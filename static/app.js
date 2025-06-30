@@ -284,38 +284,34 @@ class DragonCPUI {
         const disconnectBtn = document.getElementById('disconnectBtn');
         
         // Update status indicator
-        statusIndicator.className = 'status-indicator';
-        if (status === 'connected') {
-            statusIndicator.classList.add('status-connected');
-        } else if (status === 'connecting') {
-            statusIndicator.classList.add('status-connecting');
-        } else {
-            statusIndicator.classList.add('status-disconnected');
+        if (statusIndicator) {
+            statusIndicator.className = 'status-indicator';
+            if (status === 'connected') {
+                statusIndicator.classList.add('status-connected');
+            } else if (status === 'connecting') {
+                statusIndicator.classList.add('status-connecting');
+            } else {
+                statusIndicator.classList.add('status-disconnected');
+            }
         }
         
         // Update message
-        statusMessage.textContent = message;
+        if (statusMessage) {
+            statusMessage.textContent = message;
+        }
         
-        // Update navbar status
-        const navbarStatus = document.getElementById('connectionStatus');
-        const navbarText = document.getElementById('connectionText');
-        
-        navbarStatus.className = 'status-indicator';
-        if (status === 'connected') {
-            navbarStatus.classList.add('status-connected');
-            navbarText.textContent = 'Connected';
-            autoConnectBtn.style.display = 'none';
-            disconnectBtn.style.display = 'inline-block';
-        } else if (status === 'connecting') {
-            navbarStatus.classList.add('status-connecting');
-            navbarText.textContent = 'Connecting...';
-            autoConnectBtn.style.display = 'none';
-            disconnectBtn.style.display = 'none';
-        } else {
-            navbarStatus.classList.add('status-disconnected');
-            navbarText.textContent = 'Disconnected';
-            autoConnectBtn.style.display = 'inline-block';
-            disconnectBtn.style.display = 'none';
+        // Update buttons
+        if (autoConnectBtn && disconnectBtn) {
+            if (status === 'connected') {
+                autoConnectBtn.style.display = 'none';
+                disconnectBtn.style.display = 'inline-block';
+            } else if (status === 'connecting') {
+                autoConnectBtn.style.display = 'none';
+                disconnectBtn.style.display = 'none';
+            } else {
+                autoConnectBtn.style.display = 'inline-block';
+                disconnectBtn.style.display = 'none';
+            }
         }
     }
 
