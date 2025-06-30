@@ -93,12 +93,45 @@
         <!-- Transfer Log -->
         <div class="card fade-in" id="logCard" style="display: none;">
             <div class="card-header gradient-accent">
-                <i class="bi bi-terminal"></i> Transfer Log
-            </div>
-            <div class="card-body">
-                <div class="transfer-log p-3" id="transferLog">
-                    <!-- Transfer logs will be shown here -->
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <i class="bi bi-terminal"></i> Transfer Log
+                        <span class="badge bg-secondary ms-2" id="logCount">0 lines</span>
+                    </div>
+                    <div class="log-controls">
+                        <button class="btn btn-sm btn-outline-light me-2" id="clearLogBtn" title="Clear logs">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-light me-2" id="autoScrollBtn" title="Auto-scroll to bottom">
+                            <i class="bi bi-arrow-down-circle-fill"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-light" id="fullscreenLogBtn" title="Fullscreen logs">
+                            <i class="bi bi-arrows-fullscreen"></i>
+                        </button>
+                    </div>
                 </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="transfer-log-container">
+                    <div class="transfer-log" id="transferLog">
+                        <!-- Transfer logs will be shown here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Fullscreen Log Modal -->
+    <div class="log-fullscreen-modal" id="fullscreenLogModal">
+        <div class="log-fullscreen-header">
+            <h5><i class="bi bi-terminal"></i> Transfer Log - Fullscreen</h5>
+            <button class="log-fullscreen-close" id="closeFullscreenLog">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+        <div class="log-fullscreen-content">
+            <div class="log-fullscreen-log" id="fullscreenTransferLog">
+                <!-- Fullscreen logs will be shown here -->
             </div>
         </div>
     </div>

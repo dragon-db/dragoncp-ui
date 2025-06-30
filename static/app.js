@@ -14,6 +14,9 @@ class DragonCPUI {
             breadcrumb: []
         };
         this.activeTransfers = new Map();
+        this.transferLogs = [];
+        this.autoScroll = true;
+        this.currentTransferId = null;
         
         this.initializeEventListeners();
         this.initializeWebSocket();
@@ -44,6 +47,46 @@ class DragonCPUI {
 
         document.getElementById('resetConfigBtn').addEventListener('click', () => {
             this.resetConfiguration();
+        });
+
+        // Log controls
+        document.getElementById('clearLogBtn').addEventListener('click', () => {
+            this.clearTransferLog();
+        });
+
+        document.getElementById('autoScrollBtn').addEventListener('click', () => {
+            this.toggleAutoScroll();
+        });
+
+        document.getElementById('fullscreenLogBtn').addEventListener('click', () => {
+            this.showFullscreenLog();
+        });
+
+        document.getElementById('closeFullscreenLog').addEventListener('click', () => {
+            this.hideFullscreenLog();
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // ESC key to close fullscreen log
+            if (e.key === 'Escape') {
+                const fullscreenModal = document.getElementById('fullscreenLogModal');
+                if (fullscreenModal.classList.contains('show')) {
+                    this.hideFullscreenLog();
+                }
+            }
+            
+            // Ctrl/Cmd + L to toggle auto-scroll
+            if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+                e.preventDefault();
+                this.toggleAutoScroll();
+            }
+            
+            // Ctrl/Cmd + K to clear logs
+            if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                e.preventDefault();
+                this.clearTransferLog();
+            }
         });
 
         // Add input change listeners for config fields
@@ -719,7 +762,7 @@ class DragonCPUI {
             transfer.progress = data.progress;
             transfer.logs = data.logs;
             this.updateTransferDisplay();
-            this.updateTransferLog(data.logs);
+            this.updateTransferLog(data.logs, data.log_count);
         }
     }
 
@@ -728,7 +771,9 @@ class DragonCPUI {
         if (transfer) {
             transfer.status = data.status;
             transfer.progress = data.message;
+            transfer.logs = data.logs;
             this.updateTransferDisplay();
+            this.updateTransferLog(data.logs, data.log_count);
             
             if (data.status === 'completed') {
                 this.showAlert('Transfer completed successfully!', 'success');
@@ -740,12 +785,17 @@ class DragonCPUI {
 
     updateTransferDisplay() {
         const container = document.getElementById('activeTransfers');
+        const logCard = document.getElementById('logCard');
         container.innerHTML = '';
 
         if (this.activeTransfers.size === 0) {
             container.innerHTML = '<div class="text-center text-muted">No active transfers</div>';
+            logCard.style.display = 'none';
             return;
         }
+
+        // Show log card when there are active transfers
+        logCard.style.display = 'block';
 
         this.activeTransfers.forEach((transfer, id) => {
             const card = document.createElement('div');
@@ -762,20 +812,32 @@ class DragonCPUI {
                             ${transfer.folderName}${transfer.seasonName ? '/' + transfer.seasonName : ''}
                             ${transfer.episodeName ? '/' + transfer.episodeName : ''}
                         </h6>
-                        <span class="badge bg-${transfer.status === 'running' ? 'primary' : 
-                                               transfer.status === 'completed' ? 'success' : 'danger'}">
-                            ${transfer.status}
-                        </span>
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="badge bg-${transfer.status === 'running' ? 'primary' : 
+                                                   transfer.status === 'completed' ? 'success' : 'danger'}">
+                                ${transfer.status}
+                            </span>
+                            ${transfer.status === 'running' ? 
+                                `<button class="btn btn-sm btn-outline-danger" onclick="dragonCP.cancelTransfer('${id}')">
+                                    <i class="bi bi-x-circle"></i> Cancel
+                                </button>` : ''
+                            }
+                            ${transfer.logs && transfer.logs.length > 0 ? 
+                                `<button class="btn btn-sm btn-outline-info" onclick="dragonCP.loadTransferLogs('${id}')">
+                                    <i class="bi bi-eye"></i> View Logs
+                                </button>` : ''
+                            }
+                        </div>
                     </div>
                     <div class="progress mb-2">
                         <div class="progress-bar ${transfer.status === 'running' ? 'progress-bar-striped progress-bar-animated' : ''}" 
                              style="width: ${transfer.status === 'completed' ? '100%' : '50%'}"></div>
                     </div>
                     <small class="text-muted">${transfer.progress || 'Initializing...'}</small>
-                    ${transfer.status === 'running' ? 
-                        `<button class="btn btn-sm btn-outline-danger float-end" onclick="dragonCP.cancelTransfer('${id}')">
-                            <i class="bi bi-x-circle"></i> Cancel
-                        </button>` : ''
+                    ${transfer.logs && transfer.logs.length > 0 ? 
+                        `<small class="text-info d-block mt-1">
+                            <i class="bi bi-terminal"></i> ${transfer.logs.length} log lines
+                        </small>` : ''
                     }
                 </div>
             `;
@@ -784,10 +846,132 @@ class DragonCPUI {
         });
     }
 
-    updateTransferLog(logs) {
+    updateTransferLog(logs, log_count) {
         const logContainer = document.getElementById('transferLog');
-        logContainer.innerHTML = logs.map(log => `<div>${log}</div>`).join('');
-        logContainer.scrollTop = logContainer.scrollHeight;
+        const logCountElement = document.getElementById('logCount');
+        
+        // Store logs globally
+        this.transferLogs = logs || [];
+        
+        // Update log count
+        if (logCountElement) {
+            logCountElement.textContent = `${this.transferLogs.length} lines`;
+        }
+        
+        // Format and display logs with syntax highlighting
+        const formattedLogs = this.transferLogs.map(log => {
+            const logClass = this.getLogLineClass(log);
+            return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
+        }).join('');
+        
+        logContainer.innerHTML = formattedLogs;
+        
+        // Auto-scroll to bottom if enabled
+        if (this.autoScroll) {
+            this.scrollToBottom(logContainer);
+        }
+    }
+
+    getLogLineClass(logLine) {
+        const line = logLine.toLowerCase();
+        if (line.includes('error') || line.includes('failed') || line.includes('exception')) {
+            return 'error';
+        } else if (line.includes('warning') || line.includes('warn')) {
+            return 'warning';
+        } else if (line.includes('success') || line.includes('completed') || line.includes('done')) {
+            return 'success';
+        } else if (line.includes('info') || line.includes('progress') || line.includes('transferring')) {
+            return 'info';
+        }
+        return '';
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    scrollToBottom(element) {
+        element.scrollTop = element.scrollHeight;
+    }
+
+    clearTransferLog() {
+        this.transferLogs = [];
+        const logContainer = document.getElementById('transferLog');
+        const logCountElement = document.getElementById('logCount');
+        
+        logContainer.innerHTML = '';
+        if (logCountElement) {
+            logCountElement.textContent = '0 lines';
+        }
+        
+        this.showAlert('Transfer logs cleared', 'info');
+    }
+
+    toggleAutoScroll() {
+        this.autoScroll = !this.autoScroll;
+        const autoScrollBtn = document.getElementById('autoScrollBtn');
+        
+        if (this.autoScroll) {
+            autoScrollBtn.innerHTML = '<i class="bi bi-arrow-down-circle-fill"></i>';
+            autoScrollBtn.title = 'Auto-scroll enabled';
+            this.showAlert('Auto-scroll enabled', 'info');
+            
+            // Scroll to bottom immediately
+            const logContainer = document.getElementById('transferLog');
+            this.scrollToBottom(logContainer);
+        } else {
+            autoScrollBtn.innerHTML = '<i class="bi bi-arrow-down-circle"></i>';
+            autoScrollBtn.title = 'Auto-scroll disabled';
+            this.showAlert('Auto-scroll disabled', 'info');
+        }
+    }
+
+    showFullscreenLog() {
+        const fullscreenModal = document.getElementById('fullscreenLogModal');
+        const fullscreenLog = document.getElementById('fullscreenTransferLog');
+        
+        // Format logs for fullscreen display
+        const formattedLogs = this.transferLogs.map(log => {
+            const logClass = this.getLogLineClass(log);
+            return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
+        }).join('');
+        
+        fullscreenLog.innerHTML = formattedLogs;
+        fullscreenModal.classList.add('show');
+        
+        // Scroll to bottom in fullscreen
+        this.scrollToBottom(fullscreenLog);
+        
+        // Prevent body scroll
+        document.body.style.overflow = 'hidden';
+    }
+
+    hideFullscreenLog() {
+        const fullscreenModal = document.getElementById('fullscreenLogModal');
+        fullscreenModal.classList.remove('show');
+        
+        // Restore body scroll
+        document.body.style.overflow = '';
+    }
+
+    async loadTransferLogs(transferId) {
+        try {
+            const response = await fetch(`/api/transfer/${transferId}/logs`);
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.currentTransferId = transferId;
+                this.updateTransferLog(result.logs, result.log_count);
+                this.showAlert(`Loaded ${result.log_count} log lines`, 'info');
+            } else {
+                this.showAlert('Failed to load transfer logs', 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to load transfer logs:', error);
+            this.showAlert('Failed to load transfer logs', 'danger');
+        }
     }
 
     async cancelTransfer(transferId) {

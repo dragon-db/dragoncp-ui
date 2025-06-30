@@ -291,11 +291,12 @@ class TransferManager:
                     transfer["logs"].append(line.strip())
                     transfer["progress"] = line.strip()
                     
-                    # Emit progress via WebSocket
+                    # Emit progress via WebSocket with full logs
                     socketio.emit('transfer_progress', {
                         'transfer_id': transfer_id,
                         'progress': line.strip(),
-                        'logs': transfer["logs"][-10:]  # Last 10 lines
+                        'logs': transfer["logs"],  # Send full logs instead of just last 10
+                        'log_count': len(transfer["logs"])
                     })
             
             # Wait for process to complete
@@ -312,7 +313,9 @@ class TransferManager:
             socketio.emit('transfer_complete', {
                 'transfer_id': transfer_id,
                 'status': transfer["status"],
-                'message': transfer["progress"]
+                'message': transfer["progress"],
+                'logs': transfer["logs"],  # Include full logs in completion
+                'log_count': len(transfer["logs"])
             })
             
         except Exception as e:
@@ -321,7 +324,9 @@ class TransferManager:
             socketio.emit('transfer_complete', {
                 'transfer_id': transfer_id,
                 'status': 'failed',
-                'message': transfer["progress"]
+                'message': transfer["progress"],
+                'logs': transfer["logs"],
+                'log_count': len(transfer["logs"])
             })
     
     def get_transfer_status(self, transfer_id: str) -> Optional[Dict]:
@@ -567,7 +572,8 @@ def api_transfer_status(transfer_id):
                 "id": transfer_id,
                 "status": status["status"],
                 "progress": status["progress"],
-                "logs": status["logs"][-20:],  # Last 20 lines
+                "logs": status["logs"],
+                "log_count": len(status["logs"]),
                 "start_time": status["start_time"].isoformat()
             }
         })
@@ -582,6 +588,20 @@ def api_cancel_transfer(transfer_id):
         return jsonify({"status": "success", "message": "Transfer cancelled"})
     else:
         return jsonify({"status": "error", "message": "Failed to cancel transfer"})
+
+@app.route('/api/transfer/<transfer_id>/logs')
+def api_transfer_logs(transfer_id):
+    """Get full logs for a transfer"""
+    status = transfer_manager.get_transfer_status(transfer_id)
+    if status:
+        return jsonify({
+            "status": "success",
+            "logs": status["logs"],
+            "log_count": len(status["logs"]),
+            "transfer_status": status["status"]
+        })
+    else:
+        return jsonify({"status": "error", "message": "Transfer not found"})
 
 @app.route('/api/local-files')
 def api_local_files():
