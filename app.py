@@ -201,22 +201,60 @@ class TransferManager:
                       transfer_type: str = "folder") -> bool:
         """Start a new transfer"""
         try:
+            print(f"🔄 Starting transfer {transfer_id}")
+            print(f"📁 Source: {source_path}")
+            print(f"📁 Destination: {dest_path}")
+            print(f"📁 Type: {transfer_type}")
+            
             # Create destination directory
-            os.makedirs(dest_path, exist_ok=True)
+            try:
+                os.makedirs(dest_path, exist_ok=True)
+                print(f"✅ Created destination directory: {dest_path}")
+            except Exception as e:
+                print(f"❌ Failed to create destination directory: {e}")
+                return False
             
             # Get SSH connection details
             ssh_user = self.config.get("REMOTE_USER")
             ssh_host = self.config.get("REMOTE_IP")
+            ssh_password = self.config.get("REMOTE_PASSWORD", "")
+            ssh_key_path = self.config.get("SSH_KEY_PATH", "")
+            
+            print(f"🔑 SSH User: {ssh_user}")
+            print(f"🔑 SSH Host: {ssh_host}")
+            print(f"🔑 SSH Key Path: {ssh_key_path}")
             
             if not ssh_user or not ssh_host:
                 print("❌ SSH credentials not configured")
                 return False
             
+            # Resolve SSH key path to absolute path if it exists
+            if ssh_key_path:
+                if not os.path.isabs(ssh_key_path):
+                    # If relative path, make it absolute relative to the app directory
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    ssh_key_path = os.path.join(script_dir, ssh_key_path)
+                
+                if not os.path.exists(ssh_key_path):
+                    print(f"❌ SSH key file not found: {ssh_key_path}")
+                    ssh_key_path = ""
+                else:
+                    print(f"✅ SSH key found: {ssh_key_path}")
+            
+            # Test SSH connection before starting rsync
+            print("🔌 Testing SSH connection...")
+            test_ssh = SSHManager(ssh_host, ssh_user, ssh_password if ssh_password else None, ssh_key_path if ssh_key_path else None)
+            if not test_ssh.connect():
+                print("❌ SSH connection test failed")
+                return False
+            else:
+                print("✅ SSH connection test successful")
+                test_ssh.disconnect()
+            
             # Build rsync command with SSH connection
             rsync_cmd = [
                 "rsync", "-av",
                 "--progress",
-                "-e", f"ssh -o StrictHostKeyChecking=no -o Compression=no",
                 "--delete",
                 "--backup",
                 "--backup-dir", self.config.get("BACKUP_PATH", "/tmp/backup"),
@@ -242,6 +280,13 @@ class TransferManager:
                 "--no-motd"
             ]
             
+            # Build SSH options for rsync
+            ssh_options = ["-o", "StrictHostKeyChecking=no", "-o", "Compression=no"]
+            if ssh_key_path and os.path.exists(ssh_key_path):
+                ssh_options.extend(["-i", ssh_key_path])
+            
+            rsync_cmd.extend(["-e", f"ssh {' '.join(ssh_options)}"])
+            
             if transfer_type == "file":
                 rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}", f"{dest_path}/"])
             else:
@@ -255,8 +300,16 @@ class TransferManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
-                bufsize=1
+                bufsize=1,
+                env=os.environ.copy()  # Ensure environment variables are passed
             )
+            
+            # Check if process started successfully
+            if process.poll() is not None:
+                print(f"❌ rsync process failed to start, return code: {process.poll()}")
+                return False
+            
+            print(f"✅ rsync process started successfully (PID: {process.pid})")
             
             self.transfers[transfer_id] = {
                 "process": process,
@@ -274,53 +327,73 @@ class TransferManager:
             
             return True
         except Exception as e:
-            print(f"Transfer start failed: {e}")
+            print(f"❌ Transfer start failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _monitor_transfer(self, transfer_id: str):
         """Monitor transfer progress"""
         if transfer_id not in self.transfers:
+            print(f"❌ Transfer {transfer_id} not found in monitoring")
             return
         
         transfer = self.transfers[transfer_id]
         process = transfer["process"]
         
+        print(f"🔍 Starting monitoring for transfer {transfer_id} (PID: {process.pid})")
+        
         try:
+            # Read output line by line
             for line in iter(process.stdout.readline, ''):
                 if line:
-                    transfer["logs"].append(line.strip())
-                    transfer["progress"] = line.strip()
+                    line = line.strip()
+                    transfer["logs"].append(line)
+                    transfer["progress"] = line
                     
                     # Emit progress via WebSocket with full logs
                     socketio.emit('transfer_progress', {
                         'transfer_id': transfer_id,
-                        'progress': line.strip(),
-                        'logs': transfer["logs"],  # Send full logs instead of just last 10
+                        'progress': line,
+                        'logs': transfer["logs"],
                         'log_count': len(transfer["logs"])
                     })
             
             # Wait for process to complete
-            process.wait()
+            print(f"⏳ Waiting for transfer {transfer_id} to complete...")
+            return_code = process.wait()
+            print(f"🏁 Transfer {transfer_id} completed with return code: {return_code}")
             
-            if process.returncode == 0:
+            if return_code == 0:
                 transfer["status"] = "completed"
                 transfer["progress"] = "Transfer completed successfully!"
+                print(f"✅ Transfer {transfer_id} completed successfully")
             else:
                 transfer["status"] = "failed"
-                transfer["progress"] = f"Transfer failed with exit code: {process.returncode}"
+                transfer["progress"] = f"Transfer failed with exit code: {return_code}"
+                print(f"❌ Transfer {transfer_id} failed with exit code: {return_code}")
             
             # Emit completion status
             socketio.emit('transfer_complete', {
                 'transfer_id': transfer_id,
                 'status': transfer["status"],
                 'message': transfer["progress"],
-                'logs': transfer["logs"],  # Include full logs in completion
+                'logs': transfer["logs"],
                 'log_count': len(transfer["logs"])
             })
             
         except Exception as e:
+            print(f"❌ Error monitoring transfer {transfer_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            
             transfer["status"] = "failed"
             transfer["progress"] = f"Transfer monitoring failed: {e}"
+            
+            # Add error to logs
+            error_msg = f"ERROR: Transfer monitoring failed: {e}"
+            transfer["logs"].append(error_msg)
+            
             socketio.emit('transfer_complete', {
                 'transfer_id': transfer_id,
                 'status': 'failed',
@@ -496,70 +569,86 @@ def api_episodes(media_type, folder_name, season_name):
 @app.route('/api/transfer', methods=['POST'])
 def api_transfer():
     """Start a transfer"""
-    data = request.json
-    transfer_type = data.get('type')  # 'folder' or 'file'
-    media_type = data.get('media_type')
-    folder_name = data.get('folder_name')
-    season_name = data.get('season_name')
-    episode_name = data.get('episode_name')
-    
-    print(f"🔄 Transfer request: {data}")
-    
-    if not media_type or not folder_name:
-        return jsonify({"status": "error", "message": "Media type and folder name are required"})
-    
-    # Get source path from config
-    source_path_map = {
-        "movies": config.get("MOVIE_PATH"),
-        "tvshows": config.get("TVSHOW_PATH"),
-        "anime": config.get("ANIME_PATH")
-    }
-    
-    # Get destination path from config
-    dest_path_map = {
-        "movies": config.get("MOVIE_DEST_PATH"),
-        "tvshows": config.get("TVSHOW_DEST_PATH"),
-        "anime": config.get("ANIME_DEST_PATH")
-    }
-    
-    base_source = source_path_map.get(media_type)
-    base_dest = dest_path_map.get(media_type)
-    
-    if not base_source:
-        return jsonify({"status": "error", "message": f"Source path not configured for {media_type}"})
-    
-    if not base_dest:
-        return jsonify({"status": "error", "message": f"Destination path not configured for {media_type}"})
-    
-    # Construct source path
-    source_path = f"{base_source}/{folder_name}"
-    if season_name:
-        source_path = f"{source_path}/{season_name}"
-    
-    # Construct destination path
-    dest_path = f"{base_dest}/{folder_name}"
-    if season_name:
-        dest_path = f"{dest_path}/{season_name}"
-    
-    print(f"📁 Source: {source_path}")
-    print(f"📁 Destination: {dest_path}")
-    
-    # Generate transfer ID
-    transfer_id = f"transfer_{int(time.time())}"
-    
-    # Start transfer
-    success = transfer_manager.start_transfer(transfer_id, source_path, dest_path, transfer_type)
-    
-    if success:
-        return jsonify({
-            "status": "success", 
-            "transfer_id": transfer_id,
-            "message": "Transfer started",
-            "source": source_path,
-            "destination": dest_path
-        })
-    else:
-        return jsonify({"status": "error", "message": "Failed to start transfer"})
+    try:
+        data = request.json
+        transfer_type = data.get('type')  # 'folder' or 'file'
+        media_type = data.get('media_type')
+        folder_name = data.get('folder_name')
+        season_name = data.get('season_name')
+        episode_name = data.get('episode_name')
+        
+        print(f"🔄 Transfer request: {data}")
+        
+        if not media_type or not folder_name:
+            print("❌ Missing media_type or folder_name")
+            return jsonify({"status": "error", "message": "Media type and folder name are required"})
+        
+        # Get source path from config
+        source_path_map = {
+            "movies": config.get("MOVIE_PATH"),
+            "tvshows": config.get("TVSHOW_PATH"),
+            "anime": config.get("ANIME_PATH")
+        }
+        
+        # Get destination path from config
+        dest_path_map = {
+            "movies": config.get("MOVIE_DEST_PATH"),
+            "tvshows": config.get("TVSHOW_DEST_PATH"),
+            "anime": config.get("ANIME_DEST_PATH")
+        }
+        
+        base_source = source_path_map.get(media_type)
+        base_dest = dest_path_map.get(media_type)
+        
+        print(f"📁 Base source path for {media_type}: {base_source}")
+        print(f"📁 Base destination path for {media_type}: {base_dest}")
+        
+        if not base_source:
+            print(f"❌ Source path not configured for {media_type}")
+            return jsonify({"status": "error", "message": f"Source path not configured for {media_type}"})
+        
+        if not base_dest:
+            print(f"❌ Destination path not configured for {media_type}")
+            return jsonify({"status": "error", "message": f"Destination path not configured for {media_type}"})
+        
+        # Construct source path
+        source_path = f"{base_source}/{folder_name}"
+        if season_name:
+            source_path = f"{source_path}/{season_name}"
+        
+        # Construct destination path
+        dest_path = f"{base_dest}/{folder_name}"
+        if season_name:
+            dest_path = f"{dest_path}/{season_name}"
+        
+        print(f"📁 Final source path: {source_path}")
+        print(f"📁 Final destination path: {dest_path}")
+        
+        # Generate transfer ID
+        transfer_id = f"transfer_{int(time.time())}"
+        
+        # Start transfer
+        print(f"🚀 Starting transfer with ID: {transfer_id}")
+        success = transfer_manager.start_transfer(transfer_id, source_path, dest_path, transfer_type)
+        
+        if success:
+            print(f"✅ Transfer {transfer_id} started successfully")
+            return jsonify({
+                "status": "success", 
+                "transfer_id": transfer_id,
+                "message": "Transfer started",
+                "source": source_path,
+                "destination": dest_path
+            })
+        else:
+            print(f"❌ Failed to start transfer {transfer_id}")
+            return jsonify({"status": "error", "message": "Failed to start transfer"})
+            
+    except Exception as e:
+        print(f"❌ Error in api_transfer: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"Internal server error: {str(e)}"})
 
 @app.route('/api/transfer/<transfer_id>/status')
 def api_transfer_status(transfer_id):
@@ -667,6 +756,56 @@ def api_env_config():
     """Get only environment configuration (without session overrides)"""
     return jsonify(config.env_config)
 
+@app.route('/api/debug')
+def api_debug():
+    """Debug endpoint to check configuration and SSH status"""
+    try:
+        debug_info = {
+            "timestamp": datetime.now().isoformat(),
+            "working_directory": os.getcwd(),
+            "environment_file": config.env_file,
+            "environment_file_exists": os.path.exists(config.env_file),
+            "ssh_connected": ssh_manager.connected if ssh_manager else False,
+            "configuration": {
+                "REMOTE_IP": config.get("REMOTE_IP"),
+                "REMOTE_USER": config.get("REMOTE_USER"),
+                "REMOTE_PASSWORD": "***" if config.get("REMOTE_PASSWORD") else "Not set",
+                "SSH_KEY_PATH": config.get("SSH_KEY_PATH"),
+                "MOVIE_PATH": config.get("MOVIE_PATH"),
+                "TVSHOW_PATH": config.get("TVSHOW_PATH"),
+                "ANIME_PATH": config.get("ANIME_PATH"),
+                "MOVIE_DEST_PATH": config.get("MOVIE_DEST_PATH"),
+                "TVSHOW_DEST_PATH": config.get("TVSHOW_DEST_PATH"),
+                "ANIME_DEST_PATH": config.get("ANIME_DEST_PATH"),
+                "BACKUP_PATH": config.get("BACKUP_PATH")
+            },
+            "ssh_key_check": {
+                "key_path": config.get("SSH_KEY_PATH"),
+                "key_exists": os.path.exists(config.get("SSH_KEY_PATH", "")) if config.get("SSH_KEY_PATH") else False,
+                "key_readable": os.access(config.get("SSH_KEY_PATH", ""), os.R_OK) if config.get("SSH_KEY_PATH") and os.path.exists(config.get("SSH_KEY_PATH", "")) else False
+            },
+            "rsync_check": {
+                "rsync_available": subprocess.run(["which", "rsync"], capture_output=True, text=True).returncode == 0,
+                "rsync_version": subprocess.run(["rsync", "--version"], capture_output=True, text=True).stdout.split('\n')[0] if subprocess.run(["which", "rsync"], capture_output=True, text=True).returncode == 0 else "Not available"
+            },
+            "active_transfers": len(transfer_manager.transfers),
+            "session_config": session.get('ui_config', {})
+        }
+        
+        return jsonify({
+            "status": "success",
+            "debug_info": debug_info
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Debug failed: {str(e)}",
+            "debug_info": {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+        })
+
 if __name__ == '__main__':
     # Create templates directory if it doesn't exist
     os.makedirs('templates', exist_ok=True)
@@ -675,4 +814,4 @@ if __name__ == '__main__':
     print("DragonCP Web UI starting...")
     print("Access the application at: http://localhost:5000")
     
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True) 
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True) 
