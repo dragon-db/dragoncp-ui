@@ -476,7 +476,7 @@ class DragonCPUI {
                     ${folder}
                 </div>
                 <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-primary" onclick="dragonCP.selectFolder('${folder}', '${mediaType}')">
+                    <button class="btn btn-outline-primary" onclick="dragonCP.selectFolder('${this.escapeJavaScriptString(folder)}', '${mediaType}')">
                         <i class="bi bi-arrow-right"></i>
                     </button>
                 </div>
@@ -540,7 +540,7 @@ class DragonCPUI {
                     ${season}
                 </div>
                 <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-primary" onclick="dragonCP.selectSeason('${season}', '${mediaType}', '${folderName}')">
+                    <button class="btn btn-outline-primary" onclick="dragonCP.selectSeason('${this.escapeJavaScriptString(season)}', '${mediaType}', '${this.escapeJavaScriptString(folderName)}')">
                         <i class="bi bi-arrow-right"></i>
                     </button>
                 </div>
@@ -565,7 +565,7 @@ class DragonCPUI {
         const options = [
             {
                 title: 'Sync Entire Folder',
-                description: seasonName ? `Sync entire ${seasonName} folder` : `Sync entire ${folderName} folder`,
+                description: seasonName ? `Sync entire ${this.escapeHtml(seasonName)} folder` : `Sync entire ${this.escapeHtml(folderName)} folder`,
                 icon: 'folder-plus',
                 action: () => this.startTransfer('folder', mediaType, folderName, seasonName)
             }
@@ -698,7 +698,7 @@ class DragonCPUI {
                     ${episode}
                 </div>
                 <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-success" onclick="dragonCP.downloadEpisode('${episode}', '${mediaType}', '${folderName}', '${seasonName}')">
+                    <button class="btn btn-outline-success" onclick="dragonCP.downloadEpisode('${this.escapeJavaScriptString(episode)}', '${mediaType}', '${this.escapeJavaScriptString(folderName)}', '${this.escapeJavaScriptString(seasonName)}')">
                         <i class="bi bi-download"></i>
                     </button>
                 </div>
@@ -809,8 +809,8 @@ class DragonCPUI {
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <h6 class="card-title mb-0">
                             <i class="bi bi-${transfer.type === 'file' ? 'file-play' : 'folder'}"></i>
-                            ${transfer.folderName}${transfer.seasonName ? '/' + transfer.seasonName : ''}
-                            ${transfer.episodeName ? '/' + transfer.episodeName : ''}
+                            ${this.escapeHtml(transfer.folderName)}${transfer.seasonName ? '/' + this.escapeHtml(transfer.seasonName) : ''}
+                            ${transfer.episodeName ? '/' + this.escapeHtml(transfer.episodeName) : ''}
                         </h6>
                         <div class="d-flex align-items-center gap-2">
                             <span class="badge bg-${transfer.status === 'running' ? 'primary' : 
@@ -890,6 +890,16 @@ class DragonCPUI {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    escapeJavaScriptString(str) {
+        if (typeof str !== 'string') return str;
+        return str.replace(/\\/g, '\\\\')
+                 .replace(/'/g, "\\'")
+                 .replace(/"/g, '\\"')
+                 .replace(/\n/g, '\\n')
+                 .replace(/\r/g, '\\r')
+                 .replace(/\t/g, '\\t');
     }
 
     scrollToBottom(element) {
