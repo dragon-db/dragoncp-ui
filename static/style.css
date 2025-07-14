@@ -199,23 +199,23 @@ body {
 }
 
 .alert-success {
-    background: rgba(39, 174, 96, 0.6);
-    color: #2ecc71;
+    background: rgba(39, 174, 96, 0.85);
+    color: #ffffff;
 }
 
 .alert-danger {
-    background: rgba(231, 76, 60, 0.6);
-    color: #e74c3c;
+    background: rgba(231, 76, 60, 0.85);
+    color: #ffffff;
 }
 
 .alert-warning {
-    background: rgba(243, 156, 18, 0.6);
-    color: #f39c12;
+    background: rgba(243, 156, 18, 0.85);
+    color: #ffffff;
 }
 
 .alert-info {
-    background: rgba(52, 152, 219, 0.6);
-    color: #3498db;
+    background: rgba(52, 152, 219, 0.85);
+    color: #ffffff;
 }
 
 /* Modals */
