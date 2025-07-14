@@ -405,7 +405,6 @@ class DragonCPUI {
                     <div class="card-body text-center">
                         <i class="bi bi-${this.getMediaIcon(mediaType.id)}" style="font-size: 3rem; color: var(--secondary-color);"></i>
                         <h5 class="card-title mt-3">${mediaType.name}</h5>
-                        <p class="card-text text-muted">${mediaType.path || 'Path not configured'}</p>
                     </div>
                 </div>
             `;
