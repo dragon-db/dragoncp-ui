@@ -13,7 +13,6 @@ class DragonCPUI {
             selectedSeason: null,
             breadcrumb: []
         };
-        this.activeTransfers = new Map();
         this.transferLogs = [];
         this.autoScroll = true;
         this.currentTransferId = null;
@@ -23,6 +22,7 @@ class DragonCPUI {
         this.loadConfiguration();
         this.initializeConnection();
         this.initializeDiskUsageMonitoring();
+        this.initializeTransferManagement();
     }
 
     initializeEventListeners() {
@@ -90,6 +90,27 @@ class DragonCPUI {
             }
         });
 
+        // Transfer management buttons
+        document.getElementById('refreshTransfersBtn').addEventListener('click', () => {
+            this.loadActiveTransfers();
+        });
+
+        document.getElementById('showAllTransfersBtn').addEventListener('click', () => {
+            this.showAllTransfersModal();
+        });
+
+        document.getElementById('cleanupTransfersBtn').addEventListener('click', () => {
+            this.cleanupOldTransfers();
+        });
+
+        document.getElementById('refreshAllTransfersBtn').addEventListener('click', () => {
+            this.loadAllTransfers();
+        });
+
+        document.getElementById('transferStatusFilter').addEventListener('change', () => {
+            this.loadAllTransfers();
+        });
+
         // Add input change listeners for config fields
         this.addConfigFieldListeners();
     }
@@ -130,10 +151,14 @@ class DragonCPUI {
 
         this.socket.on('transfer_progress', (data) => {
             this.updateTransferProgress(data);
+            // Refresh transfer management display for progress bars
+            this.loadActiveTransfers();
         });
 
         this.socket.on('transfer_complete', (data) => {
             this.handleTransferComplete(data);
+            // Refresh transfer management display
+            this.loadActiveTransfers();
         });
 
         this.socket.on('disconnect', () => {
@@ -651,17 +676,8 @@ class DragonCPUI {
             
             if (result.status === 'success') {
                 this.showAlert('Transfer started successfully!', 'success');
-                this.activeTransfers.set(result.transfer_id, {
-                    id: result.transfer_id,
-                    type: transferType,
-                    mediaType,
-                    folderName,
-                    seasonName,
-                    status: 'running',
-                    startTime: new Date()
-                });
-                this.updateTransferDisplay();
-                document.getElementById('transferCard').style.display = 'block';
+                // Refresh the database-based transfer list immediately
+                this.loadActiveTransfers();
                 document.getElementById('logCard').style.display = 'block';
             } else {
                 this.showAlert(result.message || 'Failed to start transfer', 'danger');
@@ -739,18 +755,8 @@ class DragonCPUI {
             
             if (result.status === 'success') {
                 this.showAlert(`Downloading episode: ${episodeName}`, 'success');
-                this.activeTransfers.set(result.transfer_id, {
-                    id: result.transfer_id,
-                    type: 'file',
-                    mediaType,
-                    folderName,
-                    seasonName,
-                    episodeName,
-                    status: 'running',
-                    startTime: new Date()
-                });
-                this.updateTransferDisplay();
-                document.getElementById('transferCard').style.display = 'block';
+                // Refresh the database-based transfer list immediately
+                this.loadActiveTransfers();
                 document.getElementById('logCard').style.display = 'block';
             } else {
                 this.showAlert(result.message || 'Failed to start download', 'danger');
@@ -766,94 +772,23 @@ class DragonCPUI {
     }
 
     updateTransferProgress(data) {
-        const transfer = this.activeTransfers.get(data.transfer_id);
-        if (transfer) {
-            transfer.progress = data.progress;
-            transfer.logs = data.logs;
-            this.updateTransferDisplay();
-            this.updateTransferLog(data.logs, data.log_count);
-        }
+        // Update logs for the current transfer being viewed
+        this.updateTransferLog(data.logs, data.log_count);
     }
 
     handleTransferComplete(data) {
-        const transfer = this.activeTransfers.get(data.transfer_id);
-        if (transfer) {
-            transfer.status = data.status;
-            transfer.progress = data.message;
-            transfer.logs = data.logs;
-            this.updateTransferDisplay();
-            this.updateTransferLog(data.logs, data.log_count);
-            
-            if (data.status === 'completed') {
-                this.showAlert('Transfer completed successfully!', 'success');
-            } else {
-                this.showAlert(`Transfer failed: ${data.message}`, 'danger');
-            }
+        // Update logs for the current transfer
+        this.updateTransferLog(data.logs, data.log_count);
+        
+        // Show completion message
+        if (data.status === 'completed') {
+            this.showAlert('Transfer completed successfully!', 'success');
+        } else {
+            this.showAlert(`Transfer failed: ${data.message}`, 'danger');
         }
     }
 
-    updateTransferDisplay() {
-        const container = document.getElementById('activeTransfers');
-        const logCard = document.getElementById('logCard');
-        container.innerHTML = '';
 
-        if (this.activeTransfers.size === 0) {
-            container.innerHTML = '<div class="text-center text-muted">No active transfers</div>';
-            logCard.style.display = 'none';
-            return;
-        }
-
-        // Show log card when there are active transfers
-        logCard.style.display = 'block';
-
-        this.activeTransfers.forEach((transfer, id) => {
-            const card = document.createElement('div');
-            card.className = 'card mb-3';
-            
-            const statusClass = transfer.status === 'running' ? 'text-primary' : 
-                              transfer.status === 'completed' ? 'text-success' : 'text-danger';
-            
-            card.innerHTML = `
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <h6 class="card-title mb-0">
-                            <i class="bi bi-${transfer.type === 'file' ? 'file-play' : 'folder'}"></i>
-                            ${this.escapeHtml(transfer.folderName)}${transfer.seasonName ? '/' + this.escapeHtml(transfer.seasonName) : ''}
-                            ${transfer.episodeName ? '/' + this.escapeHtml(transfer.episodeName) : ''}
-                        </h6>
-                        <div class="d-flex align-items-center gap-2">
-                            <span class="badge bg-${transfer.status === 'running' ? 'primary' : 
-                                                   transfer.status === 'completed' ? 'success' : 'danger'}">
-                                ${transfer.status}
-                            </span>
-                            ${transfer.status === 'running' ? 
-                                `<button class="btn btn-sm btn-outline-danger" onclick="dragonCP.cancelTransfer('${id}')">
-                                    <i class="bi bi-x-circle"></i> Cancel
-                                </button>` : ''
-                            }
-                            ${transfer.logs && transfer.logs.length > 0 ? 
-                                `<button class="btn btn-sm btn-outline-info" onclick="dragonCP.loadTransferLogs('${id}')">
-                                    <i class="bi bi-eye"></i> View Logs
-                                </button>` : ''
-                            }
-                        </div>
-                    </div>
-                    <div class="progress mb-2">
-                        <div class="progress-bar ${transfer.status === 'running' ? 'progress-bar-striped progress-bar-animated' : ''}" 
-                             style="width: ${transfer.status === 'completed' ? '100%' : '50%'}"></div>
-                    </div>
-                    <small class="text-muted">${transfer.progress || 'Initializing...'}</small>
-                    ${transfer.logs && transfer.logs.length > 0 ? 
-                        `<small class="text-info d-block mt-1">
-                            <i class="bi bi-terminal"></i> ${transfer.logs.length} log lines
-                        </small>` : ''
-                    }
-                </div>
-            `;
-            
-            container.appendChild(card);
-        });
-    }
 
     updateTransferLog(logs, log_count) {
         const logContainer = document.getElementById('transferLog');
@@ -993,6 +928,34 @@ class DragonCPUI {
         }
     }
 
+    async showTransferLogs(transferId) {
+        try {
+            const response = await fetch(`/api/transfer/${transferId}/logs`);
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.currentTransferId = transferId;
+                this.updateTransferLog(result.logs, result.log_count);
+                
+                // Show the log card
+                document.getElementById('logCard').style.display = 'block';
+                
+                // Scroll to the log card
+                document.getElementById('logCard').scrollIntoView({ 
+                    behavior: 'smooth',
+                    block: 'nearest'
+                });
+                
+                this.showAlert(`Loaded ${result.log_count} log lines`, 'info');
+            } else {
+                this.showAlert('Failed to load transfer logs', 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to load transfer logs:', error);
+            this.showAlert('Failed to load transfer logs', 'danger');
+        }
+    }
+
     async cancelTransfer(transferId) {
         try {
             const response = await fetch(`/api/transfer/${transferId}/cancel`, {
@@ -1003,8 +966,8 @@ class DragonCPUI {
             
             if (result.status === 'success') {
                 this.showAlert('Transfer cancelled', 'warning');
-                this.activeTransfers.delete(transferId);
-                this.updateTransferDisplay();
+                // Refresh the database-based transfer list
+                this.loadActiveTransfers();
             } else {
                 this.showAlert('Failed to cancel transfer', 'danger');
             }
@@ -1100,6 +1063,7 @@ class DragonCPUI {
 
     hideMediaInterface() {
         document.getElementById('diskUsageCard').style.display = 'none';
+        document.getElementById('transferManagementCard').style.display = 'none';
         document.getElementById('mediaCard').style.display = 'none';
         document.getElementById('folderCard').style.display = 'none';
         document.getElementById('transferCard').style.display = 'none';
@@ -1108,6 +1072,7 @@ class DragonCPUI {
 
     showMediaInterface() {
         document.getElementById('diskUsageCard').style.display = 'block';
+        document.getElementById('transferManagementCard').style.display = 'block';
         document.getElementById('mediaCard').style.display = 'block';
         document.getElementById('folderCard').style.display = 'none';
         document.getElementById('transferCard').style.display = 'none';
@@ -1389,6 +1354,454 @@ class DragonCPUI {
         if (percentage >= 75) return 'warning';
         if (percentage >= 50) return 'info';
         return 'success';
+    }
+
+    // Transfer Management Methods
+    initializeTransferManagement() {
+        this.loadActiveTransfers();
+        
+        // Auto-refresh active transfers every 30 seconds
+        setInterval(() => {
+            this.loadActiveTransfers();
+        }, 30000);
+    }
+
+    async loadActiveTransfers() {
+        try {
+            const response = await fetch('/api/transfers/active');
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.updateTransferManagementDisplay(result.transfers);
+                document.getElementById('transferManagementCard').style.display = 'block';
+            } else {
+                console.error('Failed to load active transfers:', result.message);
+            }
+        } catch (error) {
+            console.error('Failed to load active transfers:', error);
+        }
+    }
+
+    updateTransferManagementDisplay(transfers) {
+        const container = document.getElementById('transferList');
+        const countBadge = document.getElementById('activeTransferCount');
+        const noTransfersMessage = document.getElementById('noTransfersMessage');
+        
+        // Update count badge
+        const activeCount = transfers.filter(t => t.status === 'running' || t.status === 'pending').length;
+        countBadge.textContent = `${activeCount} active`;
+        
+        container.innerHTML = '';
+        
+        if (transfers.length === 0) {
+            noTransfersMessage.style.display = 'block';
+            return;
+        }
+        
+        noTransfersMessage.style.display = 'none';
+        
+        transfers.forEach(transfer => {
+            const col = document.createElement('div');
+            col.className = 'col-lg-6 col-xl-4';
+            
+            const displayTitle = transfer.parsed_title || transfer.folder_name;
+            const displaySubtitle = this.buildTransferSubtitle(transfer);
+            const timeAgo = this.getTimeAgo(transfer.start_time);
+            
+            col.innerHTML = `
+                <div class="transfer-item">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <div class="transfer-title">
+                            <i class="bi bi-${this.getTransferTypeIcon(transfer.transfer_type)} transfer-type-icon"></i>
+                            ${this.escapeHtml(displayTitle)}
+                        </div>
+                        <span class="transfer-status-badge transfer-status-${transfer.status}">
+                            ${transfer.status}
+                        </span>
+                    </div>
+                    <div class="transfer-meta">
+                        <div><strong>Type:</strong> ${this.escapeHtml(transfer.media_type)}</div>
+                        ${displaySubtitle ? `<div><strong>Details:</strong> ${this.escapeHtml(displaySubtitle)}</div>` : ''}
+                        <div class="transfer-time"><strong>Started:</strong> ${timeAgo}</div>
+                    </div>
+                    <div class="transfer-progress">
+                        ${this.escapeHtml(transfer.progress || 'Initializing...')}
+                    </div>
+                    ${transfer.status === 'running' ? this.renderTransferProgressBar(transfer) : ''}
+                    <div class="transfer-actions">
+                        <button class="btn btn-sm btn-outline-info" onclick="dragonCP.showTransferDetails('${transfer.id}')">
+                            <i class="bi bi-eye"></i> Details
+                        </button>
+                        ${transfer.status === 'running' ? 
+                            `<button class="btn btn-sm btn-outline-danger" onclick="dragonCP.cancelTransfer('${transfer.id}')">
+                                <i class="bi bi-x-circle"></i> Cancel
+                            </button>` : ''
+                        }
+                        ${transfer.status === 'failed' || transfer.status === 'cancelled' ? 
+                            `<button class="btn btn-sm btn-outline-success" onclick="dragonCP.restartTransfer('${transfer.id}')">
+                                <i class="bi bi-arrow-clockwise"></i> Restart
+                            </button>` : ''
+                        }
+                        ${transfer.log_count > 0 ? 
+                            `<button class="btn btn-sm btn-outline-secondary" onclick="dragonCP.showTransferLogs('${transfer.id}')">
+                                <i class="bi bi-terminal"></i> Logs (${transfer.log_count})
+                            </button>` : ''
+                        }
+                    </div>
+                </div>
+            `;
+            
+            container.appendChild(col);
+        });
+    }
+
+    buildTransferSubtitle(transfer) {
+        const parts = [];
+        
+        if (transfer.parsed_season) {
+            parts.push(`Season ${transfer.parsed_season}`);
+        } else if (transfer.season_name) {
+            parts.push(transfer.season_name);
+        }
+        
+        if (transfer.parsed_episode) {
+            parts.push(`Episode ${transfer.parsed_episode}`);
+        } else if (transfer.episode_name) {
+            parts.push(transfer.episode_name);
+        }
+        
+        return parts.join(' - ');
+    }
+
+    getTransferTypeIcon(transferType) {
+        return transferType === 'file' ? 'file-play' : 'folder';
+    }
+
+    renderTransferProgressBar(transfer) {
+        const progressInfo = this.parseTransferProgress(transfer);
+        
+        if (progressInfo.percentage > 0) {
+            return `
+                <div class="mt-2">
+                    <div class="progress" style="height: 6px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
+                             style="width: ${progressInfo.percentage}%"></div>
+                    </div>
+                    <div class="d-flex justify-content-between mt-1">
+                        <small class="text-muted">${progressInfo.percentage}% complete</small>
+                        ${progressInfo.speed ? `<small class="text-muted">${progressInfo.speed}</small>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+        
+        return `
+            <div class="mt-2">
+                <div class="progress" style="height: 6px;">
+                    <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" 
+                         style="width: 100%"></div>
+                </div>
+                <small class="text-muted">Processing...</small>
+            </div>
+        `;
+    }
+
+    parseTransferProgress(transfer) {
+        if (!transfer.logs || transfer.logs.length === 0) {
+            return { percentage: 0, speed: null };
+        }
+        
+        // Look for rsync progress in the last few log lines
+        const recentLogs = transfer.logs.slice(-10);
+        let percentage = 0;
+        let speed = null;
+        
+        for (let i = recentLogs.length - 1; i >= 0; i--) {
+            const log = recentLogs[i];
+            
+            // Match rsync progress patterns like "1,234,567  67%  1.23MB/s"
+            const progressMatch = log.match(/(\d{1,3})%\s+([0-9.,]+[kmgtKMGT]?B\/s)/);
+            if (progressMatch) {
+                percentage = parseInt(progressMatch[1]);
+                speed = progressMatch[2];
+                break;
+            }
+            
+            // Match alternative patterns like "67% 1.23MB/s"
+            const altMatch = log.match(/(\d{1,3})%.*?([0-9.,]+[kmgtKMGT]?B\/s)/);
+            if (altMatch) {
+                percentage = parseInt(altMatch[1]);
+                speed = altMatch[2];
+                break;
+            }
+            
+            // Match just percentage
+            const percentMatch = log.match(/(\d{1,3})%/);
+            if (percentMatch) {
+                percentage = parseInt(percentMatch[1]);
+                break;
+            }
+        }
+        
+        return { percentage, speed };
+    }
+
+    getTimeAgo(timeString) {
+        if (!timeString) return 'Unknown';
+        
+        const time = new Date(timeString);
+        const now = new Date();
+        const diffMs = now - time;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMins / 60);
+        const diffDays = Math.floor(diffHours / 24);
+        
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins} min ago`;
+        if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+        return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+    }
+
+    async showAllTransfersModal() {
+        const modal = new bootstrap.Modal(document.getElementById('allTransfersModal'));
+        modal.show();
+        await this.loadAllTransfers();
+    }
+
+    async loadAllTransfers() {
+        try {
+            const statusFilter = document.getElementById('transferStatusFilter').value;
+            let url = '/api/transfers/all?limit=100';
+            if (statusFilter) {
+                url += `&status=${statusFilter}`;
+            }
+            
+            const response = await fetch(url);
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.updateAllTransfersTable(result.transfers);
+            } else {
+                this.showAlert('Failed to load transfers', 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to load all transfers:', error);
+            this.showAlert('Failed to load transfers', 'danger');
+        }
+    }
+
+    updateAllTransfersTable(transfers) {
+        const tableBody = document.getElementById('allTransfersTable');
+        const noTransfersMessage = document.getElementById('noAllTransfersMessage');
+        
+        tableBody.innerHTML = '';
+        
+        if (transfers.length === 0) {
+            noTransfersMessage.style.display = 'block';
+            return;
+        }
+        
+        noTransfersMessage.style.display = 'none';
+        
+        transfers.forEach(transfer => {
+            const row = document.createElement('tr');
+            
+            const displayTitle = transfer.parsed_title || transfer.folder_name;
+            const displaySubtitle = this.buildTransferSubtitle(transfer);
+            const fullTitle = displaySubtitle ? `${displayTitle} - ${displaySubtitle}` : displayTitle;
+            
+            row.innerHTML = `
+                <td>
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-${this.getTransferTypeIcon(transfer.transfer_type)} me-2"></i>
+                        <div>
+                            <div class="fw-bold">${this.escapeHtml(displayTitle)}</div>
+                            ${displaySubtitle ? `<small class="text-muted">${this.escapeHtml(displaySubtitle)}</small>` : ''}
+                        </div>
+                    </div>
+                </td>
+                <td>
+                    <span class="badge bg-secondary">${this.escapeHtml(transfer.media_type)}</span>
+                </td>
+                <td>
+                    <span class="transfer-status-badge transfer-status-${transfer.status}">
+                        ${transfer.status}
+                    </span>
+                </td>
+                <td>
+                    <small>${this.escapeHtml(transfer.progress || 'N/A')}</small>
+                </td>
+                <td>
+                    <small>${this.getTimeAgo(transfer.start_time)}</small>
+                </td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-info" onclick="dragonCP.showTransferDetails('${transfer.id}')" title="View details">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                        ${transfer.status === 'running' ? 
+                            `<button class="btn btn-outline-danger" onclick="dragonCP.cancelTransfer('${transfer.id}')" title="Cancel">
+                                <i class="bi bi-x-circle"></i>
+                            </button>` : ''
+                        }
+                        ${transfer.status === 'failed' || transfer.status === 'cancelled' ? 
+                            `<button class="btn btn-outline-success" onclick="dragonCP.restartTransfer('${transfer.id}')" title="Restart">
+                                <i class="bi bi-arrow-clockwise"></i>
+                            </button>` : ''
+                        }
+                    </div>
+                </td>
+            `;
+            
+            tableBody.appendChild(row);
+        });
+    }
+
+    async showTransferDetails(transferId) {
+        try {
+            const response = await fetch(`/api/transfer/${transferId}/status`);
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                const transfer = result.transfer;
+                this.renderTransferDetails(transfer);
+                const modal = new bootstrap.Modal(document.getElementById('transferDetailsModal'));
+                modal.show();
+            } else {
+                this.showAlert('Failed to load transfer details', 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to load transfer details:', error);
+            this.showAlert('Failed to load transfer details', 'danger');
+        }
+    }
+
+    renderTransferDetails(transfer) {
+        const content = document.getElementById('transferDetailsContent');
+        const logContainer = document.getElementById('transferDetailsLog');
+        
+        // Render transfer details
+        const displayTitle = transfer.parsed_title || transfer.folder_name;
+        const displaySubtitle = this.buildTransferSubtitle(transfer);
+        
+        content.innerHTML = `
+            <div class="transfer-details-section">
+                <h6>Transfer Information</h6>
+                <div class="transfer-details-grid">
+                    <div class="transfer-details-item">
+                        <div class="transfer-details-label">Title</div>
+                        <div class="transfer-details-value">${this.escapeHtml(displayTitle)}</div>
+                    </div>
+                    ${displaySubtitle ? `
+                    <div class="transfer-details-item">
+                        <div class="transfer-details-label">Details</div>
+                        <div class="transfer-details-value">${this.escapeHtml(displaySubtitle)}</div>
+                    </div>` : ''}
+                    <div class="transfer-details-item">
+                        <div class="transfer-details-label">Media Type</div>
+                        <div class="transfer-details-value">${this.escapeHtml(transfer.media_type)}</div>
+                    </div>
+                    <div class="transfer-details-item">
+                        <div class="transfer-details-label">Transfer Type</div>
+                        <div class="transfer-details-value">${this.escapeHtml(transfer.transfer_type)}</div>
+                    </div>
+                    <div class="transfer-details-item">
+                        <div class="transfer-details-label">Status</div>
+                        <div class="transfer-details-value">
+                            <span class="transfer-status-badge transfer-status-${transfer.status}">
+                                ${transfer.status}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="transfer-details-item">
+                        <div class="transfer-details-label">Started</div>
+                        <div class="transfer-details-value">${this.getTimeAgo(transfer.start_time)}</div>
+                    </div>
+                    ${transfer.end_time ? `
+                    <div class="transfer-details-item">
+                        <div class="transfer-details-label">Completed</div>
+                        <div class="transfer-details-value">${this.getTimeAgo(transfer.end_time)}</div>
+                    </div>` : ''}
+                </div>
+            </div>
+            
+            <div class="transfer-details-section">
+                <h6>Paths</h6>
+                <div class="transfer-details-grid">
+                    <div class="transfer-details-item">
+                        <div class="transfer-details-label">Source Path</div>
+                        <div class="transfer-details-value">${this.escapeHtml(transfer.source_path)}</div>
+                    </div>
+                    <div class="transfer-details-item">
+                        <div class="transfer-details-label">Destination Path</div>
+                        <div class="transfer-details-value">${this.escapeHtml(transfer.dest_path)}</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="transfer-details-section">
+                <h6>Progress</h6>
+                <div class="transfer-details-item">
+                    <div class="transfer-details-value">${this.escapeHtml(transfer.progress || 'No progress information')}</div>
+                </div>
+            </div>
+        `;
+        
+        // Render logs
+        const formattedLogs = transfer.logs.map(log => {
+            const logClass = this.getLogLineClass(log);
+            return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
+        }).join('');
+        
+        logContainer.innerHTML = formattedLogs;
+        this.scrollToBottom(logContainer);
+    }
+
+    async restartTransfer(transferId) {
+        try {
+            const response = await fetch(`/api/transfer/${transferId}/restart`, {
+                method: 'POST'
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.showAlert('Transfer restarted successfully!', 'success');
+                this.loadActiveTransfers();
+            } else {
+                this.showAlert('Failed to restart transfer: ' + result.message, 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to restart transfer:', error);
+            this.showAlert('Failed to restart transfer', 'danger');
+        }
+    }
+
+    async cleanupOldTransfers() {
+        try {
+            const confirmed = confirm('This will permanently delete old completed transfers. Continue?');
+            if (!confirmed) return;
+            
+            const response = await fetch('/api/transfers/cleanup', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ days: 30 })
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.showAlert(`Cleaned up ${result.cleaned_count} old transfers`, 'success');
+                this.loadActiveTransfers();
+            } else {
+                this.showAlert('Failed to cleanup transfers: ' + result.message, 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to cleanup transfers:', error);
+            this.showAlert('Failed to cleanup transfers', 'danger');
+        }
     }
 }
 

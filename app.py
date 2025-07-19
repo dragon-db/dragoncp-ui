@@ -21,6 +21,9 @@ from flask_socketio import SocketIO, emit
 import paramiko
 from werkzeug.utils import secure_filename
 
+# Import new database modules
+from database import DatabaseManager, TransferManager
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dragoncp-secret-key-2024')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
@@ -192,236 +195,13 @@ class SSHManager:
             return sorted(files, key=lambda x: (len(x), x))
         return []
 
-class TransferManager:
-    """Manage file transfers using rsync"""
-    
-    def __init__(self, config: DragonCPConfig):
-        self.config = config
-        self.transfers = {}
-    
-    def start_transfer(self, transfer_id: str, source_path: str, dest_path: str, 
-                      transfer_type: str = "folder") -> bool:
-        """Start a new transfer"""
-        try:
-            print(f"🔄 Starting transfer {transfer_id}")
-            print(f"📁 Source: {source_path}")
-            print(f"📁 Destination: {dest_path}")
-            print(f"📁 Type: {transfer_type}")
-            
-            # Create destination directory
-            try:
-                os.makedirs(dest_path, exist_ok=True)
-                print(f"✅ Created destination directory: {dest_path}")
-            except Exception as e:
-                print(f"❌ Failed to create destination directory: {e}")
-                return False
-            
-            # Get SSH connection details
-            ssh_user = self.config.get("REMOTE_USER")
-            ssh_host = self.config.get("REMOTE_IP")
-            ssh_password = self.config.get("REMOTE_PASSWORD", "")
-            ssh_key_path = self.config.get("SSH_KEY_PATH", "")
-            
-            print(f"🔑 SSH User: {ssh_user}")
-            print(f"🔑 SSH Host: {ssh_host}")
-            print(f"🔑 SSH Key Path: {ssh_key_path}")
-            
-            if not ssh_user or not ssh_host:
-                print("❌ SSH credentials not configured")
-                return False
-            
-            # Resolve SSH key path to absolute path if it exists
-            if ssh_key_path:
-                if not os.path.isabs(ssh_key_path):
-                    # If relative path, make it absolute relative to the app directory
-                    script_dir = os.path.dirname(os.path.abspath(__file__))
-                    ssh_key_path = os.path.join(script_dir, ssh_key_path)
-                
-                if not os.path.exists(ssh_key_path):
-                    print(f"❌ SSH key file not found: {ssh_key_path}")
-                    ssh_key_path = ""
-                else:
-                    print(f"✅ SSH key found: {ssh_key_path}")
-            
-            # Test SSH connection before starting rsync
-            print("🔌 Testing SSH connection...")
-            test_ssh = SSHManager(ssh_host, ssh_user, ssh_password if ssh_password else None, ssh_key_path if ssh_key_path else None)
-            if not test_ssh.connect():
-                print("❌ SSH connection test failed")
-                return False
-            else:
-                print("✅ SSH connection test successful")
-                test_ssh.disconnect()
-            
-            # Build rsync command with SSH connection
-            rsync_cmd = [
-                "rsync", "-av",
-                "--progress",
-                "--delete",
-                "--backup",
-                "--backup-dir", self.config.get("BACKUP_PATH", "/tmp/backup"),
-                "--update",
-                "--exclude", ".*",
-                "--exclude", "*.tmp",
-                "--exclude", "*.log",
-                "--stats",
-                "--human-readable",
-                "--bwlimit=0",
-                "--block-size=65536",
-                "--no-compress",
-                "--partial",
-                "--partial-dir", f"{self.config.get('BACKUP_PATH', '/tmp/backup')}/.rsync-partial",
-                "--timeout=300",
-                "--size-only",
-                "--no-perms",
-                "--no-owner",
-                "--no-group",
-                "--no-checksum",
-                "--whole-file",
-                "--preallocate",
-                "--no-motd"
-            ]
-            
-            # Build SSH options for rsync
-            ssh_options = ["-o", "StrictHostKeyChecking=no", "-o", "Compression=no"]
-            if ssh_key_path and os.path.exists(ssh_key_path):
-                ssh_options.extend(["-i", ssh_key_path])
-            
-            rsync_cmd.extend(["-e", f"ssh {' '.join(ssh_options)}"])
-            
-            if transfer_type == "file":
-                rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}", f"{dest_path}/"])
-            else:
-                rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
-            
-            print(f"🔄 Starting rsync: {' '.join(rsync_cmd)}")
-            
-            # Start transfer in background
-            process = subprocess.Popen(
-                rsync_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                bufsize=1,
-                env=os.environ.copy()  # Ensure environment variables are passed
-            )
-            
-            # Check if process started successfully
-            if process.poll() is not None:
-                print(f"❌ rsync process failed to start, return code: {process.poll()}")
-                return False
-            
-            print(f"✅ rsync process started successfully (PID: {process.pid})")
-            
-            self.transfers[transfer_id] = {
-                "process": process,
-                "source": source_path,
-                "dest": dest_path,
-                "type": transfer_type,
-                "start_time": datetime.now(),
-                "status": "running",
-                "progress": "",
-                "logs": []
-            }
-            
-            # Start monitoring thread
-            threading.Thread(target=self._monitor_transfer, args=(transfer_id,), daemon=True).start()
-            
-            return True
-        except Exception as e:
-            print(f"❌ Transfer start failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-    
-    def _monitor_transfer(self, transfer_id: str):
-        """Monitor transfer progress"""
-        if transfer_id not in self.transfers:
-            print(f"❌ Transfer {transfer_id} not found in monitoring")
-            return
-        
-        transfer = self.transfers[transfer_id]
-        process = transfer["process"]
-        
-        print(f"🔍 Starting monitoring for transfer {transfer_id} (PID: {process.pid})")
-        
-        try:
-            # Read output line by line
-            for line in iter(process.stdout.readline, ''):
-                if line:
-                    line = line.strip()
-                    transfer["logs"].append(line)
-                    transfer["progress"] = line
-                    
-                    # Emit progress via WebSocket with full logs
-                    socketio.emit('transfer_progress', {
-                        'transfer_id': transfer_id,
-                        'progress': line,
-                        'logs': transfer["logs"],
-                        'log_count': len(transfer["logs"])
-                    })
-            
-            # Wait for process to complete
-            print(f"⏳ Waiting for transfer {transfer_id} to complete...")
-            return_code = process.wait()
-            print(f"🏁 Transfer {transfer_id} completed with return code: {return_code}")
-            
-            if return_code == 0:
-                transfer["status"] = "completed"
-                transfer["progress"] = "Transfer completed successfully!"
-                print(f"✅ Transfer {transfer_id} completed successfully")
-            else:
-                transfer["status"] = "failed"
-                transfer["progress"] = f"Transfer failed with exit code: {return_code}"
-                print(f"❌ Transfer {transfer_id} failed with exit code: {return_code}")
-            
-            # Emit completion status
-            socketio.emit('transfer_complete', {
-                'transfer_id': transfer_id,
-                'status': transfer["status"],
-                'message': transfer["progress"],
-                'logs': transfer["logs"],
-                'log_count': len(transfer["logs"])
-            })
-            
-        except Exception as e:
-            print(f"❌ Error monitoring transfer {transfer_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            transfer["status"] = "failed"
-            transfer["progress"] = f"Transfer monitoring failed: {e}"
-            
-            # Add error to logs
-            error_msg = f"ERROR: Transfer monitoring failed: {e}"
-            transfer["logs"].append(error_msg)
-            
-            socketio.emit('transfer_complete', {
-                'transfer_id': transfer_id,
-                'status': 'failed',
-                'message': transfer["progress"],
-                'logs': transfer["logs"],
-                'log_count': len(transfer["logs"])
-            })
-    
-    def get_transfer_status(self, transfer_id: str) -> Optional[Dict]:
-        """Get transfer status"""
-        return self.transfers.get(transfer_id)
-    
-    def cancel_transfer(self, transfer_id: str) -> bool:
-        """Cancel a running transfer"""
-        if transfer_id in self.transfers:
-            transfer = self.transfers[transfer_id]
-            if transfer["status"] == "running" and transfer["process"]:
-                transfer["process"].terminate()
-                transfer["status"] = "cancelled"
-                return True
-        return False
+
 
 # Initialize global objects
 config = DragonCPConfig()
 ssh_manager = None
-transfer_manager = TransferManager(config)
+db_manager = DatabaseManager()
+transfer_manager = TransferManager(config, db_manager, socketio)
 
 @app.route('/')
 def index():
@@ -631,20 +411,50 @@ def api_transfer():
         
         # Start transfer
         print(f"🚀 Starting transfer with ID: {transfer_id}")
-        success = transfer_manager.start_transfer(transfer_id, source_path, dest_path, transfer_type)
+        print(f"📋 Transfer parameters:")
+        print(f"   - media_type: {media_type}")
+        print(f"   - folder_name: {folder_name}")
+        print(f"   - season_name: {season_name}")
+        print(f"   - episode_name: {episode_name}")
+        print(f"   - transfer_type: {transfer_type}")
         
-        if success:
-            print(f"✅ Transfer {transfer_id} started successfully")
-            return jsonify({
-                "status": "success", 
-                "transfer_id": transfer_id,
-                "message": "Transfer started",
-                "source": source_path,
-                "destination": dest_path
-            })
-        else:
-            print(f"❌ Failed to start transfer {transfer_id}")
-            return jsonify({"status": "error", "message": "Failed to start transfer"})
+        try:
+            success = transfer_manager.start_transfer(
+                transfer_id, 
+                source_path, 
+                dest_path, 
+                transfer_type,
+                media_type,
+                folder_name,
+                season_name,
+                episode_name
+            )
+            
+            if success:
+                print(f"✅ Transfer {transfer_id} started successfully")
+                # Verify the transfer was created in database
+                db_transfer = transfer_manager.get_transfer_status(transfer_id)
+                if db_transfer:
+                    print(f"✅ Transfer {transfer_id} found in database with status: {db_transfer['status']}")
+                else:
+                    print(f"❌ Transfer {transfer_id} NOT found in database!")
+                
+                return jsonify({
+                    "status": "success", 
+                    "transfer_id": transfer_id,
+                    "message": "Transfer started",
+                    "source": source_path,
+                    "destination": dest_path
+                })
+            else:
+                print(f"❌ Failed to start transfer {transfer_id}")
+                return jsonify({"status": "error", "message": "Failed to start transfer"})
+                
+        except Exception as e:
+            print(f"❌ Exception starting transfer {transfer_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "message": f"Exception starting transfer: {str(e)}"})
             
     except Exception as e:
         print(f"❌ Error in api_transfer: {e}")
@@ -655,17 +465,28 @@ def api_transfer():
 @app.route('/api/transfer/<transfer_id>/status')
 def api_transfer_status(transfer_id):
     """Get transfer status"""
-    status = transfer_manager.get_transfer_status(transfer_id)
-    if status:
+    transfer = transfer_manager.get_transfer_status(transfer_id)
+    if transfer:
         return jsonify({
             "status": "success",
             "transfer": {
                 "id": transfer_id,
-                "status": status["status"],
-                "progress": status["progress"],
-                "logs": status["logs"],
-                "log_count": len(status["logs"]),
-                "start_time": status["start_time"].isoformat()
+                "status": transfer["status"],
+                "progress": transfer["progress"],
+                "logs": transfer["logs"],
+                "log_count": len(transfer["logs"]),
+                "start_time": transfer["start_time"],
+                "end_time": transfer.get("end_time"),
+                "media_type": transfer["media_type"],
+                "folder_name": transfer["folder_name"],
+                "season_name": transfer.get("season_name"),
+                "episode_name": transfer.get("episode_name"),
+                "parsed_title": transfer.get("parsed_title"),
+                "parsed_season": transfer.get("parsed_season"),
+                "parsed_episode": transfer.get("parsed_episode"),
+                "transfer_type": transfer["transfer_type"],
+                "source_path": transfer["source_path"],
+                "dest_path": transfer["dest_path"]
             }
         })
     else:
@@ -683,16 +504,130 @@ def api_cancel_transfer(transfer_id):
 @app.route('/api/transfer/<transfer_id>/logs')
 def api_transfer_logs(transfer_id):
     """Get full logs for a transfer"""
-    status = transfer_manager.get_transfer_status(transfer_id)
-    if status:
+    transfer = transfer_manager.get_transfer_status(transfer_id)
+    if transfer:
         return jsonify({
             "status": "success",
-            "logs": status["logs"],
-            "log_count": len(status["logs"]),
-            "transfer_status": status["status"]
+            "logs": transfer["logs"],
+            "log_count": len(transfer["logs"]),
+            "transfer_status": transfer["status"]
         })
     else:
         return jsonify({"status": "error", "message": "Transfer not found"})
+
+@app.route('/api/transfers/all')
+def api_all_transfers():
+    """Get all transfers with optional filtering"""
+    try:
+        limit = request.args.get('limit', 50, type=int)
+        status_filter = request.args.get('status')
+        
+        transfers = transfer_manager.get_all_transfers(limit=limit)
+        
+        # Apply status filter if provided
+        if status_filter:
+            transfers = [t for t in transfers if t['status'] == status_filter]
+        
+        # Format transfers for response
+        formatted_transfers = []
+        for transfer in transfers:
+            formatted_transfer = {
+                "id": transfer["transfer_id"],
+                "status": transfer["status"],
+                "progress": transfer["progress"],
+                "media_type": transfer["media_type"],
+                "folder_name": transfer["folder_name"],
+                "season_name": transfer.get("season_name"),
+                "episode_name": transfer.get("episode_name"),
+                "parsed_title": transfer.get("parsed_title"),
+                "parsed_season": transfer.get("parsed_season"),
+                "parsed_episode": transfer.get("parsed_episode"),
+                "transfer_type": transfer["transfer_type"],
+                "source_path": transfer["source_path"],
+                "dest_path": transfer["dest_path"],
+                "start_time": transfer["start_time"],
+                "end_time": transfer.get("end_time"),
+                "created_at": transfer["created_at"],
+                "log_count": len(transfer["logs"])
+            }
+            formatted_transfers.append(formatted_transfer)
+        
+        return jsonify({
+            "status": "success",
+            "transfers": formatted_transfers,
+            "total": len(formatted_transfers)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting all transfers: {e}")
+        return jsonify({"status": "error", "message": f"Failed to get transfers: {str(e)}"})
+
+@app.route('/api/transfers/active')
+def api_active_transfers():
+    """Get only active (running/pending) transfers"""
+    try:
+        active_transfers = transfer_manager.get_active_transfers()
+        
+        # Format transfers for response
+        formatted_transfers = []
+        for transfer in active_transfers:
+            formatted_transfer = {
+                "id": transfer["transfer_id"],
+                "status": transfer["status"],
+                "progress": transfer["progress"],
+                "media_type": transfer["media_type"],
+                "folder_name": transfer["folder_name"],
+                "season_name": transfer.get("season_name"),
+                "episode_name": transfer.get("episode_name"),
+                "parsed_title": transfer.get("parsed_title"),
+                "parsed_season": transfer.get("parsed_season"),
+                "parsed_episode": transfer.get("parsed_episode"),
+                "transfer_type": transfer["transfer_type"],
+                "source_path": transfer["source_path"],
+                "dest_path": transfer["dest_path"],
+                "start_time": transfer["start_time"],
+                "process_id": transfer.get("process_id"),
+                "log_count": len(transfer["logs"])
+            }
+            formatted_transfers.append(formatted_transfer)
+        
+        return jsonify({
+            "status": "success",
+            "transfers": formatted_transfers,
+            "total": len(formatted_transfers)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting active transfers: {e}")
+        return jsonify({"status": "error", "message": f"Failed to get active transfers: {str(e)}"})
+
+@app.route('/api/transfer/<transfer_id>/restart', methods=['POST'])
+def api_restart_transfer(transfer_id):
+    """Restart a failed or cancelled transfer"""
+    try:
+        success = transfer_manager.restart_transfer(transfer_id)
+        if success:
+            return jsonify({"status": "success", "message": "Transfer restarted successfully"})
+        else:
+            return jsonify({"status": "error", "message": "Failed to restart transfer"})
+    except Exception as e:
+        print(f"❌ Error restarting transfer {transfer_id}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to restart transfer: {str(e)}"})
+
+@app.route('/api/transfers/cleanup', methods=['POST'])
+def api_cleanup_transfers():
+    """Clean up old completed transfers"""
+    try:
+        days = request.json.get('days', 30) if request.json else 30
+        cleaned = transfer_manager.transfer_model.cleanup_old_transfers(days)
+        return jsonify({
+            "status": "success", 
+            "message": f"Cleaned up {cleaned} old transfers",
+            "cleaned_count": cleaned
+        })
+    except Exception as e:
+        print(f"❌ Error cleaning up transfers: {e}")
+        return jsonify({"status": "error", "message": f"Failed to cleanup transfers: {str(e)}"})
 
 @app.route('/api/local-files')
 def api_local_files():
@@ -999,6 +934,40 @@ def api_debug():
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
             }
+        })
+
+@app.route('/api/debug/transfers')
+def api_debug_transfers():
+    """Debug endpoint to check database transfers"""
+    try:
+        # Get all transfers from database
+        all_transfers = transfer_manager.get_all_transfers(limit=10)
+        active_transfers = transfer_manager.get_active_transfers()
+        
+        debug_info = {
+            "timestamp": datetime.now().isoformat(),
+            "database_path": db_manager.db_path,
+            "database_exists": os.path.exists(db_manager.db_path),
+            "total_transfers_in_db": len(all_transfers),
+            "active_transfers_in_db": len(active_transfers),
+            "recent_transfers": all_transfers[:5],  # Last 5 transfers
+            "transfer_manager_type": str(type(transfer_manager)),
+            "db_manager_type": str(type(db_manager))
+        }
+        
+        return jsonify({
+            "status": "success",
+            "debug_info": debug_info
+        })
+        
+    except Exception as e:
+        print(f"❌ Error in debug transfers: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": f"Debug transfers failed: {str(e)}",
+            "error": str(e)
         })
 
 if __name__ == '__main__':

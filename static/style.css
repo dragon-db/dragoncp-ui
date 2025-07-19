@@ -903,4 +903,194 @@ body {
 @keyframes spin {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
+}
+
+/* Transfer Management Styles */
+.transfer-item {
+    transition: all 0.3s ease;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.transfer-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.transfer-item .transfer-title {
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.transfer-item .transfer-meta {
+    font-size: 0.875rem;
+    color: #c0c0c0;
+}
+
+.transfer-item .transfer-progress {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+}
+
+.transfer-item .transfer-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.transfer-item .transfer-actions .btn {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+}
+
+.transfer-item .progress {
+    background-color: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+.transfer-item .progress-bar {
+    transition: width 0.3s ease;
+}
+
+.transfer-status-badge {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 12px;
+}
+
+.transfer-status-running {
+    background-color: #007bff;
+    color: white;
+}
+
+.transfer-status-pending {
+    background-color: #ffc107;
+    color: black;
+}
+
+.transfer-status-completed {
+    background-color: #28a745;
+    color: white;
+}
+
+.transfer-status-failed {
+    background-color: #dc3545;
+    color: white;
+}
+
+.transfer-status-cancelled {
+    background-color: #6c757d;
+    color: white;
+}
+
+.transfer-time {
+    font-size: 0.75rem;
+    color: #a0a0a0;
+}
+
+.transfer-type-icon {
+    margin-right: 0.5rem;
+    color: var(--secondary-color);
+}
+
+.transfer-details-section {
+    margin-bottom: 1.5rem;
+}
+
+.transfer-details-section h6 {
+    color: #ffffff;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.transfer-details-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+}
+
+.transfer-details-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.transfer-details-label {
+    font-weight: 600;
+    color: #ffffff;
+    font-size: 0.875rem;
+}
+
+.transfer-details-value {
+    color: #c0c0c0;
+    font-size: 0.875rem;
+    word-break: break-all;
+}
+
+#transferManagementCard .badge {
+    animation: pulse 2s infinite;
+}
+
+/* Dark mode table styling */
+.table-dark {
+    --bs-table-bg: #212529;
+    --bs-table-border-color: #454d55;
+}
+
+.table-dark th,
+.table-dark td {
+    color: #ffffff;
+    border-color: #454d55;
+}
+
+/* Modal dark styling */
+.modal-content {
+    background-color: #1a1a1a;
+    color: #ffffff;
+}
+
+.modal-header {
+    border-bottom-color: #454d55;
+}
+
+.modal-footer {
+    border-top-color: #454d55;
+}
+
+/* Form elements in modals */
+.modal .form-select {
+    background-color: #343a40;
+    border-color: #454d55;
+    color: #ffffff;
+}
+
+.modal .form-select:focus {
+    background-color: #343a40;
+    border-color: #86b7fe;
+    color: #ffffff;
+}
+
+/* Transfer progress text visibility */
+.transfer-progress {
+    color: #e0e0e0 !important;
+}
+
+@media (max-width: 768px) {
+    .transfer-item {
+        padding: 0.75rem;
+    }
+    
+    .transfer-item .transfer-actions {
+        flex-wrap: wrap;
+    }
+    
+    .transfer-details-grid {
+        grid-template-columns: 1fr;
+    }
 } 
