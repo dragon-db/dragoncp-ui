@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import threading
 import time
+import shutil
+import requests
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
@@ -756,6 +758,194 @@ def api_env_config():
     """Get only environment configuration (without session overrides)"""
     return jsonify(config.env_config)
 
+@app.route('/api/disk-usage/local')
+def api_local_disk_usage():
+    """Get local disk usage for configured paths"""
+    try:
+        disk_paths = [
+            config.get("DISK_PATH_1", "/home"),
+            config.get("DISK_PATH_2"),
+            config.get("DISK_PATH_3")
+        ]
+        
+        disk_info = []
+        
+        for path in disk_paths:
+            if not path or not os.path.exists(path):
+                disk_info.append({
+                    "path": path,
+                    "error": "Path not found or not configured",
+                    "available": False
+                })
+                continue
+            
+            try:
+                # Run df command to get disk usage
+                result = subprocess.run(
+                    ["df", "-h", path], 
+                    capture_output=True, 
+                    text=True, 
+                    timeout=10
+                )
+                
+                if result.returncode == 0:
+                    lines = result.stdout.strip().split('\n')
+                    if len(lines) >= 2:
+                        # Parse df output (format: Filesystem Size Used Avail Use% Mounted on)
+                        fields = lines[1].split()
+                        if len(fields) >= 6:
+                            filesystem = fields[0]
+                            total_size = fields[1]
+                            used_size = fields[2]
+                            available_size = fields[3]
+                            usage_percent = fields[4].rstrip('%')
+                            mount_point = ' '.join(fields[5:])
+                            
+                            disk_info.append({
+                                "path": path,
+                                "filesystem": filesystem,
+                                "total_size": total_size,
+                                "used_size": used_size,
+                                "available_size": available_size,
+                                "usage_percent": int(usage_percent),
+                                "mount_point": mount_point,
+                                "available": True
+                            })
+                        else:
+                            disk_info.append({
+                                "path": path,
+                                "error": "Could not parse df output",
+                                "available": False
+                            })
+                    else:
+                        disk_info.append({
+                            "path": path,
+                            "error": "Invalid df output",
+                            "available": False
+                        })
+                else:
+                    disk_info.append({
+                        "path": path,
+                        "error": f"df command failed: {result.stderr}",
+                        "available": False
+                    })
+                    
+            except subprocess.TimeoutExpired:
+                disk_info.append({
+                    "path": path,
+                    "error": "Command timeout",
+                    "available": False
+                })
+            except Exception as e:
+                disk_info.append({
+                    "path": path,
+                    "error": f"Error: {str(e)}",
+                    "available": False
+                })
+        
+        return jsonify({
+            "status": "success",
+            "disk_info": disk_info
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting local disk usage: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get local disk usage: {str(e)}"
+        })
+
+@app.route('/api/disk-usage/remote')
+def api_remote_disk_usage():
+    """Get remote disk usage from configured API"""
+    try:
+        api_endpoint = config.get("DISK_API_ENDPOINT")
+        api_token = config.get("DISK_API_TOKEN")
+        
+        if not api_endpoint:
+            return jsonify({
+                "status": "error",
+                "message": "Remote disk API endpoint not configured"
+            })
+        
+        headers = {}
+        if api_token:
+            headers["Authorization"] = f"Bearer {api_token}"
+        
+        # Make request to remote API
+        response = requests.get(api_endpoint, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Parse the expected format
+            if "service_stats_info" in data:
+                stats = data["service_stats_info"]
+                
+                # Convert GiB to GB (1 GiB = 1.073741824 GB)
+                GIB_TO_GB = 1.073741824
+                
+                # Get values - all are in GiB (including free_storage_gb)
+                total_gib = stats.get("total_storage_value", 0)
+                used_gib = stats.get("used_storage_value", 0)
+                free_gib = stats.get("free_storage_gb", 0)  # This is actually in GiB, not GB
+                
+                # Convert all GiB values to GB
+                total_gb = round(total_gib * GIB_TO_GB)
+                used_gb = round(used_gib * GIB_TO_GB)
+                free_gb = round(free_gib * GIB_TO_GB)
+                
+                # Calculate usage percentage based on converted values
+                usage_percent = round((used_gb / max(total_gb, 1)) * 100, 1) if total_gb > 0 else 0
+                
+                # Always display in GB for consistency
+                total_display = f"{total_gb} GB"
+                used_display = f"{used_gb} GB"
+                free_display = f"{round(free_gb)} GB"
+                
+                # Extract storage information
+                storage_info = {
+                    "free_storage_bytes": stats.get("free_storage_bytes", 0),
+                    "free_storage_gb": round(free_gb),
+                    "total_storage_value": total_gb,
+                    "total_storage_unit": "GB",
+                    "used_storage_value": used_gb,
+                    "used_storage_unit": "GB",
+                    "usage_percent": usage_percent,
+                    "total_display": total_display,
+                    "used_display": used_display,
+                    "free_display": free_display,
+                    "available": True
+                }
+                
+                return jsonify({
+                    "status": "success",
+                    "storage_info": storage_info
+                })
+            else:
+                return jsonify({
+                    "status": "error",
+                    "message": "Invalid API response format"
+                })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": f"API request failed: {response.status_code} - {response.text}"
+            })
+            
+    except requests.RequestException as e:
+        print(f"❌ Error getting remote disk usage: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get remote disk usage: {str(e)}"
+        })
+    except Exception as e:
+        print(f"❌ Error getting remote disk usage: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get remote disk usage: {str(e)}"
+        })
+
 @app.route('/api/debug')
 def api_debug():
     """Debug endpoint to check configuration and SSH status"""
@@ -777,7 +967,12 @@ def api_debug():
                 "MOVIE_DEST_PATH": config.get("MOVIE_DEST_PATH"),
                 "TVSHOW_DEST_PATH": config.get("TVSHOW_DEST_PATH"),
                 "ANIME_DEST_PATH": config.get("ANIME_DEST_PATH"),
-                "BACKUP_PATH": config.get("BACKUP_PATH")
+                "BACKUP_PATH": config.get("BACKUP_PATH"),
+                "DISK_PATH_1": config.get("DISK_PATH_1"),
+                "DISK_PATH_2": config.get("DISK_PATH_2"),
+                "DISK_PATH_3": config.get("DISK_PATH_3"),
+                "DISK_API_ENDPOINT": config.get("DISK_API_ENDPOINT"),
+                "DISK_API_TOKEN": "***" if config.get("DISK_API_TOKEN") else "Not set"
             },
             "ssh_key_check": {
                 "key_path": config.get("SSH_KEY_PATH"),

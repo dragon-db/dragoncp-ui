@@ -757,4 +757,150 @@ body {
 
 .text-info {
     color: var(--secondary-color) !important;
+}
+
+/* Disk Usage Cards */
+.disk-usage-card {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    border: 1px solid var(--border-color);
+    background: var(--card-bg);
+}
+
+.disk-usage-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.disk-usage-card .card-body {
+    padding: 1.25rem;
+}
+
+.disk-usage-card .card-title {
+    color: var(--text-light);
+    font-size: 0.95rem;
+    margin-bottom: 0.75rem;
+}
+
+.disk-usage-card .progress {
+    height: 8px;
+    border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+}
+
+.disk-usage-card .progress-bar {
+    border-radius: 4px;
+    transition: width 0.6s ease;
+}
+
+.disk-usage-card .disk-details {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.disk-usage-card .disk-details small {
+    color: var(--text-muted);
+}
+
+.disk-usage-card .disk-details strong {
+    color: var(--text-light);
+}
+
+.disk-usage-card .badge {
+    font-size: 0.75rem;
+    padding: 0.3rem 0.6rem;
+}
+
+/* Disk usage color variants */
+.disk-usage-card.border-danger {
+    border-color: var(--accent-color);
+}
+
+.disk-usage-card .text-danger {
+    color: var(--accent-color) !important;
+}
+
+/* Progress bar color variants */
+.progress-bar.bg-success {
+    background-color: var(--success-color) !important;
+}
+
+.progress-bar.bg-info {
+    background-color: var(--secondary-color) !important;
+}
+
+.progress-bar.bg-warning {
+    background-color: var(--warning-color) !important;
+}
+
+.progress-bar.bg-danger {
+    background-color: var(--accent-color) !important;
+}
+
+/* Badge color variants */
+.badge.bg-success {
+    background-color: var(--success-color) !important;
+}
+
+.badge.bg-info {
+    background-color: var(--secondary-color) !important;
+}
+
+.badge.bg-warning {
+    background-color: var(--warning-color) !important;
+}
+
+.badge.bg-danger {
+    background-color: var(--accent-color) !important;
+}
+
+/* Disk Usage Card Icons */
+.disk-usage-card .bi-hdd,
+.disk-usage-card .bi-cloud {
+    color: var(--secondary-color);
+    margin-right: 0.5rem;
+}
+
+.disk-usage-card .bi-folder,
+.disk-usage-card .bi-device-hdd {
+    color: var(--text-muted);
+    margin-right: 0.25rem;
+}
+
+.disk-usage-card .bi-exclamation-triangle {
+    color: var(--accent-color);
+    margin-right: 0.5rem;
+}
+
+/* Animation for loading disk usage */
+@keyframes diskUsageLoad {
+    0% { opacity: 0; transform: translateY(10px); }
+    100% { opacity: 1; transform: translateY(0); }
+}
+
+.disk-usage-card {
+    animation: diskUsageLoad 0.4s ease-out;
+}
+
+/* Refresh button styling */
+#refreshDiskUsageBtn {
+    transition: all 0.2s ease;
+}
+
+#refreshDiskUsageBtn:hover {
+    transform: rotate(90deg);
+}
+
+#refreshDiskUsageBtn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+#refreshDiskUsageBtn .spinner-border-sm {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
 } 

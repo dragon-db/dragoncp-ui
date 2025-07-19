@@ -44,6 +44,30 @@
             </div>
         </div>
 
+        <!-- Disk Usage -->
+        <div class="card mb-4 fade-in" id="diskUsageCard" style="display: none;">
+            <div class="card-header gradient-accent">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <i class="bi bi-hdd"></i> Disk Usage Monitor
+                    </div>
+                    <button class="btn btn-outline-light btn-sm" id="refreshDiskUsageBtn" title="Refresh disk usage">
+                        <i class="bi bi-arrow-clockwise"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row" id="diskUsageInfo">
+                    <!-- Disk usage info will be loaded here -->
+                </div>
+                <div class="text-center mt-2">
+                    <small class="text-muted" id="diskUsageLastUpdate">
+                        <i class="bi bi-clock"></i> Click refresh button to update disk usage
+                    </small>
+                </div>
+            </div>
+        </div>
+
         <!-- Media Selection -->
         <div class="card mb-4 fade-in" id="mediaCard" style="display: none;">
             <div class="card-header gradient-accent">
@@ -280,6 +304,65 @@
                                             <i class="bi bi-pencil-square"></i>
                                         </div>
                                         <div class="original-value" id="animeDestPathOriginal"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Disk Monitoring -->
+                        <div class="config-section">
+                            <h6><i class="bi bi-hdd"></i> Disk Usage Monitoring</h6>
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <div class="config-field">
+                                        <label for="diskPath1" class="form-label">Local Disk Path 1</label>
+                                        <input type="text" class="form-control" id="diskPath1" name="DISK_PATH_1" placeholder="/path/to/disk1">
+                                        <div class="modified-indicator" id="diskPath1Indicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="diskPath1Original"></div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="config-field">
+                                        <label for="diskPath2" class="form-label">Local Disk Path 2</label>
+                                        <input type="text" class="form-control" id="diskPath2" name="DISK_PATH_2" placeholder="/path/to/disk2">
+                                        <div class="modified-indicator" id="diskPath2Indicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="diskPath2Original"></div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="config-field">
+                                        <label for="diskPath3" class="form-label">Local Disk Path 3</label>
+                                        <input type="text" class="form-control" id="diskPath3" name="DISK_PATH_3" placeholder="/path/to/disk3">
+                                        <div class="modified-indicator" id="diskPath3Indicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="diskPath3Original"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="config-field">
+                                        <label for="diskApiEndpoint" class="form-label">Remote Disk API Endpoint</label>
+                                        <input type="text" class="form-control" id="diskApiEndpoint" name="DISK_API_ENDPOINT" placeholder="https://api.example.com/disk-usage">
+                                        <div class="modified-indicator" id="diskApiEndpointIndicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="diskApiEndpointOriginal"></div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="config-field">
+                                        <label for="diskApiToken" class="form-label">Remote Disk API Token</label>
+                                        <input type="password" class="form-control" id="diskApiToken" name="DISK_API_TOKEN" placeholder="Bearer token for remote API">
+                                        <div class="modified-indicator" id="diskApiTokenIndicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="diskApiTokenOriginal"></div>
                                     </div>
                                 </div>
                             </div>
