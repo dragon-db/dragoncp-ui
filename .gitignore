@@ -141,3 +141,6 @@ tmp/
 *.bak
 *.backup
 backup/ 
+
+# Database files
+dragoncp.db
