@@ -28,11 +28,43 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dragoncp-secret-key-2024')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-socketio = SocketIO(app, cors_allowed_origins="*")
+# WebSocket timeout configuration
+WEBSOCKET_TIMEOUT_MIN = 5 * 60    # 5 minutes minimum
+WEBSOCKET_TIMEOUT_MAX = 65 * 60   # 65 minutes maximum (5 minutes longer than max client timeout)
+WEBSOCKET_TIMEOUT_DEFAULT = 35 * 60  # 35 minutes default
+
+def get_websocket_timeout_for_session():
+    """Get WebSocket timeout for current session, respecting user configuration"""
+    try:
+        # Get user's configured timeout from session
+        session_config = session.get('ui_config', {})
+        user_timeout_minutes = session_config.get('WEBSOCKET_TIMEOUT_MINUTES')
+        
+        if user_timeout_minutes:
+            # Convert to seconds and add 5 minutes buffer, but cap at maximum
+            user_timeout_seconds = min(60, max(5, int(user_timeout_minutes))) * 60
+            server_timeout = min(WEBSOCKET_TIMEOUT_MAX, user_timeout_seconds + 5 * 60)
+            return server_timeout
+        else:
+            return WEBSOCKET_TIMEOUT_DEFAULT
+    except:
+        return WEBSOCKET_TIMEOUT_DEFAULT
+
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*",
+    ping_timeout=WEBSOCKET_TIMEOUT_MAX,  # Use maximum for SocketIO config
+    ping_interval=25 * 60  # Send ping every 25 minutes
+)
 
 # Global variables for SSH connection
 ssh_client = None
 ssh_connected = False
+
+# WebSocket connection tracking
+websocket_connections = {}
+import threading
+from datetime import datetime, timedelta
 
 class DragonCPConfig:
     """Configuration manager for DragonCP"""
@@ -891,6 +923,22 @@ def api_debug():
             "environment_file": config.env_file,
             "environment_file_exists": os.path.exists(config.env_file),
             "ssh_connected": ssh_manager.connected if ssh_manager else False,
+            "websocket_info": {
+                "active_connections": len(websocket_connections),
+                "default_timeout_minutes": WEBSOCKET_TIMEOUT_DEFAULT // 60,
+                "max_timeout_minutes": WEBSOCKET_TIMEOUT_MAX // 60,
+                "current_session_timeout_minutes": get_websocket_timeout_for_session() // 60,
+                "session_config_timeout": session.get('ui_config', {}).get('WEBSOCKET_TIMEOUT_MINUTES', 'Not set'),
+                "connections_details": [
+                    {
+                        "session_id": sid[:8] + "...",  # Only show first 8 chars for privacy
+                        "connected_minutes_ago": int((datetime.now() - info['connected_at']).total_seconds() // 60),
+                        "last_activity_minutes_ago": int((datetime.now() - info['last_activity']).total_seconds() // 60),
+                        "timeout_minutes": info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT) // 60
+                    }
+                    for sid, info in websocket_connections.items()
+                ]
+            },
             "configuration": {
                 "REMOTE_IP": config.get("REMOTE_IP"),
                 "REMOTE_USER": config.get("REMOTE_USER"),
@@ -969,6 +1017,71 @@ def api_debug_transfers():
             "message": f"Debug transfers failed: {str(e)}",
             "error": str(e)
         })
+
+# WebSocket Events for connection management
+@socketio.on('connect')
+def handle_connect():
+    """Handle WebSocket connection"""
+    session_id = request.sid
+    websocket_connections[session_id] = {
+        'connected_at': datetime.now(),
+        'last_activity': datetime.now(),
+        'timeout_seconds': get_websocket_timeout_for_session()  # Store timeout for this session
+    }
+    print(f"🔌 WebSocket connected: {session_id}")
+    print(f"🔌 Active WebSocket connections: {len(websocket_connections)}")
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle WebSocket disconnection"""
+    session_id = request.sid
+    if session_id in websocket_connections:
+        del websocket_connections[session_id]
+    print(f"🔌 WebSocket disconnected: {session_id}")
+    print(f"🔌 Active WebSocket connections: {len(websocket_connections)}")
+
+@socketio.on('activity')
+def handle_activity():
+    """Handle client activity ping"""
+    session_id = request.sid
+    if session_id in websocket_connections:
+        websocket_connections[session_id]['last_activity'] = datetime.now()
+
+def cleanup_stale_connections():
+    """Cleanup stale WebSocket connections"""
+    while True:
+        try:
+            current_time = datetime.now()
+            
+            stale_connections = []
+            for session_id, connection_info in websocket_connections.items():
+                # Get timeout for this specific session (stored when connection was made)
+                session_timeout = connection_info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT)
+                timeout_threshold = current_time - timedelta(seconds=session_timeout)
+                
+                if connection_info['last_activity'] < timeout_threshold:
+                    stale_connections.append(session_id)
+            
+            for session_id in stale_connections:
+                print(f"🧹 Cleaning up stale WebSocket connection: {session_id}")
+                if session_id in websocket_connections:
+                    del websocket_connections[session_id]
+                # Disconnect the client
+                socketio.disconnect(session_id)
+            
+            if stale_connections:
+                print(f"🧹 Cleaned up {len(stale_connections)} stale connections")
+                print(f"🔌 Active WebSocket connections: {len(websocket_connections)}")
+                
+        except Exception as e:
+            print(f"❌ Error in cleanup_stale_connections: {e}")
+        
+        # Sleep for 5 minutes before next cleanup
+        time.sleep(5 * 60)
+
+# Start the cleanup thread
+cleanup_thread = threading.Thread(target=cleanup_stale_connections, daemon=True)
+cleanup_thread.start()
 
 if __name__ == '__main__':
     # Create templates directory if it doesn't exist

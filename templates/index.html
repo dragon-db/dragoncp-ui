@@ -21,7 +21,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.0
+                   v1.1.0
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -32,7 +32,7 @@
 
     <div class="container mt-4">
         <!-- Status Bar -->
-        <div class="status-bar fade-in" id="statusBar">
+        <div class="status-bar fade-in" id="statusBar" title="">
             <div class="status-info">
                 <span class="status-indicator" id="statusIndicator"></span>
                 <span class="status-message" id="statusMessage">Initializing application...</span>
@@ -208,6 +208,40 @@
                 </div>
                 <div class="modal-body">
                     <form id="configForm">
+                        <!-- App Connection Settings -->
+                        <div class="config-section">
+                            <h6><i class="bi bi-wifi"></i> App Connection Settings</h6>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="config-field">
+                                        <label for="websocketTimeout" class="form-label">Auto-Disconnect Timeout (minutes)</label>
+                                        <input type="number" class="form-control" id="websocketTimeout" name="WEBSOCKET_TIMEOUT_MINUTES" min="5" max="60" value="30" placeholder="30">
+                                        <div class="modified-indicator" id="websocketTimeoutIndicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="websocketTimeoutOriginal"></div>
+                                        <small class="form-text text-muted">
+                                            <i class="bi bi-info-circle"></i> 
+                                            App will disconnect after this period of inactivity (5-60 minutes). 
+                                            Transfer monitoring continues automatically. Higher values use more server resources.
+                                        </small>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="config-field">
+                                        <label class="form-label">Current Connection Status</label>
+                                        <div class="form-control-plaintext">
+                                            <span class="status-indicator" id="wsConfigStatusIndicator"></span>
+                                            <span id="wsConfigStatusText">Checking...</span>
+                                            <br>
+                                            <small class="text-muted" id="wsConfigStatusDetails">
+                                                Real-time transfer updates depend on app connection.
+                                            </small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                         <!-- SSH Connection Settings -->
                         <div class="config-section">
                             <h6><i class="bi bi-wifi"></i> SSH Connection Settings</h6>

@@ -5,7 +5,7 @@
 
 class DragonCPUI {
     constructor() {
-        this.socket = io();
+        this.socket = io({ autoConnect: true, reconnection: false });
         this.currentState = {
             connected: false,
             mediaType: null,
@@ -17,12 +17,295 @@ class DragonCPUI {
         this.autoScroll = true;
         this.currentTransferId = null;
         
+        // WebSocket timeout management
+        this.websocketTimeout = 30 * 60 * 1000; // 30 minutes in milliseconds
+        this.activityTimer = null;
+        this.lastActivity = Date.now();
+        this.isWebSocketConnected = false;
+        this.wasAutoDisconnected = false;
+        this.hasEverConnected = false;
+        
         this.initializeEventListeners();
         this.initializeWebSocket();
+        this.initializeActivityTracking();
         this.loadConfiguration();
         this.initializeConnection();
         this.initializeDiskUsageMonitoring();
         this.initializeTransferManagement();
+    }
+
+    initializeActivityTracking() {
+        // Track intentional user interactions with UI elements only
+        this.initializeUIElementTracking();
+
+        // Optional: More conservative page visibility handling
+        // Only extend session if user was away for a significant time (10+ minutes)
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && this.isWebSocketConnected) {
+                const timeSinceActivity = Date.now() - this.lastActivity;
+                const minutesSinceActivity = timeSinceActivity / (60 * 1000);
+                
+                // Only extend if user was away for 10+ minutes
+                if (minutesSinceActivity >= 10) {
+                    console.log(`Page returned after ${minutesSinceActivity.toFixed(1)} minutes - extending session`);
+                    this.updateActivity();
+                } else {
+                    console.log(`Page returned after ${minutesSinceActivity.toFixed(1)} minutes - no session extension needed`);
+                }
+            }
+        });
+        
+        // Start activity monitoring
+        this.startActivityMonitoring();
+        
+        // Start timer display updates
+        this.startTimerDisplayUpdates();
+    }
+
+    initializeUIElementTracking() {
+        // Track clicks on buttons and interactive elements (but exclude config and modal buttons)
+        const trackClicksOn = [
+            '.card.h-100', // Media type cards
+            '.list-group-item button', // Folder/season navigation buttons
+            '.transfer-item button', // Transfer action buttons
+            'input[type="submit"]',
+            'input[type="button"]'
+        ];
+        
+        // Track specific buttons by ID (excluding config and modal buttons)
+        const trackSpecificButtons = [
+            '#autoConnectBtn',
+            '#disconnectBtn',
+            '#refreshDiskUsageBtn',
+            '#refreshTransfersBtn', 
+            '#showAllTransfersBtn',
+            '#cleanupTransfersBtn',
+            '#refreshAllTransfersBtn',
+            '#clearLogBtn',
+            '#autoScrollBtn',
+            '#fullscreenLogBtn',
+            '#closeFullscreenLog'
+        ];
+        
+        // Track clicks on specific selectors
+        trackClicksOn.forEach(selector => {
+            document.addEventListener('click', (event) => {
+                if (event.target.matches(selector) || event.target.closest(selector)) {
+                    console.log(`Activity triggered by selector: ${selector}, element:`, event.target);
+                    this.updateActivity();
+                }
+            });
+        });
+        
+        // Track clicks on specific buttons by ID
+        trackSpecificButtons.forEach(buttonId => {
+            document.addEventListener('click', (event) => {
+                if (event.target.matches(buttonId) || event.target.closest(buttonId)) {
+                    console.log(`Activity triggered by button: ${buttonId}`);
+                    this.updateActivity();
+                }
+            });
+        });
+
+        // Track form submissions and input interactions (meaningful typing)
+        document.addEventListener('submit', () => {
+            this.updateActivity();
+        });
+
+        // Track typing in input fields (debounced to avoid too frequent updates)
+        // But exclude typing in config modal
+        let typingTimer;
+        document.addEventListener('keydown', (event) => {
+            // Only count typing in input fields outside of modals
+            if (event.target.matches('input[type="text"], input[type="password"], input[type="number"], textarea')) {
+                // Check if the input is inside a modal
+                const isInModal = event.target.closest('.modal');
+                if (!isInModal) {
+                    clearTimeout(typingTimer);
+                    typingTimer = setTimeout(() => {
+                        this.updateActivity();
+                    }, 2000); // Update activity after 2 seconds of typing
+                }
+            }
+        });
+
+        // Track touch interactions for mobile (excluding config and modal buttons)
+        document.addEventListener('touchstart', (event) => {
+            const touchableSelectors = trackClicksOn.join(', ') + ', ' + trackSpecificButtons.join(', ');
+            if (event.target.matches(touchableSelectors) || event.target.closest(touchableSelectors)) {
+                this.updateActivity();
+            }
+        });
+    }
+
+    updateActivity() {
+        // Only track activity if WebSocket is connected
+        if (!this.isWebSocketConnected) {
+            console.log('Activity ignored - WebSocket not connected');
+            return;
+        }
+        
+        console.log('Timer reset - activity detected');
+        this.lastActivity = Date.now();
+        
+        // Reset the timer
+        if (this.activityTimer) {
+            clearTimeout(this.activityTimer);
+        }
+        
+        // Send activity ping to server if WebSocket is connected
+        if (this.isWebSocketConnected) {
+            this.socket.emit('activity');
+        }
+        
+        // Only restart timer if WebSocket is connected
+        if (this.isWebSocketConnected) {
+            this.startActivityTimer();
+            // Update status display with new timer
+            this.updateStatusWithTimer();
+        }
+    }
+
+    startActivityMonitoring() {
+        // Check activity every minute
+        setInterval(async () => {
+            const timeSinceActivity = Date.now() - this.lastActivity;
+            const timeUntilDisconnect = this.websocketTimeout - timeSinceActivity;
+            
+            // Show warning at 2 minutes before timeout
+            if (timeUntilDisconnect <= 2 * 60 * 1000 && timeUntilDisconnect > 1 * 60 * 1000 && this.isWebSocketConnected) {
+                // Check if transfers are active before showing warning
+                const hasTransfers = await this.hasActiveTransfers();
+                
+                if (!hasTransfers) {
+                    this.showWebSocketTimeoutWarning(Math.ceil(timeUntilDisconnect / 60000));
+                } else {
+                    // Don't show warning if transfers are protecting the session
+                    console.log('Timeout warning skipped - active transfers are protecting the session');
+                }
+            }
+        }, 60000); // Check every minute
+    }
+
+    startActivityTimer() {
+        this.activityTimer = setTimeout(() => {
+            this.handleWebSocketTimeout();
+        }, this.websocketTimeout);
+    }
+
+    async handleWebSocketTimeout() {
+        if (this.isWebSocketConnected) {
+            // Check if there are active transfers before disconnecting
+            const hasActiveTransfers = await this.hasActiveTransfers();
+            
+            if (hasActiveTransfers) {
+                console.log('Timer expired but active transfers detected - session protected');
+                this.showAlert('Session timeout prevented - active file transfers are protecting your connection', 'info');
+                
+                // Restart the timer for another cycle
+                this.startActivityTimer();
+                return;
+            }
+            
+            console.log('WebSocket timeout due to inactivity');
+            this.wasAutoDisconnected = true;
+            this.disconnectWebSocket();
+            this.showWebSocketTimeoutNotification();
+        }
+    }
+
+    async hasActiveTransfers() {
+        try {
+            const response = await fetch('/api/transfers/active');
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                return result.transfers && result.transfers.length > 0;
+            }
+            return false;
+        } catch (error) {
+            console.error('Error checking active transfers:', error);
+            return false; // Assume no transfers if check fails
+        }
+    }
+
+    showWebSocketTimeoutWarning(minutesLeft) {
+        this.showAlert(`Real-time connection will disconnect in ${minutesLeft} minute(s) due to inactivity. Click the status bar to extend your session and maintain full features.`, 'warning');
+    }
+
+    showWebSocketTimeoutNotification() {
+        this.showAlert('App connection lost due to inactivity. Active transfers continue running automatically in the background. Click "Auto Connect" to restore real-time features.', 'info');
+        
+        // Update status to show auto-disconnected state
+        this.updateStatus('Disconnected due to inactivity - background monitoring active', 'auto-disconnected');
+        
+        // Hide UI elements that depend on WebSocket
+        this.hideWebSocketDependentUI();
+        
+        // Update config modal status
+        this.updateWebSocketConfigStatus();
+    }
+
+    hideWebSocketDependentUI() {
+        // Hide media interface when WebSocket is disconnected
+        const elementsToHide = [
+            'mediaCard',
+            'folderCard', 
+            'transferCard',
+            'logCard'
+        ];
+        
+        elementsToHide.forEach(elementId => {
+            const element = document.getElementById(elementId);
+            if (element) {
+                element.style.display = 'none';
+            }
+        });
+        
+        console.log('UI elements hidden - WebSocket dependent features disabled');
+        
+        // Show a brief explanation to the user
+        setTimeout(() => {
+            this.showAlert('Media browsing features temporarily disabled. Active transfers continue in the background. Reconnect to restore full functionality.', 'info');
+        }, 1000);
+    }
+
+    showWebSocketDependentUI() {
+        // Show media interface when WebSocket is connected
+        const elementsToShow = [
+            'mediaCard'
+            // Other elements will be shown based on navigation state
+        ];
+        
+        elementsToShow.forEach(elementId => {
+            const element = document.getElementById(elementId);
+            if (element) {
+                element.style.display = 'block';
+            }
+        });
+        
+        console.log('UI elements restored - WebSocket dependent features enabled');
+    }
+
+    disconnectWebSocket() {
+        if (this.socket && this.isWebSocketConnected) {
+            console.log('Intentionally disconnecting WebSocket');
+            // Prevent automatic reconnection
+            this.socket.disconnect();
+            this.isWebSocketConnected = false;
+            
+            // Stop activity tracking
+            console.log('Activity tracking disabled - WebSocket intentionally disconnected');
+            
+            // Clear activity timer
+            if (this.activityTimer) {
+                clearTimeout(this.activityTimer);
+                this.activityTimer = null;
+            }
+            
+            // Hide WebSocket dependent UI elements
+            this.hideWebSocketDependentUI();
+        }
     }
 
     initializeEventListeners() {
@@ -35,18 +318,38 @@ class DragonCPUI {
             this.disconnectFromServer();
         });
 
-        // Configuration button
+        // Status bar click to extend session
+        document.getElementById('statusBar').addEventListener('click', (event) => {
+            // Only extend session if clicking the status area, not the buttons
+            if (event.target.closest('.status-actions')) {
+                return; // Don't interfere with button clicks
+            }
+            
+            if (this.isWebSocketConnected) {
+                this.extendSession();
+            }
+        });
+
+        // Configuration button (no timer reset)
         document.getElementById('configBtn').addEventListener('click', () => {
+            console.log('Config button clicked - timer NOT reset');
             const configModal = new bootstrap.Modal(document.getElementById('configModal'));
             configModal.show();
+            
+            // Update WebSocket status when modal is shown (read-only, no timer reset)
+            setTimeout(() => {
+                this.updateWebSocketConfigStatusReadOnly();
+            }, 100);
         });
 
         // Configuration modal
         document.getElementById('saveConfig').addEventListener('click', () => {
+            console.log('Save config button clicked - timer NOT reset');
             this.saveConfiguration();
         });
 
         document.getElementById('resetConfigBtn').addEventListener('click', () => {
+            console.log('Reset config button clicked - timer NOT reset');
             this.resetConfiguration();
         });
 
@@ -115,14 +418,127 @@ class DragonCPUI {
         this.addConfigFieldListeners();
     }
 
+    extendSession() {
+        this.showAlert('Session extended successfully!', 'success');
+        
+        // Add visual feedback animation
+        const statusBar = document.getElementById('statusBar');
+        if (statusBar) {
+            statusBar.classList.add('session-extended');
+            setTimeout(() => {
+                statusBar.classList.remove('session-extended');
+            }, 600);
+        }
+        
+        this.updateActivity(); // This will reset the timer and update the display
+    }
+
+    updateWebSocketConfigStatusReadOnly() {
+        // Same as updateWebSocketConfigStatus but doesn't reset activity timer
+        // This is used when opening config modal to check status without extending session
+        const statusIndicator = document.getElementById('wsConfigStatusIndicator');
+        const statusText = document.getElementById('wsConfigStatusText');
+        const statusDetails = document.getElementById('wsConfigStatusDetails');
+        
+        if (!statusIndicator || !statusText || !statusDetails) return;
+        
+        // Check if we're in config-changed state
+        const currentStatus = document.getElementById('statusIndicator')?.className;
+        const isConfigChanged = currentStatus?.includes('status-config-changed');
+        
+        if (isConfigChanged) {
+            statusIndicator.className = 'status-indicator status-config-changed';
+            statusText.textContent = 'Configuration Updated';
+            statusDetails.innerHTML = `
+                <i class="bi bi-exclamation-triangle"></i> 
+                Settings changed. Click "Apply New Settings" to reconnect with updated configuration.
+            `;
+        } else if (this.isWebSocketConnected) {
+            statusIndicator.className = 'status-indicator status-connected';
+            statusText.textContent = 'Connected';
+            
+            const timeoutMinutes = Math.floor(this.websocketTimeout / 60000);
+            // Use the same calculation as status bar for consistency
+            const timeLeft = this.getTimeRemaining();
+            
+            statusDetails.innerHTML = `
+                <i class="bi bi-check-circle"></i> 
+                Real-time updates active. Timeout: ${timeoutMinutes} min. 
+                Time left: ${timeLeft} min.
+            `;
+        } else if (this.wasAutoDisconnected) {
+            statusIndicator.className = 'status-indicator status-auto-disconnected';
+            statusText.textContent = 'Auto-disconnected';
+            statusDetails.innerHTML = `
+                <i class="bi bi-clock"></i> 
+                Disconnected due to inactivity. Active transfers continue via background API monitoring.
+            `;
+        } else {
+            statusIndicator.className = 'status-indicator status-disconnected';
+            statusText.textContent = 'Disconnected';
+            statusDetails.innerHTML = `
+                <i class="bi bi-x-circle"></i> 
+                App connection not active. Click "Auto Connect" for real-time updates and full features.
+            `;
+        }
+    }
+
     addConfigFieldListeners() {
         // Add listeners to all config input fields to show modification indicators
         const configInputs = document.querySelectorAll('#configForm input');
         configInputs.forEach(input => {
             input.addEventListener('input', () => {
                 this.updateConfigFieldIndicator(input);
+                
+                // Special handling for timeout validation
+                if (input.id === 'websocketTimeout') {
+                    this.validateTimeoutInput(input);
+                }
             });
         });
+    }
+
+    validateTimeoutInput(input) {
+        const value = parseInt(input.value);
+        const validationDiv = document.getElementById('timeoutValidation') || this.createTimeoutValidationDiv(input);
+        
+        if (isNaN(value)) {
+            validationDiv.style.display = 'none';
+            return;
+        }
+        
+        if (value > 60) {
+            validationDiv.innerHTML = `
+                <div class="text-warning">
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    Maximum timeout is 60 minutes. Value will be capped at 60 minutes.
+                </div>
+            `;
+            validationDiv.style.display = 'block';
+        } else if (value < 5) {
+            validationDiv.innerHTML = `
+                <div class="text-warning">
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    Minimum timeout is 5 minutes. Value will be set to 5 minutes.
+                </div>
+            `;
+            validationDiv.style.display = 'block';
+        } else {
+            validationDiv.style.display = 'none';
+        }
+    }
+
+    createTimeoutValidationDiv(input) {
+        const validationDiv = document.createElement('div');
+        validationDiv.id = 'timeoutValidation';
+        validationDiv.className = 'mt-1';
+        validationDiv.style.display = 'none';
+        
+        // Insert after the input's parent config-field div
+        const configField = input.closest('.config-field');
+        configField.appendChild(validationDiv);
+        
+        return validationDiv;
     }
 
     updateConfigFieldIndicator(input) {
@@ -147,22 +563,67 @@ class DragonCPUI {
     initializeWebSocket() {
         this.socket.on('connect', () => {
             console.log('WebSocket connected');
+            this.isWebSocketConnected = true;
+            this.wasAutoDisconnected = false;
+            this.hasEverConnected = true;
+            
+            // Start activity tracking now that WebSocket is connected
+            this.updateActivity(); // Start activity tracking
+            console.log('Activity tracking enabled');
+            
+            this.updateWebSocketConfigStatus(); // Update config modal status
+            
+            // Show WebSocket dependent UI elements if server connection exists
+            if (this.currentState.connected) {
+                this.showWebSocketDependentUI();
+            }
+            
+            // Immediately show timer in status
+            setTimeout(() => {
+                this.updateStatusWithTimer();
+            }, 100);
         });
 
         this.socket.on('transfer_progress', (data) => {
             this.updateTransferProgress(data);
             // Refresh transfer management display for progress bars
             this.loadActiveTransfers();
+            // Don't count transfer progress as user activity
         });
 
         this.socket.on('transfer_complete', (data) => {
             this.handleTransferComplete(data);
             // Refresh transfer management display
             this.loadActiveTransfers();
+            // Don't count transfer completion as user activity
         });
 
-        this.socket.on('disconnect', () => {
-            console.log('WebSocket disconnected');
+        this.socket.on('disconnect', (reason) => {
+            console.log('WebSocket disconnected:', reason);
+            this.isWebSocketConnected = false;
+            
+            // Stop activity tracking
+            console.log('Activity tracking disabled - WebSocket disconnected');
+            
+            // Clear activity timer
+            if (this.activityTimer) {
+                clearTimeout(this.activityTimer);
+                this.activityTimer = null;
+            }
+            
+            // Hide WebSocket dependent UI elements on unexpected disconnect
+            if (!this.wasAutoDisconnected && reason !== 'io client disconnect') {
+                this.hideWebSocketDependentUI();
+                this.updateStatus('Connection lost unexpectedly', 'disconnected');
+            }
+            
+            // Update config modal status
+            this.updateWebSocketConfigStatus();
+            
+            // Only show reconnection message if it wasn't an auto-disconnect
+            if (!this.wasAutoDisconnected) {
+                console.log('WebSocket disconnected unexpectedly');
+            }
         });
     }
 
@@ -216,7 +677,10 @@ class DragonCPUI {
             
             // Remote disk monitoring API
             { id: 'diskApiEndpoint', name: 'DISK_API_ENDPOINT', label: 'Remote Disk API Endpoint', value: config.DISK_API_ENDPOINT, envValue: envConfig.DISK_API_ENDPOINT, placeholder: 'https://api.example.com/disk-usage' },
-            { id: 'diskApiToken', name: 'DISK_API_TOKEN', label: 'Remote Disk API Token', value: config.DISK_API_TOKEN, envValue: envConfig.DISK_API_TOKEN, type: 'password', placeholder: 'Bearer token for remote API' }
+            { id: 'diskApiToken', name: 'DISK_API_TOKEN', label: 'Remote Disk API Token', value: config.DISK_API_TOKEN, envValue: envConfig.DISK_API_TOKEN, type: 'password', placeholder: 'Bearer token for remote API' },
+            
+            // WebSocket settings
+            { id: 'websocketTimeout', name: 'WEBSOCKET_TIMEOUT_MINUTES', label: 'WebSocket Timeout (minutes)', value: Math.min(60, Math.max(5, config.WEBSOCKET_TIMEOUT_MINUTES || 30)), envValue: Math.min(60, Math.max(5, envConfig.WEBSOCKET_TIMEOUT_MINUTES || 30)), type: 'number', placeholder: '30' }
         ];
         
         // Populate each field
@@ -245,6 +709,13 @@ class DragonCPUI {
                 }
             }
         });
+        
+        // Update WebSocket timeout setting and apply it
+        const timeoutMinutes = Math.min(60, Math.max(5, parseInt(config.WEBSOCKET_TIMEOUT_MINUTES || 30)));
+        this.websocketTimeout = timeoutMinutes * 60 * 1000; // Convert to milliseconds
+        
+        // Update WebSocket status display in configuration modal
+        this.updateWebSocketConfigStatus();
     }
     
     async resetConfiguration() {
@@ -296,15 +767,36 @@ class DragonCPUI {
             const result = await response.json();
             
             if (result.status === 'success') {
+                // Determine if critical config changes were made
+                const hasCriticalChanges = this.hasCriticalConfigChanges(config);
+                
+                // Apply WebSocket timeout change
+                let timeoutChanged = false;
+                if (config.WEBSOCKET_TIMEOUT_MINUTES) {
+                    const newTimeoutMinutes = Math.min(60, Math.max(5, parseInt(config.WEBSOCKET_TIMEOUT_MINUTES)));
+                    const newTimeoutMs = newTimeoutMinutes * 60 * 1000;
+                    
+                    if (newTimeoutMs !== this.websocketTimeout) {
+                        this.websocketTimeout = newTimeoutMs;
+                        timeoutChanged = true;
+                    }
+                }
+                
                 this.showAlert('Configuration saved successfully!', 'success');
-                this.updateStatus('Configuration saved', 'disconnected');
                 
-                // Reload configuration to update indicators
-                await this.loadConfiguration();
-                
-                // Check if we have connection credentials and show auto-connect option
-                if (this.hasConnectionCredentials()) {
-                    this.showAutoConnectOption();
+                // If critical changes were made, disconnect and show reconnect UI
+                if (hasCriticalChanges || timeoutChanged) {
+                    this.handleCriticalConfigChange();
+                } else {
+                    this.updateStatus('Configuration saved', 'disconnected');
+                    
+                    // Reload configuration to update indicators
+                    await this.loadConfiguration();
+                    
+                    // Check if we have connection credentials and show auto-connect option
+                    if (this.hasConnectionCredentials()) {
+                        this.showAutoConnectOption();
+                    }
                 }
             } else {
                 this.showAlert('Failed to save configuration', 'danger');
@@ -317,18 +809,101 @@ class DragonCPUI {
         }
     }
 
+    hasCriticalConfigChanges(newConfig) {
+        // Define which config changes require reconnection
+        const criticalFields = [
+            'REMOTE_IP', 'REMOTE_USER', 'REMOTE_PASSWORD', 'SSH_KEY_PATH',
+            'WEBSOCKET_TIMEOUT_MINUTES'
+        ];
+        
+        // Check if any critical field was modified
+        return criticalFields.some(field => {
+            const currentValue = this.getCurrentConfigValue(field);
+            const newValue = newConfig[field];
+            return currentValue !== newValue;
+        });
+    }
+
+    getCurrentConfigValue(fieldName) {
+        // Map field names to their corresponding input IDs
+        const fieldMap = {
+            'REMOTE_IP': 'remoteIp',
+            'REMOTE_USER': 'remoteUser', 
+            'REMOTE_PASSWORD': 'remotePassword',
+            'SSH_KEY_PATH': 'sshKeyPath',
+            'WEBSOCKET_TIMEOUT_MINUTES': 'websocketTimeout'
+        };
+        
+        const inputId = fieldMap[fieldName];
+        const input = document.getElementById(inputId);
+        return input ? input.defaultValue : '';
+    }
+
+    handleCriticalConfigChange() {
+        // Disconnect WebSocket if connected
+        if (this.isWebSocketConnected) {
+            this.disconnectWebSocket();
+        }
+        
+        // Close the configuration modal
+        const configModal = bootstrap.Modal.getInstance(document.getElementById('configModal'));
+        if (configModal) {
+            configModal.hide();
+        }
+        
+        // Update status to show config-changed state
+        this.updateStatus('Configuration updated - reconnection required', 'config-changed');
+        
+        // Show reconnect notification
+        this.showAlert('Configuration changes saved! Please reconnect to apply the new settings.', 'info');
+        
+        // Hide media interface (already done by disconnectWebSocket)
+        
+        // Update button to show "Load Updated Config" or similar
+        this.showConfigChangedUI();
+    }
+
+    showConfigChangedUI() {
+        const autoConnectBtn = document.getElementById('autoConnectBtn');
+        if (autoConnectBtn) {
+            autoConnectBtn.style.display = 'inline-block';
+            autoConnectBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Apply New Settings';
+            autoConnectBtn.title = 'Reconnect with updated configuration';
+            autoConnectBtn.classList.add('btn-warning');
+            autoConnectBtn.classList.remove('btn-primary');
+        }
+    }
+
     async autoConnect() {
         try {
             this.updateStatus('Connecting to server...', 'connecting');
+            
+            // If we have a disconnected WebSocket, reconnect it
+            if (!this.isWebSocketConnected) {
+                this.socket.connect();
+            }
             
             const response = await fetch('/api/auto-connect');
             const result = await response.json();
             
             if (result.status === 'success') {
-                this.updateStatus('Connected to server', 'connected');
                 this.currentState.connected = true;
+                
+                // Reset auto-disconnect and config-changed flags
+                this.wasAutoDisconnected = false;
+                
+                // Reload configuration to ensure we have the latest values
+                await this.loadConfiguration();
+                
+                // Show timer immediately
+                this.updateStatusWithTimer();
+                
+                // Show WebSocket dependent UI elements
+                this.showWebSocketDependentUI();
                 this.showMediaInterface();
                 this.loadMediaTypes();
+                
+                this.showAlert('Connected with updated configuration!', 'success');
             } else {
                 this.updateStatus('Connection failed: ' + result.message, 'disconnected');
                 this.showAlert('Auto-connection failed: ' + result.message, 'danger');
@@ -342,6 +917,10 @@ class DragonCPUI {
 
     async disconnectFromServer() {
         try {
+            // Disconnect WebSocket first
+            this.disconnectWebSocket();
+            
+            // Then disconnect from SSH server
             const response = await fetch('/api/disconnect');
             const result = await response.json();
             
@@ -349,6 +928,7 @@ class DragonCPUI {
                 this.updateStatus('Disconnected from server', 'disconnected');
                 this.currentState.connected = false;
                 this.hideMediaInterface();
+                this.wasAutoDisconnected = false;
             }
         } catch (error) {
             console.error('Disconnect failed:', error);
@@ -360,6 +940,7 @@ class DragonCPUI {
         const statusMessage = document.getElementById('statusMessage');
         const autoConnectBtn = document.getElementById('autoConnectBtn');
         const disconnectBtn = document.getElementById('disconnectBtn');
+        const statusBar = document.getElementById('statusBar');
         
         // Update status indicator
         if (statusIndicator) {
@@ -368,6 +949,10 @@ class DragonCPUI {
                 statusIndicator.classList.add('status-connected');
             } else if (status === 'connecting') {
                 statusIndicator.classList.add('status-connecting');
+            } else if (status === 'auto-disconnected') {
+                statusIndicator.classList.add('status-auto-disconnected');
+            } else if (status === 'config-changed') {
+                statusIndicator.classList.add('status-config-changed');
             } else {
                 statusIndicator.classList.add('status-disconnected');
             }
@@ -378,17 +963,48 @@ class DragonCPUI {
             statusMessage.textContent = message;
         }
         
+        // Update status bar clickability and tooltip
+        if (statusBar) {
+            if (status === 'connected') {
+                statusBar.classList.add('status-extendable');
+                statusBar.title = 'Click to extend session timer';
+            } else {
+                statusBar.classList.remove('status-extendable');
+                statusBar.title = '';
+            }
+        }
+        
         // Update buttons
         if (autoConnectBtn && disconnectBtn) {
             if (status === 'connected') {
                 autoConnectBtn.style.display = 'none';
                 disconnectBtn.style.display = 'inline-block';
+                // Show manual disconnect option for WebSocket only
+                disconnectBtn.title = 'Disconnect App Connection (transfers will continue via API)';
             } else if (status === 'connecting') {
                 autoConnectBtn.style.display = 'none';
                 disconnectBtn.style.display = 'none';
             } else {
                 autoConnectBtn.style.display = 'inline-block';
                 disconnectBtn.style.display = 'none';
+                
+                // Reset button styling if it was changed for config updates
+                autoConnectBtn.classList.remove('btn-warning');
+                autoConnectBtn.classList.add('btn-primary');
+                
+                if (status === 'auto-disconnected') {
+                    autoConnectBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i> Reconnect';
+                    autoConnectBtn.title = 'Reconnect for real-time updates';
+                } else if (status === 'config-changed') {
+                    // Keep the special config-changed button styling
+                    autoConnectBtn.classList.remove('btn-primary');
+                    autoConnectBtn.classList.add('btn-warning');
+                    autoConnectBtn.innerHTML = '<i class="bi bi-arrow-repeat"></i> Apply New Settings';
+                    autoConnectBtn.title = 'Reconnect with updated configuration';
+                } else {
+                    autoConnectBtn.innerHTML = '<i class="bi bi-wifi"></i> Auto Connect';
+                    autoConnectBtn.title = 'Connect to server';
+                }
             }
         }
     }
@@ -1042,6 +1658,14 @@ class DragonCPUI {
     }
 
     showAlert(message, type) {
+        // Dismiss any existing alerts first to prevent stacking
+        const existingAlerts = document.querySelectorAll('.alert.position-fixed');
+        existingAlerts.forEach(alert => {
+            if (alert.parentNode) {
+                alert.remove();
+            }
+        });
+        
         const alertDiv = document.createElement('div');
         alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
         alertDiv.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
@@ -1053,12 +1677,14 @@ class DragonCPUI {
         
         document.body.appendChild(alertDiv);
         
-        // Auto-remove after 5 seconds
+        // Auto-remove after 10 seconds for info/warning, 5 seconds for success
+        let timeout = 10000;
+        if (type === 'success') timeout = 5000;
         setTimeout(() => {
             if (alertDiv.parentNode) {
                 alertDiv.remove();
             }
-        }, 5000);
+        }, timeout);
     }
 
     hideMediaInterface() {
@@ -1083,19 +1709,23 @@ class DragonCPUI {
         try {
             this.updateStatus('Initializing application...', 'connecting');
             
-            // Try to auto-connect first
-            const autoConnectResponse = await fetch('/api/auto-connect');
-            const autoConnectResult = await autoConnectResponse.json();
-            
-            if (autoConnectResult.status === 'success') {
-                this.currentState.connected = true;
-                this.updateStatus('Connected to server', 'connected');
-                this.showAlert('Auto-connected successfully!', 'success');
-                this.showMediaInterface();
-                this.loadMediaTypes();
-                return;
+            // Only auto-connect on first load
+            if (!this.hasEverConnected) {
+                if (!this.isWebSocketConnected) {
+                    this.socket.connect();
+                }
+                const autoConnectResponse = await fetch('/api/auto-connect');
+                const autoConnectResult = await autoConnectResponse.json();
+                
+                if (autoConnectResult.status === 'success') {
+                    this.currentState.connected = true;
+                    this.updateStatus('Connected to server', 'connected');
+                    this.showAlert('Auto-connected successfully!', 'success');
+                    this.showMediaInterface();
+                    this.loadMediaTypes();
+                    return;
+                }
             }
-            
             // If auto-connect fails, check if we have credentials
             if (this.hasConnectionCredentials()) {
                 this.updateStatus('SSH credentials available. Click Auto Connect to proceed.', 'disconnected');
@@ -1802,6 +2432,120 @@ class DragonCPUI {
             console.error('Failed to cleanup transfers:', error);
             this.showAlert('Failed to cleanup transfers', 'danger');
         }
+    }
+
+    updateWebSocketConfigStatus() {
+        const statusIndicator = document.getElementById('wsConfigStatusIndicator');
+        const statusText = document.getElementById('wsConfigStatusText');
+        const statusDetails = document.getElementById('wsConfigStatusDetails');
+        
+        if (!statusIndicator || !statusText || !statusDetails) return;
+        
+        // Check if we're in config-changed state
+        const currentStatus = document.getElementById('statusIndicator')?.className;
+        const isConfigChanged = currentStatus?.includes('status-config-changed');
+        
+        if (isConfigChanged) {
+            statusIndicator.className = 'status-indicator status-config-changed';
+            statusText.textContent = 'Configuration Updated';
+            statusDetails.innerHTML = `
+                <i class="bi bi-exclamation-triangle"></i> 
+                Settings changed. Click "Apply New Settings" to reconnect with updated configuration.
+            `;
+        } else if (this.isWebSocketConnected) {
+            statusIndicator.className = 'status-indicator status-connected';
+            statusText.textContent = 'Connected';
+            
+            const timeoutMinutes = Math.floor(this.websocketTimeout / 60000);
+            const timeSinceActivity = Math.floor((Date.now() - this.lastActivity) / 60000);
+            const timeLeft = Math.max(0, timeoutMinutes - timeSinceActivity);
+            
+            statusDetails.innerHTML = `
+                <i class="bi bi-check-circle"></i> 
+                Real-time updates active. Timeout: ${timeoutMinutes} min. 
+                Time left: ${timeLeft} min.
+            `;
+        } else if (this.wasAutoDisconnected) {
+            statusIndicator.className = 'status-indicator status-auto-disconnected';
+            statusText.textContent = 'Auto-disconnected';
+            statusDetails.innerHTML = `
+                <i class="bi bi-clock"></i> 
+                Disconnected due to inactivity. Active transfers continue via background API monitoring.
+            `;
+        } else {
+            statusIndicator.className = 'status-indicator status-disconnected';
+            statusText.textContent = 'Disconnected';
+            statusDetails.innerHTML = `
+                <i class="bi bi-x-circle"></i> 
+                App connection not active. Click "Auto Connect" for real-time updates and full features.
+            `;
+        }
+    }
+
+    startTimerDisplayUpdates() {
+        // Update timer display every minute
+        setInterval(() => {
+            if (this.isWebSocketConnected) {
+                this.updateStatusWithTimer();
+            }
+        }, 60000);
+        
+        // Also update every 15 seconds when time is running low (last 5 minutes)
+        setInterval(() => {
+            if (this.isWebSocketConnected) {
+                const minutesLeft = this.getTimeRemaining();
+                if (minutesLeft <= 5) {
+                    this.updateStatusWithTimer();
+                }
+            }
+        }, 15000);
+    }
+
+    getTimeRemaining() {
+        if (!this.isWebSocketConnected) return 0;
+        
+        const timeSinceActivity = Date.now() - this.lastActivity;
+        const timeUntilDisconnect = this.websocketTimeout - timeSinceActivity;
+        const minutesLeft = Math.max(0, Math.floor(timeUntilDisconnect / 60000));
+        
+        return minutesLeft;
+    }
+
+    updateStatusWithTimer() {
+        if (!this.isWebSocketConnected) return;
+        
+        const minutesLeft = this.getTimeRemaining();
+        let message;
+        
+        // Check if transfers are protecting the session
+        this.hasActiveTransfers().then(hasTransfers => {
+            if (hasTransfers) {
+                message = `Connected to server (session protected - active transfers running)`;
+                this.updateStatus(message, 'connected');
+            } else {
+                if (minutesLeft <= 0) {
+                    message = `Connected to server (${minutesLeft} min left)`;
+                    // Show warning color for last minute
+                    this.updateStatus(message, 'connecting'); // Use warning color
+                } else if (minutesLeft <= 1) {
+                    message = `Connected to server (${minutesLeft} min left)`;
+                    // Keep connected color but user can see it's getting low
+                    this.updateStatus(message, 'connected');
+                } else {
+                    message = `Connected to server (${minutesLeft} min left)`;
+                    this.updateStatus(message, 'connected');
+                }
+            }
+        }).catch(() => {
+            // If we can't check transfers, just show normal timer
+            if (minutesLeft <= 0) {
+                message = `Connected to server (${minutesLeft} min left)`;
+                this.updateStatus(message, 'connecting');
+            } else {
+                message = `Connected to server (${minutesLeft} min left)`;
+                this.updateStatus(message, 'connected');
+            }
+        });
     }
 }
 

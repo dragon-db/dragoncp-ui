@@ -528,6 +528,18 @@ body {
     animation: pulse 1.5s infinite;
 }
 
+.status-auto-disconnected {
+    background: #9b59b6;
+    box-shadow: 0 0 10px #9b59b6;
+    animation: fade 2s infinite;
+}
+
+.status-config-changed {
+    background: #f39c12;
+    box-shadow: 0 0 10px #f39c12;
+    animation: pulse 1.5s infinite;
+}
+
 /* Loading Spinner */
 .loading-spinner {
     display: none;
@@ -600,30 +612,76 @@ body {
 
 /* Status Bar */
 .status-bar {
-    background: rgba(0, 0, 0, 0.3);
-    border-radius: 10px;
-    padding: 10px 15px;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 15px;
+    padding: 15px 20px;
     margin-bottom: 20px;
     display: flex;
-    align-items: center;
     justify-content: space-between;
-    backdrop-filter: blur(10px);
+    align-items: center;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    transition: all 0.3s ease;
+}
+
+.status-bar.status-extendable {
+    cursor: pointer;
+    user-select: none;
+}
+
+.status-bar.status-extendable:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+    background: linear-gradient(45deg, var(--card-bg), #2d4a4d);
+    border-color: var(--secondary-color);
+}
+
+.status-bar.status-extendable:active {
+    transform: translateY(0);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.status-bar.status-extendable .status-info {
+    transition: all 0.3s ease;
+}
+
+.status-bar.status-extendable:hover .status-info {
+    color: var(--secondary-color);
 }
 
 .status-info {
     display: flex;
     align-items: center;
-    gap: 10px;
-}
-
-.status-message {
-    color: var(--text-light);
-    font-size: 0.9rem;
+    flex: 1;
 }
 
 .status-actions {
     display: flex;
     gap: 10px;
+}
+
+.status-actions .btn {
+    z-index: 10;
+    position: relative;
+}
+
+.status-bar.session-extended {
+    animation: sessionExtended 0.6s ease-out;
+}
+
+@keyframes sessionExtended {
+    0% { 
+        background: var(--success-color);
+        transform: scale(1.02);
+    }
+    50% { 
+        background: var(--success-color);
+        transform: scale(1.02);
+    }
+    100% { 
+        background: var(--card-bg);
+        transform: scale(1);
+    }
 }
 
 /* Media Type Cards */
@@ -751,6 +809,12 @@ body {
 @keyframes slideIn {
     from { transform: translateX(-100%); opacity: 0; }
     to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes fade {
+    0% { opacity: 1; }
+    50% { opacity: 0.4; }
+    100% { opacity: 1; }
 }
 
 /* Utility Classes */
