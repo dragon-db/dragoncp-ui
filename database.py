@@ -571,7 +571,8 @@ class TransferManager:
                             'transfer_id': transfer_id,
                             'progress': line,
                             'logs': transfer['logs'][-100:],  # Last 100 lines for better visibility
-                            'log_count': len(transfer['logs'])
+                            'log_count': len(transfer['logs']),
+                            'status': transfer.get('status', 'running')
                         })
             
             # Wait for process to complete

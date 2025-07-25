@@ -21,7 +21,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.1.2
+                   v1.2.0
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -155,27 +155,44 @@
             <div class="card-header gradient-accent">
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
-                        <i class="bi bi-terminal"></i> Transfer Log
-                        <span class="badge bg-secondary ms-2" id="logCount">0 lines</span>
+                        <i class="bi bi-terminal"></i> Transfer Logs
+                        <span class="badge bg-secondary ms-2" id="logCount">0 active</span>
                     </div>
                     <div class="log-controls">
-                        <button class="btn btn-sm btn-outline-light me-2" id="clearLogBtn" title="Clear logs">
+                        <button class="btn btn-sm btn-outline-light me-2" id="clearLogBtn" title="Clear current tab logs">
                             <i class="bi bi-trash"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-light me-2" id="autoScrollBtn" title="Auto-scroll to bottom">
-                            <i class="bi bi-arrow-down-circle-fill"></i>
+                        <button class="btn btn-sm btn-outline-light me-2" id="autoScrollBtn" title="Auto-scroll to newest">
+                            <i class="bi bi-arrow-up-circle-fill"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-light" id="fullscreenLogBtn" title="Fullscreen logs">
+                        <button class="btn btn-sm btn-outline-light" id="fullscreenLogBtn" title="Fullscreen current tab">
                             <i class="bi bi-arrows-fullscreen"></i>
                         </button>
                     </div>
                 </div>
+                <!-- Tab Navigation -->
+                <div class="log-tabs mt-2" id="logTabsContainer" style="display: none;">
+                    <nav class="nav nav-tabs log-nav-tabs" id="logTabs" role="tablist">
+                        <!-- Tabs will be added dynamically -->
+                    </nav>
+                </div>
             </div>
             <div class="card-body p-0">
-                <div class="transfer-log-container">
+                <!-- Single log display (when no tabs) -->
+                <div class="transfer-log-container" id="singleLogContainer">
                     <div class="transfer-log" id="transferLog">
-                        <!-- Transfer logs will be shown here -->
+                        <!-- Single transfer logs will be shown here -->
                     </div>
+                </div>
+                
+                <!-- Tabbed log display (when multiple transfers) -->
+                <div class="tab-content" id="logTabContent" style="display: none;">
+                    <!-- Tab panes will be added dynamically -->
+                </div>
+                
+                <!-- No logs message -->
+                <div class="text-center p-4 text-muted" id="noLogsMessage" style="display: none;">
+                    <i class="bi bi-info-circle"></i> No transfer logs available
                 </div>
             </div>
         </div>

@@ -17,6 +17,11 @@ class DragonCPUI {
         this.autoScroll = true;
         this.currentTransferId = null;
         
+        // Tabbed transfer logs
+        this.transferTabs = new Map(); // transferId -> { logs: [], autoScroll: boolean, transfer: {} }
+        this.activeTabId = null;
+        this.cachedActiveTransfers = [];
+        
         // WebSocket timeout management
         this.websocketTimeout = 30 * 60 * 1000; // 30 minutes in milliseconds
         this.activityTimer = null;
@@ -32,6 +37,11 @@ class DragonCPUI {
         this.initializeConnection();
         this.initializeDiskUsageMonitoring();
         this.initializeTransferManagement();
+        
+        // Handle window resize for tab scroll indicators
+        window.addEventListener('resize', () => {
+            this.updateTabScrollIndicators();
+        });
     }
 
     initializeActivityTracking() {
@@ -1393,13 +1403,13 @@ class DragonCPUI {
     }
 
     updateTransferProgress(data) {
-        // Update logs for the current transfer being viewed
-        this.updateTransferLog(data.logs, data.log_count);
+        // Update logs for the specific transfer
+        this.updateTransferTabLogs(data.transfer_id, data.logs, data.log_count, data.status || 'running');
     }
 
     handleTransferComplete(data) {
-        // Update logs for the current transfer
-        this.updateTransferLog(data.logs, data.log_count);
+        // Update logs for the specific transfer
+        this.updateTransferTabLogs(data.transfer_id, data.logs, data.log_count, data.status);
         
         // Show completion message
         if (data.status === 'completed') {
@@ -1423,17 +1433,323 @@ class DragonCPUI {
             logCountElement.textContent = `${this.transferLogs.length} lines`;
         }
         
-        // Format and display logs with syntax highlighting
-        const formattedLogs = this.transferLogs.map(log => {
+        // Format and display logs with syntax highlighting (newest first)
+        const formattedLogs = this.transferLogs.slice().reverse().map(log => {
             const logClass = this.getLogLineClass(log);
             return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
         }).join('');
         
         logContainer.innerHTML = formattedLogs;
         
-        // Auto-scroll to bottom if enabled
+        // Auto-scroll to top if enabled (newest logs first)
         if (this.autoScroll) {
-            this.scrollToBottom(logContainer);
+            setTimeout(() => {
+                logContainer.scrollTop = 0;
+            }, 10);
+        }
+    }
+
+    // Tab-based transfer log management
+    updateTransferTabLogs(transferId, logs, logCount, status = 'running') {
+        if (!transferId) return;
+        
+        // Create or update tab data
+        const tabData = this.transferTabs.get(transferId) || {
+            logs: [],
+            autoScroll: true,
+            transfer: {},
+            status: status
+        };
+        
+        // Update logs (new logs are added to the end of the array)
+        tabData.logs = logs || [];
+        tabData.status = status;
+        this.transferTabs.set(transferId, tabData);
+        
+        // Create or update the tab UI
+        this.createOrUpdateTransferTab(transferId, tabData);
+        
+        // Update the display mode
+        this.updateLogDisplayMode();
+        
+        // Update tab scroll indicators
+        this.updateTabScrollIndicators();
+        
+        // If this is the active tab, update the content
+        if (this.activeTabId === transferId) {
+            this.displayTabContent(transferId);
+        }
+    }
+
+    createOrUpdateTransferTab(transferId, tabData) {
+        const tabsContainer = document.getElementById('logTabs');
+        let tab = document.getElementById(`tab-${transferId}`);
+        
+        if (!tab) {
+            // Create new tab and insert at the beginning (newest first)
+            tab = document.createElement('a');
+            tab.className = 'nav-link';
+            tab.id = `tab-${transferId}`;
+            tab.href = '#';
+            tab.setAttribute('role', 'tab');
+            tab.onclick = (e) => {
+                e.preventDefault();
+                this.switchToTab(transferId);
+            };
+            
+            // Insert at the beginning to show newest transfers first
+            if (tabsContainer.firstChild) {
+                tabsContainer.insertBefore(tab, tabsContainer.firstChild);
+            } else {
+                tabsContainer.appendChild(tab);
+            }
+        }
+        
+        // Get transfer display name
+        const displayName = this.getTransferDisplayName(transferId, tabData.transfer);
+        
+        // Update tab content
+        tab.innerHTML = `
+            <span class="log-tab-title" title="${this.escapeHtml(displayName)}">${this.escapeHtml(this.truncateText(displayName, 20))}</span>
+            <span class="log-tab-status ${tabData.status}">${tabData.status}</span>
+            ${tabData.status === 'completed' || tabData.status === 'failed' || tabData.status === 'cancelled' ? 
+                `<button class="log-tab-close" onclick="event.stopPropagation(); dragonCP.closeTransferTab('${transferId}')" title="Close tab">
+                    <i class="bi bi-x"></i>
+                </button>` : ''
+            }
+        `;
+        
+        // Set as active if it's the first tab or if no active tab
+        if (!this.activeTabId || this.transferTabs.size === 1) {
+            this.switchToTab(transferId);
+        }
+    }
+
+    getTransferDisplayName(transferId, transfer) {
+        // Try to get name from active transfers first
+        const activeTransfers = this.getActiveTransfersSync();
+        const activeTransfer = activeTransfers.find(t => t.id === transferId);
+        
+        let displayName = '';
+        if (activeTransfer) {
+            displayName = activeTransfer.parsed_title || activeTransfer.folder_name || transferId;
+        } else {
+            // Fallback to stored transfer data or transferId
+            displayName = transfer.folder_name || transfer.parsed_title || transferId;
+        }
+        
+        // Remove year patterns like (2000) or [2000] from the display name
+        return displayName.replace(/[\[\(]\d{4}[\]\)]/g, '').trim();
+    }
+
+    getActiveTransfersSync() {
+        // This should return cached active transfers data
+        // You might need to store this from the loadActiveTransfers() method
+        return this.cachedActiveTransfers || [];
+    }
+
+    switchToTab(transferId) {
+        // Update active tab
+        this.activeTabId = transferId;
+        
+        // Update tab styling
+        document.querySelectorAll('.log-nav-tabs .nav-link').forEach(tab => {
+            tab.classList.remove('active');
+        });
+        
+        const activeTab = document.getElementById(`tab-${transferId}`);
+        if (activeTab) {
+            activeTab.classList.add('active');
+        }
+        
+        // Display tab content
+        this.displayTabContent(transferId);
+        
+        // Update controls state
+        this.updateLogControlsForTab(transferId);
+    }
+
+    displayTabContent(transferId) {
+        const tabData = this.transferTabs.get(transferId);
+        if (!tabData) return;
+        
+        // Get or create tab pane
+        let tabPane = document.getElementById(`logContent-${transferId}`);
+        const tabContent = document.getElementById('logTabContent');
+        
+        if (!tabPane) {
+            tabPane = document.createElement('div');
+            tabPane.className = 'tab-pane fade show active';
+            tabPane.id = `logContent-${transferId}`;
+            tabPane.innerHTML = `
+                <div class="transfer-log-container">
+                    <div class="transfer-log" id="transferLog-${transferId}"></div>
+                </div>
+            `;
+            tabContent.appendChild(tabPane);
+        }
+        
+        // Hide all tab panes
+        document.querySelectorAll('.tab-pane').forEach(pane => {
+            pane.classList.remove('show', 'active');
+        });
+        
+        // Show active tab pane
+        tabPane.classList.add('show', 'active');
+        
+        // Update log content
+        const logContainer = document.getElementById(`transferLog-${transferId}`);
+        if (logContainer) {
+            // Display logs in reverse order (newest first)
+            const formattedLogs = tabData.logs.slice().reverse().map(log => {
+                const logClass = this.getLogLineClass(log);
+                return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
+            }).join('');
+            
+            logContainer.innerHTML = formattedLogs;
+            
+            // Auto-scroll if enabled for this tab (scroll to top for newest logs)
+            if (tabData.autoScroll) {
+                setTimeout(() => {
+                    logContainer.scrollTop = 0;
+                }, 10);
+            }
+        }
+    }
+
+    updateLogDisplayMode() {
+        const tabsContainer = document.getElementById('logTabsContainer');
+        const singleLogContainer = document.getElementById('singleLogContainer');
+        const tabbedLogContainer = document.getElementById('logTabContent');
+        const noLogsMessage = document.getElementById('noLogsMessage');
+        const logCountElement = document.getElementById('logCount');
+        
+        const transferCount = this.transferTabs.size;
+        
+        if (transferCount === 0) {
+            // No transfers - show no logs message
+            tabsContainer.style.display = 'none';
+            singleLogContainer.style.display = 'none';
+            tabbedLogContainer.style.display = 'none';
+            noLogsMessage.style.display = 'block';
+            logCountElement.textContent = '0 active';
+        } else if (transferCount === 1) {
+            // Single transfer - use single log display
+            tabsContainer.style.display = 'none';
+            singleLogContainer.style.display = 'block';
+            tabbedLogContainer.style.display = 'none';
+            noLogsMessage.style.display = 'none';
+            
+            // Display the single transfer's logs in the main container
+            const transferId = Array.from(this.transferTabs.keys())[0];
+            const tabData = this.transferTabs.get(transferId);
+            
+            const mainLogContainer = document.getElementById('transferLog');
+            if (mainLogContainer && tabData) {
+                // Display logs in reverse order (newest first) for single transfer view
+                const formattedLogs = tabData.logs.slice().reverse().map(log => {
+                    const logClass = this.getLogLineClass(log);
+                    return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
+                }).join('');
+                
+                mainLogContainer.innerHTML = formattedLogs;
+                
+                if (tabData.autoScroll) {
+                    setTimeout(() => {
+                        mainLogContainer.scrollTop = 0;
+                    }, 10);
+                }
+                
+                logCountElement.textContent = `${tabData.logs.length} lines`;
+            }
+        } else {
+            // Multiple transfers - use tabbed display
+            tabsContainer.style.display = 'block';
+            singleLogContainer.style.display = 'none';
+            tabbedLogContainer.style.display = 'block';
+            noLogsMessage.style.display = 'none';
+            logCountElement.textContent = `${transferCount} active`;
+        }
+    }
+
+    updateLogControlsForTab(transferId) {
+        const tabData = this.transferTabs.get(transferId);
+        if (!tabData) return;
+        
+        const autoScrollBtn = document.getElementById('autoScrollBtn');
+        if (autoScrollBtn) {
+            if (tabData.autoScroll) {
+                autoScrollBtn.innerHTML = '<i class="bi bi-arrow-up-circle-fill"></i>';
+                autoScrollBtn.title = 'Auto-scroll to newest enabled';
+            } else {
+                autoScrollBtn.innerHTML = '<i class="bi bi-arrow-up-circle"></i>';
+                autoScrollBtn.title = 'Auto-scroll to newest disabled';
+            }
+        }
+    }
+
+    closeTransferTab(transferId) {
+        // Remove tab data
+        this.transferTabs.delete(transferId);
+        
+        // Remove tab UI
+        const tab = document.getElementById(`tab-${transferId}`);
+        if (tab) {
+            tab.remove();
+        }
+        
+        // Remove tab content
+        const tabPane = document.getElementById(`logContent-${transferId}`);
+        if (tabPane) {
+            tabPane.remove();
+        }
+        
+        // If this was the active tab, switch to another tab
+        if (this.activeTabId === transferId) {
+            const remainingTabs = Array.from(this.transferTabs.keys());
+            if (remainingTabs.length > 0) {
+                this.switchToTab(remainingTabs[0]);
+            } else {
+                this.activeTabId = null;
+            }
+        }
+        
+        // Update display mode
+        this.updateLogDisplayMode();
+        
+        // Update tab scroll indicators after closing
+        this.updateTabScrollIndicators();
+    }
+
+    truncateText(text, maxLength) {
+        if (text.length <= maxLength) return text;
+        return text.substring(0, maxLength - 3) + '...';
+    }
+
+    updateTabScrollIndicators() {
+        const tabsContainer = document.getElementById('logTabs');
+        if (!tabsContainer) return;
+        
+        // Check if tabs are scrollable
+        const isScrollable = tabsContainer.scrollWidth > tabsContainer.clientWidth;
+        
+        // Update the scrollable attribute for CSS indicators
+        if (isScrollable) {
+            tabsContainer.setAttribute('data-scrollable', 'true');
+        } else {
+            tabsContainer.removeAttribute('data-scrollable');
+        }
+        
+        // Scroll the newest (first) tab into view smoothly
+        const firstTab = tabsContainer.querySelector('.nav-link:first-child');
+        if (firstTab && isScrollable) {
+            setTimeout(() => {
+                firstTab.scrollIntoView({ 
+                    behavior: 'smooth', 
+                    inline: 'start',
+                    block: 'nearest'
+                });
+            }, 100);
         }
     }
 
@@ -1472,34 +1788,84 @@ class DragonCPUI {
     }
 
     clearTransferLog() {
-        this.transferLogs = [];
-        const logContainer = document.getElementById('transferLog');
-        const logCountElement = document.getElementById('logCount');
-        
-        logContainer.innerHTML = '';
-        if (logCountElement) {
-            logCountElement.textContent = '0 lines';
+        if (this.transferTabs.size > 1 && this.activeTabId) {
+            // Clear only the active tab's logs
+            const tabData = this.transferTabs.get(this.activeTabId);
+            if (tabData) {
+                tabData.logs = [];
+                this.displayTabContent(this.activeTabId);
+                this.showAlert('Current tab logs cleared', 'info');
+            }
+        } else {
+            // Clear single transfer logs
+            this.transferLogs = [];
+            const logContainer = document.getElementById('transferLog');
+            const logCountElement = document.getElementById('logCount');
+            
+            logContainer.innerHTML = '';
+            if (logCountElement) {
+                logCountElement.textContent = '0 lines';
+            }
+            
+            // Also clear the single tab if it exists
+            if (this.transferTabs.size === 1) {
+                const transferId = Array.from(this.transferTabs.keys())[0];
+                const tabData = this.transferTabs.get(transferId);
+                if (tabData) {
+                    tabData.logs = [];
+                }
+            }
+            
+            this.showAlert('Transfer logs cleared', 'info');
         }
-        
-        this.showAlert('Transfer logs cleared', 'info');
     }
 
     toggleAutoScroll() {
-        this.autoScroll = !this.autoScroll;
-        const autoScrollBtn = document.getElementById('autoScrollBtn');
-        
-        if (this.autoScroll) {
-            autoScrollBtn.innerHTML = '<i class="bi bi-arrow-down-circle-fill"></i>';
-            autoScrollBtn.title = 'Auto-scroll enabled';
-            this.showAlert('Auto-scroll enabled', 'info');
-            
-            // Scroll to bottom immediately
-            const logContainer = document.getElementById('transferLog');
-            this.scrollToBottom(logContainer);
+        if (this.transferTabs.size > 1 && this.activeTabId) {
+            // Toggle auto-scroll for the active tab
+            const tabData = this.transferTabs.get(this.activeTabId);
+            if (tabData) {
+                tabData.autoScroll = !tabData.autoScroll;
+                this.updateLogControlsForTab(this.activeTabId);
+                
+                if (tabData.autoScroll) {
+                    this.showAlert('Auto-scroll enabled for current tab', 'info');
+                    // Scroll to top to show newest logs immediately
+                    const logContainer = document.getElementById(`transferLog-${this.activeTabId}`);
+                    if (logContainer) {
+                        logContainer.scrollTop = 0;
+                    }
+                } else {
+                    this.showAlert('Auto-scroll disabled for current tab', 'info');
+                }
+            }
         } else {
-            autoScrollBtn.innerHTML = '<i class="bi bi-arrow-down-circle"></i>';
-            autoScrollBtn.title = 'Auto-scroll disabled';
-            this.showAlert('Auto-scroll disabled', 'info');
+            // Toggle auto-scroll for single transfer
+            this.autoScroll = !this.autoScroll;
+            const autoScrollBtn = document.getElementById('autoScrollBtn');
+            
+            if (this.autoScroll) {
+                autoScrollBtn.innerHTML = '<i class="bi bi-arrow-up-circle-fill"></i>';
+                autoScrollBtn.title = 'Auto-scroll to newest enabled';
+                this.showAlert('Auto-scroll to newest enabled', 'info');
+                
+                // Scroll to top to show newest logs immediately
+                const logContainer = document.getElementById('transferLog');
+                logContainer.scrollTop = 0;
+            } else {
+                autoScrollBtn.innerHTML = '<i class="bi bi-arrow-up-circle"></i>';
+                autoScrollBtn.title = 'Auto-scroll to newest disabled';
+                this.showAlert('Auto-scroll disabled', 'info');
+            }
+            
+            // Also update the single tab if it exists
+            if (this.transferTabs.size === 1) {
+                const transferId = Array.from(this.transferTabs.keys())[0];
+                const tabData = this.transferTabs.get(transferId);
+                if (tabData) {
+                    tabData.autoScroll = this.autoScroll;
+                }
+            }
         }
     }
 
@@ -1507,8 +1873,37 @@ class DragonCPUI {
         const fullscreenModal = document.getElementById('fullscreenLogModal');
         const fullscreenLog = document.getElementById('fullscreenTransferLog');
         
-        // Format logs for fullscreen display
-        const formattedLogs = this.transferLogs.map(log => {
+        let logsToShow = [];
+        let transferName = 'Transfer Log';
+        
+        if (this.transferTabs.size > 1 && this.activeTabId) {
+            // Show logs for the active tab
+            const tabData = this.transferTabs.get(this.activeTabId);
+            if (tabData) {
+                logsToShow = tabData.logs;
+                transferName = this.getTransferDisplayName(this.activeTabId, tabData.transfer);
+            }
+        } else if (this.transferTabs.size === 1) {
+            // Show logs for the single tab
+            const transferId = Array.from(this.transferTabs.keys())[0];
+            const tabData = this.transferTabs.get(transferId);
+            if (tabData) {
+                logsToShow = tabData.logs;
+                transferName = this.getTransferDisplayName(transferId, tabData.transfer);
+            }
+        } else {
+            // Fallback to legacy logs
+            logsToShow = this.transferLogs;
+        }
+        
+        // Update fullscreen header with transfer name
+        const fullscreenHeader = fullscreenModal.querySelector('.log-fullscreen-header h5');
+        if (fullscreenHeader) {
+            fullscreenHeader.innerHTML = `<i class="bi bi-terminal"></i> ${this.escapeHtml(transferName)} - Fullscreen`;
+        }
+        
+        // Format logs for fullscreen display (newest first)
+        const formattedLogs = logsToShow.slice().reverse().map(log => {
             const logClass = this.getLogLineClass(log);
             return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
         }).join('');
@@ -1516,8 +1911,8 @@ class DragonCPUI {
         fullscreenLog.innerHTML = formattedLogs;
         fullscreenModal.classList.add('show');
         
-        // Scroll to bottom in fullscreen
-        this.scrollToBottom(fullscreenLog);
+        // Scroll to top to show newest logs first
+        fullscreenLog.scrollTop = 0;
         
         // Prevent body scroll
         document.body.style.overflow = 'hidden';
@@ -1556,10 +1951,20 @@ class DragonCPUI {
             
             if (result.status === 'success') {
                 this.currentTransferId = transferId;
-                this.updateTransferLog(result.logs, result.log_count);
+                
+                // Get transfer details for the tab
+                const transferDetails = this.cachedActiveTransfers?.find(t => t.id === transferId) || {};
+                
+                // Update tab logs (this will create a tab if it doesn't exist)
+                this.updateTransferTabLogs(transferId, result.logs, result.log_count, result.transfer_status || 'running');
                 
                 // Show the log card
                 document.getElementById('logCard').style.display = 'block';
+                
+                // Switch to this transfer's tab if using tabbed display
+                if (this.transferTabs.size > 1) {
+                    this.switchToTab(transferId);
+                }
                 
                 // Scroll to the log card
                 document.getElementById('logCard').scrollIntoView({ 
@@ -2007,6 +2412,12 @@ class DragonCPUI {
             const result = await response.json();
             
             if (result.status === 'success') {
+                // Cache active transfers for tab display names
+                this.cachedActiveTransfers = result.transfers;
+                
+                // Update active transfer tabs
+                this.updateActiveTransferTabs(result.transfers);
+                
                 this.updateTransferManagementDisplay(result.transfers);
                 document.getElementById('transferManagementCard').style.display = 'block';
             } else {
@@ -2015,6 +2426,49 @@ class DragonCPUI {
         } catch (error) {
             console.error('Failed to load active transfers:', error);
         }
+    }
+
+    updateActiveTransferTabs(activeTransfers) {
+        // Add or update tabs for active transfers that don't have tabs yet
+        activeTransfers.forEach(transfer => {
+            if (!this.transferTabs.has(transfer.id)) {
+                // Create a new tab for this transfer
+                const tabData = {
+                    logs: [],
+                    autoScroll: true,
+                    transfer: transfer,
+                    status: transfer.status
+                };
+                this.transferTabs.set(transfer.id, tabData);
+                this.createOrUpdateTransferTab(transfer.id, tabData);
+            } else {
+                // Update existing tab status
+                const tabData = this.transferTabs.get(transfer.id);
+                tabData.transfer = transfer;
+                tabData.status = transfer.status;
+                this.createOrUpdateTransferTab(transfer.id, tabData);
+            }
+        });
+        
+        // Remove tabs for transfers that are no longer active (completed/failed/cancelled)
+        const activeTransferIds = new Set(activeTransfers.map(t => t.id));
+        const tabsToRemove = [];
+        
+        this.transferTabs.forEach((tabData, transferId) => {
+            if (!activeTransferIds.has(transferId) && 
+                (tabData.status === 'completed' || tabData.status === 'failed' || tabData.status === 'cancelled')) {
+                // Don't auto-remove tabs for completed transfers - let user close them manually
+                // But update their status
+                const cachedTransfer = this.cachedActiveTransfers.find(t => t.id === transferId);
+                if (cachedTransfer) {
+                    tabData.status = cachedTransfer.status;
+                    this.createOrUpdateTransferTab(transferId, tabData);
+                }
+            }
+        });
+        
+        // Update display mode
+        this.updateLogDisplayMode();
     }
 
     updateTransferManagementDisplay(transfers) {

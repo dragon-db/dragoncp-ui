@@ -328,8 +328,250 @@ body {
 
 .log-controls .btn {
     padding: 4px 8px;
-    font-size: 0.8rem;
-    border-radius: 6px;
+}
+
+/* Log Tabs */
+.log-tabs {
+    margin-top: 8px;
+    margin-bottom: 0;
+}
+
+.log-nav-tabs {
+    border-bottom: 1px solid rgba(255, 255, 255, 0);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE and Edge */
+    padding: 12px 0px 0px 0px;
+    background: rgba(255, 255, 255, 0.02);
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+    border-radius: 6px 6px 0 0;
+    position: relative;
+    
+    /* Ensure horizontal layout */
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    
+    /* Smooth scrolling */
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+    
+    /* Minimum height to prevent collapsing */
+    min-height: 60px;
+    
+    /* Smooth scroll snap for better UX */
+    scroll-snap-type: x proximity;
+}
+
+.log-nav-tabs::-webkit-scrollbar {
+    display: none; /* Chrome, Safari, Opera */
+}
+
+.log-nav-tabs .nav-link {
+    color: var(--text-light);
+    background: rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 2px solid transparent;
+    padding: 8px 12px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.3s ease;
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-right: 4px;
+    min-height: 40px;
+    min-width: fit-content;
+    border-radius: 6px 6px 6px 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    
+    /* Prevent text wrapping and maintain size */
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
+.log-nav-tabs .nav-link:hover {
+    color: var(--text-light);
+    background: rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(15px);
+    -webkit-backdrop-filter: blur(15px);
+    border-color: rgba(255, 255, 255, 0.2);
+    border-bottom-color: var(--secondary-color);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.log-nav-tabs .nav-link.active {
+    color: var(--text-light);
+    background: rgba(52, 152, 219, 0.15);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border-color: rgba(52, 152, 219, 0.3);
+    border-bottom-color: var(--secondary-color);
+    border-bottom-width: 2px;
+    box-shadow: 0 4px 16px rgba(52, 152, 219, 0.2);
+}
+
+.log-tab-title {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.log-tab-status {
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+    color: var(--text-light);
+    margin-left: 4px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.log-tab-status.running {
+    background: rgba(46, 204, 113, 0.3);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-color: rgba(46, 204, 113, 0.5);
+    color: #ffffff;
+    box-shadow: 0 0 12px rgba(46, 204, 113, 0.4), 
+                inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    animation: pulse-green 2s infinite;
+}
+
+.log-tab-status.completed {
+    background: rgba(39, 174, 96, 0.3);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-color: rgba(39, 174, 96, 0.5);
+    color: #ffffff;
+    box-shadow: 0 0 10px rgba(39, 174, 96, 0.5), 
+                inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.log-tab-status.failed {
+    background: rgba(231, 76, 60, 0.3);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-color: rgba(231, 76, 60, 0.5);
+    color: #ffffff;
+    box-shadow: 0 0 10px rgba(231, 76, 60, 0.5), 
+                inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.log-tab-status.cancelled {
+    background: rgba(255, 165, 0, 0.3);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-color: rgba(255, 165, 0, 0.5);
+    color: #ffffff;
+    box-shadow: 0 0 10px rgba(255, 165, 0, 0.5), 
+                inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.log-tab-close {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    padding: 4px 6px;
+    margin-left: 6px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+    opacity: 0.7;
+    min-width: 24px;
+    min-height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.log-tab-close:hover {
+    background: rgba(231, 76, 60, 0.2);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border-color: rgba(231, 76, 60, 0.3);
+    color: white;
+    opacity: 1;
+}
+
+.log-nav-tabs .nav-link:hover .log-tab-close {
+    opacity: 1;
+}
+
+/* Tab content styling */
+.tab-content {
+    border: none;
+}
+
+.tab-pane .transfer-log-container {
+    border-top: none;
+    border-radius: 0 0 10px 10px;
+}
+
+/* Horizontal scroll indicators for tabs */
+.log-nav-tabs::before,
+.log-nav-tabs::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 20px;
+    pointer-events: none;
+    z-index: 10;
+    transition: opacity 0.3s ease;
+}
+
+.log-nav-tabs::before {
+    left: 0;
+    background: linear-gradient(to right, rgba(255, 255, 255, 0.02), transparent);
+    opacity: 0;
+}
+
+.log-nav-tabs::after {
+    right: 0;
+    background: linear-gradient(to left, rgba(255, 255, 255, 0.02), transparent);
+    opacity: 0;
+}
+
+/* Show scroll indicators when scrollable */
+.log-nav-tabs[data-scrollable="true"]::before,
+.log-nav-tabs[data-scrollable="true"]::after {
+    opacity: 1;
+}
+
+.log-nav-tabs .nav-link {
+    scroll-snap-align: start;
+}
+
+/* Pulse animation for running transfers */
+@keyframes pulse-green {
+    0% { 
+        box-shadow: 0 0 12px rgba(46, 204, 113, 0.4), 
+                    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    }
+    50% { 
+        box-shadow: 0 0 20px rgba(46, 204, 113, 0.8), 
+                    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    }
+    100% { 
+        box-shadow: 0 0 12px rgba(46, 204, 113, 0.4), 
+                    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    }
 }
 
 /* Fullscreen log modal */
@@ -477,6 +719,36 @@ body {
         font-size: 0.7rem;
     }
     
+    .log-nav-tabs {
+        padding: 6px 8px 0 8px;
+        min-height: 64px;
+    }
+    
+    .log-nav-tabs .nav-link {
+        padding: 10px 12px;
+        font-size: 0.8rem;
+        min-height: 44px; /* Better touch target for mobile */
+        margin-right: 3px;
+        min-width: fit-content;
+    }
+    
+    .log-tab-title {
+        max-width: 120px;
+    }
+    
+    .log-tab-status {
+        font-size: 0.65rem;
+        padding: 2px 4px;
+        margin-left: 3px;
+    }
+    
+    .log-tab-close {
+        min-width: 28px;
+        min-height: 28px;
+        padding: 4px;
+        margin-left: 3px;
+    }
+    
     .log-fullscreen-content {
         padding: 10px;
     }
@@ -495,6 +767,38 @@ body {
     .transfer-log {
         font-size: 0.75rem;
         padding: 8px;
+    }
+    
+    .log-nav-tabs {
+        padding: 4px 6px 0 6px;
+        min-height: 68px;
+    }
+    
+    .log-nav-tabs .nav-link {
+        padding: 12px 10px;
+        font-size: 0.75rem;
+        min-height: 48px; /* Even better touch target for small screens */
+        margin-right: 2px;
+        gap: 4px;
+        min-width: fit-content;
+    }
+    
+    .log-tab-title {
+        max-width: 100px;
+    }
+    
+    .log-tab-status {
+        font-size: 0.6rem;
+        padding: 2px 3px;
+        margin-left: 2px;
+    }
+    
+    .log-tab-close {
+        font-size: 0.65rem;
+        min-width: 30px;
+        min-height: 30px;
+        padding: 6px;
+        margin-left: 2px;
     }
     
     .log-fullscreen-log {
