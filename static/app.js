@@ -65,7 +65,7 @@ class DragonCPUI {
     initializeUIElementTracking() {
         // Track clicks on buttons and interactive elements (but exclude config and modal buttons)
         const trackClicksOn = [
-            '.card.h-100', // Media type cards
+            '.card.h-100:not(.disk-usage-card)', // Media type cards only (exclude disk usage cards)
             '.list-group-item button', // Folder/season navigation buttons
             '.transfer-item button', // Transfer action buttons
             'input[type="submit"]',
