@@ -323,11 +323,18 @@ body {
 /* Log controls */
 .log-controls {
     display: flex;
-    gap: 5px;
+    gap: 4px;
+    flex-shrink: 0;
+    flex-wrap: nowrap;
 }
 
 .log-controls .btn {
     padding: 4px 8px;
+    font-size: 0.8rem;
+    border-radius: 4px;
+    min-width: auto;
+    white-space: nowrap;
+    line-height: 1;
 }
 
 /* Log Tabs */
@@ -711,12 +718,22 @@ body {
     }
     
     .log-controls {
-        flex-wrap: wrap;
+        gap: 2px;
+        flex-shrink: 0;
+        flex-wrap: nowrap;
+        margin-top: 4px;
     }
     
     .log-controls .btn {
-        padding: 3px 6px;
+        padding: 8px 10px;
         font-size: 0.7rem;
+        min-width: auto;
+        line-height: 1;
+        border-radius: 3px;
+    }
+    
+    .log-controls .btn i {
+        font-size: 0.75rem;
     }
     
     .log-nav-tabs {
@@ -767,6 +784,24 @@ body {
     .transfer-log {
         font-size: 0.75rem;
         padding: 8px;
+    }
+    
+    .log-controls {
+        gap: 1px;
+        flex-wrap: nowrap;
+        margin-top: 4px;
+    }
+    
+    .log-controls .btn {
+        padding: 8px 10px;
+        font-size: 0.65rem;
+        min-width: auto;
+        line-height: 1;
+        border-radius: 2px;
+    }
+    
+    .log-controls .btn i {
+        font-size: 0.7rem;
     }
     
     .log-nav-tabs {
