@@ -162,7 +162,9 @@ class DragonCPUI {
         if (this.isWebSocketConnected) {
             this.startActivityTimer();
             // Update status display with new timer
-            this.updateStatusWithTimer();
+            this.updateStatusWithTimer().catch(error => {
+                console.warn('Failed to update status with timer:', error);
+            });
         }
     }
 
@@ -580,7 +582,9 @@ class DragonCPUI {
             
             // Immediately show timer in status
             setTimeout(() => {
-                this.updateStatusWithTimer();
+                this.updateStatusWithTimer().catch(error => {
+                    console.warn('Failed to update status with timer:', error);
+                });
             }, 100);
         });
 
@@ -895,8 +899,9 @@ class DragonCPUI {
                 // Reload configuration to ensure we have the latest values
                 await this.loadConfiguration();
                 
-                // Show timer immediately
-                this.updateStatusWithTimer();
+                // Wait a moment for WebSocket to establish connection before showing timer
+                // The WebSocket 'connect' event handler will call updateStatusWithTimer()
+                this.updateStatus('Connected to server', 'connected');
                 
                 // Show WebSocket dependent UI elements
                 this.showWebSocketDependentUI();
@@ -2486,7 +2491,9 @@ class DragonCPUI {
         // Update timer display every minute
         setInterval(() => {
             if (this.isWebSocketConnected) {
-                this.updateStatusWithTimer();
+                this.updateStatusWithTimer().catch(error => {
+                    console.warn('Failed to update status with timer:', error);
+                });
             }
         }, 60000);
         
@@ -2495,7 +2502,9 @@ class DragonCPUI {
             if (this.isWebSocketConnected) {
                 const minutesLeft = this.getTimeRemaining();
                 if (minutesLeft <= 5) {
-                    this.updateStatusWithTimer();
+                    this.updateStatusWithTimer().catch(error => {
+                        console.warn('Failed to update status with timer:', error);
+                    });
                 }
             }
         }, 15000);
@@ -2511,41 +2520,51 @@ class DragonCPUI {
         return minutesLeft;
     }
 
-    updateStatusWithTimer() {
+    async updateStatusWithTimer() {
         if (!this.isWebSocketConnected) return;
         
         const minutesLeft = this.getTimeRemaining();
         let message;
+        let status = 'connected';
         
-        // Check if transfers are protecting the session
-        this.hasActiveTransfers().then(hasTransfers => {
+        try {
+            // Check if transfers are protecting the session
+            const hasTransfers = await this.hasActiveTransfers();
+            
             if (hasTransfers) {
                 message = `Connected to server (session protected - active transfers running)`;
-                this.updateStatus(message, 'connected');
+                status = 'connected';
             } else {
                 if (minutesLeft <= 0) {
                     message = `Connected to server (${minutesLeft} min left)`;
-                    // Show warning color for last minute
-                    this.updateStatus(message, 'connecting'); // Use warning color
+                    status = 'connecting'; // Use warning color for last minute
                 } else if (minutesLeft <= 1) {
                     message = `Connected to server (${minutesLeft} min left)`;
-                    // Keep connected color but user can see it's getting low
-                    this.updateStatus(message, 'connected');
+                    status = 'connecting'; // Show warning color for last minute
                 } else {
                     message = `Connected to server (${minutesLeft} min left)`;
-                    this.updateStatus(message, 'connected');
+                    status = 'connected';
                 }
             }
-        }).catch(() => {
+        } catch (error) {
             // If we can't check transfers, just show normal timer
+            console.warn('Failed to check active transfers:', error);
             if (minutesLeft <= 0) {
                 message = `Connected to server (${minutesLeft} min left)`;
-                this.updateStatus(message, 'connecting');
+                status = 'connecting';
+            } else if (minutesLeft <= 1) {
+                message = `Connected to server (${minutesLeft} min left)`;
+                status = 'connecting';
             } else {
                 message = `Connected to server (${minutesLeft} min left)`;
-                this.updateStatus(message, 'connected');
+                status = 'connected';
             }
-        });
+        }
+        
+        // Only update status if we're still connected (prevents race conditions)
+        if (this.isWebSocketConnected) {
+            this.updateStatus(message, status);
+        }
     }
 }
 
