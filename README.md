@@ -17,15 +17,9 @@ A modern, mobile-friendly web interface for the DragonCP media transfer script. 
 - ⚙️ **Configuration Management** - Easy setup of paths and settings
 - 🔄 **WebSocket Support** - Real-time communication for transfer updates
 - 🐍 **Virtual Environment Support** - Automatic venv detection and creation
-
-## Features
-
-The interface features:
-- Connection setup with SSH authentication
-- Media type selection (Movies, TV Shows, Anime)
-- Folder and season browsing with breadcrumb navigation
-- Transfer management with real-time progress
-- Configuration panel for path settings
+- 🗄️ **Database Persistence** - Transfer history and progress tracking
+- 🔄 **Transfer Management** - Resume, cancel, and restart transfers
+- 💾 **Disk Usage Monitoring** - Real-time storage space tracking
 
 ## Installation
 
@@ -35,78 +29,36 @@ The interface features:
 - rsync (for file transfers)
 - SSH access to your media server
 
-### Quick Start (Recommended)
+### Quick Start (Linux)
 
-The startup scripts will automatically handle virtual environment setup:
+The startup script will automatically handle virtual environment setup:
 
 1. **Clone or download the project**:
    ```bash
    cd dragoncp_ui
    ```
 
-2. **Run the startup script**:
+2. **Give execute permission to the startup script**:
    ```bash
-   # On Linux/Mac:
-   ./start.sh
-   
-   # On Windows:
-   start.bat
-   
-   # Or use the Python script (works on all platforms):
-   python3 start.py
+   chmod u+x start.sh
    ```
 
-3. **Follow the prompts**:
+3. **Run the startup script**:
+   ```bash
+   ./start.sh
+   ```
+
+4. **Follow the prompts**:
    - The script will detect if a virtual environment exists
    - If not found, it will offer to create one
    - Dependencies will be automatically installed
    - Configuration will be set up
 
-4. **Access the web interface**:
+5. **Access the web interface**:
    - Open your browser and go to `http://localhost:5000`
    - The interface will be available on all network interfaces
 
-### Manual Setup (Alternative)
-
-If you prefer to set up the virtual environment manually:
-
-1. **Create virtual environment**:
-   ```bash
-   python3 -m venv venv
-   ```
-
-2. **Activate virtual environment**:
-   ```bash
-   # On Linux/Mac:
-   source venv/bin/activate
-   
-   # On Windows:
-   venv\Scripts\activate
-   ```
-
-3. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Run the application**:
-   ```bash
-   python app.py
-   ```
-
-### Using the Setup Script
-
-For a guided setup experience:
-
-```bash
-python3 setup_venv.py
-```
-
-This script will:
-- Check for existing virtual environments
-- Create a new one if needed
-- Install all dependencies
-- Verify the installation
+For detailed setup instructions, manual installation, troubleshooting, and development information, see [SETUP.md](SETUP.md).
 
 ## Configuration
 
@@ -115,22 +67,36 @@ This script will:
 Create a `dragoncp_env.env` file in the project root directory (same location as `app.py`) with the following variables:
 
 ```env
-# Server connection details
+# Flask Application Settings
+SECRET_KEY="your-secret-key-here-change-this-in-production"
+
+# Remote Server Connection Details
 REMOTE_IP="your-server-ip"
 REMOTE_USER="your-username"
+REMOTE_PASSWORD="your-password-here"
+SSH_KEY_PATH="/path/to/your/private/key"
 
-# Media paths on the server
+# Media Source Paths on Remote Server
 MOVIE_PATH="/path/to/movies"
 TVSHOW_PATH="/path/to/tvshows"
 ANIME_PATH="/path/to/anime"
 
-# Local destination paths
+# Local Destination Paths
 MOVIE_DEST_PATH="/local/path/to/movies"
 TVSHOW_DEST_PATH="/local/path/to/tvshows"
 ANIME_DEST_PATH="/local/path/to/anime"
 
-# Backup path for rsync
+# Backup Path for rsync
 BACKUP_PATH="/path/to/backup"
+
+# Disk Usage Monitoring (optional)
+DISK_PATH_1="/path/to/monitor"
+DISK_PATH_2="/another/path/to/monitor"
+DISK_PATH_3="/third/path/to/monitor"
+
+# Remote disk usage API (optional)
+DISK_API_ENDPOINT="https://api.example.com/disk-usage"
+DISK_API_TOKEN="your_bearer_token_here"
 ```
 
 **Note**: The environment file must be placed in the project root directory (same folder as `app.py`). The application will only look for `dragoncp_env.env` in this specific location.
@@ -187,46 +153,8 @@ You can connect using either:
 - Transfer logs with detailed rsync output
 - Ability to cancel running transfers
 - Progress bars and status indicators
-
-## Virtual Environment Management
-
-### Automatic Detection
-
-The startup scripts automatically detect virtual environments in these locations:
-- `venv/` (default)
-- `env/`
-- `.venv/`
-- `.env/`
-
-### Creating a Virtual Environment
-
-The startup scripts will offer to create a virtual environment if none is found. This is the recommended approach as it:
-
-- Isolates dependencies from your system Python
-- Prevents conflicts with other projects
-- Makes the project more portable
-- Follows Python best practices
-
-### Manual Virtual Environment Management
-
-If you need to manage the virtual environment manually:
-
-```bash
-# Create virtual environment
-python3 -m venv venv
-
-# Activate (Linux/Mac)
-source venv/bin/activate
-
-# Activate (Windows)
-venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Deactivate when done
-deactivate
-```
+- Persistent transfer history in database
+- Resume interrupted transfers
 
 ## Technical Details
 
@@ -235,76 +163,51 @@ deactivate
 - **Frontend**: Modern HTML5, CSS3, and JavaScript with Bootstrap 5
 - **SSH**: Paramiko library for secure server connections
 - **File Transfer**: rsync with optimized settings for media files
+- **Database**: SQLite with persistent transfer tracking and metadata
 - **Environment**: Python virtual environment support
+- **Transfer Management**: Enhanced transfer manager with database persistence
+- **WebSocket Timeout**: Configurable session management with activity tracking
 
 ### Security Features
 - SSH key and password authentication support
-- Secure WebSocket connections
+- Secure WebSocket connections with configurable timeouts
 - Input validation and sanitization
-- Session management
+- Session management with automatic timeout protection
 - Isolated Python environment
+- Database-based transfer tracking and audit logs
 
 ### Performance Optimizations
 - Optimized rsync settings for large media files
-- Asynchronous transfer monitoring
+- Asynchronous transfer monitoring with database persistence
 - Efficient folder browsing with caching
 - Mobile-optimized UI components
 - Virtual environment isolation
+- Transfer resume capability for interrupted operations
+- Real-time disk usage monitoring
 
-## Troubleshooting
-
-### Common Issues
-
-1. **Connection Failed**
-   - Verify server IP and credentials
-   - Check SSH service is running on server
-   - Ensure firewall allows SSH connections
-
-2. **Transfer Fails**
-   - Verify rsync is installed on both systems
-   - Check file permissions on source and destination
-   - Ensure sufficient disk space
-
-3. **WebSocket Connection Issues**
-   - Check if port 5000 is accessible
-   - Verify firewall settings
-   - Try accessing via localhost first
-
-4. **Virtual Environment Issues**
-   - Ensure Python 3.12+ is installed
-   - Try recreating the virtual environment: `python3 setup_venv.py`
-   - Check if venv module is available: `python3 -m venv --help`
-
-### Logs
-- Check browser console for JavaScript errors
-- Monitor Python console output for backend errors
-- Transfer logs are displayed in real-time in the web interface
-
-## Development
-
-### Project Structure
-```
-dragoncp_ui/
-├── app.py              # Main Flask application
-├── dragoncp_env.env    # Environment configuration (create from sample)
-├── dragoncp_env_sample.env # Sample environment file
-├── start.py            # Smart startup script with venv support
-├── setup_venv.py       # Virtual environment setup script
-├── start.sh            # Linux/Mac launcher
-├── start.bat           # Windows launcher
-├── templates/
-│   └── index.html      # Main HTML template
-├── static/
-│   ├── app.js          # Frontend JavaScript
-│   └── style.css       # CSS styles
-├── requirements.txt    # Python dependencies
-└── README.md          # This file
-```
+### Database Features
+- **Transfer Persistence**: All transfers are stored in SQLite database
+- **Metadata Tracking**: Parsed titles, seasons, and episode information
+- **Progress History**: Complete transfer logs and status tracking
+- **Resume Capability**: Interrupted transfers can be resumed
+- **Transfer Management**: Cancel, restart, and monitor active transfers
+- **Audit Trail**: Complete history of all transfer operations
 
 ## License
 
-This project is part of the DragonCP media management system.
+This project is part of the DragonCP media management system and is specifically designed to work with the DragonDB management system. This application is optimized for DragonDB's custom setup and directory structure, and may not work correctly with other custom media management configurations. The application is intended for use with DragonDB's specific media organization and transfer workflows.
 
 ## Support
 
-For issues and feature requests, please refer to the main DragonCP project documentation. 
+If you encounter any issues while using this script, please raise a GitHub issue with the following details:
+
+- **Operating System**: Linux distribution and version
+- **Python Version**: Output of `python3 --version`
+- **Error Messages**: Complete error logs and stack traces
+- **Configuration**: Your environment file settings (without sensitive data)
+- **Steps to Reproduce**: Detailed steps that led to the issue
+- **Expected vs Actual Behavior**: What you expected vs what happened
+- **Transfer Logs**: Any relevant transfer logs from the web interface
+- **Browser Information**: Browser type and version if UI-related
+
+For detailed setup instructions, manual installation, troubleshooting, and development information, see [SETUP.md](SETUP.md). 
