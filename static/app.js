@@ -13,6 +13,10 @@ class DragonCPUI {
             selectedSeason: null,
             breadcrumb: []
         };
+        
+        // Browse Media state
+        this.currentMediaType = null;
+        this.currentPath = [];
         this.transferLogs = [];
         this.autoScroll = true;
         this.currentTransferId = null;
@@ -265,8 +269,7 @@ class DragonCPUI {
     hideWebSocketDependentUI() {
         // Hide media interface when WebSocket is disconnected
         const elementsToHide = [
-            'mediaCard',
-            'folderCard', 
+            'browseMediaCard',
             'transferCard',
             'logCard'
         ];
@@ -289,7 +292,7 @@ class DragonCPUI {
     showWebSocketDependentUI() {
         // Show media interface when WebSocket is connected
         const elementsToShow = [
-            'mediaCard'
+            'browseMediaCard'
             // Other elements will be shown based on navigation state
         ];
         
@@ -453,6 +456,8 @@ class DragonCPUI {
                 textSpan.textContent = ' Expand All';
             }
         });
+
+
     }
 
     extendSession() {
@@ -1070,10 +1075,8 @@ class DragonCPUI {
             // Handle both direct array response and status-wrapped response
             if (Array.isArray(mediaTypes)) {
                 this.renderMediaTypes(mediaTypes);
-                document.getElementById('mediaCard').style.display = 'block';
             } else if (mediaTypes.status === 'success' && mediaTypes.data) {
                 this.renderMediaTypes(mediaTypes.data);
-                document.getElementById('mediaCard').style.display = 'block';
             } else {
                 this.showAlert('Failed to load media types', 'danger');
             }
@@ -1116,10 +1119,23 @@ class DragonCPUI {
     async selectMediaType(mediaType) {
         this.currentState.mediaType = mediaType;
         this.currentState.breadcrumb = [mediaType];
+        this.currentPath = [];
         
+        // Transition to folder browser view
+        this.showFolderBrowserView(mediaType);
+        
+        // Load folders for this media type
         await this.loadFolders(mediaType);
-        document.getElementById('folderCard').style.display = 'block';
-        this.updateBreadcrumb();
+    }
+
+    getMediaDisplayName(mediaType) {
+        const displayNames = {
+            'movies': 'Movies',
+            'tvshows': 'TV Shows', 
+            'anime': 'Anime',
+            'backup': 'Backup'
+        };
+        return displayNames[mediaType] || mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
     }
 
     async loadFolders(mediaType, folderPath = '') {
@@ -1188,7 +1204,7 @@ class DragonCPUI {
             this.showTransferOptions(mediaType, folderName);
         }
         
-        this.updateBreadcrumb();
+        this.updateBrowseMediaBreadcrumb();
     }
 
     async loadSeasons(mediaType, folderName) {
@@ -1245,7 +1261,7 @@ class DragonCPUI {
         this.currentState.breadcrumb.push(seasonName);
         
         this.showTransferOptions(mediaType, folderName, seasonName);
-        this.updateBreadcrumb();
+        this.updateBrowseMediaBreadcrumb();
     }
 
     showTransferOptions(mediaType, folderName, seasonName = null) {
@@ -2028,30 +2044,7 @@ class DragonCPUI {
         }
     }
 
-    updateBreadcrumb() {
-        const breadcrumb = document.getElementById('breadcrumb');
-        breadcrumb.innerHTML = '';
 
-        this.currentState.breadcrumb.forEach((item, index) => {
-            const li = document.createElement('li');
-            li.className = `breadcrumb-item ${index === this.currentState.breadcrumb.length - 1 ? 'active' : ''}`;
-            
-            if (index === this.currentState.breadcrumb.length - 1) {
-                li.textContent = this.formatBreadcrumbItem(item);
-            } else {
-                const a = document.createElement('a');
-                a.href = '#';
-                a.textContent = this.formatBreadcrumbItem(item);
-                a.onclick = (e) => {
-                    e.preventDefault();
-                    this.navigateBreadcrumb(index);
-                };
-                li.appendChild(a);
-            }
-            
-            breadcrumb.appendChild(li);
-        });
-    }
 
     formatBreadcrumbItem(item) {
         const labels = {
@@ -2062,33 +2055,64 @@ class DragonCPUI {
         return labels[item] || item;
     }
 
-    navigateBreadcrumb(index) {
-        this.currentState.breadcrumb = this.currentState.breadcrumb.slice(0, index + 1);
-        
-        if (index === 0) {
-            // Back to media type selection
-            this.currentState.selectedFolder = null;
-            this.currentState.selectedSeason = null;
-            this.loadMediaTypes();
-        } else if (index === 1) {
-            // Back to folder selection
-            this.currentState.selectedSeason = null;
-            this.loadFolders(this.currentState.mediaType);
-        }
-        
-        this.updateBreadcrumb();
+
+
+    navigateToMediaType() {
+        // Go back to showing all folders for this media type
+        this.currentState.breadcrumb = [this.currentMediaType];
+        this.currentState.selectedFolder = null;
+        this.currentState.selectedSeason = null;
+        this.loadFolders(this.currentMediaType);
+        this.updateBrowseMediaBreadcrumb();
     }
 
+    navigateToFolderLevel(breadcrumbIndex) {
+        // Truncate breadcrumb to the target level
+        this.currentState.breadcrumb = this.currentState.breadcrumb.slice(0, breadcrumbIndex + 1);
+        
+        if (breadcrumbIndex === 1) {
+            // This is a folder name (like "BreakingBad")
+            const folderName = this.currentState.breadcrumb[1];
+            this.currentState.selectedFolder = folderName;
+            this.currentState.selectedSeason = null;
+            
+            if (this.currentMediaType === 'tvshows' || this.currentMediaType === 'anime') {
+                // Load seasons for this folder
+                this.loadSeasons(this.currentMediaType, folderName);
+            } else {
+                // For movies/backup, show transfer options
+                this.showTransferOptions(this.currentMediaType, folderName);
+            }
+        } else if (breadcrumbIndex === 2) {
+            // This is typically a season name (like "Season1")
+            const folderName = this.currentState.breadcrumb[1];
+            const seasonName = this.currentState.breadcrumb[2];
+            this.currentState.selectedFolder = folderName;
+            this.currentState.selectedSeason = seasonName;
+            
+            // Show transfer options for this season
+            this.showTransferOptions(this.currentMediaType, folderName, seasonName);
+        } else {
+            // Handle deeper nesting if needed
+            const folderPath = this.currentState.breadcrumb.slice(1, breadcrumbIndex + 1).join('/');
+            this.loadFolders(this.currentMediaType, folderPath);
+        }
+        
+        this.updateBrowseMediaBreadcrumb();
+    }
+
+
+
     showFolderLoading(show) {
-        const spinner = document.querySelector('.loading-spinner');
+        const spinner = document.getElementById('folderLoadingSpinner');
         const folderList = document.getElementById('folderList');
         
         if (show) {
-            spinner.style.display = 'block';
-            folderList.style.display = 'none';
+            if (spinner) spinner.style.display = 'block';
+            if (folderList) folderList.style.display = 'none';
         } else {
-            spinner.style.display = 'none';
-            folderList.style.display = 'block';
+            if (spinner) spinner.style.display = 'none';
+            if (folderList) folderList.style.display = 'block';
         }
     }
 
@@ -2125,19 +2149,137 @@ class DragonCPUI {
     hideMediaInterface() {
         document.getElementById('diskUsageCard').style.display = 'none';
         document.getElementById('transferManagementCard').style.display = 'none';
-        document.getElementById('mediaCard').style.display = 'none';
-        document.getElementById('folderCard').style.display = 'none';
+        document.getElementById('browseMediaCard').style.display = 'none';
         document.getElementById('transferCard').style.display = 'none';
         document.getElementById('logCard').style.display = 'none';
+        this.resetBrowseMediaState();
     }
 
     showMediaInterface() {
         document.getElementById('diskUsageCard').style.display = 'block';
         document.getElementById('transferManagementCard').style.display = 'block';
-        document.getElementById('mediaCard').style.display = 'block';
-        document.getElementById('folderCard').style.display = 'none';
+        document.getElementById('browseMediaCard').style.display = 'block';
         document.getElementById('transferCard').style.display = 'none';
         document.getElementById('logCard').style.display = 'none';
+        this.showMediaTypeView();
+        
+        // Only load media types if we don't already have them
+        const mediaTypesContainer = document.getElementById('mediaTypes');
+        if (!mediaTypesContainer || mediaTypesContainer.children.length === 0) {
+            this.loadMediaTypes();
+        }
+    }
+
+    resetBrowseMediaState() {
+        // Reset to media type selection view
+        this.showMediaTypeView();
+        this.currentMediaType = null;
+        this.currentPath = [];
+    }
+
+    showMediaTypeView() {
+        const mediaTypeView = document.getElementById('mediaTypeView');
+        const folderBrowserView = document.getElementById('folderBrowserView');
+        const browseMediaBreadcrumb = document.getElementById('browseMediaBreadcrumb');
+        const browseMediaTitle = document.getElementById('browseMediaTitle');
+        const browseMediaIcon = document.getElementById('browseMediaIcon');
+        
+        if (mediaTypeView) mediaTypeView.style.display = 'block';
+        if (folderBrowserView) folderBrowserView.style.display = 'none';
+        if (browseMediaBreadcrumb) browseMediaBreadcrumb.style.display = 'none';
+        
+        if (browseMediaTitle) browseMediaTitle.textContent = 'Browse Media';
+        if (browseMediaIcon) {
+            browseMediaIcon.className = 'bi bi-collection-play';
+        }
+    }
+
+    showFolderBrowserView(mediaType) {
+        const mediaTypeView = document.getElementById('mediaTypeView');
+        const folderBrowserView = document.getElementById('folderBrowserView');
+        const browseMediaBreadcrumb = document.getElementById('browseMediaBreadcrumb');
+        const browseMediaTitle = document.getElementById('browseMediaTitle');
+        const browseMediaIcon = document.getElementById('browseMediaIcon');
+        
+        if (mediaTypeView) mediaTypeView.style.display = 'none';
+        if (folderBrowserView) folderBrowserView.style.display = 'block';
+        if (browseMediaBreadcrumb) browseMediaBreadcrumb.style.display = 'block';
+        
+        if (browseMediaTitle) browseMediaTitle.textContent = `Browse ${this.getMediaDisplayName(mediaType)}`;
+        if (browseMediaIcon) {
+            browseMediaIcon.className = 'bi bi-folder';
+        }
+        
+        this.currentMediaType = mediaType;
+        this.updateBrowseMediaBreadcrumb();
+    }
+
+    updateBrowseMediaBreadcrumb() {
+        const breadcrumb = document.getElementById('breadcrumb');
+        if (!breadcrumb) return;
+
+        breadcrumb.innerHTML = '';
+
+        // Always add "Type" as the first breadcrumb item to go back to media selection
+        const typeLi = document.createElement('li');
+        typeLi.className = 'breadcrumb-item';
+        const typeA = document.createElement('a');
+        typeA.href = '#';
+        typeA.textContent = 'Type';
+        typeA.onclick = (e) => {
+            e.preventDefault();
+            this.showMediaTypeView();
+            this.resetBrowseMediaState();
+        };
+        typeLi.appendChild(typeA);
+        breadcrumb.appendChild(typeLi);
+
+        // Add current media type
+        if (this.currentMediaType) {
+            const mediaLi = document.createElement('li');
+            const isMediaTypeActive = !this.currentState.breadcrumb || this.currentState.breadcrumb.length === 1;
+            mediaLi.className = `breadcrumb-item ${isMediaTypeActive ? 'active' : ''}`;
+            
+            if (isMediaTypeActive) {
+                mediaLi.textContent = this.getMediaDisplayName(this.currentMediaType);
+            } else {
+                const mediaA = document.createElement('a');
+                mediaA.href = '#';
+                mediaA.textContent = this.getMediaDisplayName(this.currentMediaType);
+                mediaA.onclick = (e) => {
+                    e.preventDefault();
+                    // Go back to showing all folders for this media type
+                    this.navigateToMediaType();
+                };
+                mediaLi.appendChild(mediaA);
+            }
+            breadcrumb.appendChild(mediaLi);
+
+            // Add folder path items from currentState.breadcrumb (excluding media type)
+            if (this.currentState.breadcrumb && this.currentState.breadcrumb.length > 1) {
+                this.currentState.breadcrumb.slice(1).forEach((item, index) => {
+                    const li = document.createElement('li');
+                    const breadcrumbIndex = index + 1; // This is the actual index in the breadcrumb array
+                    const isLast = breadcrumbIndex === this.currentState.breadcrumb.length - 1;
+                    li.className = `breadcrumb-item ${isLast ? 'active' : ''}`;
+                    
+                    if (isLast) {
+                        li.textContent = this.formatBreadcrumbItem(item);
+                    } else {
+                        const a = document.createElement('a');
+                        a.href = '#';
+                        a.textContent = this.formatBreadcrumbItem(item);
+                        a.onclick = (e) => {
+                            e.preventDefault();
+                            this.navigateToFolderLevel(breadcrumbIndex);
+                        };
+                        li.appendChild(a);
+                    }
+                    
+                    breadcrumb.appendChild(li);
+                });
+            }
+        }
     }
 
     async initializeConnection() {

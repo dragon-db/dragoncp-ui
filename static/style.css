@@ -167,10 +167,15 @@ body {
 }
 
 .list-group-item:hover {
-    background: #4a4a4a;
-    transform: translateX(5px);
+    background: rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     color: var(--text-light);
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+    border-color: rgba(255, 255, 255, 0.25);
+    box-shadow: 
+        0 6px 24px rgba(0, 0, 0, 0.25),
+        inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
 }
 
 .list-group-item.active {
@@ -179,23 +184,139 @@ body {
     color: white;
 }
 
+/* Browse Media Container Styling */
+.folder-browser-container {
+    max-height: 500px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 0.375rem;
+    background: rgba(255, 255, 255, 0.02);
+    backdrop-filter: blur(10px);
+}
+
+.folder-browser-container::-webkit-scrollbar {
+    width: 8px;
+}
+
+.folder-browser-container::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 4px;
+}
+
+.folder-browser-container::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+.folder-browser-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
 /* Folder List Specific Styling */
 #folderList {
-    padding: 20px;
+    padding: 0;
+    margin: 0; /* Remove all margins for clean spacing */
+}
+
+/* Ensure consistent spacing on mobile */
+@media (max-width: 768px) {
+    #folderList {
+        margin: 0;
+    }
 }
 
 #folderList .list-group-item {
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
+    border-left: none;
+    border-right: none;
+    border-radius: 0;
     backdrop-filter: blur(10px);
-    transition: all 0.3s ease;
+    transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+}
+
+#folderList .list-group-item:first-child {
+    border-top: none;
+}
+
+#folderList .list-group-item:last-child {
+    border-bottom: none;
 }
 
 #folderList .list-group-item:hover {
-    background: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.2);
-    transform: translateY(-2px);
-    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+    background: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.3);
+    backdrop-filter: blur(15px);
+    -webkit-backdrop-filter: blur(15px);
+    box-shadow: 
+        0 8px 32px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2);
+
+    transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+
+/* Browse Media Specific Styling */
+
+#browseMediaBreadcrumb {
+    transition: all 0.3s ease;
+}
+
+#browseMediaBreadcrumb .breadcrumb {
+    margin-bottom: 0;
+    padding: 0.5rem 0;
+}
+
+#browseMediaBreadcrumb .breadcrumb-item a {
+    color: rgba(255, 255, 255, 0.8);
+    text-decoration: none;
+    transition: color 0.3s ease;
+}
+
+#browseMediaBreadcrumb .breadcrumb-item a:hover {
+    color: white;
+    text-decoration: underline;
+}
+
+#browseMediaBreadcrumb .breadcrumb-item.active {
+    color: rgba(255, 255, 255, 0.6);
+}
+
+#browseMediaBreadcrumb .breadcrumb-item + .breadcrumb-item::before {
+    color: rgba(255, 255, 255, 0.5);
+    content: ">";
+    padding-left: 2px;
+    padding-right: 2px;
+}
+
+/* Override Bootstrap breadcrumb padding */
+.breadcrumb-item + .breadcrumb-item {
+    padding-left: 0 !important;
+}
+
+#browseMediaBreadcrumb .breadcrumb-item + .breadcrumb-item {
+    padding-left: 0 !important;
+}
+
+/* View Transitions */
+#mediaTypeView,
+#folderBrowserView {
+    transition: all 0.3s ease;
+}
+
+#mediaTypeView.fade-out,
+#folderBrowserView.fade-out {
+    opacity: 0;
+    transform: translateX(-20px);
+}
+
+#mediaTypeView.fade-in,
+#folderBrowserView.fade-in {
+    opacity: 1;
+    transform: translateX(0);
 }
 
 /* Progress */
@@ -905,6 +1026,8 @@ body {
 
 .breadcrumb-item + .breadcrumb-item::before {
     color: var(--text-muted);
+    padding-left: 2px;
+    padding-right: 2px;
 }
 
 /* Configuration Modal Specific Styles */
@@ -1031,14 +1154,21 @@ body {
     padding: 20px;
     text-align: center;
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
     color: var(--text-light);
+    position: relative;
+    overflow: hidden;
 }
 
 .media-type-card:hover {
-    transform: translateY(-5px);
-    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
-    border-color: var(--secondary-color);
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-color: rgba(255, 255, 255, 0.3);
+    box-shadow: 
+        0 8px 32px rgba(0, 0, 0, 0.25),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    transition: all 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
 }
 
 .media-type-card .icon {
@@ -1112,12 +1242,8 @@ body {
         justify-content: center;
     }
     
-    #folderList {
-        padding: 15px;
-    }
-    
     #folderList .list-group-item {
-        padding: 15px 20px;
+        padding: 12px 15px;
     }
 }
 
@@ -1846,7 +1972,165 @@ body {
     }
 }
 
+/* Browse Media Mobile Responsive */
+@media (max-width: 768px) {
+    #browseMediaCard .collapsible-header {
+        padding: 0.75rem;
+    }
+    
+    #browseMediaCard .collapsible-header .d-flex {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+    }
+    
+    #browseMediaCard .collapsible-header .d-flex > div:first-child {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        flex: 1;
+    }
+    
+    /* Ensure Browse Media card header matches other cards exactly */
+    #browseMediaCard .collapsible-header .d-flex {
+        width: 100%;
+    }
+    
+    #browseMediaBreadcrumb {
+        margin-top: 0.75rem;
+        padding: 0 0.75rem;
+    }
+    
+    #browseMediaBreadcrumb .breadcrumb {
+        font-size: 0.8rem;
+        flex-wrap: wrap;
+        margin-bottom: 0;
+        padding: 0.5rem 0.75rem;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 0.375rem;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    /* Improved mobile breadcrumb spacing */
+    #browseMediaBreadcrumb .breadcrumb-item + .breadcrumb-item::before {
+        padding-left: 2px;
+        padding-right: 2px;
+    }
+    
+    .folder-browser-container {
+        max-height: 400px;
+        margin: 0;
+    }
+    
+    #browseMediaTitle {
+        font-size: 0.9rem;
+        font-weight: 600;
+    }
+    
+    #browseMediaIcon {
+        font-size: 1rem;
+    }
+    
+    /* Ensure consistent card body padding */
+    #browseMediaCard .card-body {
+        padding: 0.75rem;
+    }
+    
+    /* Improve media type view spacing */
+    #mediaTypeView .row {
+        margin: 0 -0.375rem;
+    }
+    
+    #mediaTypeView .col-md-6 {
+        padding: 0.375rem;
+    }
+}
+
 @media (max-width: 480px) {
+    #browseMediaCard .collapsible-header {
+        padding: 0.625rem;
+    }
+    
+    #browseMediaBreadcrumb {
+        margin-top: 0.625rem;
+        padding: 0 0.625rem;
+    }
+    
+    #browseMediaBreadcrumb .breadcrumb {
+        font-size: 0.75rem;
+        padding: 0.4rem 0.6rem;
+    }
+    
+    /* Even tighter spacing on small screens */
+    #browseMediaBreadcrumb .breadcrumb-item + .breadcrumb-item::before {
+        padding-left: 2px;
+        padding-right: 2px;
+    }
+    
+    .folder-browser-container {
+        max-height: 350px;
+        margin: 0;
+    }
+    
+    #browseMediaTitle {
+        font-size: 0.8rem;
+        font-weight: 600;
+    }
+    
+    #browseMediaIcon {
+        font-size: 0.9rem;
+    }
+    
+    /* Improve folder list items on small screens */
+    #folderList .list-group-item {
+        padding: 10px 12px;
+        font-size: 0.9rem;
+    }
+    
+    /* Reduce glassmorphism effects on mobile for better performance */
+    #folderList .list-group-item:hover {
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        box-shadow: 
+            0 4px 16px rgba(0, 0, 0, 0.2),
+            inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    }
+    
+    .list-group-item:hover {
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        box-shadow: 
+            0 3px 12px rgba(0, 0, 0, 0.2),
+            inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    }
+    
+    /* Consistent card body padding on small screens */
+    #browseMediaCard .card-body {
+        padding: 0.625rem;
+    }
+    
+    /* Optimize media type view for small screens */
+    #mediaTypeView .row {
+        margin: 0 -0.25rem;
+    }
+    
+    #mediaTypeView .col-md-6 {
+        padding: 0.25rem;
+    }
+    
+    #mediaTypeView .media-type-card {
+        padding: 0.75rem;
+    }
+    
+    /* Optimized glassmorphism for media type cards on mobile */
+    .media-type-card:hover {
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        box-shadow: 
+            0 4px 20px rgba(0, 0, 0, 0.2),
+            inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    }
+    
     .status-actions {
         flex-direction: column;
         width: 100%;
