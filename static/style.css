@@ -261,46 +261,6 @@ body {
 
 /* Browse Media Specific Styling */
 
-#browseMediaBreadcrumb {
-    transition: all 0.3s ease;
-}
-
-#browseMediaBreadcrumb .breadcrumb {
-    margin-bottom: 0;
-    padding: 0.5rem 0;
-}
-
-#browseMediaBreadcrumb .breadcrumb-item a {
-    color: rgba(255, 255, 255, 0.8);
-    text-decoration: none;
-    transition: color 0.3s ease;
-}
-
-#browseMediaBreadcrumb .breadcrumb-item a:hover {
-    color: white;
-    text-decoration: underline;
-}
-
-#browseMediaBreadcrumb .breadcrumb-item.active {
-    color: rgba(255, 255, 255, 0.6);
-}
-
-#browseMediaBreadcrumb .breadcrumb-item + .breadcrumb-item::before {
-    color: rgba(255, 255, 255, 0.5);
-    content: ">";
-    padding-left: 2px;
-    padding-right: 2px;
-}
-
-/* Override Bootstrap breadcrumb padding */
-.breadcrumb-item + .breadcrumb-item {
-    padding-left: 0 !important;
-}
-
-#browseMediaBreadcrumb .breadcrumb-item + .breadcrumb-item {
-    padding-left: 0 !important;
-}
-
 /* View Transitions */
 #mediaTypeView,
 #folderBrowserView {
@@ -1972,6 +1932,258 @@ body {
     }
 }
 
+/* Browse Breadcrumb Styling */
+.browse-breadcrumb {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 0.5rem;
+    padding: 0.75rem 1rem;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+.browse-breadcrumb .breadcrumb {
+    margin-bottom: 0;
+    background: transparent;
+}
+
+.browse-breadcrumb .breadcrumb-item a {
+    color: var(--secondary-color);
+    text-decoration: none;
+    transition: color 0.3s ease;
+}
+
+.browse-breadcrumb .breadcrumb-item a:hover {
+    color: var(--text-light);
+    text-decoration: underline;
+}
+
+.browse-breadcrumb .breadcrumb-item.active {
+    color: var(--text-light);
+}
+
+.browse-breadcrumb .breadcrumb-item + .breadcrumb-item::before {
+    color: var(--text-muted);
+    content: ">";
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+}
+
+/* Override Bootstrap default breadcrumb padding for cleaner look */
+.browse-breadcrumb .breadcrumb-item + .breadcrumb-item {
+    padding-left: 0 !important;
+}
+
+/* Browse Controls Styling */
+.browse-controls {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 0.5rem;
+    padding: 1rem;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+.browse-controls .input-group-text {
+    background-color: var(--input-bg) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-light) !important;
+}
+
+.browse-controls .form-control {
+    background-color: var(--input-bg) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-light) !important;
+}
+
+.browse-controls .form-control:focus {
+    background-color: var(--input-bg) !important;
+    border-color: var(--secondary-color) !important;
+    color: var(--text-light) !important;
+    box-shadow: 0 0 0 0.2rem rgba(52, 152, 219, 0.25) !important;
+}
+
+.browse-controls .form-control::placeholder {
+    color: var(--text-muted) !important;
+}
+
+.browse-controls .form-select {
+    background-color: var(--input-bg) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-light) !important;
+}
+
+.browse-controls .form-select:focus {
+    background-color: var(--input-bg) !important;
+    border-color: var(--secondary-color) !important;
+    color: var(--text-light) !important;
+    box-shadow: 0 0 0 0.2rem rgba(52, 152, 219, 0.25) !important;
+}
+
+.browse-controls .btn-outline-light {
+    border-color: var(--border-color);
+    color: var(--text-light);
+    background: transparent;
+}
+
+.browse-controls .btn-outline-light:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    border-color: var(--text-light);
+    color: var(--text-light);
+}
+
+.browse-controls #folderCount {
+    font-size: 0.8rem;
+    color: var(--text-muted) !important;
+    font-weight: 500;
+}
+
+/* Search input transitions */
+.browse-controls .form-control {
+    transition: all 0.3s ease;
+}
+
+.browse-controls .form-control:focus {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(52, 152, 219, 0.15), 
+                0 0 0 0.2rem rgba(52, 152, 219, 0.25) !important;
+}
+
+/* Clear button animation */
+.browse-controls #clearSearchBtn {
+    transition: all 0.2s ease;
+    opacity: 0.8;
+}
+
+.browse-controls #clearSearchBtn:hover {
+    opacity: 1;
+    transform: scale(1.05);
+}
+
+/* Sort select styling */
+.browse-controls .form-select {
+    transition: all 0.3s ease;
+    cursor: pointer;
+}
+
+.browse-controls .form-select:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Loading state for controls */
+.browse-controls.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+.browse-controls.loading * {
+    cursor: wait !important;
+}
+
+/* Empty state styling */
+.browse-controls .form-control:placeholder-shown {
+    font-style: italic;
+}
+
+/* Responsive adjustments for browse controls */
+@media (max-width: 768px) {
+    .browse-breadcrumb {
+        padding: 0.5rem 0.75rem;
+    }
+    
+    .browse-breadcrumb .breadcrumb-item + .breadcrumb-item::before {
+        padding-left: 0.3rem;
+        padding-right: 0.3rem;
+    }
+    
+    .browse-controls {
+        padding: 0.75rem;
+    }
+    
+    .browse-controls .col-md-6,
+    .browse-controls .col-md-4,
+    .browse-controls .col-md-2 {
+        margin-bottom: 0.5rem;
+    }
+    
+    .browse-controls .col-md-2 {
+        margin-bottom: 0;
+        text-align: center;
+    }
+    
+    .browse-controls #folderCount {
+        font-size: 0.75rem;
+    }
+    
+    .browse-controls .input-group-sm .form-control,
+    .browse-controls .input-group-sm .input-group-text,
+    .browse-controls .form-select-sm {
+        font-size: 0.85rem;
+        padding: 0.4rem 0.6rem;
+    }
+}
+
+@media (max-width: 480px) {
+    .browse-breadcrumb {
+        padding: 0.5rem;
+    }
+    
+    .browse-breadcrumb .breadcrumb {
+        font-size: 0.85rem;
+        flex-wrap: wrap;
+    }
+    
+    .browse-controls {
+        padding: 0.75rem 0.5rem;
+    }
+    
+    .browse-controls .row {
+        flex-direction: column;
+    }
+    
+    .browse-controls .col-md-6,
+    .browse-controls .col-md-4,
+    .browse-controls .col-md-2 {
+        width: 100%;
+        max-width: 100%;
+        margin-bottom: 0.75rem;
+    }
+    
+    .browse-controls .col-md-2 {
+        margin-bottom: 0;
+        text-align: center !important;
+    }
+    
+    .browse-controls #folderCount {
+        font-size: 0.7rem;
+        padding: 0.25rem 0;
+    }
+    
+    .browse-controls .input-group-sm .form-control,
+    .browse-controls .input-group-sm .input-group-text,
+    .browse-controls .form-select-sm {
+        font-size: 0.8rem;
+        padding: 0.5rem 0.75rem;
+    }
+}
+
+/* Smooth animations for showing/hiding controls */
+.browse-controls,
+.browse-breadcrumb {
+    transition: all 0.3s ease;
+    overflow: hidden;
+}
+
+.browse-controls[style*="display: none"],
+.browse-breadcrumb[style*="display: none"] {
+    max-height: 0;
+    opacity: 0;
+    padding: 0;
+    margin: 0;
+    border: none;
+}
+
 /* Browse Media Mobile Responsive */
 @media (max-width: 768px) {
     #browseMediaCard .collapsible-header {
@@ -1996,26 +2208,7 @@ body {
         width: 100%;
     }
     
-    #browseMediaBreadcrumb {
-        margin-top: 0.75rem;
-        padding: 0 0.75rem;
-    }
-    
-    #browseMediaBreadcrumb .breadcrumb {
-        font-size: 0.8rem;
-        flex-wrap: wrap;
-        margin-bottom: 0;
-        padding: 0.5rem 0.75rem;
-        background: rgba(255, 255, 255, 0.05);
-        border-radius: 0.375rem;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-    }
-    
-    /* Improved mobile breadcrumb spacing */
-    #browseMediaBreadcrumb .breadcrumb-item + .breadcrumb-item::before {
-        padding-left: 2px;
-        padding-right: 2px;
-    }
+
     
     .folder-browser-container {
         max-height: 400px;
@@ -2051,21 +2244,7 @@ body {
         padding: 0.625rem;
     }
     
-    #browseMediaBreadcrumb {
-        margin-top: 0.625rem;
-        padding: 0 0.625rem;
-    }
-    
-    #browseMediaBreadcrumb .breadcrumb {
-        font-size: 0.75rem;
-        padding: 0.4rem 0.6rem;
-    }
-    
-    /* Even tighter spacing on small screens */
-    #browseMediaBreadcrumb .breadcrumb-item + .breadcrumb-item::before {
-        padding-left: 2px;
-        padding-right: 2px;
-    }
+
     
     .folder-browser-container {
         max-height: 350px;

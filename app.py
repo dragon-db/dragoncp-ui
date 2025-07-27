@@ -216,6 +216,31 @@ class SSHManager:
             return sorted(folders, key=lambda x: (len(x), x))
         return []
     
+    def list_folders_with_metadata(self, path: str) -> List[Dict]:
+        """List folders in remote directory with metadata including modification time"""
+        # Get folder names with modification times using stat
+        command = f'find "{path}" -mindepth 1 -maxdepth 1 -type d -exec sh -c \'for dir; do echo "$(basename "$dir")|$(stat -c %Y "$dir")"; done\' _ {{}} +'
+        exit_code, output, error = self.execute_command(command)
+        
+        folders = []
+        if exit_code == 0 and output:
+            for line in output.strip().split('\n'):
+                if line.strip() and '|' in line:
+                    folder_name, mod_time = line.strip().split('|', 1)
+                    try:
+                        folders.append({
+                            'name': folder_name,
+                            'modification_time': int(mod_time)
+                        })
+                    except ValueError:
+                        # Fallback for invalid modification time
+                        folders.append({
+                            'name': folder_name,
+                            'modification_time': 0
+                        })
+        
+        return folders
+    
     def list_files(self, path: str) -> List[str]:
         """List files in remote directory"""
         # Fix escape sequence warning by using raw string
@@ -334,11 +359,19 @@ def api_folders(media_type):
         print(f"❌ Invalid media type: {media_type}")
         return jsonify({"status": "error", "message": "Invalid media type"})
     
-    print(f"🔍 Listing folders in: {path}")
-    folders = ssh_manager.list_folders(path)
-    print(f"📁 Found folders: {folders}")
-    
-    return jsonify({"status": "success", "folders": folders})
+    print(f"🔍 Listing folders with metadata in: {path}")
+    try:
+        folders_metadata = ssh_manager.list_folders_with_metadata(path)
+        print(f"📁 Found folders: {[f['name'] for f in folders_metadata]}")
+        return jsonify({"status": "success", "folders": folders_metadata})
+    except Exception as e:
+        print(f"❌ Error getting folder metadata: {e}")
+        # Fallback to simple folder listing
+        folders = ssh_manager.list_folders(path)
+        # Convert to metadata format for consistency
+        folders_metadata = [{"name": folder, "modification_time": 0} for folder in folders]
+        print(f"📁 Fallback folders: {folders}")
+        return jsonify({"status": "success", "folders": folders_metadata})
 
 @app.route('/api/seasons/<media_type>/<folder_name>')
 def api_seasons(media_type, folder_name):
@@ -357,8 +390,16 @@ def api_seasons(media_type, folder_name):
         return jsonify({"status": "error", "message": "Invalid media type"})
     
     full_path = f"{base_path}/{folder_name}"
-    seasons = ssh_manager.list_folders(full_path)
-    return jsonify({"status": "success", "seasons": seasons})
+    try:
+        seasons_metadata = ssh_manager.list_folders_with_metadata(full_path)
+        return jsonify({"status": "success", "seasons": seasons_metadata})
+    except Exception as e:
+        print(f"❌ Error getting season metadata: {e}")
+        # Fallback to simple folder listing
+        seasons = ssh_manager.list_folders(full_path)
+        # Convert to metadata format for consistency
+        seasons_metadata = [{"name": season, "modification_time": 0} for season in seasons]
+        return jsonify({"status": "success", "seasons": seasons_metadata})
 
 @app.route('/api/episodes/<media_type>/<folder_name>/<season_name>')
 def api_episodes(media_type, folder_name, season_name):

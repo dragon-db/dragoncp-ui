@@ -21,6 +21,12 @@ class DragonCPUI {
         this.autoScroll = true;
         this.currentTransferId = null;
         
+        // Browse Media search and sort
+        this.allFolders = []; // Store all folder data for filtering/sorting
+        this.filteredFolders = []; // Store currently filtered/sorted folders
+        this.searchTerm = '';
+        this.sortOption = 'recent'; // 'recent' or 'alphabetical'
+        
         // Tabbed transfer logs
         this.transferTabs = new Map(); // transferId -> { logs: [], autoScroll: boolean, transfer: {} }
         this.activeTabId = null;
@@ -435,6 +441,25 @@ class DragonCPUI {
 
         // Add input change listeners for config fields
         this.addConfigFieldListeners();
+
+        // Browse Media search and sort controls
+        document.getElementById('folderSearchInput').addEventListener('input', (e) => {
+            this.searchTerm = e.target.value.toLowerCase().trim();
+            this.filterAndSortFolders();
+            this.updateClearSearchButton();
+        });
+
+        document.getElementById('clearSearchBtn').addEventListener('click', () => {
+            document.getElementById('folderSearchInput').value = '';
+            this.searchTerm = '';
+            this.filterAndSortFolders();
+            this.updateClearSearchButton();
+        });
+
+        document.getElementById('folderSortSelect').addEventListener('change', (e) => {
+            this.sortOption = e.target.value;
+            this.filterAndSortFolders();
+        });
 
         // Collapse All button
         document.getElementById('collapseAllBtn').addEventListener('click', () => {
@@ -1164,25 +1189,92 @@ class DragonCPUI {
     }
 
     renderFolders(folders, mediaType) {
+        // Store all folders data for filtering/sorting
+        this.allFolders = folders.map(folder => {
+            // Handle both old format (string) and new format (object)
+            if (typeof folder === 'string') {
+                return { name: folder, modification_time: 0 };
+            }
+            return folder;
+        });
+        
+        this.currentMediaType = mediaType;
+        this.filterAndSortFolders();
+    }
+
+    filterAndSortFolders() {
+        if (!this.allFolders || this.allFolders.length === 0) {
+            this.displayFolders([]);
+            return;
+        }
+
+        // Filter folders based on search term
+        let filtered = this.allFolders;
+        if (this.searchTerm) {
+            filtered = this.allFolders.filter(folder => 
+                folder.name.toLowerCase().includes(this.searchTerm)
+            );
+        }
+
+        // Sort folders based on selected option
+        filtered = [...filtered]; // Create copy to avoid mutating original
+        if (this.sortOption === 'alphabetical') {
+            filtered.sort((a, b) => a.name.localeCompare(b.name));
+        } else if (this.sortOption === 'recent') {
+            filtered.sort((a, b) => b.modification_time - a.modification_time);
+        }
+
+        this.filteredFolders = filtered;
+        this.displayFolders(filtered);
+        this.updateFolderCount(filtered.length, this.allFolders.length);
+        this.showBrowseControls();
+    }
+
+    displayFolders(folders) {
         const container = document.getElementById('folderList');
         container.innerHTML = '';
 
         if (folders.length === 0) {
-            container.innerHTML = '<div class="text-center text-muted">No folders found</div>';
+            const message = this.searchTerm ? 
+                `No folders found matching "${this.searchTerm}"` : 
+                'No folders found';
+            container.innerHTML = `<div class="text-center text-muted p-3">${message}</div>`;
             return;
         }
 
-        folders.forEach((folder, index) => {
+        folders.forEach((folder) => {
             const item = document.createElement('div');
             item.className = 'list-group-item d-flex justify-content-between align-items-center';
+            
+            // Create date string for recently modified folders
+            let dateInfo = '';
+            if (folder.modification_time > 0 && this.sortOption === 'recent') {
+                const date = new Date(folder.modification_time * 1000);
+                const now = new Date();
+                const diffTime = now - date;
+                const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                
+                if (diffDays === 0) {
+                    dateInfo = ' <small class="text-muted">(Today)</small>';
+                } else if (diffDays === 1) {
+                    dateInfo = ' <small class="text-muted">(Yesterday)</small>';
+                } else if (diffDays < 7) {
+                    dateInfo = ` <small class="text-muted">(${diffDays} days ago)</small>`;
+                } else if (diffDays < 30) {
+                    const weeks = Math.floor(diffDays / 7);
+                    dateInfo = ` <small class="text-muted">(${weeks} week${weeks > 1 ? 's' : ''} ago)</small>`;
+                } else {
+                    dateInfo = ` <small class="text-muted">(${date.toLocaleDateString()})</small>`;
+                }
+            }
             
             item.innerHTML = `
                 <div>
                     <i class="bi bi-folder me-2"></i>
-                    ${folder}
+                    ${this.escapeHtml(folder.name)}${dateInfo}
                 </div>
                 <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-primary" onclick="dragonCP.selectFolder('${this.escapeJavaScriptString(folder)}', '${mediaType}')">
+                    <button class="btn btn-outline-primary" onclick="dragonCP.selectFolder('${this.escapeJavaScriptString(folder.name)}', '${this.currentMediaType}')">
                         <i class="bi bi-arrow-right"></i>
                     </button>
                 </div>
@@ -1190,6 +1282,44 @@ class DragonCPUI {
             
             container.appendChild(item);
         });
+    }
+
+    updateFolderCount(filteredCount, totalCount) {
+        const countElement = document.getElementById('folderCount');
+        if (countElement) {
+            if (filteredCount === totalCount) {
+                countElement.textContent = `${totalCount} folder${totalCount !== 1 ? 's' : ''}`;
+            } else {
+                countElement.textContent = `${filteredCount} of ${totalCount} folder${totalCount !== 1 ? 's' : ''}`;
+            }
+        }
+    }
+
+    updateClearSearchButton() {
+        const clearBtn = document.getElementById('clearSearchBtn');
+        if (clearBtn) {
+            clearBtn.style.display = this.searchTerm ? 'block' : 'none';
+        }
+    }
+
+    showBrowseControls() {
+        const controlsElement = document.getElementById('browseControls');
+        if (controlsElement && this.allFolders.length > 0) {
+            controlsElement.style.display = 'block';
+        }
+    }
+
+    hideBrowseControls() {
+        const controlsElement = document.getElementById('browseControls');
+        if (controlsElement) {
+            controlsElement.style.display = 'none';
+        }
+        // Also clear search state
+        this.searchTerm = '';
+        this.sortOption = 'recent';
+        document.getElementById('folderSearchInput').value = '';
+        document.getElementById('folderSortSelect').value = 'recent';
+        this.updateClearSearchButton();
     }
 
     async selectFolder(folderName, mediaType) {
@@ -1228,31 +1358,47 @@ class DragonCPUI {
     }
 
     renderSeasons(seasons, mediaType, folderName) {
+        // Handle new metadata format for seasons too
+        const seasonData = seasons.map(season => {
+            // Handle both old format (string) and new format (object)
+            if (typeof season === 'string') {
+                return { name: season, modification_time: 0 };
+            }
+            return season;
+        });
+
+        // For seasons, temporarily store data and apply folder filtering/sorting
+        const originalFolders = this.allFolders;
+        const originalMediaType = this.currentMediaType;
+        
+        this.allFolders = seasonData;
+        this.currentMediaType = mediaType;
+        this.filterAndSortFolders();
+        
+        // Override the folder select click to use season select instead
+        this.overrideForSeasons(mediaType, folderName);
+        
+        // Restore original state after rendering
+        setTimeout(() => {
+            this.allFolders = originalFolders;
+            this.currentMediaType = originalMediaType;
+        }, 100);
+    }
+
+    overrideForSeasons(mediaType, folderName) {
+        // Update the displayed folders to use season selection instead of folder selection
         const container = document.getElementById('folderList');
-        container.innerHTML = '';
-
-        if (seasons.length === 0) {
-            container.innerHTML = '<div class="text-center text-muted">No seasons found</div>';
-            return;
-        }
-
-        seasons.forEach((season, index) => {
-            const item = document.createElement('div');
-            item.className = 'list-group-item d-flex justify-content-between align-items-center';
-            
-            item.innerHTML = `
-                <div>
-                    <i class="bi bi-collection me-2"></i>
-                    ${season}
-                </div>
-                <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-primary" onclick="dragonCP.selectSeason('${this.escapeJavaScriptString(season)}', '${mediaType}', '${this.escapeJavaScriptString(folderName)}')">
-                        <i class="bi bi-arrow-right"></i>
-                    </button>
-                </div>
-            `;
-            
-            container.appendChild(item);
+        const buttons = container.querySelectorAll('button[onclick*="selectFolder"]');
+        
+        buttons.forEach(button => {
+            const seasonName = button.getAttribute('onclick').match(/selectFolder\('(.+?)'/)[1];
+            button.setAttribute('onclick', `dragonCP.selectSeason('${this.escapeJavaScriptString(seasonName)}', '${mediaType}', '${this.escapeJavaScriptString(folderName)}')`);
+        });
+        
+        // Update icons to show seasons instead of folders
+        const icons = container.querySelectorAll('i.bi-folder');
+        icons.forEach(icon => {
+            icon.className = 'bi bi-collection me-2';
         });
     }
 
@@ -2192,6 +2338,9 @@ class DragonCPUI {
         if (browseMediaIcon) {
             browseMediaIcon.className = 'bi bi-collection-play';
         }
+        
+        // Hide browse controls when showing media type selection
+        this.hideBrowseControls();
     }
 
     showFolderBrowserView(mediaType) {
