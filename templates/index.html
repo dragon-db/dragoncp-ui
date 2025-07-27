@@ -21,7 +21,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.2.1
+                   v1.3.0
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -38,6 +38,9 @@
                 <span class="status-message" id="statusMessage">Initializing application...</span>
             </div>
             <div class="status-actions">
+                <button class="btn btn-outline-light btn-sm me-2" id="collapseAllBtn" title="Collapse all cards">
+                    <i class="bi bi-chevron-up"></i><span> Collapse All</span>
+                </button>
                 <button class="btn btn-primary btn-sm" id="autoConnectBtn" style="display: none;">
                     <i class="bi bi-wifi"></i> Auto Connect
                 </button>
@@ -49,17 +52,21 @@
 
         <!-- Disk Usage -->
         <div class="card mb-4 fade-in" id="diskUsageCard" style="display: none;">
-            <div class="card-header gradient-accent">
+            <div class="card-header gradient-accent collapsible-header" data-card-id="diskUsageCard">
                 <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <i class="bi bi-hdd"></i> Disk Usage Monitor
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-hdd"></i>
+                        <span class="fw-semibold">Disk Usage Monitor</span>
+                        <i class="bi bi-chevron-down collapse-icon"></i>
                     </div>
-                    <button class="btn btn-outline-light btn-sm" id="refreshDiskUsageBtn" title="Refresh disk usage">
-                        <i class="bi bi-arrow-clockwise"></i>
-                    </button>
+                    <div class="d-flex align-items-center btn-group">
+                        <button class="btn btn-outline-light btn-sm" id="refreshDiskUsageBtn" title="Refresh disk usage">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
                 </div>
             </div>
-            <div class="card-body">
+            <div class="card-body collapsible-content">
                 <div class="row" id="diskUsageInfo">
                     <!-- Disk usage info will be loaded here -->
                 </div>
@@ -73,17 +80,19 @@
 
         <!-- Active Transfers Management -->
         <div class="card mb-4 fade-in" id="transferManagementCard" style="display: none;">
-            <div class="card-header gradient-accent">
+            <div class="card-header gradient-accent collapsible-header" data-card-id="transferManagementCard">
                 <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <i class="bi bi-arrow-repeat"></i> Active Transfers
-                        <span class="badge bg-light text-dark ms-2" id="activeTransferCount">0 active</span>
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-arrow-repeat"></i>
+                        <span class="fw-semibold">Active Transfers</span>
+                        <span class="badge bg-light text-dark" id="activeTransferCount">0 active</span>
+                        <i class="bi bi-chevron-down collapse-icon"></i>
                     </div>
-                    <div>
-                        <button class="btn btn-outline-light btn-sm me-2" id="refreshTransfersBtn" title="Refresh transfer list">
+                    <div class="d-flex align-items-center btn-group">
+                        <button class="btn btn-outline-light btn-sm" id="refreshTransfersBtn" title="Refresh transfer list">
                             <i class="bi bi-arrow-clockwise"></i>
                         </button>
-                        <button class="btn btn-outline-light btn-sm me-2" id="showAllTransfersBtn" title="Show all transfers">
+                        <button class="btn btn-outline-light btn-sm" id="showAllTransfersBtn" title="Show all transfers">
                             <i class="bi bi-list"></i> All
                         </button>
                         <button class="btn btn-outline-light btn-sm" id="cleanupTransfersBtn" title="Clean up old transfers">
@@ -92,7 +101,7 @@
                     </div>
                 </div>
             </div>
-            <div class="card-body">
+            <div class="card-body collapsible-content">
                 <div class="row" id="transferList">
                     <!-- Transfer items will be loaded here -->
                 </div>
@@ -106,10 +115,16 @@
 
         <!-- Media Selection -->
         <div class="card mb-4 fade-in" id="mediaCard" style="display: none;">
-            <div class="card-header gradient-accent">
-                <i class="bi bi-collection-play"></i> Select Media Type
+            <div class="card-header gradient-accent collapsible-header" data-card-id="mediaCard">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-collection-play"></i>
+                        <span class="fw-semibold">Select Media Type</span>
+                        <i class="bi bi-chevron-down collapse-icon"></i>
+                    </div>
+                </div>
             </div>
-            <div class="card-body">
+            <div class="card-body collapsible-content">
                 <div class="row" id="mediaTypes">
                     <!-- Media types will be loaded here -->
                 </div>
@@ -118,15 +133,21 @@
 
         <!-- Folder Selection -->
         <div class="card mb-4 fade-in" id="folderCard" style="display: none;">
-            <div class="card-header gradient-accent">
-                <i class="bi bi-folder"></i> Select Folder
-                <div class="breadcrumb mt-2">
+            <div class="card-header gradient-accent collapsible-header" data-card-id="folderCard">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-folder"></i>
+                        <span class="fw-semibold">Select Folder</span>
+                        <i class="bi bi-chevron-down collapse-icon"></i>
+                    </div>
+                </div>
+                <div class="breadcrumb mt-2 mb-0">
                     <ol class="breadcrumb" id="breadcrumb">
                         <!-- Breadcrumb will be populated -->
                     </ol>
                 </div>
             </div>
-            <div class="card-body">
+            <div class="card-body collapsible-content">
                 <div class="loading-spinner text-center mb-3">
                     <div class="spinner-border text-primary" role="status">
                         <span class="visually-hidden">Loading...</span>
@@ -140,10 +161,16 @@
 
         <!-- Transfer Management -->
         <div class="card mb-4 fade-in" id="transferCard" style="display: none;">
-            <div class="card-header gradient-accent">
-                <i class="bi bi-gear"></i> Current Transfer (Legacy)
+            <div class="card-header gradient-accent collapsible-header" data-card-id="transferCard">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-gear"></i>
+                        <span class="fw-semibold">Current Transfer (Legacy)</span>
+                        <i class="bi bi-chevron-down collapse-icon"></i>
+                    </div>
+                </div>
             </div>
-            <div class="card-body">
+            <div class="card-body collapsible-content">
                 <div id="activeTransfers">
                     <!-- Active transfers will be shown here -->
                 </div>
@@ -152,17 +179,19 @@
 
         <!-- Transfer Log -->
         <div class="card fade-in" id="logCard" style="display: none;">
-            <div class="card-header gradient-accent">
+            <div class="card-header gradient-accent collapsible-header" data-card-id="logCard">
                 <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <i class="bi bi-terminal"></i> Transfer Logs
-                        <span class="badge bg-secondary ms-2" id="logCount">0 active</span>
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-terminal"></i>
+                        <span class="fw-semibold">Transfer Logs</span>
+                        <span class="badge bg-secondary" id="logCount">0 active</span>
+                        <i class="bi bi-chevron-down collapse-icon"></i>
                     </div>
-                    <div class="log-controls">
-                        <button class="btn btn-sm btn-outline-light me-2" id="clearLogBtn" title="Clear current tab logs">
+                    <div class="log-controls d-flex align-items-center btn-group">
+                        <button class="btn btn-sm btn-outline-light" id="clearLogBtn" title="Clear current tab logs">
                             <i class="bi bi-trash"></i>
                         </button>
-                        <button class="btn btn-sm btn-outline-light me-2" id="autoScrollBtn" title="Auto-scroll to newest">
+                        <button class="btn btn-sm btn-outline-light" id="autoScrollBtn" title="Auto-scroll to newest">
                             <i class="bi bi-arrow-up-circle-fill"></i>
                         </button>
                         <button class="btn btn-sm btn-outline-light" id="fullscreenLogBtn" title="Fullscreen current tab">
@@ -177,7 +206,7 @@
                     </nav>
                 </div>
             </div>
-            <div class="card-body p-0">
+            <div class="card-body p-0 collapsible-content">
                 <!-- Single log display (when no tabs) -->
                 <div class="transfer-log-container" id="singleLogContainer">
                     <div class="transfer-log" id="transferLog">

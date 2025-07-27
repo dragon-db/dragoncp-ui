@@ -1516,3 +1516,469 @@ body {
         grid-template-columns: 1fr;
     }
 } 
+
+/* Collapsible Card Styles */
+.collapsible-header {
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.3s ease;
+    position: relative;
+    border-radius: 0.375rem 0.375rem 0 0;
+    padding: 1rem;
+}
+
+.collapsible-header:hover {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.collapsible-header:active {
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.collapsible-header .collapse-icon {
+    transition: transform 0.3s ease, opacity 0.3s ease;
+    font-size: 0.9rem;
+    opacity: 0.8;
+    transform-origin: center;
+    margin-left: 0.5rem;
+}
+
+.collapsible-header:hover .collapse-icon {
+    opacity: 1;
+    transform: scale(1.1);
+}
+
+.collapsible-header.collapsed .collapse-icon {
+    transform: rotate(-180deg);
+}
+
+.collapsible-content {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
+    max-height: 2000px;
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.collapsible-content.collapsed {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-10px);
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+/* Card header content layout */
+.collapsible-header .d-flex {
+    align-items: center;
+}
+
+.collapsible-header .d-flex > div:first-child {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1;
+}
+
+.collapsible-header .d-flex > div:last-child {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.collapsible-header .fw-semibold {
+    margin: 0 0.5rem;
+}
+
+/* Badge styling in headers */
+.collapsible-header .badge {
+    font-size: 0.75rem;
+    padding: 0.3rem 0.6rem;
+    border-radius: 12px;
+    font-weight: 500;
+}
+
+/* Prevent button clicks from triggering collapse */
+.collapsible-header .btn,
+.collapsible-header .log-controls,
+.collapsible-header .log-controls * {
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.collapsible-header .btn:hover,
+.collapsible-header .log-controls .btn:hover {
+    transform: scale(1.05);
+}
+
+/* Special handling for log card tabs */
+.collapsible-header .log-tabs {
+    pointer-events: auto;
+    margin-top: 0.5rem;
+}
+
+.collapsible-header .log-tabs * {
+    pointer-events: auto;
+}
+
+/* Breadcrumb in folder card header */
+.collapsible-header .breadcrumb {
+    pointer-events: auto;
+    margin-top: 0.5rem;
+}
+
+.collapsible-header .breadcrumb * {
+    pointer-events: auto;
+}
+
+/* Prevent text selection on header */
+.collapsible-header * {
+    pointer-events: none;
+}
+
+.collapsible-header .btn,
+.collapsible-header .log-controls,
+.collapsible-header .log-controls *,
+.collapsible-header .log-tabs,
+.collapsible-header .log-tabs *,
+.collapsible-header .breadcrumb,
+.collapsible-header .breadcrumb * {
+    pointer-events: auto;
+}
+
+/* Card shadow changes for collapsed state */
+.card.collapsed {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.card.collapsed .collapsible-header {
+    border-bottom: none;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* Focus styles for accessibility */
+.collapsible-header:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: -2px;
+    box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.2);
+}
+
+/* Mobile-friendly collapsible styles */
+@media (max-width: 768px) {
+    .collapsible-header {
+        padding: 0.75rem;
+        min-height: 48px;
+    }
+    
+    .collapsible-header .d-flex {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+    }
+    
+    .collapsible-header .d-flex > div:first-child {
+        width: 100%;
+        justify-content: space-between;
+    }
+    
+    .collapsible-header .d-flex > div:last-child {
+        width: 100%;
+        justify-content: flex-end;
+        gap: 0.25rem;
+    }
+    
+    .collapsible-header .collapse-icon {
+        font-size: 1rem;
+        margin-left: 0;
+    }
+    
+    .collapsible-header:hover {
+        transform: none;
+        box-shadow: none;
+    }
+    
+    .collapsible-header:active {
+        transform: none;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+    
+    /* Make touch targets larger on mobile */
+    .collapsible-header .btn {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.8rem;
+        min-height: 36px;
+    }
+    
+    .collapsible-content {
+        transition: all 0.25s ease;
+    }
+    
+    /* Improve badge display on mobile */
+    .collapsible-header .badge {
+        font-size: 0.7rem;
+        padding: 0.2rem 0.4rem;
+    }
+}
+
+@media (max-width: 480px) {
+    .collapsible-header {
+        padding: 0.5rem;
+    }
+    
+    .collapsible-header .d-flex {
+        gap: 0.25rem;
+    }
+    
+    .collapsible-header .collapse-icon {
+        font-size: 1.1rem;
+    }
+    
+    .collapsible-header .btn {
+        padding: 0.4rem 0.6rem;
+        font-size: 0.75rem;
+        min-height: 32px;
+    }
+    
+    .collapsible-header .btn i {
+        font-size: 0.9rem;
+    }
+    
+    /* Stack buttons vertically on very small screens */
+    .collapsible-header .d-flex > div:last-child {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.25rem;
+    }
+    
+    .collapsible-header .d-flex > div:last-child .btn {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
+/* Animation for smooth collapse/expand */
+@keyframes slideDown {
+    from {
+        max-height: 0;
+        opacity: 0;
+    }
+    to {
+        max-height: 2000px;
+        opacity: 1;
+    }
+}
+
+@keyframes slideUp {
+    from {
+        max-height: 2000px;
+        opacity: 1;
+    }
+    to {
+        max-height: 0;
+        opacity: 0;
+    }
+}
+
+.collapsible-content.expanding {
+    animation: slideDown 0.3s ease forwards;
+}
+
+.collapsible-content.collapsing {
+    animation: slideUp 0.3s ease forwards;
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+    .collapsible-header {
+        border: 2px solid #fff;
+    }
+    
+    .collapsible-header:hover {
+        border-color: #fff;
+        background: #fff;
+        color: #000;
+    }
+    
+    .collapsible-header .collapse-icon {
+        opacity: 1;
+    }
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+    .collapsible-header,
+    .collapsible-content,
+    .collapse-icon {
+        transition: none;
+    }
+    
+    .collapsible-content.collapsed {
+        display: none;
+    }
+} 
+
+/* Status bar improvements for mobile */
+@media (max-width: 768px) {
+    .status-bar {
+        flex-direction: column;
+        gap: 0.5rem;
+        padding: 0.75rem;
+    }
+    
+    .status-actions {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+    
+    .status-actions .btn {
+        font-size: 0.8rem;
+        padding: 0.4rem 0.6rem;
+    }
+    
+    #collapseAllBtn {
+        order: -1; /* Put collapse all button first on mobile */
+    }
+}
+
+@media (max-width: 480px) {
+    .status-actions {
+        flex-direction: column;
+        width: 100%;
+    }
+    
+    .status-actions .btn {
+        width: 100%;
+        margin: 0.1rem 0;
+    }
+}
+
+/* Collapse All button styles - match Connect/Disconnect buttons */
+.status-actions .btn {
+    border-radius: 25px !important;
+}
+
+#collapseAllBtn.collapsed i {
+    transform: rotate(180deg);
+} 
+
+/* Additional mobile improvements */
+@media (max-width: 768px) {
+    /* Improve card header text readability */
+    .collapsible-header .fw-semibold {
+        font-size: 0.95rem;
+        line-height: 1.2;
+    }
+    
+    /* Better spacing for badges */
+    .collapsible-header .badge {
+        font-size: 0.7rem;
+        padding: 0.3rem 0.6rem;
+        margin-left: 0.5rem;
+    }
+    
+    /* Improve button spacing */
+    .collapsible-header .d-flex > div:last-child {
+        flex-direction: row;
+        flex-wrap: nowrap;
+        justify-content: flex-end;
+    }
+    
+    .collapsible-header .btn {
+        margin-left: 0.25rem;
+    }
+    
+    /* Better icon spacing */
+    .collapsible-header .bi {
+        font-size: 0.9rem;
+    }
+    
+    .collapsible-header .collapse-icon {
+        margin-left: auto;
+    }
+    
+    /* Improve breadcrumb on mobile */
+    .collapsible-header .breadcrumb {
+        font-size: 0.8rem;
+        margin-top: 0.75rem;
+    }
+    
+    .collapsible-header .breadcrumb-item {
+        padding: 0.25rem 0;
+    }
+}
+
+@media (max-width: 480px) {
+    /* Even smaller text for very small screens */
+    .collapsible-header .fw-semibold {
+        font-size: 0.9rem;
+    }
+    
+    .collapsible-header .badge {
+        font-size: 0.65rem;
+        padding: 0.25rem 0.5rem;
+    }
+    
+    .collapsible-header .bi {
+        font-size: 0.85rem;
+    }
+    
+    /* Improve button layout on very small screens */
+    .collapsible-header .d-flex > div:last-child {
+        margin-top: 0.5rem;
+    }
+    
+    .collapsible-header .d-flex > div:last-child .btn {
+        flex-grow: 1;
+        margin: 0.1rem;
+    }
+}
+
+/* Improve overall card consistency */
+.card-header {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.collapsible-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    font-weight: 500;
+}
+
+/* Better hover states */
+.collapsible-header:hover {
+    background: linear-gradient(135deg, #5a6fd8 0%, #6a4190 100%);
+}
+
+/* Improve collapse icon positioning */
+.collapsible-header .collapse-icon {
+    margin-left: 0.5rem;
+    opacity: 0.9;
+}
+
+.collapsible-header:hover .collapse-icon {
+    opacity: 1;
+}
+
+/* Better badge styling */
+.collapsible-header .badge {
+    font-weight: 600;
+    letter-spacing: 0.025em;
+    padding: 0.3rem 0.6rem;
+}
+
+/* Improve button consistency */
+.collapsible-header .btn-outline-light {
+    border-width: 1px;
+    font-weight: 500;
+}
+
+.collapsible-header .btn-outline-light:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.5);
+} 

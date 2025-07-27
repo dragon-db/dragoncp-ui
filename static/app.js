@@ -38,6 +38,10 @@ class DragonCPUI {
         this.initializeDiskUsageMonitoring();
         this.initializeTransferManagement();
         
+        // Initialize collapsible cards functionality
+        this.collapsedCards = new Set(); // Track collapsed cards
+        this.initializeCollapsibleCards();
+        
         // Handle window resize for tab scroll indicators
         window.addEventListener('resize', () => {
             this.updateTabScrollIndicators();
@@ -428,6 +432,27 @@ class DragonCPUI {
 
         // Add input change listeners for config fields
         this.addConfigFieldListeners();
+
+        // Collapse All button
+        document.getElementById('collapseAllBtn').addEventListener('click', () => {
+            const button = document.getElementById('collapseAllBtn');
+            const icon = button.querySelector('i');
+            const textSpan = button.querySelector('span');
+            
+            if (button.classList.contains('collapsed')) {
+                // Currently collapsed, expand all
+                this.expandAllCards();
+                button.classList.remove('collapsed');
+                icon.className = 'bi bi-chevron-up';
+                textSpan.textContent = ' Collapse All';
+            } else {
+                // Currently expanded, collapse all
+                this.collapseAllExcept();
+                button.classList.add('collapsed');
+                icon.className = 'bi bi-chevron-down';
+                textSpan.textContent = ' Expand All';
+            }
+        });
     }
 
     extendSession() {
@@ -2975,50 +3000,246 @@ class DragonCPUI {
     }
 
     async updateStatusWithTimer() {
-        if (!this.isWebSocketConnected) return;
-        
-        const minutesLeft = this.getTimeRemaining();
-        let message;
-        let status = 'connected';
-        
-        try {
-            // Check if transfers are protecting the session
-            const hasTransfers = await this.hasActiveTransfers();
-            
-            if (hasTransfers) {
-                message = `Connected to server (session protected - active transfers running)`;
-                status = 'connected';
+        if (this.activityTimer) {
+            const timeRemaining = this.getTimeRemaining();
+            if (timeRemaining > 0) {
+                this.updateStatus(`Session active - ${timeRemaining} minutes remaining`, 'connected');
             } else {
-                if (minutesLeft <= 0) {
-                    message = `Connected to server (${minutesLeft} min left)`;
-                    status = 'connecting'; // Use warning color for last minute
-                } else if (minutesLeft <= 1) {
-                    message = `Connected to server (${minutesLeft} min left)`;
-                    status = 'connecting'; // Show warning color for last minute
-                } else {
-                    message = `Connected to server (${minutesLeft} min left)`;
-                    status = 'connected';
+                this.updateStatus('Session expired - reconnecting...', 'auto-disconnected');
+            }
+        }
+    }
+
+    // ===== COLLAPSIBLE CARDS FUNCTIONALITY =====
+    
+    initializeCollapsibleCards() {
+        // Load saved collapsed state from localStorage
+        this.loadCollapsedState();
+        
+        // Add event listeners to all collapsible headers
+        document.addEventListener('click', (e) => {
+            const header = e.target.closest('.collapsible-header');
+            if (header && !e.target.closest('.btn, .log-controls, .breadcrumb')) {
+                e.preventDefault();
+                e.stopPropagation();
+                this.toggleCardCollapse(header);
+            }
+        });
+        
+        // Add keyboard support for accessibility
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                const header = document.activeElement.closest('.collapsible-header');
+                if (header && !e.target.closest('.btn, .log-controls, .breadcrumb')) {
+                    e.preventDefault();
+                    this.toggleCardCollapse(header);
                 }
             }
-        } catch (error) {
-            // If we can't check transfers, just show normal timer
-            console.warn('Failed to check active transfers:', error);
-            if (minutesLeft <= 0) {
-                message = `Connected to server (${minutesLeft} min left)`;
-                status = 'connecting';
-            } else if (minutesLeft <= 1) {
-                message = `Connected to server (${minutesLeft} min left)`;
-                status = 'connecting';
-            } else {
-                message = `Connected to server (${minutesLeft} min left)`;
-                status = 'connected';
+        });
+        
+        // Apply saved collapsed state to visible cards
+        this.applyCollapsedState();
+    }
+    
+    loadCollapsedState() {
+        try {
+            const saved = localStorage.getItem('dragoncp_collapsed_cards');
+            if (saved) {
+                const collapsedIds = JSON.parse(saved);
+                this.collapsedCards = new Set(collapsedIds);
             }
+        } catch (error) {
+            console.warn('Failed to load collapsed card state:', error);
+            this.collapsedCards = new Set();
+        }
+    }
+    
+    saveCollapsedState() {
+        try {
+            const collapsedIds = Array.from(this.collapsedCards);
+            localStorage.setItem('dragoncp_collapsed_cards', JSON.stringify(collapsedIds));
+        } catch (error) {
+            console.warn('Failed to save collapsed card state:', error);
+        }
+    }
+    
+    applyCollapsedState() {
+        // Apply collapsed state to all visible cards
+        document.querySelectorAll('.collapsible-header').forEach(header => {
+            const cardId = header.dataset.cardId;
+            if (cardId && this.collapsedCards.has(cardId)) {
+                this.collapseCard(header, false); // false = don't save state again
+            }
+        });
+        this.updateCollapseAllButtonState();
+    }
+    
+    toggleCardCollapse(header) {
+        const cardId = header.dataset.cardId;
+        const content = header.nextElementSibling;
+        const card = header.closest('.card');
+        
+        if (content.classList.contains('collapsed')) {
+            // Expand the card
+            this.expandCard(header);
+            this.collapsedCards.delete(cardId);
+        } else {
+            // Collapse the card
+            this.collapseCard(header);
+            this.collapsedCards.add(cardId);
         }
         
-        // Only update status if we're still connected (prevents race conditions)
-        if (this.isWebSocketConnected) {
-            this.updateStatus(message, status);
+        // Save state to localStorage
+        this.saveCollapsedState();
+        
+        // Update collapse all button state
+        this.updateCollapseAllButtonState();
+    }
+    
+    collapseCard(header, saveState = true) {
+        const content = header.nextElementSibling;
+        const card = header.closest('.card');
+        
+        // Add collapsed classes
+        header.classList.add('collapsed');
+        content.classList.add('collapsed');
+        card.classList.add('collapsed');
+        
+        // Add animation class
+        content.classList.add('collapsing');
+        
+        // Remove animation class after animation completes
+        setTimeout(() => {
+            content.classList.remove('collapsing');
+        }, 300);
+        
+        if (saveState) {
+            this.saveCollapsedState();
         }
+    }
+    
+    expandCard(header, saveState = true) {
+        const content = header.nextElementSibling;
+        const card = header.closest('.card');
+        
+        // Remove collapsed classes
+        header.classList.remove('collapsed');
+        content.classList.remove('collapsed');
+        card.classList.remove('collapsed');
+        
+        // Add animation class
+        content.classList.add('expanding');
+        
+        // Remove animation class after animation completes
+        setTimeout(() => {
+            content.classList.remove('expanding');
+        }, 300);
+        
+        if (saveState) {
+            this.saveCollapsedState();
+        }
+    }
+    
+
+    
+    updateCollapseAllButtonState() {
+        const button = document.getElementById('collapseAllBtn');
+        if (!button) return;
+        
+        const icon = button.querySelector('i');
+        const textSpan = button.querySelector('span');
+        
+        // Check if all cards are collapsed
+        const allCards = document.querySelectorAll('.collapsible-header');
+        const allCollapsed = Array.from(allCards).every(header => {
+            const cardId = header.dataset.cardId;
+            return cardId && this.collapsedCards.has(cardId);
+        });
+        
+        if (allCollapsed && allCards.length > 0) {
+            button.classList.add('collapsed');
+            icon.className = 'bi bi-chevron-down';
+            textSpan.textContent = ' Expand All';
+        } else {
+            button.classList.remove('collapsed');
+            icon.className = 'bi bi-chevron-up';
+            textSpan.textContent = ' Collapse All';
+        }
+    }
+    
+    // Method to programmatically collapse/expand cards (useful for other parts of the app)
+    setCardCollapsed(cardId, collapsed) {
+        const header = document.querySelector(`[data-card-id="${cardId}"]`);
+        if (header) {
+            if (collapsed) {
+                this.collapseCard(header);
+                this.collapsedCards.add(cardId);
+            } else {
+                this.expandCard(header);
+                this.collapsedCards.delete(cardId);
+            }
+            this.saveCollapsedState();
+        }
+    }
+    
+    // Method to get current collapsed state
+    isCardCollapsed(cardId) {
+        return this.collapsedCards.has(cardId);
+    }
+    
+    // Method to handle dynamic card creation (for cards added after page load)
+    setupCollapsibleForCard(cardElement) {
+        const header = cardElement.querySelector('.collapsible-header');
+        if (header) {
+            const cardId = header.dataset.cardId;
+            if (cardId && this.collapsedCards.has(cardId)) {
+                // Apply saved collapsed state
+                this.collapseCard(header, false);
+            }
+        }
+    }
+    
+    // Method to refresh collapsible state for all cards
+    refreshCollapsibleState() {
+        document.querySelectorAll('.collapsible-header').forEach(header => {
+            const cardId = header.dataset.cardId;
+            if (cardId) {
+                if (this.collapsedCards.has(cardId)) {
+                    this.collapseCard(header, false);
+                } else {
+                    this.expandCard(header, false);
+                }
+            }
+        });
+    }
+    
+    // Method to collapse all cards except specified ones
+    collapseAllExcept(exceptCardIds = []) {
+        document.querySelectorAll('.collapsible-header').forEach(header => {
+            const cardId = header.dataset.cardId;
+            if (cardId && !exceptCardIds.includes(cardId)) {
+                this.setCardCollapsed(cardId, true);
+            }
+        });
+        this.updateCollapseAllButtonState();
+    }
+    
+    // Method to expand all cards
+    expandAllCards() {
+        document.querySelectorAll('.collapsible-header').forEach(header => {
+            const cardId = header.dataset.cardId;
+            if (cardId) {
+                this.setCardCollapsed(cardId, false);
+            }
+        });
+        this.updateCollapseAllButtonState();
+    }
+    
+    // Method to reset collapsible state to default
+    resetCollapsibleState() {
+        this.collapsedCards.clear();
+        localStorage.removeItem('dragoncp_collapsed_cards');
+        this.refreshCollapsibleState();
     }
 }
 
