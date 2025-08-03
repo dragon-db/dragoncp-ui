@@ -1193,9 +1193,9 @@ class DragonCPUI {
             col.className = 'col-md-4 mb-3';
             
             col.innerHTML = `
-                <div class="card h-100" style="cursor: pointer;" onclick="dragonCP.selectMediaType('${mediaType.id}')">
+                <div class="card h-100 media-type-card-custom" onclick="dragonCP.selectMediaType('${mediaType.id}')">
                     <div class="card-body text-center">
-                        <i class="bi bi-${this.getMediaIcon(mediaType.id)}" style="font-size: 3rem; color: var(--secondary-color);"></i>
+                        <i class="bi bi-${this.getMediaIcon(mediaType.id)} media-type-icon"></i>
                         <h5 class="card-title mt-3">${mediaType.name}</h5>
                     </div>
                 </div>
@@ -2777,7 +2777,7 @@ class DragonCPUI {
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <h6 class="card-title mb-0">
-                                <i class="bi bi-hdd"></i> ${label}
+                                <i class="bi bi-hdd disk-usage-icon"></i> ${label}
                             </h6>
                             <span class="badge bg-${usageColor}">${diskInfo.usage_percent}%</span>
                         </div>
@@ -2810,7 +2810,7 @@ class DragonCPUI {
                     <div class="card-body">
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <h6 class="card-title mb-0">
-                                <i class="bi bi-cloud"></i> ${label}
+                                <i class="bi bi-cloud disk-usage-icon"></i> ${label}
                             </h6>
                             <span class="badge bg-${usageColor}">${diskInfo.usage_percent}%</span>
                         </div>

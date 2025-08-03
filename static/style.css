@@ -12,20 +12,86 @@
     --input-bg: #3a3a3a;
     --modal-bg: #2d2d2d;
     --gradient-accent: linear-gradient(90deg, #6a00fd, #fe00fc);
+    --navbar-gradient: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 50%, #1a1a1a 100%);
 }
 
 body {
-    background: linear-gradient(135deg, var(--dark-bg) 0%, #2c3e50 100%);
+    /* background: linear-gradient(135deg, var(--dark-bg) 0%, #2c3e50 100%); */
+    background: linear-gradient(135deg, var(--dark-bg) 0%, #241a2d 100%);
     color: var(--text-light);
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     min-height: 100vh;
 }
 
 /* Navigation */
+.navbar {
+    background: var(--navbar-gradient) !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+
 .navbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     font-weight: bold;
     font-size: 1.5rem;
     color: var(--text-light) !important;
+    text-decoration: none;
+    transition: all 0.3s ease;
+}
+
+.navbar-brand:hover {
+    /* color: var(--secondary-color) !important; */
+    transform: translateY(-1px);
+}
+
+.navbar-logo {
+    height: 32px;
+    width: auto;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+    transition: all 0.3s ease;
+    object-fit: contain;
+}
+
+.navbar-brand-text:hover .navbar-logo:hover {
+    /* filter: drop-shadow(0 4px 8px rgba(52, 152, 219, 0.4)); */
+    transform: scale(1.05);
+    border-color: #994db7;
+}
+
+/* Fallback for logo if image fails to load */
+.navbar-brand:not(:has(img))::before {
+    content: "🐉";
+    font-size: 1.5rem;
+    margin-right: 8px;
+}
+
+/* Alternative fallback for browsers that don't support :has() */
+.navbar-brand img:not([src]), 
+.navbar-brand img[src=""],
+.navbar-brand img[src*="error"] {
+    display: none;
+}
+
+.navbar-brand img:not([src]) + .navbar-brand-text::before,
+.navbar-brand img[src=""] + .navbar-brand-text::before,
+.navbar-brand img[src*="error"] + .navbar-brand-text::before {
+    content: "🐉 ";
+    font-size: 1.5rem;
+}
+
+.navbar-brand-text {
+    background: var(--gradient-accent);
+    background-size: 200% 200%;
+    animation: gradientShift 3s ease infinite;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    font-weight: 700;
+    letter-spacing: 0.5px;
 }
 
 .navbar-text {
@@ -43,7 +109,12 @@ body {
 
 .version-badge:hover {
     opacity: 1;
-    color: var(--text-muted) !important;
+    background: var(--gradient-accent);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradientShift 3s ease infinite;
+    /* color: var(--text-muted) !important; */
 }
 
 .version-badge i {
@@ -60,12 +131,34 @@ body {
     backdrop-filter: blur(10px);
 }
 
+.card-header,
+.collapsible-header {
+    background: rgba(102, 126, 234, 0.25);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    color: white;
+    font-weight: 500;
+}
+
+.collapsible-header {
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.3s ease;
+    position: relative;
+    border-radius: 0.375rem 0.375rem 0 0;
+    padding: 1rem;
+}
+
 .card-header {
-    background: linear-gradient(45deg, var(--primary-color), var(--secondary-color));
     border-bottom: 1px solid var(--border-color);
     border-radius: 15px 15px 0 0 !important;
-    color: white;
     font-weight: bold;
+}
+
+.collapsible-header:hover {
+    background: rgba(118, 75, 162, 0.4);
 }
 
 .card-title {
@@ -261,6 +354,12 @@ body {
 }
 
 /* Browse Media Specific Styling */
+.media-type-card-custom:hover {
+    background: linear-gradient(45deg, var(--card-bg), #532373);
+    border-color: #994db7;
+    transform: translateY(-2px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
 
 /* View Transitions */
 #mediaTypeView,
@@ -1055,8 +1154,8 @@ body {
 .status-bar.status-extendable:hover {
     transform: translateY(-2px);
     box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
-    background: linear-gradient(45deg, var(--card-bg), #2d4a4d);
-    border-color: var(--secondary-color);
+    background: linear-gradient(45deg, var(--card-bg), #532373);
+    border-color: #994db7;
 }
 
 .status-bar.status-extendable:active {
@@ -1069,7 +1168,7 @@ body {
 }
 
 .status-bar.status-extendable:hover .status-info {
-    color: var(--secondary-color);
+    color: #994db7;
 }
 
 .status-info {
@@ -1169,17 +1268,55 @@ body {
 }
 
 /* Apply gradient accent to various elements */
-.btn-primary.gradient-accent,
-.card-header.gradient-accent,
-.navbar.gradient-accent {
+.btn-primary.gradient-accent {
     background: var(--gradient-accent);
     background-size: 200% 200%;
     animation: gradientShift 3s ease infinite;
     border: none;
 }
 
+.card-header.gradient-accent {
+    background: var(--gradient-accent);
+    background-size: 200% 200%;
+    animation: none;
+    border: none;
+}
+
 /* Responsive Design */
 @media (max-width: 768px) {
+    /* Navbar mobile styles */
+    .navbar-brand {
+        font-size: 1.3rem;
+        gap: 8px;
+    }
+    
+    .navbar-logo {
+        height: 28px;
+    }
+    
+    .navbar-brand-text {
+        font-size: 1.2rem;
+    }
+    
+    /* Card header button mobile styles */
+    .collapsible-header .btn {
+        padding: 8px 10px;
+        font-size: 0.8rem;
+        min-height: 36px;
+        min-width: 36px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    .collapsible-header .btn i {
+        font-size: 0.9rem;
+    }
+    
+    .collapsible-header .btn:hover {
+        transform: translateY(-1px) scale(1.02);
+    }
+    
     .card {
         margin-bottom: 1rem;
     }
@@ -1205,6 +1342,42 @@ body {
     
     #folderList .list-group-item {
         padding: 12px 15px;
+    }
+}
+
+@media (max-width: 480px) {
+    /* Navbar small mobile styles */
+    .navbar-brand {
+        font-size: 1.1rem;
+        gap: 6px;
+    }
+    
+    .navbar-logo {
+        height: 24px;
+    }
+    
+    .navbar-brand-text {
+        font-size: 1rem;
+    }
+    
+    .version-badge {
+        font-size: 0.7rem;
+    }
+    
+    /* Card header button small mobile styles */
+    .collapsible-header .btn {
+        padding: 6px 8px;
+        font-size: 0.75rem;
+        min-height: 32px;
+        min-width: 32px;
+    }
+    
+    .collapsible-header .btn i {
+        font-size: 0.8rem;
+    }
+    
+    .collapsible-header .btn:hover {
+        transform: translateY(-1px) scale(1.01);
     }
 }
 
@@ -1278,6 +1451,8 @@ body {
 .disk-usage-card:hover {
     transform: translateY(-2px);
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+    background: linear-gradient(45deg, var(--card-bg), #532373);
+    border-color: #994db7;
 }
 
 .disk-usage-card .card-body {
@@ -1391,22 +1566,102 @@ body {
     animation: diskUsageLoad 0.4s ease-out;
 }
 
-/* Refresh button styling */
-#refreshDiskUsageBtn {
-    transition: all 0.2s ease;
+/* Card Header Button Styles - Consistent Theme */
+.collapsible-header .btn {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: var(--text-light);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    position: relative;
+    overflow: hidden;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
 }
 
-#refreshDiskUsageBtn:hover {
-    transform: rotate(90deg);
+.collapsible-header .btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.4);
+    color: var(--text-light);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
-#refreshDiskUsageBtn:disabled {
-    opacity: 0.6;
+.collapsible-header .btn:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.collapsible-header .btn:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.3);
+}
+
+.collapsible-header .btn i {
+    transition: transform 0.3s ease;
+}
+
+.collapsible-header .btn:hover i {
+    transform: scale(1.1);
+}
+
+/* Refresh button specific styling */
+#refreshDiskUsageBtn,
+#refreshTransfersBtn,
+#refreshSyncStatusBtn {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#refreshDiskUsageBtn:hover,
+#refreshTransfersBtn:hover,
+#refreshSyncStatusBtn:hover {
+    transform: translateY(-1px) scale(1.05);
+    background: rgba(52, 152, 219, 0.2);
+    border-color: rgba(52, 152, 219, 0.4);
+}
+
+#refreshDiskUsageBtn:active,
+#refreshTransfersBtn:active,
+#refreshSyncStatusBtn:active {
+    transform: translateY(0) scale(1);
+}
+
+#refreshDiskUsageBtn:disabled,
+#refreshTransfersBtn:disabled,
+#refreshSyncStatusBtn:disabled {
+    opacity: 0.5;
     cursor: not-allowed;
+    transform: none;
 }
 
-#refreshDiskUsageBtn .spinner-border-sm {
-    animation: spin 1s linear infinite;
+#refreshDiskUsageBtn:disabled:hover,
+#refreshTransfersBtn:disabled:hover,
+#refreshSyncStatusBtn:disabled:hover {
+    transform: none;
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Spinning animation for refresh buttons */
+#refreshDiskUsageBtn.spinning i,
+#refreshTransfersBtn.spinning i,
+#refreshSyncStatusBtn.spinning i {
+    animation: smoothSpin 1.2s linear infinite;
+    transform-origin: center;
+}
+
+#refreshDiskUsageBtn .spinner-border-sm,
+#refreshTransfersBtn .spinner-border-sm,
+#refreshSyncStatusBtn .spinner-border-sm {
+    animation: smoothSpin 1.2s linear infinite;
 }
 
 @keyframes spin {
@@ -1809,7 +2064,6 @@ button#refreshSyncStatusBtn i.spinning,
     pointer-events: auto;
 }
 
-.collapsible-header .btn:hover,
 .collapsible-header .log-controls .btn:hover {
     transform: scale(1.05);
 }
@@ -1855,10 +2109,7 @@ button#refreshSyncStatusBtn i.spinning,
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.card.collapsed .collapsible-header {
-    border-bottom: none;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
+
 
 /* Focus styles for accessibility */
 .collapsible-header:focus-visible {
@@ -2550,14 +2801,26 @@ button#refreshSyncStatusBtn i.spinning,
 }
 
 /* Improve button consistency */
+/* Override outline light styles for collapsible headers to use consistent theme */
 .collapsible-header .btn-outline-light {
-    border-width: 1px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: var(--text-light);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 0.85rem;
     font-weight: 500;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
 }
 
 .collapsible-header .btn-outline-light:hover {
-    background-color: rgba(255, 255, 255, 0.15);
-    border-color: rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.4);
+    color: var(--text-light);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 /* Sync Status Badge Styling */
@@ -2765,3 +3028,29 @@ button#refreshSyncStatusBtn i.spinning,
     margin-bottom: -0.1rem;
     pointer-events: none;
 } 
+
+/* Media Type Icons with Gradient Animation */
+.media-type-icon {
+    font-size: 3rem;
+    background: var(--gradient-accent);
+    background-size: 200% 200%;
+    animation: gradientShift 3s ease infinite;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Disk Usage Icons with Gradient Animation */
+.disk-usage-icon {
+    background: var(--gradient-accent);
+    background-size: 200% 200%;
+    animation: gradientShift 3s ease infinite;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Media Type Card Cursor */
+.media-type-card-custom {
+    cursor: pointer;
+}
