@@ -217,9 +217,21 @@ class SSHManager:
         return []
     
     def list_folders_with_metadata(self, path: str) -> List[Dict]:
-        """List folders in remote directory with metadata including modification time"""
-        # Get folder names with modification times using stat
-        command = f'find "{path}" -mindepth 1 -maxdepth 1 -type d -exec sh -c \'for dir; do echo "$(basename "$dir")|$(stat -c %Y "$dir")"; done\' _ {{}} +'
+        """List folders in remote directory with metadata including most recent file modification time"""
+        # Get folder names with most recent file modification time within each folder
+        command = f'''find "{path}" -mindepth 1 -maxdepth 1 -type d -exec sh -c '
+            for dir; do
+                # Get the most recent file modification time within this folder (recursive)
+                latest_file_time=$(find "$dir" -type f -printf "%T@\\n" | sort -nr | head -1)
+                if [ -n "$latest_file_time" ]; then
+                    echo "$(basename "$dir")|$latest_file_time"
+                else
+                    # If no files found, use folder modification time as fallback
+                    echo "$(basename "$dir")|$(stat -c %Y "$dir")"
+                fi
+            done
+        ' _ {{}} +'''
+        
         exit_code, output, error = self.execute_command(command)
         
         folders = []
@@ -230,7 +242,7 @@ class SSHManager:
                     try:
                         folders.append({
                             'name': folder_name,
-                            'modification_time': int(mod_time)
+                            'modification_time': int(float(mod_time))  # Convert from float timestamp
                         })
                     except ValueError:
                         # Fallback for invalid modification time
@@ -251,6 +263,80 @@ class SSHManager:
             files = [f.strip() for f in output.split('\n') if f.strip()]
             return sorted(files, key=lambda x: (len(x), x))
         return []
+
+    def list_files_with_metadata(self, path: str) -> List[Dict]:
+        """List files in remote directory with metadata including modification time and size"""
+        command = f'''find "{path}" -maxdepth 1 -type f -exec sh -c '
+            for file; do
+                filename=$(basename "$file")
+                mod_time=$(stat -c %Y "$file")
+                file_size=$(stat -c %s "$file")
+                echo "$filename|$mod_time|$file_size"
+            done
+        ' _ {{}} +'''
+        
+        exit_code, output, error = self.execute_command(command)
+        
+        files = []
+        if exit_code == 0 and output:
+            for line in output.strip().split('\n'):
+                if line.strip() and '|' in line:
+                    parts = line.strip().split('|')
+                    if len(parts) >= 3:
+                        filename, mod_time, file_size = parts[0], parts[1], parts[2]
+                        try:
+                            files.append({
+                                'name': filename,
+                                'modification_time': int(mod_time),
+                                'size': int(file_size)
+                            })
+                        except ValueError:
+                            # Fallback for invalid data
+                            files.append({
+                                'name': filename,
+                                'modification_time': 0,
+                                'size': 0
+                            })
+        
+        return sorted(files, key=lambda x: x['modification_time'], reverse=True)
+
+    def get_folder_file_summary(self, path: str) -> Dict:
+        """Get summary of files in a folder including count, total size, and most recent modification"""
+        command = f'''find "{path}" -type f -exec sh -c '
+            total_size=0
+            latest_time=0
+            file_count=0
+            for file; do
+                file_count=$((file_count + 1))
+                file_size=$(stat -c %s "$file")
+                mod_time=$(stat -c %Y "$file")
+                total_size=$((total_size + file_size))
+                if [ $mod_time -gt $latest_time ]; then
+                    latest_time=$mod_time
+                fi
+            done
+            echo "$file_count|$total_size|$latest_time"
+        ' _ {{}} +'''
+        
+        exit_code, output, error = self.execute_command(command)
+        
+        if exit_code == 0 and output:
+            try:
+                parts = output.strip().split('|')
+                if len(parts) >= 3:
+                    return {
+                        'file_count': int(parts[0]),
+                        'total_size': int(parts[1]),
+                        'latest_modification': int(parts[2])
+                    }
+            except ValueError:
+                pass
+        
+        return {
+            'file_count': 0,
+            'total_size': 0,
+            'latest_modification': 0
+        }
 
 
 
@@ -420,6 +506,254 @@ def api_episodes(media_type, folder_name, season_name):
     full_path = f"{base_path}/{folder_name}/{season_name}"
     episodes = ssh_manager.list_files(full_path)
     return jsonify({"status": "success", "episodes": episodes})
+
+@app.route('/api/sync-status/<media_type>')
+def api_sync_status(media_type):
+    """Get sync status for all folders in a media type"""
+    print(f"🔍 API: /api/sync-status/{media_type} called")
+    
+    if not ssh_manager or not ssh_manager.connected:
+        print("❌ Not connected to server")
+        return jsonify({"status": "error", "message": "Not connected to server"})
+    
+    if not transfer_manager:
+        print("❌ Transfer manager not available")
+        return jsonify({"status": "error", "message": "Transfer manager not available"})
+    
+    path_map = {
+        "movies": config.get("MOVIE_PATH"),
+        "tvshows": config.get("TVSHOW_PATH"),
+        "anime": config.get("ANIME_PATH")
+    }
+    
+    path = path_map.get(media_type)
+    if not path:
+        print(f"❌ Invalid media type: {media_type}")
+        return jsonify({"status": "error", "message": "Invalid media type"})
+    
+    try:
+        print(f"🔍 Getting sync status for {media_type} folders in: {path}")
+        
+        # Get folders with metadata
+        folders_metadata = ssh_manager.list_folders_with_metadata(path)
+        sync_statuses = {}
+        
+        for folder_data in folders_metadata:
+            folder_name = folder_data['name']
+            modification_time = folder_data.get('modification_time', 0)
+            
+            print(f"📁 Processing folder: {folder_name}")
+            
+            if media_type == 'movies':
+                # For movies, get direct folder status
+                status = transfer_manager.transfer_model.get_sync_status(
+                    media_type, folder_name, None, modification_time
+                )
+                sync_statuses[folder_name] = {
+                    'status': status,
+                    'type': 'movie',
+                    'modification_time': modification_time
+                }
+            else:
+                # For series/anime, get seasons and aggregate
+                try:
+                    full_path = f"{path}/{folder_name}"
+                    seasons_metadata = ssh_manager.list_folders_with_metadata(full_path)
+                    
+                    summary = transfer_manager.transfer_model.get_folder_sync_status_summary(
+                        media_type, folder_name, seasons_metadata
+                    )
+                    sync_statuses[folder_name] = summary
+                    
+                except Exception as season_error:
+                    print(f"⚠️ Error getting seasons for {folder_name}: {season_error}")
+                    # Fallback to NO_INFO if we can't get season data
+                    sync_statuses[folder_name] = {
+                        'status': 'NO_INFO',
+                        'type': 'series',
+                        'seasons': []
+                    }
+        
+        print(f"✅ Sync status processed for {len(sync_statuses)} folders")
+        return jsonify({
+            "status": "success", 
+            "sync_statuses": sync_statuses
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting sync status: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"Failed to get sync status: {str(e)}"})
+
+@app.route('/api/sync-status/<media_type>/<folder_name>')
+def api_folder_sync_status(media_type, folder_name):
+    """Get detailed sync status for a specific folder (useful for series/anime seasons)"""
+    print(f"🔍 API: /api/sync-status/{media_type}/{folder_name} called")
+    
+    if not ssh_manager or not ssh_manager.connected:
+        return jsonify({"status": "error", "message": "Not connected to server"})
+    
+    if not transfer_manager:
+        return jsonify({"status": "error", "message": "Transfer manager not available"})
+    
+    path_map = {
+        "movies": config.get("MOVIE_PATH"),
+        "tvshows": config.get("TVSHOW_PATH"),
+        "anime": config.get("ANIME_PATH")
+    }
+    
+    path = path_map.get(media_type)
+    if not path:
+        return jsonify({"status": "error", "message": "Invalid media type"})
+    
+    try:
+        if media_type == 'movies':
+            # For movies, get folder metadata
+            folders_metadata = ssh_manager.list_folders_with_metadata(path)
+            folder_data = next((f for f in folders_metadata if f['name'] == folder_name), None)
+            
+            if not folder_data:
+                return jsonify({"status": "error", "message": "Folder not found"})
+            
+            modification_time = folder_data.get('modification_time', 0)
+            status = transfer_manager.transfer_model.get_sync_status(
+                media_type, folder_name, None, modification_time
+            )
+            
+            return jsonify({
+                "status": "success",
+                "folder_name": folder_name,
+                "sync_status": {
+                    'status': status,
+                    'type': 'movie',
+                    'modification_time': modification_time
+                }
+            })
+        else:
+            # For series/anime, get detailed season information
+            full_path = f"{path}/{folder_name}"
+            seasons_metadata = ssh_manager.list_folders_with_metadata(full_path)
+            
+            summary = transfer_manager.transfer_model.get_folder_sync_status_summary(
+                media_type, folder_name, seasons_metadata
+            )
+            
+            # Convert seasons data to the format expected by frontend
+            seasons_sync_status = {}
+            if 'seasons' in summary:
+                for season_data in summary['seasons']:
+                    seasons_sync_status[season_data['name']] = {
+                        'status': season_data['status'],
+                        'type': 'season',
+                        'modification_time': season_data.get('modification_time', 0)
+                    }
+            
+            return jsonify({
+                "status": "success",
+                "folder_name": folder_name,
+                "sync_status": summary,
+                "seasons_sync_status": seasons_sync_status
+            })
+            
+    except Exception as e:
+        print(f"❌ Error getting folder sync status: {e}")
+        return jsonify({"status": "error", "message": f"Failed to get folder sync status: {str(e)}"})
+
+@app.route('/api/sync-status/<media_type>/<folder_name>/enhanced')
+def api_enhanced_folder_sync_status(media_type, folder_name):
+    """Get enhanced sync status with detailed file information"""
+    print(f"🔍 API: /api/sync-status/{media_type}/{folder_name}/enhanced called")
+    
+    if not ssh_manager or not ssh_manager.connected:
+        return jsonify({"status": "error", "message": "Not connected to server"})
+    
+    if not transfer_manager:
+        return jsonify({"status": "error", "message": "Transfer manager not available"})
+    
+    path_map = {
+        "movies": config.get("MOVIE_PATH"),
+        "tvshows": config.get("TVSHOW_PATH"),
+        "anime": config.get("ANIME_PATH")
+    }
+    
+    path = path_map.get(media_type)
+    if not path:
+        return jsonify({"status": "error", "message": "Invalid media type"})
+    
+    try:
+        full_path = f"{path}/{folder_name}"
+        
+        if media_type == 'movies':
+            # For movies, get detailed file information
+            file_summary = ssh_manager.get_folder_file_summary(full_path)
+            files_metadata = ssh_manager.list_files_with_metadata(full_path)
+            
+            # Get sync status using the most recent file modification time
+            latest_modification = file_summary.get('latest_modification', 0)
+            status = transfer_manager.transfer_model.get_sync_status(
+                media_type, folder_name, None, latest_modification
+            )
+            
+            return jsonify({
+                "status": "success",
+                "folder_name": folder_name,
+                "sync_status": {
+                    'status': status,
+                    'type': 'movie',
+                    'modification_time': latest_modification,
+                    'file_count': file_summary.get('file_count', 0),
+                    'total_size': file_summary.get('total_size', 0),
+                    'files': files_metadata[:10]  # Show first 10 files
+                }
+            })
+        else:
+            # For series/anime, get detailed season and episode information
+            seasons_metadata = ssh_manager.list_folders_with_metadata(full_path)
+            
+            detailed_seasons = []
+            for season_data in seasons_metadata:
+                season_name = season_data['name']
+                season_path = f"{full_path}/{season_name}"
+                
+                # Get file summary for this season
+                season_file_summary = ssh_manager.get_folder_file_summary(season_path)
+                season_files = ssh_manager.list_files_with_metadata(season_path)
+                
+                # Get sync status for this season
+                season_status = transfer_manager.transfer_model.get_sync_status(
+                    media_type, folder_name, season_name, season_data.get('modification_time', 0)
+                )
+                
+                detailed_seasons.append({
+                    'name': season_name,
+                    'status': season_status,
+                    'modification_time': season_data.get('modification_time', 0),
+                    'file_count': season_file_summary.get('file_count', 0),
+                    'total_size': season_file_summary.get('total_size', 0),
+                    'files': season_files[:5]  # Show first 5 files per season
+                })
+            
+            # Determine overall status based on most recent season
+            most_recent_season = max(detailed_seasons, key=lambda x: x['modification_time']) if detailed_seasons else None
+            overall_status = most_recent_season['status'] if most_recent_season else 'NO_INFO'
+            
+            return jsonify({
+                "status": "success",
+                "folder_name": folder_name,
+                "sync_status": {
+                    'status': overall_status,
+                    'type': 'series',
+                    'seasons': detailed_seasons,
+                    'most_recent_season': most_recent_season['name'] if most_recent_season else None
+                }
+            })
+            
+    except Exception as e:
+        print(f"❌ Error getting enhanced folder sync status: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"Failed to get enhanced folder sync status: {str(e)}"})
 
 @app.route('/api/transfer', methods=['POST'])
 def api_transfer():

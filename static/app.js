@@ -11,7 +11,10 @@ class DragonCPUI {
             mediaType: null,
             selectedFolder: null,
             selectedSeason: null,
-            breadcrumb: []
+            breadcrumb: [],
+            viewingSeasons: false,
+            seasonsFolder: null,
+            viewingTransferOptions: false
         };
         
         // Browse Media state
@@ -459,6 +462,76 @@ class DragonCPUI {
         document.getElementById('folderSortSelect').addEventListener('change', (e) => {
             this.sortOption = e.target.value;
             this.filterAndSortFolders();
+        });
+
+        // Refresh Sync Status button
+        document.getElementById('refreshSyncStatusBtn').addEventListener('click', async () => {
+            const button = document.getElementById('refreshSyncStatusBtn');
+            const icon = button.querySelector('i');
+            
+            // Check if sync status is already loading
+            if (this.allFolders && this.allFolders.some(folder => folder.syncStatus && folder.syncStatus.status === 'LOADING')) {
+                console.log('Sync status already loading, ignoring refresh request');
+                return;
+            }
+            
+            // Check if button is already disabled/refreshing
+            if (button.disabled || button.classList.contains('refreshing')) {
+                console.log('Refresh button already in progress, ignoring request');
+                return;
+            }
+            
+            // Add loading state with smooth animation
+            button.disabled = true;
+            button.classList.add('refreshing');
+            
+            // Reset icon classes and add spinning
+            icon.className = 'bi bi-arrow-clockwise spinning';
+            
+            // Debug log to ensure classes are applied
+            console.log('Refresh button spinning - Button classes:', button.className);
+            console.log('Refresh button spinning - Icon classes:', icon.className);
+            
+            // First set all current sync statuses to loading
+            if (this.allFolders) {
+                this.allFolders = this.allFolders.map(folder => ({
+                    ...folder,
+                    syncStatus: { ...folder.syncStatus, status: 'LOADING' }
+                }));
+                this.filterAndSortFolders(); // Re-render with loading states
+                this.updateRefreshButtonState(); // Update button state
+            }
+            
+            try {
+                await this.refreshSyncStatus();
+                
+                // Show success animation
+                console.log('Refresh success - stopping spinner');
+                icon.className = 'bi bi-check-circle-fill';
+                button.classList.add('success');
+                
+                setTimeout(() => {
+                    icon.className = 'bi bi-arrow-clockwise';
+                    button.classList.remove('success');
+                    console.log('Success animation complete');
+                }, 1500);
+            } catch (error) {
+                console.error('Failed to refresh sync status:', error);
+                
+                // Show error animation
+                console.log('Refresh error - stopping spinner');
+                icon.className = 'bi bi-exclamation-triangle-fill';
+                button.classList.add('error');
+                
+                setTimeout(() => {
+                    icon.className = 'bi bi-arrow-clockwise';
+                    button.classList.remove('error');
+                    console.log('Error animation complete');
+                }, 1500);
+            } finally {
+                button.disabled = false;
+                button.classList.remove('refreshing');
+            }
         });
 
         // Collapse All button
@@ -1146,6 +1219,13 @@ class DragonCPUI {
         this.currentState.breadcrumb = [mediaType];
         this.currentPath = [];
         
+        // Reset navigation state when switching media types
+        this.currentState.viewingSeasons = false;
+        this.currentState.seasonsFolder = null;
+        this.currentState.viewingTransferOptions = false;
+        this.currentState.selectedFolder = null;
+        this.currentState.selectedSeason = null;
+        
         // Transition to folder browser view
         this.showFolderBrowserView(mediaType);
         
@@ -1172,18 +1252,32 @@ class DragonCPUI {
                 url += `?path=${encodeURIComponent(folderPath)}`;
             }
             
-            const response = await fetch(url);
-            const result = await response.json();
+            // Load folders immediately without waiting for sync status
+            const foldersResponse = await fetch(url);
+            const foldersResult = await foldersResponse.json();
             
-            if (result.status === 'success') {
-                this.renderFolders(result.folders, mediaType);
+            if (foldersResult.status === 'success') {
+                // Display folders immediately with loading sync status
+                const foldersWithLoadingSyncStatus = foldersResult.folders.map(folder => {
+                    return {
+                        ...(typeof folder === 'object' ? folder : { name: folder, modification_time: 0 }),
+                        syncStatus: { status: 'LOADING', type: 'unknown' }
+                    };
+                });
+                
+                this.renderFolders(foldersWithLoadingSyncStatus, mediaType);
+                this.showFolderLoading(false);
+                
+                // Load sync status asynchronously and update UI
+                this.loadSyncStatusAsync(mediaType);
+                
             } else {
-                this.showAlert(result.message || 'Failed to load folders', 'danger');
+                this.showAlert(foldersResult.message || 'Failed to load folders', 'danger');
+                this.showFolderLoading(false);
             }
         } catch (error) {
             console.error('Failed to load folders:', error);
             this.showAlert('Failed to load folders', 'danger');
-        } finally {
             this.showFolderLoading(false);
         }
     }
@@ -1268,10 +1362,19 @@ class DragonCPUI {
                 }
             }
             
+            // Generate sync status badge
+            const syncStatusBadge = this.generateSyncStatusBadge(folder.syncStatus);
+            
             item.innerHTML = `
-                <div>
+                <div class="d-flex align-items-center flex-grow-1">
                     <i class="bi bi-folder me-2"></i>
-                    ${this.escapeHtml(folder.name)}${dateInfo}
+                    <div class="flex-grow-1">
+                        <div class="d-flex align-items-center gap-2">
+                            <span>${this.escapeHtml(folder.name)}</span>
+                            ${syncStatusBadge}
+                        </div>
+                        ${dateInfo ? `<div>${dateInfo}</div>` : ''}
+                    </div>
                 </div>
                 <div class="btn-group btn-group-sm">
                     <button class="btn btn-outline-primary" onclick="dragonCP.selectFolder('${this.escapeJavaScriptString(folder.name)}', '${this.currentMediaType}')">
@@ -1341,18 +1444,32 @@ class DragonCPUI {
         try {
             this.showFolderLoading(true);
             
-            const response = await fetch(`/api/seasons/${mediaType}/${encodeURIComponent(folderName)}`);
-            const result = await response.json();
+            // Load seasons immediately without waiting for sync status
+            const seasonsResponse = await fetch(`/api/seasons/${mediaType}/${encodeURIComponent(folderName)}`);
+            const seasonsResult = await seasonsResponse.json();
             
-            if (result.status === 'success') {
-                this.renderSeasons(result.seasons, mediaType, folderName);
+            if (seasonsResult.status === 'success') {
+                // Display seasons immediately with loading sync status
+                const seasonsWithLoadingSyncStatus = seasonsResult.seasons.map(season => {
+                    return {
+                        ...(typeof season === 'object' ? season : { name: season, modification_time: 0 }),
+                        syncStatus: { status: 'LOADING', type: 'season' }
+                    };
+                });
+                
+                this.renderSeasons(seasonsWithLoadingSyncStatus, mediaType, folderName);
+                this.showFolderLoading(false);
+                
+                // Load sync status asynchronously for this specific folder
+                this.loadSeasonSyncStatusAsync(mediaType, folderName);
+                
             } else {
-                this.showAlert(result.message || 'Failed to load seasons', 'danger');
+                this.showAlert(seasonsResult.message || 'Failed to load seasons', 'danger');
+                this.showFolderLoading(false);
             }
         } catch (error) {
             console.error('Failed to load seasons:', error);
             this.showAlert('Failed to load seasons', 'danger');
-        } finally {
             this.showFolderLoading(false);
         }
     }
@@ -1367,39 +1484,88 @@ class DragonCPUI {
             return season;
         });
 
-        // For seasons, temporarily store data and apply folder filtering/sorting
-        const originalFolders = this.allFolders;
-        const originalMediaType = this.currentMediaType;
-        
+        // Store seasons data properly without interfering with main navigation
         this.allFolders = seasonData;
         this.currentMediaType = mediaType;
-        this.filterAndSortFolders();
+        
+        // Set the current state to indicate we're viewing seasons
+        this.currentState.viewingSeasons = true;
+        this.currentState.seasonsFolder = folderName;
+        
+        // Display seasons directly instead of using filterAndSortFolders
+        this.displaySeasons(seasonData, mediaType, folderName);
         
         // Override the folder select click to use season select instead
         this.overrideForSeasons(mediaType, folderName);
-        
-        // Restore original state after rendering
-        setTimeout(() => {
-            this.allFolders = originalFolders;
-            this.currentMediaType = originalMediaType;
-        }, 100);
+    }
+
+    displaySeasons(seasons, mediaType, folderName) {
+        const container = document.getElementById('folderList');
+        container.innerHTML = '';
+
+        if (seasons.length === 0) {
+            container.innerHTML = `<div class="text-center text-muted p-3">No seasons found for ${this.escapeHtml(folderName)}</div>`;
+            return;
+        }
+
+        seasons.forEach((season) => {
+            const item = document.createElement('div');
+            item.className = 'list-group-item d-flex justify-content-between align-items-center';
+            
+            // Create date string for recently modified seasons
+            let dateInfo = '';
+            if (season.modification_time > 0) {
+                const date = new Date(season.modification_time * 1000);
+                const now = new Date();
+                const diffTime = now - date;
+                const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                
+                if (diffDays === 0) {
+                    dateInfo = ' <small class="text-muted">(Today)</small>';
+                } else if (diffDays === 1) {
+                    dateInfo = ' <small class="text-muted">(Yesterday)</small>';
+                } else if (diffDays < 7) {
+                    dateInfo = ` <small class="text-muted">(${diffDays} days ago)</small>`;
+                } else if (diffDays < 30) {
+                    const weeks = Math.floor(diffDays / 7);
+                    dateInfo = ` <small class="text-muted">(${weeks} week${weeks > 1 ? 's' : ''} ago)</small>`;
+                } else {
+                    dateInfo = ` <small class="text-muted">(${date.toLocaleDateString()})</small>`;
+                }
+            }
+            
+            // Generate sync status badge
+            const syncStatusBadge = this.generateSyncStatusBadge(season.syncStatus);
+            
+            item.innerHTML = `
+                <div class="d-flex align-items-center flex-grow-1">
+                    <i class="bi bi-collection me-2"></i>
+                    <div class="flex-grow-1">
+                        <div class="d-flex align-items-center gap-2">
+                            <span>${this.escapeHtml(season.name)}</span>
+                            ${syncStatusBadge}
+                        </div>
+                        ${dateInfo ? `<div>${dateInfo}</div>` : ''}
+                    </div>
+                </div>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-primary" onclick="dragonCP.selectSeason('${this.escapeJavaScriptString(season.name)}', '${mediaType}', '${this.escapeJavaScriptString(folderName)}')">
+                        <i class="bi bi-arrow-right"></i>
+                    </button>
+                </div>
+            `;
+            
+            container.appendChild(item);
+        });
+
+        // Update folder count to show season count
+        this.updateFolderCount(seasons.length, seasons.length);
+        this.showBrowseControls();
     }
 
     overrideForSeasons(mediaType, folderName) {
-        // Update the displayed folders to use season selection instead of folder selection
-        const container = document.getElementById('folderList');
-        const buttons = container.querySelectorAll('button[onclick*="selectFolder"]');
-        
-        buttons.forEach(button => {
-            const seasonName = button.getAttribute('onclick').match(/selectFolder\('(.+?)'/)[1];
-            button.setAttribute('onclick', `dragonCP.selectSeason('${this.escapeJavaScriptString(seasonName)}', '${mediaType}', '${this.escapeJavaScriptString(folderName)}')`);
-        });
-        
-        // Update icons to show seasons instead of folders
-        const icons = container.querySelectorAll('i.bi-folder');
-        icons.forEach(icon => {
-            icon.className = 'bi bi-collection me-2';
-        });
+        // This function is no longer needed since we're using displaySeasons directly
+        // Keeping it for backward compatibility but it's now a no-op
     }
 
     async selectSeason(seasonName, mediaType, folderName) {
@@ -1413,6 +1579,12 @@ class DragonCPUI {
     showTransferOptions(mediaType, folderName, seasonName = null) {
         const container = document.getElementById('folderList');
         container.innerHTML = '';
+        
+        // Hide refresh button when showing transfer options
+        this.hideBrowseControls();
+        
+        // Set state to indicate we're viewing transfer options
+        this.currentState.viewingTransferOptions = true;
 
         const options = [
             {
@@ -2321,6 +2493,14 @@ class DragonCPUI {
         this.showMediaTypeView();
         this.currentMediaType = null;
         this.currentPath = [];
+        
+        // Reset navigation state
+        this.currentState.viewingSeasons = false;
+        this.currentState.seasonsFolder = null;
+        this.currentState.viewingTransferOptions = false;
+        this.currentState.selectedFolder = null;
+        this.currentState.selectedSeason = null;
+        this.currentState.breadcrumb = [];
     }
 
     showMediaTypeView() {
@@ -3531,6 +3711,162 @@ class DragonCPUI {
         this.collapsedCards.clear();
         localStorage.removeItem('dragoncp_collapsed_cards');
         this.refreshCollapsibleState();
+    }
+    
+    // Sync Status Methods
+    generateSyncStatusBadge(syncStatus) {
+        if (!syncStatus || !syncStatus.status) {
+            return '';
+        }
+        
+        const { status, type, most_recent_season } = syncStatus;
+        
+        // Get badge details based on status
+        const badgeConfig = this.getSyncStatusBadgeConfig(status);
+        
+        // For series/anime, add additional info if available
+        let additionalInfo = '';
+        if (type === 'series' && most_recent_season && status !== 'NO_INFO') {
+            additionalInfo = ` title="Based on most recent season: ${most_recent_season.name}"`;
+        }
+        
+        return `<span class="badge sync-status-badge ${badgeConfig.class}"${additionalInfo}>
+                    <i class="${badgeConfig.icon} me-1"></i>
+                    ${badgeConfig.text}
+                </span>`;
+    }
+    
+    getSyncStatusBadgeConfig(status) {
+        switch (status) {
+            case 'SYNCED':
+                return {
+                    class: 'sync-status-synced bg-success',
+                    icon: 'bi bi-check-circle-fill',
+                    text: 'Synced'
+                };
+            case 'OUT_OF_SYNC':
+                return {
+                    class: 'sync-status-out-of-sync bg-warning text-dark',
+                    icon: 'bi bi-exclamation-triangle-fill',
+                    text: 'Out of Sync'
+                };
+            case 'LOADING':
+                return {
+                    class: 'sync-status-loading bg-info',
+                    icon: 'bi bi-arrow-clockwise spinning',
+                    text: 'Loading...'
+                };
+            case 'NO_INFO':
+            default:
+                return {
+                    class: 'sync-status-no-info bg-secondary',
+                    icon: 'bi bi-question-circle-fill',
+                    text: 'No Info'
+                };
+        }
+    }
+    
+    // Method to refresh sync status for current media type
+    async refreshSyncStatus() {
+        // Don't refresh if we're viewing transfer options
+        if (this.currentState.viewingTransferOptions) {
+            return;
+        }
+        
+        // Check current context - are we viewing seasons of a specific series?
+        if (this.currentState.viewingSeasons && this.currentState.seasonsFolder && this.currentMediaType) {
+            // We're in a season view, refresh only this series' sync status
+            await this.loadSeasonSyncStatusAsync(this.currentMediaType, this.currentState.seasonsFolder);
+        } else if (this.currentMediaType) {
+            // We're in the main folder view, refresh all folders
+            await this.loadSyncStatusAsync(this.currentMediaType);
+        }
+    }
+    
+    // Load sync status asynchronously for all folders in a media type
+    async loadSyncStatusAsync(mediaType) {
+        try {
+            const response = await fetch(`/api/sync-status/${mediaType}`);
+            const result = await response.json();
+            
+            if (result.status === 'success' && this.allFolders) {
+                // Update sync status for all folders
+                this.allFolders = this.allFolders.map(folder => {
+                    const syncStatus = result.sync_statuses[folder.name];
+                    return {
+                        ...folder,
+                        syncStatus: syncStatus || { status: 'NO_INFO', type: 'unknown' }
+                    };
+                });
+                
+                // Re-render the current view with updated sync status
+                this.filterAndSortFolders();
+                this.updateRefreshButtonState();
+            }
+        } catch (error) {
+            console.error('Failed to load sync status:', error);
+            // Update all folders to show error state
+            if (this.allFolders) {
+                this.allFolders = this.allFolders.map(folder => ({
+                    ...folder,
+                    syncStatus: { status: 'NO_INFO', type: 'unknown' }
+                }));
+                this.filterAndSortFolders();
+            }
+            this.updateRefreshButtonState();
+        }
+    }
+    
+    // Load sync status asynchronously for seasons of a specific folder
+    async loadSeasonSyncStatusAsync(mediaType, folderName) {
+        try {
+            const response = await fetch(`/api/sync-status/${mediaType}/${encodeURIComponent(folderName)}`);
+            const result = await response.json();
+            
+            if (result.status === 'success' && this.allFolders) {
+                // Update sync status for all seasons
+                this.allFolders = this.allFolders.map(season => {
+                    const syncStatus = result.seasons_sync_status && result.seasons_sync_status[season.name];
+                    return {
+                        ...season,
+                        syncStatus: syncStatus || { status: 'NO_INFO', type: 'season' }
+                    };
+                });
+                
+                // Re-render the current view with updated sync status
+                this.displaySeasons(this.allFolders, mediaType, folderName);
+                this.updateRefreshButtonState();
+            }
+        } catch (error) {
+            console.error('Failed to load season sync status:', error);
+            // Update all seasons to show error state
+            if (this.allFolders) {
+                this.allFolders = this.allFolders.map(season => ({
+                    ...season,
+                    syncStatus: { status: 'NO_INFO', type: 'season' }
+                }));
+                this.displaySeasons(this.allFolders, mediaType, folderName);
+            }
+            this.updateRefreshButtonState();
+        }
+    }
+    
+    // Update refresh button state based on current sync status
+    updateRefreshButtonState() {
+        const button = document.getElementById('refreshSyncStatusBtn');
+        if (!button) return;
+        
+        // Check if any sync status is currently loading
+        const hasLoadingStatus = this.allFolders && this.allFolders.some(folder => 
+            folder.syncStatus && folder.syncStatus.status === 'LOADING'
+        );
+        
+        // Disable button if sync is loading or button is already refreshing
+        if (hasLoadingStatus || button.classList.contains('refreshing')) {
+            button.disabled = true;
+        } else {
+            button.disabled = false;
+        }
     }
 }
 

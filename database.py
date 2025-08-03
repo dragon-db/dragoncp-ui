@@ -286,6 +286,143 @@ class Transfer:
         title = title.strip()
         
         return title
+    
+    def get_sync_status(self, media_type: str, folder_name: str, season_name: str = None, 
+                       remote_modification_time: int = 0) -> str:
+        """
+        Get sync status for a folder/season
+        Returns: 'SYNCED', 'OUT_OF_SYNC', or 'NO_INFO'
+        """
+        try:
+            # Build query based on media type
+            if media_type == 'movies':
+                # For movies, check folder-level transfers only
+                query = '''
+                    SELECT end_time, updated_at FROM transfers 
+                    WHERE media_type = ? AND folder_name = ? AND status = 'completed'
+                    AND season_name IS NULL
+                    ORDER BY end_time DESC LIMIT 1
+                '''
+                params = (media_type, folder_name)
+            else:
+                # For TV shows and anime, check season-level transfers
+                if season_name:
+                    query = '''
+                        SELECT end_time, updated_at FROM transfers 
+                        WHERE media_type = ? AND folder_name = ? AND season_name = ? AND status = 'completed'
+                        ORDER BY end_time DESC LIMIT 1
+                    '''
+                    params = (media_type, folder_name, season_name)
+                else:
+                    # This shouldn't happen for series/anime without season_name
+                    return 'NO_INFO'
+            
+            with self.db.get_connection() as conn:
+                cursor = conn.execute(query, params)
+                row = cursor.fetchone()
+                
+                if not row:
+                    return 'NO_INFO'
+                
+                # Convert end_time to timestamp for comparison
+                from datetime import datetime
+                import time
+                
+                end_time_str = row['end_time']
+                if end_time_str:
+                    try:
+                        # Parse ISO format datetime
+                        end_time_dt = datetime.fromisoformat(end_time_str.replace('Z', '+00:00'))
+                        end_time_timestamp = int(end_time_dt.timestamp())
+                        
+                        # Compare with remote modification time
+                        if remote_modification_time > 0:
+                            if end_time_timestamp >= remote_modification_time:
+                                return 'SYNCED'
+                            else:
+                                return 'OUT_OF_SYNC'
+                        else:
+                            # If no remote modification time available, assume synced if we have a completion record
+                            return 'SYNCED'
+                    except (ValueError, AttributeError):
+                        # If we can't parse the date, assume it's synced if we have a record
+                        return 'SYNCED'
+                else:
+                    # Transfer exists but no end_time (shouldn't happen for completed transfers)
+                    return 'NO_INFO'
+                    
+        except Exception as e:
+            print(f"❌ Error getting sync status: {e}")
+            return 'NO_INFO'
+    
+    def get_folder_sync_status_summary(self, media_type: str, folder_name: str, 
+                                     seasons_with_metadata: List[Dict] = None) -> Dict:
+        """
+        Get sync status summary for a folder, handling series/anime aggregation logic
+        For movies: returns folder-level status
+        For series/anime: returns aggregated status based on most recent season
+        """
+        try:
+            if media_type == 'movies':
+                # Simple case: just check the folder itself
+                status = self.get_sync_status(media_type, folder_name, None, 0)
+                return {
+                    'status': status,
+                    'type': 'movie',
+                    'seasons': []
+                }
+            else:
+                # Complex case: check all seasons and aggregate
+                if not seasons_with_metadata:
+                    return {
+                        'status': 'NO_INFO',
+                        'type': 'series',
+                        'seasons': []
+                    }
+                
+                season_statuses = []
+                most_recent_season = None
+                most_recent_time = 0
+                
+                for season_data in seasons_with_metadata:
+                    season_name = season_data['name']
+                    mod_time = season_data.get('modification_time', 0)
+                    
+                    status = self.get_sync_status(media_type, folder_name, season_name, mod_time)
+                    
+                    season_statuses.append({
+                        'name': season_name,
+                        'status': status,
+                        'modification_time': mod_time
+                    })
+                    
+                    # Track most recently modified season
+                    if mod_time > most_recent_time:
+                        most_recent_time = mod_time
+                        most_recent_season = {
+                            'name': season_name,
+                            'status': status
+                        }
+                
+                # Determine overall status based on most recent season
+                overall_status = 'NO_INFO'
+                if most_recent_season:
+                    overall_status = most_recent_season['status']
+                
+                return {
+                    'status': overall_status,
+                    'type': 'series',
+                    'seasons': season_statuses,
+                    'most_recent_season': most_recent_season
+                }
+                
+        except Exception as e:
+            print(f"❌ Error getting folder sync status summary: {e}")
+            return {
+                'status': 'NO_INFO',
+                'type': 'unknown',
+                'seasons': []
+            }
 
 class TransferManager:
     """Enhanced transfer manager with database persistence"""
