@@ -23,6 +23,7 @@ from werkzeug.utils import secure_filename
 
 # Import new database modules
 from database import DatabaseManager, TransferManager
+from simulator import TransferSimulator
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dragoncp-secret-key-2024')
@@ -345,6 +346,7 @@ config = DragonCPConfig()
 ssh_manager = None
 db_manager = DatabaseManager()
 transfer_manager = TransferManager(config, db_manager, socketio)
+simulator = TransferSimulator(transfer_manager, socketio)
 
 @app.route('/')
 def index():
@@ -1035,6 +1037,47 @@ def api_cleanup_transfers():
     except Exception as e:
         print(f"❌ Error cleaning up transfers: {e}")
         return jsonify({"status": "error", "message": f"Failed to cleanup transfers: {str(e)}"})
+
+@app.route('/api/test/simulate', methods=['POST'])
+def api_start_simulation():
+    """Start simulated transfers for UI testing (no rsync). Controlled by TEST_MODE env."""
+    if os.environ.get('TEST_MODE', '0') != '1':
+        return jsonify({"status": "error", "message": "Simulation disabled. Set TEST_MODE=1 to enable."}), 403
+
+    try:
+        payload = request.json or {}
+        count = int(payload.get('count', 3))
+        steps = int(payload.get('steps', 40))
+        interval = float(payload.get('interval', 0.5))
+        failure_rate = float(payload.get('failure_rate', 0.0))
+
+        started = simulator.start_simulations(
+            count=count,
+            steps=steps,
+            interval_seconds=interval,
+            failure_rate=failure_rate,
+        )
+        return jsonify({
+            "status": "success",
+            "message": f"Started {len(started)} simulated transfers",
+            "transfer_ids": started,
+        })
+    except Exception as e:
+        print(f"❌ Error starting simulation: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/test/simulate/stop', methods=['POST'])
+def api_stop_simulation():
+    """Signal all running simulations to stop."""
+    if os.environ.get('TEST_MODE', '0') != '1':
+        return jsonify({"status": "error", "message": "Simulation disabled. Set TEST_MODE=1 to enable."}), 403
+
+    try:
+        num = simulator.stop_all()
+        return jsonify({"status": "success", "message": f"Stop signaled to {num} simulations"})
+    except Exception as e:
+        print(f"❌ Error stopping simulation: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/local-files')
 def api_local_files():
