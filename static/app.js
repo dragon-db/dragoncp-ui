@@ -1792,18 +1792,18 @@ class DragonCPUI {
             logCountElement.textContent = `${this.transferLogs.length} lines`;
         }
         
-        // Format and display logs with syntax highlighting (newest first)
-        const formattedLogs = this.transferLogs.slice().reverse().map(log => {
+        // Format and display logs with syntax highlighting (chronological order)
+        const formattedLogs = this.transferLogs.map(log => {
             const logClass = this.getLogLineClass(log);
             return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
         }).join('');
         
         logContainer.innerHTML = formattedLogs;
         
-        // Auto-scroll to top if enabled (newest logs first)
+        // Auto-scroll to bottom if enabled
         if (this.autoScroll) {
             setTimeout(() => {
-                logContainer.scrollTop = 0;
+                logContainer.scrollTop = logContainer.scrollHeight;
             }, 10);
         }
     }
@@ -1849,10 +1849,18 @@ class DragonCPUI {
             tab = document.createElement('a');
             tab.className = 'nav-link';
             tab.id = `tab-${transferId}`;
-            tab.href = '#';
+            // Avoid page scroll to top on click
+            tab.href = 'javascript:void(0)';
             tab.setAttribute('role', 'tab');
             tab.onclick = (e) => {
                 e.preventDefault();
+                e.stopPropagation();
+                this.switchToTab(transferId);
+            };
+            // Handle mousedown to ensure reliable activation even during frequent DOM updates
+            tab.onmousedown = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
                 this.switchToTab(transferId);
             };
             
@@ -1872,7 +1880,7 @@ class DragonCPUI {
             <span class="log-tab-title" title="${this.escapeHtml(displayName)}">${this.escapeHtml(this.truncateText(displayName, 20))}</span>
             <span class="log-tab-status ${tabData.status}">${tabData.status}</span>
             ${tabData.status === 'completed' || tabData.status === 'failed' || tabData.status === 'cancelled' ? 
-                `<button class="log-tab-close" onclick="event.stopPropagation(); dragonCP.closeTransferTab('${transferId}')" title="Close tab">
+                `<button type="button" class="log-tab-close" onclick="event.preventDefault(); event.stopPropagation(); dragonCP.closeTransferTab('${transferId}')" onmousedown="event.preventDefault(); event.stopPropagation();" title="Close tab">
                     <i class="bi bi-x"></i>
                 </button>` : ''
             }
@@ -1959,18 +1967,18 @@ class DragonCPUI {
         // Update log content
         const logContainer = document.getElementById(`transferLog-${transferId}`);
         if (logContainer) {
-            // Display logs in reverse order (newest first)
-            const formattedLogs = tabData.logs.slice().reverse().map(log => {
+            // Display logs in chronological order
+            const formattedLogs = tabData.logs.map(log => {
                 const logClass = this.getLogLineClass(log);
                 return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
             }).join('');
             
             logContainer.innerHTML = formattedLogs;
             
-            // Auto-scroll if enabled for this tab (scroll to top for newest logs)
+            // Auto-scroll if enabled for this tab (scroll to bottom)
             if (tabData.autoScroll) {
                 setTimeout(() => {
-                    logContainer.scrollTop = 0;
+                    logContainer.scrollTop = logContainer.scrollHeight;
                 }, 10);
             }
         }
@@ -2005,8 +2013,8 @@ class DragonCPUI {
             
             const mainLogContainer = document.getElementById('transferLog');
             if (mainLogContainer && tabData) {
-                // Display logs in reverse order (newest first) for single transfer view
-                const formattedLogs = tabData.logs.slice().reverse().map(log => {
+                // Display logs in chronological order for single transfer view
+                const formattedLogs = tabData.logs.map(log => {
                     const logClass = this.getLogLineClass(log);
                     return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
                 }).join('');
@@ -2015,7 +2023,7 @@ class DragonCPUI {
                 
                 if (tabData.autoScroll) {
                     setTimeout(() => {
-                        mainLogContainer.scrollTop = 0;
+                        mainLogContainer.scrollTop = mainLogContainer.scrollHeight;
                     }, 10);
                 }
                 
@@ -2089,6 +2097,23 @@ class DragonCPUI {
         const tabsContainer = document.getElementById('logTabs');
         if (!tabsContainer) return;
         
+        // Ensure desktop scrollability (horizontal)
+        tabsContainer.style.overflowX = 'auto';
+        tabsContainer.style.whiteSpace = 'nowrap';
+        tabsContainer.style.webkitOverflowScrolling = 'touch';
+        tabsContainer.style.flexWrap = 'nowrap';
+
+        // Add wheel-to-horizontal behavior once (non-intrusive)
+        if (!tabsContainer.dataset.wheelScrollBound) {
+            tabsContainer.addEventListener('wheel', (e) => {
+                if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+                    tabsContainer.scrollLeft += e.deltaY;
+                    e.preventDefault();
+                }
+            }, { passive: false });
+            tabsContainer.dataset.wheelScrollBound = 'true';
+        }
+
         // Check if tabs are scrollable
         const isScrollable = tabsContainer.scrollWidth > tabsContainer.clientWidth;
         
@@ -2098,18 +2123,7 @@ class DragonCPUI {
         } else {
             tabsContainer.removeAttribute('data-scrollable');
         }
-        
-        // Scroll the newest (first) tab into view smoothly
-        const firstTab = tabsContainer.querySelector('.nav-link:first-child');
-        if (firstTab && isScrollable) {
-            setTimeout(() => {
-                firstTab.scrollIntoView({ 
-                    behavior: 'smooth', 
-                    inline: 'start',
-                    block: 'nearest'
-                });
-            }, 100);
-        }
+        // Do not adjust scroll position here; respect user's current position
     }
 
     getLogLineClass(logLine) {
@@ -2189,10 +2203,10 @@ class DragonCPUI {
                 
                 if (tabData.autoScroll) {
                     this.showAlert('Auto-scroll enabled for current tab', 'info');
-                    // Scroll to top to show newest logs immediately
+                    // Scroll to bottom to show latest logs immediately
                     const logContainer = document.getElementById(`transferLog-${this.activeTabId}`);
                     if (logContainer) {
-                        logContainer.scrollTop = 0;
+                        logContainer.scrollTop = logContainer.scrollHeight;
                     }
                 } else {
                     this.showAlert('Auto-scroll disabled for current tab', 'info');
@@ -2208,9 +2222,9 @@ class DragonCPUI {
                 autoScrollBtn.title = 'Auto-scroll to newest enabled';
                 this.showAlert('Auto-scroll to newest enabled', 'info');
                 
-                // Scroll to top to show newest logs immediately
+                // Scroll to bottom to show latest logs immediately
                 const logContainer = document.getElementById('transferLog');
-                logContainer.scrollTop = 0;
+                logContainer.scrollTop = logContainer.scrollHeight;
             } else {
                 autoScrollBtn.innerHTML = '<i class="bi bi-arrow-up-circle"></i>';
                 autoScrollBtn.title = 'Auto-scroll to newest disabled';
@@ -2261,8 +2275,8 @@ class DragonCPUI {
             fullscreenHeader.innerHTML = `<i class="bi bi-terminal"></i> ${this.escapeHtml(transferName)} - Fullscreen`;
         }
         
-        // Format logs for fullscreen display (newest first)
-        const formattedLogs = logsToShow.slice().reverse().map(log => {
+        // Format logs for fullscreen display (chronological order)
+        const formattedLogs = logsToShow.map(log => {
             const logClass = this.getLogLineClass(log);
             return `<div class="log-line ${logClass}">${this.escapeHtml(log)}</div>`;
         }).join('');
@@ -2270,8 +2284,8 @@ class DragonCPUI {
         fullscreenLog.innerHTML = formattedLogs;
         fullscreenModal.classList.add('show');
         
-        // Scroll to top to show newest logs first
-        fullscreenLog.scrollTop = 0;
+        // Scroll to bottom to show latest logs
+        fullscreenLog.scrollTop = fullscreenLog.scrollHeight;
         
         // Prevent body scroll
         document.body.style.overflow = 'hidden';
@@ -2326,10 +2340,7 @@ class DragonCPUI {
                 }
                 
                 // Scroll to the log card
-                document.getElementById('logCard').scrollIntoView({ 
-                    behavior: 'smooth',
-                    block: 'nearest'
-                });
+                // Avoid auto-scrolling the page; just reveal content without changing viewport position
                 
                 this.showAlert(`Loaded ${result.log_count} log lines`, 'info');
             } else {
@@ -3490,7 +3501,7 @@ class DragonCPUI {
         // Add event listeners to all collapsible headers
         document.addEventListener('click', (e) => {
             const header = e.target.closest('.collapsible-header');
-            if (header && !e.target.closest('.btn, .log-controls, .breadcrumb')) {
+            if (header && !e.target.closest('.btn, .log-controls, .breadcrumb, .log-nav-tabs, #logTabs, #logTabsContainer, .nav-tabs')) {
                 e.preventDefault();
                 e.stopPropagation();
                 this.toggleCardCollapse(header);
@@ -3501,7 +3512,7 @@ class DragonCPUI {
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' || e.key === ' ') {
                 const header = document.activeElement.closest('.collapsible-header');
-                if (header && !e.target.closest('.btn, .log-controls, .breadcrumb')) {
+                if (header && !e.target.closest('.btn, .log-controls, .breadcrumb, .log-nav-tabs, #logTabs, #logTabsContainer, .nav-tabs')) {
                     e.preventDefault();
                     this.toggleCardCollapse(header);
                 }
