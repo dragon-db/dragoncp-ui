@@ -42,6 +42,13 @@ class DragonCPUI {
         this.isWebSocketConnected = false;
         this.wasAutoDisconnected = false;
         this.hasEverConnected = false;
+
+        // Throttling for active transfer refresh to reduce UI churn
+        this._activeRefreshScheduled = false;
+        this._lastActiveRefreshAt = 0;
+
+        // Track last known progress percentage per transfer for smooth bar updates
+        this.transferProgress = new Map();
         
         this.initializeEventListeners();
         this.initializeWebSocket();
@@ -59,6 +66,131 @@ class DragonCPUI {
         window.addEventListener('resize', () => {
             this.updateTabScrollIndicators();
         });
+    }
+
+    scheduleActiveTransferRefresh() {
+        const now = Date.now();
+        const minIntervalMs = 1000; // throttle to at most once per second
+        const elapsed = now - (this._lastActiveRefreshAt || 0);
+        if (elapsed >= minIntervalMs) {
+            this._lastActiveRefreshAt = now;
+            this.loadActiveTransfers();
+            return;
+        }
+        if (this._activeRefreshScheduled) return;
+        this._activeRefreshScheduled = true;
+        setTimeout(() => {
+            this._activeRefreshScheduled = false;
+            this._lastActiveRefreshAt = Date.now();
+            this.loadActiveTransfers();
+        }, Math.max(50, minIntervalMs - elapsed));
+    }
+
+    // Update a specific card's progress using socket data (includes percentage parsing)
+    updateCardProgressFromSocket(payload) {
+        const { transfer_id, logs = [], status } = payload || {};
+        if (!transfer_id) return;
+        const item = document.querySelector(`#transfer-item-${transfer_id}`);
+        if (!item) return;
+        if (item.matches(':hover') || (document.activeElement && item.contains(document.activeElement))) {
+            // Don't update while interacting
+            return;
+        }
+
+        // Determine percentage from latest logs if possible
+        let percentage = NaN;
+        let speed = null;
+        for (let i = logs.length - 1; i >= 0 && i >= logs.length - 10; i--) {
+            const line = logs[i] || '';
+            const m = line.match(/(\d{1,3})%\s+([0-9.,]+[kmgtKMGT]?B\/s)/) || line.match(/(\d{1,3})%/);
+            if (m) {
+                percentage = parseInt(m[1]);
+                const sm = line.match(/([0-9.,]+[kmgtKMGT]?B\/s)/);
+                if (sm) speed = sm[1];
+                break;
+            }
+        }
+
+        // Progress text
+        const progressText = item.querySelector('.transfer-progress');
+        if (progressText && payload.progress) {
+            progressText.textContent = payload.progress;
+        }
+
+        // Status badge
+        const badge = item.querySelector('.transfer-status-badge');
+        if (badge && status) {
+            badge.textContent = status;
+            badge.className = `transfer-status-badge transfer-status-${status}`;
+        }
+
+        // Manage progress bar presence and width (smooth, no reset)
+        let progressBar = item.querySelector('.progress-bar');
+        if (status === 'running') {
+            if (!progressBar) {
+                // create bar
+                const wrapper = document.createElement('div');
+                wrapper.className = 'mt-2';
+                const lastKnown = this.transferProgress.get(transfer_id);
+                const initial = !isNaN(percentage)
+                    ? Math.max(1, Math.min(100, percentage))
+                    : (typeof lastKnown === 'number' ? lastKnown : 1);
+                wrapper.innerHTML = `
+                    <div class="progress" style="height: 6px;">
+                        <div class="progress-bar" style="width: ${initial}%"></div>
+                    </div>
+                    <div class="d-flex justify-content-between mt-1">
+                        <small class="text-muted">${!isNaN(percentage) ? `${percentage}% complete` : 'Processing...'}</small>
+                        ${speed ? `<small class=\"text-muted\">${this.escapeHtml(speed)}</small>` : ''}
+                    </div>
+                `;
+                progressText?.insertAdjacentElement('afterend', wrapper);
+                progressBar = wrapper.querySelector('.progress-bar');
+            } else {
+                if (!isNaN(percentage)) {
+                    const target = Math.max(0, Math.min(100, percentage));
+                    this.transferProgress.set(transfer_id, target);
+                    const currentVal = parseFloat((progressBar.style.width || '0').replace('%', '')) || 0;
+                    if (target > currentVal) {
+                        // Smooth step when a big jump occurs to avoid visual reset
+                        const delta = target - currentVal;
+                        const step = delta > 20 ? Math.max(5, Math.floor(delta / 2)) : delta;
+                        progressBar.style.width = `${Math.min(target, currentVal + step)}%`;
+                        setTimeout(() => {
+                            progressBar.style.width = `${target}%`;
+                        }, 100);
+                    } else {
+                        progressBar.style.width = `${target}%`;
+                    }
+                }
+                const mt2 = progressBar.closest('.mt-2');
+                const dflex = mt2 ? mt2.querySelector('.d-flex') : null;
+                if (dflex) {
+                    const smalls = dflex.querySelectorAll('small.text-muted');
+                    if (smalls.length >= 1) {
+                        smalls[0].textContent = !isNaN(percentage) ? `${percentage}% complete` : 'Processing...';
+                    }
+                    if (speed) {
+                        if (smalls.length >= 2) {
+                            smalls[1].textContent = speed;
+                        } else {
+                            const s = document.createElement('small');
+                            s.className = 'text-muted';
+                            s.textContent = speed;
+                            dflex.appendChild(s);
+                        }
+                    } else if (smalls.length >= 2) {
+                        dflex.removeChild(smalls[1]);
+                    }
+                }
+            }
+        } else {
+            // not running: remove bar if exists
+            if (progressBar) {
+                const mt2 = progressBar.closest('.mt-2');
+                mt2?.parentElement?.removeChild(mt2);
+            }
+        }
     }
 
     initializeActivityTracking() {
@@ -729,14 +861,14 @@ class DragonCPUI {
         this.socket.on('transfer_progress', (data) => {
             this.updateTransferProgress(data);
             // Refresh transfer management display for progress bars
-            this.loadActiveTransfers();
+            this.scheduleActiveTransferRefresh();
             // Don't count transfer progress as user activity
         });
 
         this.socket.on('transfer_complete', (data) => {
             this.handleTransferComplete(data);
             // Refresh transfer management display
-            this.loadActiveTransfers();
+            this.scheduleActiveTransferRefresh();
             // Don't count transfer completion as user activity
         });
 
@@ -1764,6 +1896,14 @@ class DragonCPUI {
     updateTransferProgress(data) {
         // Update logs for the specific transfer
         this.updateTransferTabLogs(data.transfer_id, data.logs, data.log_count, data.status || 'running');
+
+        // Update the corresponding card's progress bar and text in-place from socket data
+        try {
+            this.updateCardProgressFromSocket(data);
+        } catch (e) {
+            // Fallback: schedule a throttled refresh of active transfers
+            this.scheduleActiveTransferRefresh();
+        }
     }
 
     handleTransferComplete(data) {
@@ -1775,6 +1915,13 @@ class DragonCPUI {
             this.showAlert('Transfer completed successfully!', 'success');
         } else {
             this.showAlert(`Transfer failed: ${data.message}`, 'danger');
+        }
+
+        // Update the corresponding card's progress bar and text in-place
+        try {
+            this.updateCardProgressFromSocket(data);
+        } catch (e) {
+            this.scheduleActiveTransferRefresh();
         }
     }
 
@@ -2982,49 +3129,140 @@ class DragonCPUI {
         const container = document.getElementById('transferList');
         const countBadge = document.getElementById('activeTransferCount');
         const noTransfersMessage = document.getElementById('noTransfersMessage');
-        
+
         // Update count badge
         const activeCount = transfers.filter(t => t.status === 'running' || t.status === 'pending').length;
         countBadge.textContent = `${activeCount} active`;
-        
-        container.innerHTML = '';
-        
+
+        // Handle empty state
         if (transfers.length === 0) {
+            // Remove all existing items
+            container.innerHTML = '';
             noTransfersMessage.style.display = 'block';
             return;
         }
-        
+
         noTransfersMessage.style.display = 'none';
-        
+
+        // One-time migration: if old DOM (no data-transfer-id), clear to avoid duplicates
+        if (!container.querySelector('.transfer-item[data-transfer-id]') && container.children.length > 0) {
+            container.innerHTML = '';
+        }
+
+        // Build a set of incoming transfer IDs for diffing
+        const incomingIds = new Set(transfers.map(t => t.id));
+
+        // Remove DOM items that no longer exist
+        const existingCols = Array.from(container.children);
+        existingCols.forEach(col => {
+            const item = col.querySelector('.transfer-item');
+            const id = item?.getAttribute('data-transfer-id');
+            if (id && !incomingIds.has(id)) {
+                container.removeChild(col);
+            }
+        });
+
+        // Update or create items
         transfers.forEach(transfer => {
-            const col = document.createElement('div');
-            col.className = 'col-lg-6 col-xl-4';
-            
-            const displayTitle = transfer.parsed_title || transfer.folder_name;
-            const displaySubtitle = this.buildTransferSubtitle(transfer);
-            const timeAgo = this.getTimeAgo(transfer.start_time);
-            
-            col.innerHTML = `
-                <div class="transfer-item">
-                    <div class="d-flex justify-content-between align-items-start mb-2">
-                        <div class="transfer-title">
-                            <i class="bi bi-${this.getTransferTypeIcon(transfer.transfer_type)} transfer-type-icon"></i>
-                            ${this.escapeHtml(displayTitle)}
-                        </div>
-                        <span class="transfer-status-badge transfer-status-${transfer.status}">
-                            ${transfer.status}
-                        </span>
-                    </div>
-                    <div class="transfer-meta">
-                        <div><strong>Type:</strong> ${this.escapeHtml(transfer.media_type)}</div>
-                        ${displaySubtitle ? `<div><strong>Details:</strong> ${this.escapeHtml(displaySubtitle)}</div>` : ''}
-                        <div class="transfer-time"><strong>Started:</strong> ${timeAgo}</div>
-                    </div>
-                    <div class="transfer-progress">
-                        ${this.escapeHtml(transfer.progress || 'Initializing...')}
-                    </div>
-                    ${transfer.status === 'running' ? this.renderTransferProgressBar(transfer) : ''}
-                    <div class="transfer-actions">
+            const existingItem = container.querySelector(`#transfer-item-${transfer.id}`);
+            if (existingItem) {
+                // Skip updating if user is interacting with this item
+                if (existingItem.matches(':hover') || (document.activeElement && existingItem.contains(document.activeElement))) {
+                    return;
+                }
+
+                // Update status badge
+                const statusBadge = existingItem.querySelector('.transfer-status-badge');
+                if (statusBadge) {
+                    statusBadge.textContent = transfer.status;
+                    statusBadge.className = `transfer-status-badge transfer-status-${transfer.status}`;
+                }
+
+                // Update title text
+                const titleText = existingItem.querySelector('.transfer-title-text');
+                if (titleText) {
+                    const displayTitle = transfer.parsed_title || transfer.folder_name;
+                    titleText.textContent = displayTitle || '';
+                }
+
+                // Update meta (type + details) line and started time
+                const typeLine = existingItem.querySelector('.transfer-type-line');
+                if (typeLine) {
+                    const displaySubtitle = this.buildTransferSubtitle(transfer);
+                    typeLine.innerHTML = `<strong>Type:</strong> ${this.escapeHtml(transfer.media_type)}${displaySubtitle ? ` <span class="transfer-details">• ${this.escapeHtml(displaySubtitle)}</span>` : ''}`;
+                }
+                const startedEl = existingItem.querySelector('.transfer-time');
+                if (startedEl) {
+                    startedEl.innerHTML = `<strong>Started:</strong> ${this.getTimeAgo(transfer.start_time)}`;
+                }
+
+                // Update progress text
+                const progressText = existingItem.querySelector('.transfer-progress');
+                if (progressText) {
+                    progressText.textContent = transfer.progress || 'Initializing...';
+                }
+
+                // Update or toggle progress bar without resetting width on unknown percentage
+                const progressBar = existingItem.querySelector('.progress-bar');
+                if (transfer.status === 'running') {
+                    const progressInfo = this.parseTransferProgress(transfer);
+                    if (!progressBar) {
+                        // Insert progress bar right after progress text
+                        const wrapper = document.createElement('div');
+                        wrapper.className = 'mt-2';
+                        // Use last known percentage if available to avoid reset feel
+                        const lastKnown = this.transferProgress.get(transfer.id);
+                        const initial = (progressInfo.percentage > 0 ? progressInfo.percentage : (typeof lastKnown === 'number' ? lastKnown : 1));
+                        wrapper.innerHTML = `
+                            <div class="progress" style="height: 6px;">
+                                <div class="progress-bar" style="width: ${initial}%"></div>
+                            </div>
+                            <div class="d-flex justify-content-between mt-1">
+                                <small class="text-muted">${progressInfo.percentage > 0 ? `${progressInfo.percentage}% complete` : 'Processing...'}</small>
+                                ${progressInfo.speed ? `<small class="text-muted">${this.escapeHtml(progressInfo.speed)}</small>` : ''}
+                            </div>
+                        `;
+                        progressText?.insertAdjacentElement('afterend', wrapper);
+                    } else {
+                        // Only update width when we have a valid percentage; don't force back to 0
+                        const info = this.parseTransferProgress(transfer);
+                        if (info.percentage && info.percentage > 0) {
+                            // cache last known
+                            this.transferProgress.set(transfer.id, info.percentage);
+                            const current = parseInt(progressBar.style.width || '0');
+                            if (isNaN(current) || current !== info.percentage) {
+                                progressBar.style.width = `${Math.max(0, Math.min(100, info.percentage))}%`;
+                            }
+                            const mt2 = progressBar.closest('.mt-2');
+                            const dflex = mt2 ? mt2.querySelector('.d-flex') : null;
+                            if (dflex) {
+                                const smalls = dflex.querySelectorAll('small.text-muted');
+                                if (smalls.length >= 1) {
+                                    smalls[0].textContent = `${info.percentage}% complete`;
+                                }
+                                if (info.speed) {
+                                    if (smalls.length >= 2) {
+                                        smalls[1].textContent = info.speed;
+                                    } else {
+                                        const s = document.createElement('small');
+                                        s.className = 'text-muted';
+                                        s.textContent = info.speed;
+                                        dflex.appendChild(s);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if (progressBar) {
+                    // Remove progress bar when not running
+                    const containerEl = progressBar.closest('.mt-2');
+                    containerEl?.parentElement?.removeChild(containerEl);
+                }
+
+                // Update actions
+                const actions = existingItem.querySelector('.transfer-actions');
+                if (actions) {
+                    actions.innerHTML = `
                         <button class="btn btn-sm btn-outline-info" onclick="dragonCP.showTransferDetails('${transfer.id}')">
                             <i class="bi bi-eye"></i> Details
                         </button>
@@ -3033,7 +3271,7 @@ class DragonCPUI {
                                 <i class="bi bi-x-circle"></i> Cancel
                             </button>` : ''
                         }
-                        ${transfer.status === 'failed' || transfer.status === 'cancelled' ? 
+                        ${(transfer.status === 'failed' || transfer.status === 'cancelled') ? 
                             `<button class="btn btn-sm btn-outline-success" onclick="dragonCP.restartTransfer('${transfer.id}')">
                                 <i class="bi bi-arrow-clockwise"></i> Restart
                             </button>` : ''
@@ -3043,11 +3281,59 @@ class DragonCPUI {
                                 <i class="bi bi-terminal"></i> Logs (${transfer.log_count})
                             </button>` : ''
                         }
+                    `;
+                }
+            } else {
+                // Create new item
+                const col = document.createElement('div');
+                col.className = 'col-lg-6 col-xl-4';
+
+                const displayTitle = transfer.parsed_title || transfer.folder_name;
+                const displaySubtitle = this.buildTransferSubtitle(transfer);
+                const timeAgo = this.getTimeAgo(transfer.start_time);
+
+                col.innerHTML = `
+                    <div class="transfer-item" id="transfer-item-${transfer.id}" data-transfer-id="${transfer.id}">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <div class="transfer-title">
+                                <i class="bi bi-${this.getTransferTypeIcon(transfer.transfer_type)} transfer-type-icon"></i>
+                                <span class="transfer-title-text">${this.escapeHtml(displayTitle)}</span>
+                            </div>
+                            <span class="transfer-status-badge transfer-status-${transfer.status}">
+                                ${transfer.status}
+                            </span>
+                        </div>
+                        <div class="transfer-meta">
+                            <div class="transfer-type-line"><strong>Type:</strong> ${this.escapeHtml(transfer.media_type)}${displaySubtitle ? ` <span class=\"transfer-details\">• ${this.escapeHtml(displaySubtitle)}</span>` : ''}</div>
+                            <div class="transfer-time"><strong>Started:</strong> ${timeAgo}</div>
+                        </div>
+                        <div class="transfer-progress">${this.escapeHtml(transfer.progress || 'Initializing...')}</div>
+                        <!-- Progress bar inserted dynamically from socket updates to prevent resets -->
+                        <div class="transfer-actions">
+                            <button class="btn btn-sm btn-outline-info" onclick="dragonCP.showTransferDetails('${transfer.id}')">
+                                <i class="bi bi-eye"></i> Details
+                            </button>
+                            ${transfer.status === 'running' ? 
+                                `<button class="btn btn-sm btn-outline-danger" onclick="dragonCP.cancelTransfer('${transfer.id}')">
+                                    <i class="bi bi-x-circle"></i> Cancel
+                                </button>` : ''
+                            }
+                            ${(transfer.status === 'failed' || transfer.status === 'cancelled') ? 
+                                `<button class="btn btn-sm btn-outline-success" onclick="dragonCP.restartTransfer('${transfer.id}')">
+                                    <i class="bi bi-arrow-clockwise"></i> Restart
+                                </button>` : ''
+                            }
+                            ${transfer.log_count > 0 ? 
+                                `<button class="btn btn-sm btn-outline-secondary" onclick="dragonCP.showTransferLogs('${transfer.id}')">
+                                    <i class="bi bi-terminal"></i> Logs (${transfer.log_count})
+                                </button>` : ''
+                            }
+                        </div>
                     </div>
-                </div>
-            `;
-            
-            container.appendChild(col);
+                `;
+
+                container.appendChild(col);
+            }
         });
     }
 

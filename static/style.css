@@ -1784,7 +1784,7 @@ button#refreshSyncStatusBtn i.spinning,
 
 /* Transfer Management Styles */
 .transfer-item {
-    transition: all 0.3s ease;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
     border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 1rem;
@@ -1792,10 +1792,31 @@ button#refreshSyncStatusBtn i.spinning,
     background: rgba(255, 255, 255, 0.05);
 }
 
+/* Keep a stable layout and consistent height cues */
+.transfer-item .transfer-title {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.transfer-item .transfer-meta .transfer-type-line .transfer-details {
+    color: var(--text-muted);
+    margin-left: 0.25rem;
+}
+
+.transfer-item .transfer-meta .transfer-type-line {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .transfer-item:hover {
-    background: rgba(255, 255, 255, 0.1);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+    /* Consistent with disk-usage-card:hover, but without transform */
+    background: linear-gradient(45deg, var(--card-bg), #532373);
+    border-color: #994db7;
+    /* Remove translate to avoid card jump during frequent updates */
+    transform: none;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
 }
 
 .transfer-item .transfer-title {
@@ -1831,7 +1852,8 @@ button#refreshSyncStatusBtn i.spinning,
 }
 
 .transfer-item .progress-bar {
-    transition: width 0.3s ease;
+    transition: width 0.4s ease-in-out;
+    background: linear-gradient(45deg, var(--success-color), #229954) !important;
 }
 
 .transfer-status-badge {
