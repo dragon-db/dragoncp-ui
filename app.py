@@ -1023,20 +1023,42 @@ def api_restart_transfer(transfer_id):
         print(f"❌ Error restarting transfer {transfer_id}: {e}")
         return jsonify({"status": "error", "message": f"Failed to restart transfer: {str(e)}"})
 
+@app.route('/api/transfer/<transfer_id>/delete', methods=['POST'])
+def api_delete_transfer(transfer_id):
+    """Delete a transfer record from the database"""
+    try:
+        # Get the transfer details first
+        transfer = transfer_manager.transfer_model.get(transfer_id)
+        if not transfer:
+            return jsonify({"status": "error", "message": "Transfer not found"})
+        
+        # Check if transfer is currently running
+        if transfer['status'] == 'running':
+            return jsonify({"status": "error", "message": "Cannot delete a running transfer. Please cancel it first."})
+        
+        # Delete the transfer
+        deleted = transfer_manager.transfer_model.delete(transfer_id)
+        if deleted:
+            return jsonify({"status": "success", "message": "Transfer deleted successfully"})
+        else:
+            return jsonify({"status": "error", "message": "Failed to delete transfer"})
+    except Exception as e:
+        print(f"❌ Error deleting transfer {transfer_id}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to delete transfer: {str(e)}"})
+
 @app.route('/api/transfers/cleanup', methods=['POST'])
 def api_cleanup_transfers():
-    """Clean up old completed transfers"""
+    """Remove duplicate transfers based on destination path, keeping only the latest successful transfer"""
     try:
-        days = request.json.get('days', 30) if request.json else 30
-        cleaned = transfer_manager.transfer_model.cleanup_old_transfers(days)
+        cleaned = transfer_manager.transfer_model.cleanup_duplicate_transfers()
         return jsonify({
             "status": "success", 
-            "message": f"Cleaned up {cleaned} old transfers",
+            "message": f"Cleaned up {cleaned} duplicate transfers",
             "cleaned_count": cleaned
         })
     except Exception as e:
-        print(f"❌ Error cleaning up transfers: {e}")
-        return jsonify({"status": "error", "message": f"Failed to cleanup transfers: {str(e)}"})
+        print(f"❌ Error cleaning up duplicate transfers: {e}")
+        return jsonify({"status": "error", "message": f"Failed to cleanup duplicate transfers: {str(e)}"})
 
 @app.route('/api/test/simulate', methods=['POST'])
 def api_start_simulation():

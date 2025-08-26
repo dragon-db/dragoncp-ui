@@ -3281,6 +3281,11 @@ class DragonCPUI {
                                 <i class="bi bi-terminal"></i> Logs (${transfer.log_count})
                             </button>` : ''
                         }
+                        ${transfer.status !== 'running' ? 
+                            `<button class="btn btn-sm btn-outline-danger" onclick="dragonCP.deleteTransfer('${transfer.id}')">
+                                <i class="bi bi-trash"></i> Delete
+                            </button>` : ''
+                        }
                     `;
                 }
             } else {
@@ -3326,6 +3331,11 @@ class DragonCPUI {
                             ${transfer.log_count > 0 ? 
                                 `<button class="btn btn-sm btn-outline-secondary" onclick="dragonCP.showTransferLogs('${transfer.id}')">
                                     <i class="bi bi-terminal"></i> Logs (${transfer.log_count})
+                                </button>` : ''
+                            }
+                            ${transfer.status !== 'running' ? 
+                                `<button class="btn btn-sm btn-outline-danger" onclick="dragonCP.deleteTransfer('${transfer.id}')">
+                                    <i class="bi bi-trash"></i> Delete
                                 </button>` : ''
                             }
                         </div>
@@ -3531,6 +3541,11 @@ class DragonCPUI {
                                 <i class="bi bi-arrow-clockwise"></i>
                             </button>` : ''
                         }
+                        ${transfer.status !== 'running' ? 
+                            `<button class="btn btn-outline-danger" onclick="dragonCP.deleteTransfer('${transfer.id}')" title="Delete">
+                                <i class="bi bi-trash"></i>
+                            </button>` : ''
+                        }
                     </div>
                 </td>
             `;
@@ -3637,6 +3652,38 @@ class DragonCPUI {
         
         logContainer.innerHTML = formattedLogs;
         this.scrollToBottom(logContainer);
+        
+        // Add action buttons to the modal
+        const modalBody = document.querySelector('#transferDetailsModal .modal-body');
+        const actionButtonsDiv = document.createElement('div');
+        actionButtonsDiv.className = 'mt-3 pt-3 border-top';
+        actionButtonsDiv.innerHTML = `
+            <h6>Actions:</h6>
+            <div class="btn-group">
+                ${transfer.status === 'running' ? 
+                    `<button class="btn btn-outline-danger" onclick="dragonCP.cancelTransfer('${transfer.id}')" title="Cancel">
+                        <i class="bi bi-x-circle"></i> Cancel
+                    </button>` : ''
+                }
+                ${transfer.status === 'failed' || transfer.status === 'cancelled' ? 
+                    `<button class="btn btn-outline-success" onclick="dragonCP.restartTransfer('${transfer.id}')" title="Restart">
+                        <i class="bi bi-arrow-clockwise"></i> Restart
+                    </button>` : ''
+                }
+                ${transfer.status !== 'running' ? 
+                    `<button class="btn btn-outline-danger" onclick="dragonCP.deleteTransfer('${transfer.id}')" title="Delete">
+                        <i class="bi bi-trash"></i> Delete
+                    </button>` : ''
+                }
+            </div>
+        `;
+        
+        // Remove any existing action buttons and add new ones
+        const existingActionButtons = modalBody.querySelector('.border-top');
+        if (existingActionButtons) {
+            existingActionButtons.remove();
+        }
+        modalBody.appendChild(actionButtonsDiv);
     }
 
     async restartTransfer(transferId) {
@@ -3659,30 +3706,62 @@ class DragonCPUI {
         }
     }
 
+    async deleteTransfer(transferId) {
+        try {
+            const confirmed = confirm('Are you sure you want to delete this transfer? This action cannot be undone.');
+            if (!confirmed) return;
+            
+            const response = await fetch(`/api/transfer/${transferId}/delete`, {
+                method: 'POST'
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.showAlert('Transfer deleted successfully!', 'success');
+                
+                // Close the transfer details modal if it's open
+                const transferDetailsModal = bootstrap.Modal.getInstance(document.getElementById('transferDetailsModal'));
+                if (transferDetailsModal) {
+                    transferDetailsModal.hide();
+                }
+                
+                // Refresh the appropriate lists
+                this.loadActiveTransfers();
+                this.loadAllTransfers();
+            } else {
+                this.showAlert('Failed to delete transfer: ' + result.message, 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to delete transfer:', error);
+            this.showAlert('Failed to delete transfer', 'danger');
+        }
+    }
+
     async cleanupOldTransfers() {
         try {
-            const confirmed = confirm('This will permanently delete old completed transfers. Continue?');
+            const confirmed = confirm('This will remove all duplicate transfers for the same destination path, keeping only the latest successful transfer. Continue?');
             if (!confirmed) return;
             
             const response = await fetch('/api/transfers/cleanup', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ days: 30 })
+                }
             });
             
             const result = await response.json();
             
             if (result.status === 'success') {
-                this.showAlert(`Cleaned up ${result.cleaned_count} old transfers`, 'success');
+                this.showAlert(`Cleaned up ${result.cleaned_count} duplicate transfers`, 'success');
                 this.loadActiveTransfers();
+                this.loadAllTransfers();
             } else {
-                this.showAlert('Failed to cleanup transfers: ' + result.message, 'danger');
+                this.showAlert('Failed to cleanup duplicate transfers: ' + result.message, 'danger');
             }
         } catch (error) {
-            console.error('Failed to cleanup transfers:', error);
-            this.showAlert('Failed to cleanup transfers', 'danger');
+            console.error('Failed to cleanup duplicate transfers:', error);
+            this.showAlert('Failed to cleanup duplicate transfers', 'danger');
         }
     }
 

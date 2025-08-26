@@ -54,6 +54,8 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_transfer_id ON transfers(transfer_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON transfers(status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_created_at ON transfers(created_at)')
+            # Helpful for duplicate cleanup queries
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_dest_status ON transfers(dest_path, status)')
             
             conn.commit()
         
@@ -220,6 +222,54 @@ class Transfer:
             '''.format(days))
             conn.commit()
             return cursor.rowcount
+    
+    def cleanup_duplicate_transfers(self) -> int:
+        """Remove duplicate completed transfers per dest_path, keeping only the most recent one.
+        """
+        with self.db.get_connection() as conn:
+            # Find dest_paths that have more than one completed transfer
+            duplicate_paths = conn.execute('''
+                SELECT dest_path
+                FROM transfers
+                WHERE status = 'completed' AND dest_path IS NOT NULL
+                GROUP BY dest_path
+                HAVING COUNT(*) > 1
+            ''').fetchall()
+
+            total_deleted = 0
+
+            for row in duplicate_paths:
+                dest_path = row[0]
+
+                # Determine the single record to keep for this dest_path
+                keep_row = conn.execute('''
+                    SELECT id, end_time, updated_at, created_at
+                    FROM transfers
+                    WHERE status = 'completed' AND dest_path = ?
+                    ORDER BY (end_time IS NULL), end_time DESC,
+                             (updated_at IS NULL), updated_at DESC,
+                             (created_at IS NULL), created_at DESC,
+                             id DESC
+                    LIMIT 1
+                ''', (dest_path,)).fetchone()
+
+                if keep_row is None:
+                    continue
+
+                keep_id = keep_row['id'] if isinstance(keep_row, sqlite3.Row) else keep_row[0]
+
+                # Delete all other completed entries for the same dest_path
+                cursor = conn.execute('''
+                    DELETE FROM transfers
+                    WHERE status = 'completed' AND dest_path = ? AND id <> ?
+                ''', (dest_path, keep_id))
+
+                deleted_count = cursor.rowcount or 0
+                total_deleted += deleted_count
+                print(f"🧹 Cleaned up {deleted_count} duplicate transfers for path: {dest_path} (kept id {keep_id})")
+
+            conn.commit()
+            return total_deleted
     
     def add_log(self, transfer_id: str, log_line: str) -> bool:
         """Add a log line to transfer"""
