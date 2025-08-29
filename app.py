@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import has_request_context
 from flask_socketio import SocketIO, emit
 import paramiko
 from werkzeug.utils import secure_filename
@@ -104,10 +105,11 @@ class DragonCPConfig:
     
     def get(self, key: str, default: str = "") -> str:
         """Get configuration value (env config takes precedence)"""
-        # First check session config (UI overrides)
-        session_config = session.get('ui_config', {})
-        if key in session_config:
-            return session_config[key]
+        # First check session config (UI overrides) only if in a request context
+        if has_request_context():
+            session_config = session.get('ui_config', {})
+            if key in session_config:
+                return session_config[key]
         
         # Fall back to env config
         value = self.env_config.get(key, default)
@@ -1045,6 +1047,181 @@ def api_delete_transfer(transfer_id):
     except Exception as e:
         print(f"❌ Error deleting transfer {transfer_id}: {e}")
         return jsonify({"status": "error", "message": f"Failed to delete transfer: {str(e)}"})
+
+@app.route('/api/backups')
+def api_list_backups():
+    """List transfer backups."""
+    try:
+        limit = request.args.get('limit', 100, type=int)
+        include_deleted = request.args.get('include_deleted', '0') in ('1', 'true', 'True')
+        backups = transfer_manager.backup_model.get_all(limit=limit, include_deleted=include_deleted)
+        return jsonify({
+            "status": "success",
+            "backups": backups,
+            "total": len(backups)
+        })
+    except Exception as e:
+        print(f"❌ Error listing backups: {e}")
+        return jsonify({"status": "error", "message": f"Failed to list backups: {str(e)}"}), 500
+
+@app.route('/api/backups/<backup_id>')
+def api_get_backup(backup_id):
+    """Get backup details."""
+    try:
+        backup = transfer_manager.backup_model.get(backup_id)
+        if not backup:
+            return jsonify({"status": "error", "message": "Backup not found"}), 404
+        return jsonify({"status": "success", "backup": backup})
+    except Exception as e:
+        print(f"❌ Error getting backup {backup_id}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to get backup: {str(e)}"}), 500
+
+@app.route('/api/backups/<backup_id>/files')
+def api_get_backup_files(backup_id):
+    """List files inside a backup."""
+    try:
+        limit = request.args.get('limit', type=int)
+        files = transfer_manager.backup_model.get_files(backup_id, limit=limit)
+        return jsonify({"status": "success", "files": files, "total": len(files)})
+    except Exception as e:
+        print(f"❌ Error getting backup files {backup_id}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to get backup files: {str(e)}"}), 500
+
+@app.route('/api/backups/<backup_id>/restore', methods=['POST'])
+def api_restore_backup(backup_id):
+    """Restore a backup (optionally selected files)."""
+    try:
+        payload = request.json or {}
+        # Legacy selective file restore path retained
+        files = payload.get('files')
+        if files and not isinstance(files, list):
+            return jsonify({"status": "error", "message": "'files' must be a list of relative paths"}), 400
+        if files:
+            ok, msg = transfer_manager.restore_backup(backup_id, files)
+            return (jsonify({"status": "success", "message": msg}) if ok
+                    else (jsonify({"status": "error", "message": msg}), 400))
+
+        # New snapshot-based restore flow
+        transfer_id = payload.get('transfer_id')
+        dry_run = bool(payload.get('dry_run', False))
+        if not transfer_id:
+            return jsonify({"status": "error", "message": "transfer_id is required for snapshot restore"}), 400
+        restore_id = payload.get('restore_id') or f"restore_{int(time.time())}"
+        ok, msg = transfer_manager.start_restore(restore_id, backup_id, transfer_id, dry_run=dry_run)
+        if ok:
+            return jsonify({"status": "success", "message": msg, "restore_id": restore_id})
+        else:
+            return jsonify({"status": "error", "message": msg}), 400
+    except Exception as e:
+        print(f"❌ Error restoring backup {backup_id}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to restore backup: {str(e)}"}), 500
+
+@app.route('/api/backups/<backup_id>/delete', methods=['POST'])
+def api_delete_backup(backup_id):
+    """Delete a backup record and optionally remove backup files from disk."""
+    try:
+        payload = request.json or {}
+        delete_files = payload.get('delete_files', True)
+        ok, msg = transfer_manager.delete_backup(backup_id, delete_files=bool(delete_files))
+        if ok:
+            return jsonify({"status": "success", "message": msg})
+        else:
+            return jsonify({"status": "error", "message": msg}), 400
+    except Exception as e:
+        print(f"❌ Error deleting backup {backup_id}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to delete backup: {str(e)}"}), 500
+
+@app.route('/api/backups/reindex', methods=['POST'])
+def api_reindex_backups():
+    """Scan BACKUP_PATH for existing backup folders and import missing ones."""
+    try:
+        imported, skipped = transfer_manager.reindex_backups()
+        return jsonify({
+            "status": "success",
+            "message": f"Imported {imported} backups, skipped {skipped}.",
+            "imported": imported,
+            "skipped": skipped
+        })
+    except Exception as e:
+        print(f"❌ Error reindexing backups: {e}")
+        return jsonify({"status": "error", "message": f"Failed to reindex backups: {str(e)}"}), 500
+
+# ===== New Analysis/Snapshot/Sync/Restore APIs =====
+
+@app.route('/api/transfers/<transfer_id>/analysis', methods=['POST'])
+def api_transfer_analysis(transfer_id):
+    try:
+        result = transfer_manager.analyze_sync(transfer_id)
+        return jsonify({"status": "success", "analysis": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+@app.route('/api/transfers/<transfer_id>/snapshot', methods=['POST'])
+def api_transfer_snapshot(transfer_id):
+    try:
+        payload = request.json or {}
+        category = payload.get('category', 'pre_sync_snapshot')
+        related_to = payload.get('related_to')
+        snap_id = transfer_manager.create_snapshot(transfer_id, category=category, related_to=related_to)
+        if snap_id:
+            return jsonify({"status": "success", "snapshot_id": snap_id})
+        return jsonify({"status": "error", "message": "Snapshot not created (possibly empty dest)"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+@app.route('/api/transfers/<transfer_id>/sync', methods=['POST'])
+def api_transfer_sync(transfer_id):
+    try:
+        payload = request.json or {}
+        strategy = payload.get('strategy', 'auto')
+        dry_run = bool(payload.get('dry_run', False))
+        ok = transfer_manager.run_sync(transfer_id, strategy=strategy, dry_run=dry_run)
+        if ok:
+            return jsonify({"status": "success", "message": "Sync started", "strategy": strategy, "dry_run": dry_run})
+        return jsonify({"status": "error", "message": "Failed to start sync"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+@app.route('/api/restores', methods=['POST'])
+def api_start_restore():
+    try:
+        payload = request.json or {}
+        source_backup_id = payload.get('source_backup_id')
+        transfer_id = payload.get('transfer_id')
+        dry_run = bool(payload.get('dry_run', False))
+        if not source_backup_id or not transfer_id:
+            return jsonify({"status": "error", "message": "source_backup_id and transfer_id are required"}), 400
+        restore_id = payload.get('restore_id') or f"restore_{int(time.time())}"
+        ok, msg = transfer_manager.start_restore(restore_id, source_backup_id, transfer_id, dry_run=dry_run)
+        if ok:
+            return jsonify({"status": "success", "message": msg, "restore_id": restore_id})
+        else:
+            return jsonify({"status": "error", "message": msg}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+@app.route('/api/restores/<restore_id>/undo', methods=['POST'])
+def api_undo_restore(restore_id):
+    try:
+        payload = request.json or {}
+        dry_run = bool(payload.get('dry_run', False))
+        ok, msg = transfer_manager.undo_restore(restore_id, dry_run=dry_run)
+        if ok:
+            return jsonify({"status": "success", "message": msg})
+        else:
+            return jsonify({"status": "error", "message": msg}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+
+@app.route('/api/restores', methods=['GET'])
+def api_list_restores():
+    try:
+        transfer_id = request.args.get('transfer_id')
+        limit = request.args.get('limit', 100, type=int)
+        items = transfer_manager.list_restores(transfer_id=transfer_id, limit=limit)
+        return jsonify({"status": "success", "restores": items, "total": len(items)})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
 
 @app.route('/api/transfers/cleanup', methods=['POST'])
 def api_cleanup_transfers():

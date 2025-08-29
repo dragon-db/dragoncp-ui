@@ -57,6 +57,8 @@ class DragonCPUI {
         this.initializeConnection();
         this.initializeDiskUsageMonitoring();
         this.initializeTransferManagement();
+        this.createBackupsUIElements();
+        this.initializeBackupRestoreCard();
         
         // Initialize collapsible cards functionality
         this.collapsedCards = new Set(); // Track collapsed cards
@@ -66,6 +68,184 @@ class DragonCPUI {
         window.addEventListener('resize', () => {
             this.updateTabScrollIndicators();
         });
+    }
+    initializeBackupRestoreCard() {
+        const hide = () => {
+            const card = document.getElementById('backupRestoreCard');
+            if (card) card.style.display = 'none';
+        };
+        const btnClose = document.getElementById('backupCloseBtn');
+        if (btnClose) {
+            btnClose.addEventListener('click', hide);
+        }
+        const btnAnalyze = document.getElementById('backupAnalyzeBtn');
+        if (btnAnalyze) {
+            btnAnalyze.addEventListener('click', async () => {
+                if (!this.activeTabId) return;
+                await this.runAnalysisForTransfer(this.activeTabId);
+            });
+        }
+        const btnSync = document.getElementById('backupAutoSyncBtn');
+        if (btnSync) {
+            btnSync.addEventListener('click', async () => {
+                if (!this.activeTabId) return;
+                await this.startAutoSync(this.activeTabId);
+            });
+        }
+    }
+
+    async runAnalysisForTransfer(transferId) {
+        try {
+            const res = await fetch(`/api/transfers/${transferId}/analysis`, { method: 'POST' });
+            const data = await res.json();
+            const out = document.getElementById('backupAnalysisOutput');
+            const sum = document.getElementById('backupAnalysisSummary');
+            if (data.status === 'success') {
+                const a = data.analysis || {};
+                if (sum) sum.textContent = `${a.sync_type || 'UNKNOWN'} | snapshot: ${a.needs_snapshot ? 'YES' : 'NO'} | del: ${(a.deletions||[]).length} mod: ${(a.modifications||[]).length} add: ${(a.additions||[]).length}`;
+                if (out) out.textContent = (a.raw_output || []).join('\n');
+            } else {
+                if (sum) sum.textContent = 'Analysis failed';
+                if (out) out.textContent = data.message || 'Error';
+            }
+        } catch (e) {
+            const out = document.getElementById('backupAnalysisOutput');
+            const sum = document.getElementById('backupAnalysisSummary');
+            if (sum) sum.textContent = 'Analysis error';
+            if (out) out.textContent = String(e);
+        }
+    }
+
+    async startAutoSync(transferId) {
+        try {
+            const res = await fetch(`/api/transfers/${transferId}/sync`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ strategy: 'auto', dry_run: false }) });
+            const data = await res.json();
+            if (data.status === 'success') {
+                this.showAlert('Sync started', 'success');
+            } else {
+                this.showAlert(data.message || 'Failed to start sync', 'danger');
+            }
+        } catch (e) {
+            this.showAlert('Failed to start sync', 'danger');
+        }
+    }
+
+    async loadSnapshotsAndRestores(transferId) {
+        try {
+            // Snapshots
+            const bres = await fetch('/api/backups');
+            const bjson = await bres.json();
+            const list = (bjson.backups || []).filter(b => b.transfer_id === transferId);
+            const snapEl = document.getElementById('snapshotList');
+            if (snapEl) {
+                if (!list.length) { snapEl.textContent = 'No snapshots to show'; }
+                else {
+                    snapEl.innerHTML = '';
+                    list.forEach(b => {
+                        const div = document.createElement('div');
+                        const title = `${b.folder_name || ''}${b.season_name ? ' - ' + b.season_name : ''}`;
+                        div.className = 'd-flex justify-content-between align-items-center py-1 border-bottom border-secondary-subtle';
+                        div.innerHTML = `
+                            <div>
+                                <span class="badge bg-secondary me-2">${this.escapeHtml(b.category || 'backup')}</span>
+                                <strong>${this.escapeHtml(title || b.backup_id)}</strong>
+                                <small class="text-muted ms-2">${(b.file_count||0)} files • ${this.humanReadableBytes(b.total_size||0)}</small>
+                            </div>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-info" data-action="dry-restore" data-id="${b.backup_id}"><i class="bi bi-eye"></i> Dry Run</button>
+                                <button class="btn btn-outline-success" data-action="restore" data-id="${b.backup_id}"><i class="bi bi-arrow-counterclockwise"></i> Restore</button>
+                            </div>`;
+                        snapEl.appendChild(div);
+                    });
+                    snapEl.querySelectorAll('button[data-action]').forEach(btn => {
+                        btn.addEventListener('click', async () => {
+                            const id = btn.getAttribute('data-id');
+                            const action = btn.getAttribute('data-action');
+                            await this.triggerRestoreAction(transferId, id, action === 'dry-restore');
+                        });
+                    });
+                }
+            }
+            // Restores
+            const rres = await fetch(`/api/restores?transfer_id=${encodeURIComponent(transferId)}`);
+            const rjson = await rres.json();
+            const rEl = document.getElementById('restoreList');
+            if (rEl) {
+                if (rjson.status !== 'success' || !(rjson.restores||[]).length) {
+                    rEl.textContent = 'No restore history';
+                } else {
+                    rEl.innerHTML = '';
+                    (rjson.restores||[]).forEach(r => {
+                        const row = document.createElement('div');
+                        row.className = 'd-flex justify-content-between align-items-center py-1 border-bottom border-secondary-subtle';
+                        row.innerHTML = `
+                            <div>
+                                <strong>${this.escapeHtml(r.restore_id)}</strong>
+                                <small class="text-muted ms-2">${this.escapeHtml(r.status)}</small>
+                            </div>
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-warning" data-action="undo" data-id="${r.restore_id}"><i class="bi bi-arrow-counterclockwise"></i> Undo</button>
+                            </div>`;
+                        rEl.appendChild(row);
+                    });
+                    rEl.querySelectorAll('button[data-action=undo]').forEach(btn => {
+                        btn.addEventListener('click', async () => {
+                            const rid = btn.getAttribute('data-id');
+                            await this.triggerUndoRestore(rid);
+                        });
+                    });
+                }
+            }
+        } catch (e) {
+            // no-op UI errors
+        }
+    }
+
+    async triggerRestoreAction(transferId, backupId, dryRun) {
+        try {
+            // Ensure a stable transfer tab id for logs if not active
+            if (!this.activeTabId) {
+                this.activeTabId = transferId;
+            }
+            const payload = { transfer_id: transferId, dry_run: !!dryRun };
+            const res = await fetch(`/api/backups/${backupId}/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            const data = await res.json();
+            if (data.status === 'success') {
+                this.showAlert(dryRun ? 'Restore dry-run started' : 'Restore started', 'success');
+            } else {
+                this.showAlert(data.message || 'Restore failed to start', 'danger');
+            }
+        } catch (e) {
+            this.showAlert('Restore failed to start', 'danger');
+        }
+    }
+
+    async triggerUndoRestore(restoreId, dryRun = false) {
+        try {
+            const res = await fetch(`/api/restores/${restoreId}/undo`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dry_run: !!dryRun }) });
+            const data = await res.json();
+            if (data.status === 'success') {
+                this.showAlert(dryRun ? 'Undo dry-run started' : 'Undo started', 'success');
+            } else {
+                this.showAlert(data.message || 'Undo failed to start', 'danger');
+            }
+        } catch (e) {
+            this.showAlert('Undo failed to start', 'danger');
+        }
+    }
+
+    showBackupRestoreCard(transferId) {
+        this.activeTabId = transferId;
+        const card = document.getElementById('backupRestoreCard');
+        if (card) {
+            card.style.display = 'block';
+            const ctx = document.getElementById('backupCardContext');
+            if (ctx) ctx.textContent = `Transfer: ${transferId}`;
+        }
+        this.runAnalysisForTransfer(transferId);
+        this.loadSnapshotsAndRestores(transferId);
+        // Scroll into view on smaller screens
+        setTimeout(() => card?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
     }
 
     scheduleActiveTransferRefresh() {
@@ -566,6 +746,14 @@ class DragonCPUI {
             this.cleanupOldTransfers();
         });
 
+        // Manage Backups button: repurpose to open backups card instead of modal
+        const manageBtn = document.getElementById('manageBackupsBtn');
+        if (manageBtn) {
+            manageBtn.addEventListener('click', () => {
+                this.showBackupsCard();
+            });
+        }
+
         document.getElementById('refreshAllTransfersBtn').addEventListener('click', () => {
             this.loadAllTransfers();
         });
@@ -688,6 +876,464 @@ class DragonCPUI {
         });
 
 
+    }
+
+    // ===== Backups: UI creation and handlers =====
+    createBackupsUIElements() {
+        try {
+            // Create Manage Backups button next to cleanup if not present
+            let manageBtn = document.getElementById('manageBackupsBtn');
+            const cleanupBtn = document.getElementById('cleanupTransfersBtn');
+            if (!manageBtn && cleanupBtn && cleanupBtn.parentElement) {
+                manageBtn = document.createElement('button');
+                manageBtn.id = 'manageBackupsBtn';
+                manageBtn.className = 'btn btn-outline-secondary';
+                manageBtn.innerHTML = '<i class="bi bi-archive"></i> Backups';
+                manageBtn.title = 'View and restore deleted-file backups';
+                cleanupBtn.parentElement.insertBefore(manageBtn, cleanupBtn.nextSibling);
+                manageBtn.addEventListener('click', () => this.showBackupsCard());
+            }
+
+            // Create Backups modal container if not exists
+            // Remove modal-based UI; we now use a dedicated card
+
+            // Create Backup Files modal
+            if (!document.getElementById('backupFilesModal')) {
+                const modalDiv = document.createElement('div');
+                modalDiv.id = 'backupFilesModal';
+                modalDiv.className = 'modal fade';
+                modalDiv.tabIndex = -1;
+                modalDiv.innerHTML = `
+                    <div class="modal-dialog modal-lg">
+                        <div class="modal-content">
+                            <div class="modal-header card-header gradient-accent">
+                                <h5 class="modal-title"><i class="bi bi-folder2-open"></i> Backup Files</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div id="backupFilesMeta" class="mb-2 text-muted small"></div>
+                                <div class="table-responsive" style="max-height: 50vh; overflow:auto">BG blur
+                                    <table class="table table-dark table-striped table-hover table-sm align-middle">
+                                        <thead>
+                                            <tr>
+                                                <th style="width:40px;"><input type="checkbox" id="backupFilesSelectAll"></th>
+                                                <th>Path</th>
+                                                <th>Size</th>
+                                                <th>Modified</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="backupFilesTable"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button id="restoreSelectedBtn" type="button" class="btn btn-outline-warning"><i class="bi bi-arrow-counterclockwise"></i> Restore Selected</button>
+                                <button id="restoreAllBtn" type="button" class="btn btn-outline-success"><i class="bi bi-arrow-counterclockwise"></i> Restore All</button>
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                            </div>
+                        </div>
+                    </div>`;
+                document.body.appendChild(modalDiv);
+                modalDiv.querySelector('#backupFilesSelectAll').addEventListener('change', (e) => {
+                    const checked = e.target.checked;
+                    document.querySelectorAll('#backupFilesTable input[type="checkbox"]').forEach(cb => cb.checked = checked);
+                });
+                modalDiv.querySelector('#restoreSelectedBtn').addEventListener('click', () => this.restoreSelectedFilesFromModal());
+                modalDiv.querySelector('#restoreAllBtn').addEventListener('click', () => this.restoreAllFromModal());
+                // Blur the underlying Backups modal while this modal is open
+                modalDiv.addEventListener('shown.bs.modal', () => {
+                    const parent = document.getElementById('backupsModal');
+                    if (parent) {
+                        const content = parent.querySelector('.modal-content');
+                        if (content) {
+                            content.style.transition = 'filter 10ms ease';
+                            content.style.filter = 'blur(3px) brightness(0.9)';
+                        }
+                    }
+                });
+                modalDiv.addEventListener('hidden.bs.modal', () => {
+                    const parent = document.getElementById('backupsModal');
+                    if (parent) {
+                        const content = parent.querySelector('.modal-content');
+                        if (content) {
+                            content.style.filter = '';
+                        }
+                    }
+                });
+                // Ensure close button hides the modal programmatically (fallback to data attribute)
+                const closeBtn2 = modalDiv.querySelector('.btn-close');
+                if (closeBtn2) {
+                    closeBtn2.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        const inst = bootstrap.Modal.getInstance(modalDiv) || new bootstrap.Modal(modalDiv);
+                        inst.hide();
+                    });
+                }
+            }
+        } catch (e) {
+            console.warn('Failed to create backups UI:', e);
+        }
+    }
+
+    showBackupsCard() {
+        const card = document.getElementById('backupsCard');
+        if (!card) return;
+        card.style.display = 'block';
+        this.loadBackupsCard();
+        // Wire top-right controls
+        const refresh = document.getElementById('backupsRefreshBtn');
+        const importBtn = document.getElementById('backupsImportBtn');
+        const hideBtn = document.getElementById('backupsHideBtn');
+        refresh?.addEventListener('click', () => this.loadBackupsCard());
+        importBtn?.addEventListener('click', () => this.importBackupsFromDisk().then(()=>this.loadBackupsCard()));
+        hideBtn?.addEventListener('click', () => { card.style.display = 'none'; });
+    }
+
+    async loadBackupsCard() {
+        try {
+            const res = await fetch('/api/backups');
+            const data = await res.json();
+            if (data.status !== 'success') {
+                this.showAlert('Failed to load backups', 'danger');
+                return;
+            }
+            this.renderBackupsTableCard(data.backups || []);
+            const sum = document.getElementById('backupsCardSummary');
+            if (sum) sum.textContent = `${(data.backups || []).length} backups`;
+        } catch (e) {
+            console.error('Failed to load backups:', e);
+            this.showAlert('Failed to load backups', 'danger');
+        }
+    }
+
+    renderBackupsTableCard(backups) {
+        const tbody = document.getElementById('backupsTableCard');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!backups || backups.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No backups found</td></tr>';
+            return;
+        }
+        backups.forEach(b => {
+            const tr = document.createElement('tr');
+            const title = (b.folder_name || '') + (b.season_name ? ` - ${b.season_name}` : '') + (b.episode_name ? ` - ${b.episode_name}` : '');
+            tr.innerHTML = `
+                <td>${this.escapeHtml(title || b.transfer_id || b.backup_id)}</td>
+                <td><span class="badge bg-secondary">${this.escapeHtml(b.media_type || '')}</span></td>
+                <td>${b.file_count || 0}</td>
+                <td>${this.humanReadableBytes(b.total_size || 0)}</td>
+                <td><span class="badge ${b.status === 'ready' ? 'bg-success' : (b.status === 'restored' ? 'bg-info' : 'bg-secondary')}">${b.status}</span></td>
+                <td><small>${this.escapeHtml(this.timeAgo(b.created_at))}</small></td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-info" title="Dry Run Restore" data-action="dry-restore" data-id="${b.backup_id}"><i class="bi bi-eye"></i></button>
+                        <button class="btn btn-outline-success" title="Restore" data-action="restore" data-id="${b.backup_id}"><i class="bi bi-arrow-counterclockwise"></i></button>
+                        <button class="btn btn-outline-secondary" title="Select" data-action="select" data-id="${b.backup_id}"><i class="bi bi-cursor"></i></button>
+                        <button class="btn btn-outline-danger" title="Delete" data-action="delete" data-id="${b.backup_id}"><i class="bi bi-trash"></i></button>
+                    </div>
+                </td>`;
+            tbody.appendChild(tr);
+        });
+        // Delegate actions
+        tbody.querySelectorAll('button[data-action]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const action = btn.getAttribute('data-action');
+                const id = btn.getAttribute('data-id');
+                if (action === 'restore') this.confirmAndStartRestore(id, false);
+                if (action === 'dry-restore') this.confirmAndStartRestore(id, true);
+                if (action === 'select') this.selectBackupInCard(id);
+                if (action === 'delete') this.deleteBackup(id);
+            });
+        });
+    }
+    async selectBackupInCard(backupId) {
+        // Load files and enable actions
+        const meta = document.getElementById('selectedBackupMeta');
+        const dryBtn = document.getElementById('backupDryRunBtn');
+        const restoreBtn = document.getElementById('backupRestoreBtn');
+        const undoBtn = document.getElementById('backupUndoBtn');
+        const selectAll = document.getElementById('backupFilesSelectAllCard');
+        if (meta) meta.textContent = 'Loading selected backup...';
+        await this.showBackupFilesInCard(backupId);
+        if (dryBtn) { dryBtn.disabled = false; dryBtn.onclick = () => this.confirmAndStartRestore(backupId, true); }
+        if (restoreBtn) { restoreBtn.disabled = false; restoreBtn.onclick = () => this.confirmAndStartRestore(backupId, false); }
+        if (undoBtn) { undoBtn.disabled = false; undoBtn.onclick = async () => { const last = await this.findLastRestoreForBackup(backupId); if (last) this.triggerUndoRestore(last.restore_id); }}
+        if (selectAll) selectAll.onchange = (e) => {
+            const checked = e.target.checked;
+            document.querySelectorAll('#backupFilesTableCard input[type="checkbox"]').forEach(cb => cb.checked = checked);
+        };
+        document.getElementById('restoreSelectedDryBtn').onclick = () => this.restoreSelectedFromCard(true);
+        document.getElementById('restoreSelectedBtn').onclick = () => this.restoreSelectedFromCard(false);
+
+        // Switch to details view
+        const listView = document.getElementById('backupsListView');
+        const detailsView = document.getElementById('backupDetailsView');
+        const titleEl = document.getElementById('selectedBackupTitle');
+        const backup = await this.getBackupMeta(backupId);
+        if (titleEl) {
+            const title = (backup.folder_name || '') + (backup.season_name ? ` - ${backup.season_name}` : '') + (backup.episode_name ? ` - ${backup.episode_name}` : '');
+            titleEl.textContent = title || backupId;
+        }
+        if (listView && detailsView) {
+            listView.style.display = 'none';
+            detailsView.style.display = 'block';
+            const backBtn = document.getElementById('backupsBackBtn');
+            if (backBtn) {
+                backBtn.onclick = () => {
+                    detailsView.style.display = 'none';
+                    listView.style.display = 'block';
+                };
+            }
+        }
+    }
+
+    async showBackupFilesInCard(backupId) {
+        try {
+            const res = await fetch(`/api/backups/${backupId}/files`);
+            const data = await res.json();
+            const tbody = document.getElementById('backupFilesTableCard');
+            const meta = document.getElementById('selectedBackupMeta');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+            if (data.status !== 'success' || !(data.files||[]).length) {
+                if (meta) meta.textContent = 'No files';
+                return;
+            }
+            if (meta) meta.textContent = `${(data.files||[]).length} file(s)`;
+            data.files.forEach(f => {
+                const tr = document.createElement('tr');
+                const dt = f.modified_time ? new Date(f.modified_time * 1000).toLocaleString() : '';
+                tr.innerHTML = `
+                    <td><input type="checkbox" data-path="${this.escapeHtml(f.relative_path)}"></td>
+                    <td><code>${this.escapeHtml(f.relative_path)}</code></td>
+                    <td>${this.humanReadableBytes(f.file_size || 0)}</td>
+                    <td><small>${this.escapeHtml(dt)}</small></td>`;
+                tbody.appendChild(tr);
+            });
+            // Persist context
+            this.currentBackupContext = { backupId, files: data.files || [] };
+        } catch (e) {
+            this.showAlert('Failed to load backup files', 'danger');
+        }
+    }
+
+    async confirmAndStartRestore(backupId, dryRun) {
+        const ok = confirm(dryRun ? 'Run a dry run restore?' : 'Proceed with restore?');
+        if (!ok) return;
+        // Start restore, wire logs to Transfer Logs via sockets
+        const transferId = this.activeTabId || `restore_${Date.now()}`;
+        await this.triggerRestoreAction(transferId, backupId, dryRun);
+        const logCard = document.getElementById('logCard');
+        if (logCard) logCard.style.display = 'block';
+    }
+
+    async restoreSelectedFromCard(dryRun) {
+        const ctx = this.currentBackupContext || {};
+        const rows = document.querySelectorAll('#backupFilesTableCard input[type="checkbox"]:checked');
+        const files = Array.from(rows).map(cb => cb.getAttribute('data-path'));
+        if (!files.length) {
+            this.showAlert('No files selected', 'warning');
+            return;
+        }
+        const ok = confirm(dryRun ? 'Run a dry run restore for selected files?' : 'Restore selected files?');
+        if (!ok) return;
+        // Use legacy selected-files endpoint
+        this.restoreBackup(ctx.backupId, files);
+    }
+
+    async findLastRestoreForBackup(backupId) {
+        try {
+            const res = await fetch('/api/restores');
+            const data = await res.json();
+            if (data.status !== 'success') return null;
+            const items = (data.restores||[]).filter(r => r.source_backup_id === backupId);
+            if (!items.length) return null;
+            return items[0];
+        } catch { return null; }
+    }
+
+    async getBackupMeta(backupId) {
+        try {
+            const res = await fetch(`/api/backups/${backupId}`);
+            const data = await res.json();
+            return data.backup || {};
+        } catch { return {}; }
+    }
+
+    applyGlobalBackgroundBlur(shouldBlur, modalEl) {
+        try {
+            // Blur everything except the active modal
+            const bodyChildren = Array.from(document.body.children);
+            bodyChildren.forEach(el => {
+                if (el === modalEl || el.classList.contains('modal-backdrop') || el.classList.contains('modal')) return;
+                el.style.transition = 'filter 10ms ease';
+                el.style.filter = shouldBlur ? 'blur(3px) brightness(0.9)' : '';
+            });
+            // Also ensure the backdrop stays dark
+            const bd = document.querySelector('.modal-backdrop');
+            if (bd) {
+                bd.style.backgroundColor = '';
+            }
+        } catch (e) {
+            // no-op
+        }
+    }
+
+    async showBackupFiles(backupId) {
+        try {
+            const res = await fetch(`/api/backups/${backupId}/files`);
+            const data = await res.json();
+            if (data.status !== 'success') {
+                this.showAlert('Failed to load backup files', 'danger');
+                return;
+            }
+            // Store context for actions
+            this.currentBackupContext = { backupId, files: data.files || [] };
+            this.renderBackupFiles(data.files || []);
+            const meta = document.getElementById('backupFilesMeta');
+            if (meta) meta.textContent = `${(data.files || []).length} file(s)`;
+            const modalEl = document.getElementById('backupFilesModal');
+            const modal = new bootstrap.Modal(modalEl);
+            modal.show();
+        } catch (e) {
+            console.error('Failed to load backup files:', e);
+            this.showAlert('Failed to load backup files', 'danger');
+        }
+    }
+
+    renderBackupFiles(files) {
+        const tbody = document.getElementById('backupFilesTable');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!files || files.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No files</td></tr>';
+            return;
+        }
+        files.forEach(f => {
+            const tr = document.createElement('tr');
+            const dt = f.modified_time ? new Date(f.modified_time * 1000).toLocaleString() : '';
+            tr.innerHTML = `
+                <td><input type="checkbox" data-path="${this.escapeHtml(f.relative_path)}"></td>
+                <td><code>${this.escapeHtml(f.relative_path)}</code></td>
+                <td>${this.humanReadableBytes(f.file_size || 0)}</td>
+                <td><small>${this.escapeHtml(dt)}</small></td>`;
+            tbody.appendChild(tr);
+        });
+    }
+
+    async restoreBackup(backupId, files = null) {
+        try {
+            const payload = files && files.length ? { files } : {};
+            const res = await fetch(`/api/backups/${backupId}/restore`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.status === 'success') {
+                this.showAlert('Restore completed successfully', 'success');
+                this.loadBackups();
+            } else {
+                this.showAlert(data.message || 'Restore failed', 'danger');
+            }
+        } catch (e) {
+            console.error('Restore failed:', e);
+            this.showAlert('Restore failed', 'danger');
+        }
+    }
+
+    async deleteBackup(backupId) {
+        try {
+            const confirmed = confirm('Delete this backup? You can optionally remove files from disk.');
+            if (!confirmed) return;
+            const deleteFiles = confirm('Also remove backup files from disk? Click OK to remove, Cancel to keep files.');
+            const res = await fetch(`/api/backups/${backupId}/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ delete_files: deleteFiles })
+            });
+            const data = await res.json();
+            if (data.status === 'success') {
+                this.showAlert('Backup deleted', 'success');
+                this.loadBackups();
+            } else {
+                this.showAlert(data.message || 'Failed to delete backup', 'danger');
+            }
+        } catch (e) {
+            console.error('Delete backup failed:', e);
+            this.showAlert('Failed to delete backup', 'danger');
+        }
+    }
+
+    async importBackupsFromDisk() {
+        try {
+            const btn = document.getElementById('importBackupsBtn');
+            const original = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Importing...';
+            const res = await fetch('/api/backups/reindex', { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') {
+                this.showAlert(data.message || 'Import completed', 'success');
+                await this.loadBackups();
+            } else {
+                this.showAlert(data.message || 'Import failed', 'danger');
+            }
+            btn.innerHTML = original;
+            btn.disabled = false;
+        } catch (e) {
+            console.error('Import backups failed:', e);
+            this.showAlert('Import failed', 'danger');
+            const btn = document.getElementById('importBackupsBtn');
+            if (btn) {
+                btn.innerHTML = '<i class="bi bi-download"></i> Import from Disk';
+                btn.disabled = false;
+            }
+        }
+    }
+
+    restoreSelectedFilesFromModal() {
+        const ctx = this.currentBackupContext || {};
+        const rows = document.querySelectorAll('#backupFilesTable input[type="checkbox"]:checked');
+        const files = Array.from(rows).map(cb => cb.getAttribute('data-path'));
+        if (!files.length) {
+            this.showAlert('No files selected', 'warning');
+            return;
+        }
+        this.restoreBackup(ctx.backupId, files);
+    }
+
+    restoreAllFromModal() {
+        const ctx = this.currentBackupContext || {};
+        this.restoreBackup(ctx.backupId, null);
+    }
+
+    humanReadableBytes(bytes) {
+        const thresh = 1024;
+        if (Math.abs(bytes) < thresh) {
+            return bytes + ' B';
+        }
+        const units = ['KB','MB','GB','TB','PB','EB','ZB','YB'];
+        let u = -1;
+        do {
+            bytes /= thresh;
+            ++u;
+        } while (Math.abs(bytes) >= thresh && u < units.length - 1);
+        return bytes.toFixed(1) + ' ' + units[u];
+    }
+
+    timeAgo(isoString) {
+        if (!isoString) return '';
+        const ts = new Date(isoString);
+        const now = new Date();
+        const diffMs = now - ts;
+        const mins = Math.floor(diffMs / 60000);
+        const hrs = Math.floor(mins / 60);
+        const days = Math.floor(hrs / 24);
+        if (mins < 1) return 'Just now';
+        if (mins < 60) return `${mins} min ago`;
+        if (hrs < 24) return `${hrs} hour${hrs > 1 ? 's' : ''} ago`;
+        return `${days} day${days > 1 ? 's' : ''} ago`;
     }
 
     extendSession() {
@@ -3266,6 +3912,9 @@ class DragonCPUI {
                         <button class="btn btn-sm btn-outline-info" onclick="dragonCP.showTransferDetails('${transfer.id}')">
                             <i class="bi bi-eye"></i> Details
                         </button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="dragonCP.showBackupRestoreCard('${transfer.id}')">
+                            <i class="bi bi-archive"></i> Backups
+                        </button>
                         ${transfer.status === 'running' ? 
                             `<button class="btn btn-sm btn-outline-danger" onclick="dragonCP.cancelTransfer('${transfer.id}')">
                                 <i class="bi bi-x-circle"></i> Cancel
@@ -3317,6 +3966,9 @@ class DragonCPUI {
                         <div class="transfer-actions">
                             <button class="btn btn-sm btn-outline-info" onclick="dragonCP.showTransferDetails('${transfer.id}')">
                                 <i class="bi bi-eye"></i> Details
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary" onclick="dragonCP.showBackupRestoreCard('${transfer.id}')">
+                                <i class="bi bi-archive"></i> Backups
                             </button>
                             ${transfer.status === 'running' ? 
                                 `<button class="btn btn-sm btn-outline-danger" onclick="dragonCP.cancelTransfer('${transfer.id}')">
