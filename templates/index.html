@@ -22,7 +22,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.6.0
+                   v1.6.1
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -100,7 +100,7 @@
                             <i class="bi bi-trash"></i> Cleanup
                         </button>
                         <button class="btn btn-outline-light btn-sm" id="manageBackupsBtn" title="Backup & Restore">
-                            <i class="bi bi-archive"></i> Manage Backups
+                            <i class="bi bi-archive"></i> Backups
                         </button>
                     </div>
                 </div>
@@ -790,6 +790,6 @@
     <!-- Socket.IO -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <!-- Custom JS -->
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html> 
