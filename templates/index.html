@@ -22,7 +22,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.5.3
+                   v1.6.0
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -99,6 +99,9 @@
                         <button class="btn btn-outline-light btn-sm" id="cleanupTransfersBtn" title="Remove duplicate transfers">
                             <i class="bi bi-trash"></i> Cleanup
                         </button>
+                        <button class="btn btn-outline-light btn-sm" id="manageBackupsBtn" title="Backup & Restore">
+                            <i class="bi bi-archive"></i> Manage Backups
+                        </button>
                     </div>
                 </div>
             </div>
@@ -109,6 +112,168 @@
                 <div class="text-center mt-3" id="noTransfersMessage" style="display: none;">
                     <div class="text-muted">
                         <i class="bi bi-info-circle"></i> No active transfers found
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Backup & Restore Card -->
+        <div class="card mb-4 fade-in" id="backupsCard" style="display: none;">
+            <div class="card-header gradient-accent collapsible-header" data-card-id="backupsCard">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-archive"></i>
+                        <span class="fw-semibold">Backup & Restore</span>
+                        <i class="bi bi-chevron-down collapse-icon"></i>
+                    </div>
+                    <div class="d-flex align-items-center btn-group">
+                        <button class="btn btn-outline-light btn-sm" id="refreshBackupsBtn" title="Refresh backups">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                        <button class="btn btn-outline-light btn-sm" id="importBackupsBtn" title="Scan backup directory and import">
+                            <i class="bi bi-download"></i> Import from Disk
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body collapsible-content">
+                <!-- Backups breadcrumb -->
+                <div class="browse-breadcrumb mb-2" id="backupsBreadcrumb" style="display:none;">
+                    <nav aria-label="breadcrumb">
+                        <ol class="breadcrumb mb-0" id="backupsBreadcrumbItems"></ol>
+                    </nav>
+                </div>
+
+                <div class="d-flex justify-content-between mb-2">
+                    <div class="text-muted small" id="backupsSummary"></div>
+                    <div>
+                        <span class="badge bg-secondary" id="selectedFilesCount" style="display:none;">0 selected</span>
+                    </div>
+                </div>
+                <!-- Stage 1: Backups list -->
+                <div id="backupsListSection">
+                    <div class="table-responsive" style="max-height: 55vh; overflow:auto">
+                        <table class="table table-dark table-striped table-hover table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Title</th>
+                                    <th>Type</th>
+                                    <th>Files</th>
+                                    <th>Size</th>
+                                    <th>Status</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="backupsTable"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Stage 2: Files of a backup -->
+                <div id="backupFilesSection" style="display:none;">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div class="text-muted small" id="backupFilesMeta"></div>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-outline-success" id="restoreSelectedBtn"><i class="bi bi-arrow-counterclockwise"></i> Restore Selected</button>
+                            <button class="btn btn-outline-success" id="restoreAllBtn"><i class="bi bi-arrow-counterclockwise"></i> Restore All</button>
+                        </div>
+                    </div>
+                    <div class="table-responsive" style="max-height: 50vh; overflow:auto">
+                        <table class="table table-dark table-striped table-hover table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th style="width:40px;"><input type="checkbox" id="backupFilesSelectAll"></th>
+                                    <th>Context</th>
+                                    <th>Backup Path</th>
+                                    <th>Size</th>
+                                    <th>Modified</th>
+                                </tr>
+                            </thead>
+                            <tbody id="backupFilesTable"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Stage 3: Restore Confirmation -->
+                <div id="backupConfirmSection" style="display:none;">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0 text-light">Planned Changes</h6>
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-primary" id="applyRestoreBtn"><i class="bi bi-check2-circle"></i> Apply Changes</button>
+                            <button class="btn btn-outline-secondary" id="cancelRestoreBtn"><i class="bi bi-arrow-left"></i> Back</button>
+                        </div>
+                    </div>
+                    <div id="restorePlanContainer">
+                        <div class="table-responsive" style="max-height: 45vh; overflow:auto">
+                            <table class="table table-dark table-striped table-hover table-sm align-middle">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 50%;">Backup File & Context</th>
+                                        <th style="width: 50%;">Will Replace / Copy To</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="restorePlanTable"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stage 3b: Delete Confirmation -->
+                <div id="backupDeleteSection" style="display:none;">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h6 class="mb-0 text-light">Delete Backup</h6>
+                        <button class="btn btn-outline-secondary btn-sm" id="cancelDeleteBtn"><i class="bi bi-arrow-left"></i> Back</button>
+                    </div>
+                    
+                    <!-- Delete Options -->
+                    <div class="card mb-3">
+                        <div class="card-body">
+                            <h6 class="card-title"><i class="bi bi-exclamation-triangle text-warning"></i> What would you like to delete?</h6>
+                            <div class="form-check mb-2">
+                                <input class="form-check-input" type="checkbox" id="deleteRecordCheck" checked>
+                                <label class="form-check-label text-light" for="deleteRecordCheck">
+                                    <strong>Database Record</strong> - Remove backup entry from database
+                                </label>
+                                <div class="text-muted small ms-4">This will remove the backup from the list but keep files on disk</div>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="deleteFilesCheck">
+                                <label class="form-check-label text-light" for="deleteFilesCheck">
+                                    <strong>Backup Files</strong> - Delete all backup files from disk
+                                </label>
+                                <div class="text-warning small ms-4"><i class="bi bi-exclamation-triangle"></i> This will permanently delete all files in the backup directory (NOT your original media)</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Files to be deleted (shown when deleteFilesCheck is checked) -->
+                    <div id="deleteFilesPreview" style="display:none;">
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="mb-0"><i class="bi bi-files text-danger"></i> Backup files to be deleted</h6>
+                                <small class="text-warning"><i class="bi bi-shield-exclamation"></i> These files will be deleted from the backup directory only</small>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive" style="max-height: 30vh; overflow:auto">
+                                    <table class="table table-dark table-striped table-hover table-sm">
+                                        <thead>
+                                            <tr>
+                                                <th style="width: 80%;">Backup File Path</th>
+                                                <th style="width: 20%;" class="text-center">Size</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="deleteFilesTable"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Delete Actions -->
+                    <div class="d-flex justify-content-end gap-2 mt-3">
+                        <button class="btn btn-outline-secondary" id="cancelDeleteBtn2"><i class="bi bi-x"></i> Cancel</button>
+                        <button class="btn btn-danger" id="confirmDeleteBtn" disabled><i class="bi bi-trash"></i> Delete Selected</button>
                     </div>
                 </div>
             </div>

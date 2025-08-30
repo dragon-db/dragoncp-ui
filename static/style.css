@@ -3076,3 +3076,29 @@ button#refreshSyncStatusBtn i.spinning,
 .media-type-card-custom {
     cursor: pointer;
 }
+
+/* Consistent action button hover effects for backup operations */
+#applyRestoreBtn:hover,
+#confirmDeleteBtn:hover {
+    transform: none !important; /* Remove translate animation */
+    transition: box-shadow 0.3s ease, border-color 0.3s ease !important;
+}
+
+#applyRestoreBtn:hover {
+    box-shadow: 0 0 15px rgba(13, 110, 253, 0.6), 
+                0 0 30px rgba(13, 110, 253, 0.4) !important;
+    border-color: #0d6efd !important;
+}
+
+#confirmDeleteBtn:hover {
+    box-shadow: 0 0 15px rgba(220, 53, 69, 0.6), 
+                0 0 30px rgba(220, 53, 69, 0.4) !important;
+    border-color: #dc3545 !important;
+}
+
+/* Ensure disabled state doesn't have hover effects */
+#applyRestoreBtn:disabled:hover,
+#confirmDeleteBtn:disabled:hover {
+    transform: none !important;
+    box-shadow: none !important;
+}
