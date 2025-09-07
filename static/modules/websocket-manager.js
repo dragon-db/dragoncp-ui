@@ -5,7 +5,14 @@
 export class WebSocketManager {
     constructor(app) {
         this.app = app;
-        this.socket = io({ autoConnect: true, reconnection: false });
+        // Note: "Invalid frame header" error during timeout disconnect is expected
+        // due to socket.io transport upgrade cleanup (from http to ws). This is harmless.
+        this.socket = io({ 
+            autoConnect: false, 
+            reconnection: false,
+            timeout: 20000,
+            transports: ['polling', 'websocket']
+        });
         
         // WebSocket timeout management
         this.websocketTimeout = 30 * 60 * 1000; // 30 minutes in milliseconds
@@ -18,6 +25,11 @@ export class WebSocketManager {
         this.initializeWebSocket();
         this.initializeActivityTracking();
         this.startTimerDisplayUpdates();
+        
+        // Connect after a brief delay to ensure full initialization
+        setTimeout(() => {
+            this.connect();
+        }, 100);
     }
 
     initializeWebSocket() {
@@ -86,6 +98,17 @@ export class WebSocketManager {
             if (!this.wasAutoDisconnected) {
                 console.log('WebSocket disconnected unexpectedly');
             }
+        });
+
+        // Add error handling for socket connection issues
+        this.socket.on('connect_error', (error) => {
+            console.error('WebSocket connection error:', error);
+            this.isWebSocketConnected = false;
+            this.app.ui.updateStatus('WebSocket connection failed', 'disconnected');
+        });
+
+        this.socket.on('error', (error) => {
+            console.error('WebSocket error:', error);
         });
     }
 

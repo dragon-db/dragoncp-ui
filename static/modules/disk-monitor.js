@@ -42,7 +42,9 @@ export class DiskMonitor {
             // Show loading state
             const refreshBtn = document.getElementById('refreshDiskUsageBtn');
             const originalHtml = refreshBtn.innerHTML;
-            refreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise spinner-border spinner-border-sm"></i>';
+            
+            // Add spinning class directly to the icon for smooth animation
+            refreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise spinning"></i>';
             refreshBtn.disabled = true;
 
             // Load both local and remote disk usage in parallel
