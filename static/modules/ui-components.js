@@ -453,6 +453,7 @@ export class UIComponents {
     hideMediaInterface() {
         document.getElementById('diskUsageCard').style.display = 'none';
         document.getElementById('transferManagementCard').style.display = 'none';
+        document.getElementById('movieSyncCard').style.display = 'none';
         document.getElementById('browseMediaCard').style.display = 'none';
         document.getElementById('transferCard').style.display = 'none';
         document.getElementById('logCard').style.display = 'none';
@@ -462,6 +463,7 @@ export class UIComponents {
     showMediaInterface() {
         document.getElementById('diskUsageCard').style.display = 'block';
         document.getElementById('transferManagementCard').style.display = 'block';
+        document.getElementById('movieSyncCard').style.display = 'block';
         document.getElementById('browseMediaCard').style.display = 'block';
         document.getElementById('transferCard').style.display = 'none';
         document.getElementById('logCard').style.display = 'none';
@@ -543,19 +545,20 @@ export class UIComponents {
             dialog.className = 'custom-confirm-dialog card';
             dialog.style.cssText = `
                 width: 400px; max-width: 90vw; margin: 20px; 
-                background: var(--bs-dark); border: 1px solid var(--bs-border-color);
-                border-radius: 0.375rem; box-shadow: 0 0.5rem 1rem rgba(0,0,0,0.15);
+                background: #1f1f1f; border: 1px solid rgba(255,255,255,0.15);
+                color: #f1f1f1;
+                border-radius: 0.375rem; box-shadow: 0 0.5rem 1rem rgba(0,0,0,0.5);
             `;
             
             dialog.innerHTML = `
                 <div class="card-header gradient-accent">
                     <h6 class="mb-0">${this.escapeHtml(title)}</h6>
                 </div>
-                <div class="card-body">
-                    <p class="mb-3">${this.escapeHtml(message)}</p>
+                <div class="card-body" style="color:#e6e6e6;">
+                    <p class="mb-3" style="color:#f5f5f5;">${this.escapeHtml(message)}</p>
                     <div class="d-flex justify-content-end gap-2">
-                        <button class="btn btn-outline-secondary custom-confirm-no">${this.escapeHtml(noText)}</button>
                         <button class="btn btn-primary custom-confirm-yes">${this.escapeHtml(yesText)}</button>
+                        <button class="btn btn-outline-secondary custom-confirm-no">${this.escapeHtml(noText)}</button>
                     </div>
                 </div>
             `;

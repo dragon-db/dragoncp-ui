@@ -10,6 +10,7 @@ import { DiskMonitor } from './modules/disk-monitor.js';
 import { MediaBrowser } from './modules/media-browser.js';
 import { TransferManager } from './modules/transfer-manager.js';
 import { BackupManager } from './modules/backup-manager.js';
+import { WebhookManager } from './modules/webhook-manager.js';
 
 class DragonCPUI {
     constructor() {
@@ -33,10 +34,14 @@ class DragonCPUI {
         this.media = new MediaBrowser(this);
         this.transfers = new TransferManager(this);
         this.backups = new BackupManager(this);
+        this.webhook = new WebhookManager(this);
         
         // Initialize the application
         this.initializeEventListeners();
         this.initializeConnection();
+        
+        // Initialize webhook functionality
+        this.webhook.initialize();
     }
 
     initializeEventListeners() {

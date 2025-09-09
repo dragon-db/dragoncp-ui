@@ -1563,6 +1563,212 @@ def api_debug_transfers():
             "error": str(e)
         })
 
+# ===== WEBHOOK ENDPOINTS =====
+
+@app.route('/api/webhook/movies', methods=['POST'])
+def api_webhook_movies_receiver():
+    """Webhook receiver endpoint for movie notifications from Radarr"""
+    try:
+        print("🎬 Webhook received")
+        
+        # Validate content type
+        if not request.is_json:
+            return jsonify({"status": "error", "message": "Content-Type must be application/json"}), 400
+        
+        webhook_data = request.json
+        if not webhook_data:
+            return jsonify({"status": "error", "message": "Empty JSON payload"}), 400
+        
+        print(f"🎬 Webhook data received: {webhook_data.get('movie', {}).get('title', 'Unknown')}")
+        
+        # Parse webhook data according to specification
+        parsed_data = transfer_manager.parse_webhook_data(webhook_data)
+        
+        # Store notification in database
+        notification_id = transfer_manager.webhook_model.create(parsed_data)
+        
+        # Check if auto-sync is enabled (prefer DB app_settings, fallback to env)
+        try:
+            auto_sync_enabled = transfer_manager.settings.get_bool('AUTO_SYNC_MOVIES', default=(config.get("AUTO_SYNC_MOVIES", "false").lower() == "true"))
+        except Exception:
+            auto_sync_enabled = config.get("AUTO_SYNC_MOVIES", "false").lower() == "true"
+        
+        if auto_sync_enabled:
+            print(f"🎬 Auto-sync enabled, triggering sync for {parsed_data['title']}")
+            # Trigger automatic sync
+            success, message = transfer_manager.trigger_webhook_sync(notification_id)
+            if success:
+                return jsonify({
+                    "status": "success",
+                    "message": f"Webhook received and auto-sync started for {parsed_data['title']}",
+                    "notification_id": notification_id,
+                    "auto_sync": True
+                })
+            else:
+                return jsonify({
+                    "status": "warning",
+                    "message": f"Webhook received but auto-sync failed: {message}",
+                    "notification_id": notification_id,
+                    "auto_sync": False
+                })
+        else:
+            print(f"🎬 Auto-sync disabled, storing notification for manual sync")
+            return jsonify({
+                "status": "success",
+                "message": f"Webhook received for {parsed_data['title']}. Manual sync required.",
+                "notification_id": notification_id,
+                "auto_sync": False
+            })
+        
+    except Exception as e:
+        print(f"❌ Error processing webhook: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to process webhook: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/notifications')
+def api_webhook_notifications():
+    """Get all webhook notifications"""
+    try:
+        status_filter = request.args.get('status')
+        limit = request.args.get('limit', 50, type=int)
+        
+        notifications = transfer_manager.webhook_model.get_all(status_filter=status_filter, limit=limit)
+        
+        return jsonify({
+            "status": "success",
+            "notifications": notifications,
+            "total": len(notifications)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting webhook notifications: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get notifications: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/notifications/<notification_id>')
+def api_webhook_notification_details(notification_id):
+    """Get specific webhook notification details"""
+    try:
+        notification = transfer_manager.webhook_model.get(notification_id)
+        if not notification:
+            return jsonify({"status": "error", "message": "Notification not found"}), 404
+        
+        return jsonify({
+            "status": "success",
+            "notification": notification
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting notification details: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get notification details: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/notifications/<notification_id>/sync', methods=['POST'])
+def api_webhook_sync(notification_id):
+    """Manually trigger sync for a webhook notification"""
+    try:
+        success, message = transfer_manager.trigger_webhook_sync(notification_id)
+        
+        if success:
+            return jsonify({
+                "status": "success",
+                "message": message
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": message
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error triggering webhook sync: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to trigger sync: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/notifications/<notification_id>/delete', methods=['POST'])
+def api_webhook_delete_notification(notification_id):
+    """Delete a webhook notification"""
+    try:
+        success = transfer_manager.webhook_model.delete(notification_id)
+        
+        if success:
+            return jsonify({
+                "status": "success",
+                "message": "Notification deleted successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to delete notification"
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error deleting notification: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to delete notification: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/settings', methods=['GET', 'POST'])
+def api_webhook_settings():
+    """Get or update webhook settings"""
+    if request.method == 'GET':
+        try:
+            # Prefer DB app_settings value when present, fallback to env
+            db_val = None
+            try:
+                db_val = transfer_manager.settings.get('AUTO_SYNC_MOVIES')
+            except Exception:
+                db_val = None
+            env_val = config.get("AUTO_SYNC_MOVIES", "false").lower() == "true"
+            settings = {
+                "auto_sync_movies": (str(db_val).lower() in ('true','1','yes','on')) if db_val is not None else env_val
+            }
+            return jsonify({
+                "status": "success",
+                "settings": settings
+            })
+        except Exception as e:
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to get settings: {str(e)}"
+            }), 500
+    
+    else:  # POST
+        try:
+            data = request.json
+            if not data:
+                return jsonify({"status": "error", "message": "No data provided"}), 400
+            
+            # Update auto-sync setting (store only in DB; no .env write)
+            if "auto_sync_movies" in data:
+                new_val = bool(data["auto_sync_movies"])
+                # Save to DB app_settings
+                transfer_manager.settings.set_bool('AUTO_SYNC_MOVIES', new_val)
+                print(f"🎬 Auto-sync movies setting updated (DB): {new_val}")
+            
+            return jsonify({
+                "status": "success",
+                "message": "Settings updated successfully"
+            })
+            
+        except Exception as e:
+            print(f"❌ Error updating webhook settings: {e}")
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to update settings: {str(e)}"
+            }), 500
+
 # WebSocket Events for connection management
 @socketio.on('connect')
 def handle_connect():

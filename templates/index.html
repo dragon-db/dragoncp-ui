@@ -22,7 +22,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.6.2
+                   v1.7.0
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -114,6 +114,43 @@
                         <i class="bi bi-info-circle"></i> No active transfers found
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- Movie Sync Card -->
+        <div class="card mb-4 fade-in" id="movieSyncCard" style="display: none;">
+            <div class="card-header gradient-accent collapsible-header" data-card-id="movieSyncCard">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-film"></i>
+                        <span class="fw-semibold">Media Sync</span>
+                        <i class="bi bi-chevron-down collapse-icon"></i>
+                        <span class="ms-2 badge bg-light text-dark" id="syncNotificationCount">0 pending</span>
+                    </div>
+                    <div class="d-flex align-items-center btn-group">
+                        <button class="btn btn-outline-light btn-sm" id="refreshSyncBtn" title="Refresh notifications">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                        <button class="btn btn-outline-light btn-sm" id="autoSyncToggleBtn" title="Toggle auto-sync">
+                            <i class="bi bi-toggle-off"></i> Auto-Sync: OFF
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body collapsible-content">
+                <div id="movieNotificationsList" class="movie-notifications-container">
+                    <!-- Movie notifications will be loaded here as stacked cards -->
+                </div>
+                <div class="text-center mt-3" id="noNotificationsMessage" style="display: none;">
+                    <div class="text-muted">
+                        <i class="bi bi-film"></i> No movie notifications found
+                        <div class="mt-2 small">
+                            Movie notifications will appear here when received from webhook.
+                        </div>
+                    </div>
+                </div>
+                
+                
             </div>
         </div>
 

@@ -51,6 +51,43 @@ class DatabaseManager:
                 )
             ''')
             
+            # Webhook notifications for automated movie sync
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS webhook_notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    notification_id TEXT UNIQUE NOT NULL,
+                    title TEXT NOT NULL,
+                    year INTEGER,
+                    folder_path TEXT NOT NULL,
+                    poster_url TEXT,
+                    requested_by TEXT,
+                    file_path TEXT NOT NULL,
+                    quality TEXT,
+                    size INTEGER DEFAULT 0,
+                    languages TEXT DEFAULT '[]',
+                    subtitles TEXT DEFAULT '[]',
+                    release_title TEXT,
+                    release_indexer TEXT,
+                    release_size INTEGER DEFAULT 0,
+                    tmdb_id INTEGER,
+                    imdb_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    error_message TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    synced_at DATETIME,
+                    transfer_id TEXT
+                )
+            ''')
+
+            # Application settings (key-value store for dynamic UI settings)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
             # Backups for rsync --backup deletions
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS transfer_backups (
@@ -102,12 +139,19 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_id ON transfer_backup_files(backup_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_context_key ON transfer_backup_files(context_key)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_backups_transfer_id ON transfer_backups(transfer_id)')
+            # Webhook notifications indexes
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_webhook_notification_id ON webhook_notifications(notification_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_webhook_status ON webhook_notifications(status)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_webhook_created_at ON webhook_notifications(created_at)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_webhook_transfer_id ON webhook_notifications(transfer_id)')
             
             conn.commit()
         
         print(f"✅ Database initialized: {self.db_path}")
         # Perform lightweight migrations to add context columns if upgrading from older schema
         self._ensure_backup_file_context_columns()
+        self._ensure_webhook_notification_columns()
+        self._ensure_app_settings_table()
 
     def _ensure_backup_file_context_columns(self):
         """Ensure context columns exist on transfer_backup_files for upgrades."""
@@ -143,11 +187,75 @@ class DatabaseManager:
         except Exception as e:
             print(f"⚠️  Migration check failed: {e}")
     
+    def _ensure_webhook_notification_columns(self):
+        """Ensure tmdb_id and imdb_id columns exist on webhook_notifications for upgrades."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cols = {row[1] for row in conn.execute('PRAGMA table_info(webhook_notifications)')}
+                to_add = []
+                def add(col, type_decl):
+                    if col not in cols:
+                        to_add.append((col, type_decl))
+                add('tmdb_id', 'INTEGER')
+                add('imdb_id', 'TEXT')
+                for col, typ in to_add:
+                    try:
+                        conn.execute(f'ALTER TABLE webhook_notifications ADD COLUMN {col} {typ}')
+                    except Exception as e:
+                        # Ignore if concurrent/multiple attempts or table doesn't exist yet
+                        pass
+                conn.commit()
+        except Exception as e:
+            print(f"⚠️  Webhook notification migration check failed: {e}")
+
+    def _ensure_app_settings_table(self):
+        """Ensure app_settings table exists (for upgrades)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS app_settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                ''')
+                conn.commit()
+        except Exception as e:
+            print(f"⚠️  App settings table check failed: {e}")
+    
     def get_connection(self):
         """Get database connection with row factory"""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+class AppSettings:
+    """Simple key-value settings store in SQLite."""
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+
+    def get(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        with self.db.get_connection() as conn:
+            row = conn.execute('SELECT value FROM app_settings WHERE key = ?', (key,)).fetchone()
+            return (row[0] if row else default)
+
+    def set(self, key: str, value: str) -> None:
+        with self.db.get_connection() as conn:
+            conn.execute('''
+                INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            ''', (key, value))
+            conn.commit()
+
+    def get_bool(self, key: str, default: bool = False) -> bool:
+        val = self.get(key)
+        if val is None:
+            return default
+        return str(val).lower() in ('1', 'true', 'yes', 'on')
+
+    def set_bool(self, key: str, value: bool) -> None:
+        self.set(key, 'true' if value else 'false')
 
 class Transfer:
     """Transfer model for database operations"""
@@ -681,6 +789,151 @@ class Backup:
             conn.commit()
             return cur.rowcount
 
+class WebhookNotification:
+    """WebhookNotification model for movie webhook notifications"""
+    
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+    
+    def create(self, notification_data: Dict) -> str:
+        """Create a new webhook notification record"""
+        print(f"📝 Creating webhook notification for {notification_data.get('title', 'Unknown')}")
+        
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.execute('''
+                    INSERT INTO webhook_notifications (
+                        notification_id, title, year, folder_path, poster_url, requested_by,
+                        file_path, quality, size, languages, subtitles, 
+                        release_title, release_indexer, release_size, tmdb_id, imdb_id, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    notification_data['notification_id'],
+                    notification_data['title'],
+                    notification_data.get('year'),
+                    notification_data['folder_path'],
+                    notification_data.get('poster_url'),
+                    notification_data.get('requested_by'),
+                    notification_data['file_path'],
+                    notification_data.get('quality'),
+                    notification_data.get('size', 0),
+                    json.dumps(notification_data.get('languages', [])),
+                    json.dumps(notification_data.get('subtitles', [])),
+                    notification_data.get('release_title'),
+                    notification_data.get('release_indexer'),
+                    notification_data.get('release_size', 0),
+                    notification_data.get('tmdb_id'),
+                    notification_data.get('imdb_id'),
+                    notification_data.get('status', 'pending')
+                ))
+                conn.commit()
+                print(f"✅ Webhook notification created successfully for {notification_data['title']}")
+                return notification_data['notification_id']
+        except Exception as e:
+            print(f"❌ Error creating webhook notification: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def update(self, notification_id: str, updates: Dict) -> bool:
+        """Update webhook notification record"""
+        if not updates:
+            return False
+        
+        # Convert lists to JSON strings if present
+        if 'languages' in updates and isinstance(updates['languages'], list):
+            updates['languages'] = json.dumps(updates['languages'])
+        if 'subtitles' in updates and isinstance(updates['subtitles'], list):
+            updates['subtitles'] = json.dumps(updates['subtitles'])
+        
+        # Build dynamic update query
+        set_clause = ', '.join([f"{key} = ?" for key in updates.keys()])
+        values = list(updates.values()) + [notification_id]
+        
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(f'''
+                UPDATE webhook_notifications SET {set_clause}
+                WHERE notification_id = ?
+            ''', values)
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def get(self, notification_id: str) -> Optional[Dict]:
+        """Get webhook notification by ID"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                SELECT * FROM webhook_notifications WHERE notification_id = ?
+            ''', (notification_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                notification = dict(row)
+                # Parse JSON fields
+                try:
+                    notification['languages'] = json.loads(notification.get('languages', '[]'))
+                except json.JSONDecodeError:
+                    notification['languages'] = []
+                try:
+                    notification['subtitles'] = json.loads(notification.get('subtitles', '[]'))
+                except json.JSONDecodeError:
+                    notification['subtitles'] = []
+                return notification
+            return None
+    
+    def get_all(self, status_filter: str = None, limit: int = None) -> List[Dict]:
+        """Get all webhook notifications with optional filtering"""
+        query = "SELECT * FROM webhook_notifications"
+        params = []
+        
+        if status_filter:
+            query += " WHERE status = ?"
+            params.append(status_filter)
+        
+        query += " ORDER BY created_at DESC"
+        
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+        
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(query, params)
+            notifications = []
+            
+            for row in cursor.fetchall():
+                notification = dict(row)
+                # Parse JSON fields
+                try:
+                    notification['languages'] = json.loads(notification.get('languages', '[]'))
+                except json.JSONDecodeError:
+                    notification['languages'] = []
+                try:
+                    notification['subtitles'] = json.loads(notification.get('subtitles', '[]'))
+                except json.JSONDecodeError:
+                    notification['subtitles'] = []
+                notifications.append(notification)
+            
+            return notifications
+    
+    def delete(self, notification_id: str) -> bool:
+        """Delete webhook notification record"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                DELETE FROM webhook_notifications WHERE notification_id = ?
+            ''', (notification_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def cleanup_old_notifications(self, days: int = 30) -> int:
+        """Clean up old processed notifications"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                DELETE FROM webhook_notifications 
+                WHERE status IN ('completed', 'failed')
+                AND datetime(created_at) < datetime('now', '-{} days')
+            '''.format(days))
+            conn.commit()
+            return cursor.rowcount
+
 class TransferManager:
     """Enhanced transfer manager with database persistence"""
     
@@ -690,7 +943,10 @@ class TransferManager:
         self.db = db_manager
         self.transfer_model = Transfer(db_manager)
         self.backup_model = Backup(db_manager)
+        self.webhook_model = WebhookNotification(db_manager)
         self.socketio = socketio
+        # Settings API
+        self.settings = AppSettings(db_manager)
         print(f"✅ Transfer model initialized")
         
         # Resume any transfers that were running when the app was stopped
@@ -1003,6 +1259,9 @@ class TransferManager:
                 'end_time': datetime.now().isoformat()
             })
             
+            # Update webhook notification status if this was a webhook-triggered transfer
+            self.update_webhook_transfer_status(transfer_id, status)
+            
             # Finalize backup record if any files were backed up
             try:
                 self._finalize_backup_for_transfer(transfer_id)
@@ -1035,6 +1294,9 @@ class TransferManager:
                 'progress': error_msg,
                 'end_time': datetime.now().isoformat()
             })
+            
+            # Update webhook notification status if this was a webhook-triggered transfer
+            self.update_webhook_transfer_status(transfer_id, 'failed')
             
             # Add error to logs
             self.transfer_model.add_log(transfer_id, f"ERROR: {error_msg}")
@@ -1734,4 +1996,207 @@ class TransferManager:
                 transfer['transfer_type']
             )
         
-        return False 
+        return False
+    
+    def trigger_webhook_sync(self, notification_id: str) -> Tuple[bool, str]:
+        """Trigger sync for a webhook notification"""
+        try:
+            # Get notification details
+            notification = self.webhook_model.get(notification_id)
+            if not notification:
+                return False, "Notification not found"
+            
+            if notification['status'] == 'syncing':
+                return False, "Sync already in progress"
+            
+            if notification['status'] == 'completed':
+                return False, "Already synced"
+            
+            # Update notification status to syncing
+            self.webhook_model.update(notification_id, {
+                'status': 'syncing',
+                'synced_at': datetime.now().isoformat()
+            })
+            
+            # Generate transfer ID
+            transfer_id = f"webhook_{notification_id}_{int(datetime.now().timestamp())}"
+            
+            # Extract movie details
+            folder_name = notification['title']
+            if notification.get('year'):
+                folder_name = f"{notification['title']} ({notification['year']})"
+            
+            # Use folder_path as source_path and determine destination
+            source_path = notification['folder_path']
+            
+            # Get movie destination path from config
+            dest_base = self.config.get("MOVIE_DEST_PATH")
+            if not dest_base:
+                self.webhook_model.update(notification_id, {
+                    'status': 'failed',
+                    'error_message': 'Movie destination path not configured'
+                })
+                return False, "Movie destination path not configured"
+            
+            dest_path = f"{dest_base}/{folder_name}"
+            
+            # Store transfer ID in notification
+            self.webhook_model.update(notification_id, {'transfer_id': transfer_id})
+            
+            # Start the transfer using existing transfer logic
+            success = self.start_transfer(
+                transfer_id=transfer_id,
+                source_path=source_path,
+                dest_path=dest_path,
+                transfer_type="folder",
+                media_type="movies",
+                folder_name=folder_name,
+                season_name=None,
+                episode_name=None
+            )
+            
+            if success:
+                print(f"✅ Webhook sync started for {notification['title']} (Transfer ID: {transfer_id})")
+                return True, f"Sync started for {notification['title']}"
+            else:
+                # Update notification status back to pending on failure
+                self.webhook_model.update(notification_id, {
+                    'status': 'failed',
+                    'error_message': 'Failed to start transfer'
+                })
+                return False, "Failed to start transfer"
+                
+        except Exception as e:
+            print(f"❌ Error triggering webhook sync: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Update notification status to failed
+            self.webhook_model.update(notification_id, {
+                'status': 'failed',
+                'error_message': str(e)
+            })
+            return False, f"Sync failed: {str(e)}"
+    
+    def update_webhook_transfer_status(self, transfer_id: str, status: str):
+        """Update webhook notification status based on transfer completion"""
+        try:
+            # Find the webhook notification by transfer_id
+            notifications = self.webhook_model.get_all()
+            webhook_notification = None
+            
+            for notification in notifications:
+                if notification.get('transfer_id') == transfer_id:
+                    webhook_notification = notification
+                    break
+            
+            if webhook_notification:
+                update_data = {}
+                if status == 'completed':
+                    update_data = {
+                        'status': 'completed',
+                        'synced_at': datetime.now().isoformat()
+                    }
+                elif status == 'failed':
+                    update_data = {
+                        'status': 'failed',
+                        'error_message': 'Transfer failed'
+                    }
+                
+                if update_data:
+                    self.webhook_model.update(webhook_notification['notification_id'], update_data)
+                    print(f"📋 Updated webhook notification status to {status} for {webhook_notification['title']}")
+                    
+        except Exception as e:
+            print(f"❌ Error updating webhook transfer status: {e}")
+    
+    def parse_webhook_data(self, webhook_json: Dict) -> Dict:
+        """Parse webhook JSON data according to specification"""
+        try:
+            movie = webhook_json.get('movie', {})
+            movie_file = webhook_json.get('movieFile', {})
+            release = webhook_json.get('release', {})
+            
+            # Extract title and year
+            title = movie.get('title', 'Unknown Movie')
+            year = movie.get('year')
+            
+            # Extract folder path
+            folder_path = movie.get('folderPath', '')
+            
+            # Extract poster URL from images
+            poster_url = None
+            images = movie.get('images', [])
+            for image in images:
+                if image.get('coverType') == 'poster':
+                    poster_url = image.get('remoteUrl')
+                    break
+            
+            # Extract requested by from tags (format: <number> - <name>)
+            requested_by = None
+            tags = movie.get('tags', [])
+            for tag in tags:
+                if isinstance(tag, str) and ' - ' in tag:
+                    parts = tag.split(' - ', 1)
+                    if len(parts) == 2 and parts[0].strip().isdigit():
+                        requested_by = parts[1].strip()
+                        break
+            
+            # Extract file information
+            file_path = movie_file.get('path', '')
+            quality = movie_file.get('quality', '')
+            size = movie_file.get('size', 0)
+            
+            # Extract languages
+            languages = []
+            movie_file_languages = movie_file.get('languages', [])
+            for lang in movie_file_languages:
+                if isinstance(lang, dict) and 'name' in lang:
+                    languages.append(lang['name'])
+            
+            # Extract subtitles from mediaInfo
+            subtitles = []
+            media_info = movie_file.get('mediaInfo', {})
+            if 'subtitles' in media_info:
+                subtitles = media_info['subtitles']
+            
+            # Extract release information
+            release_title = release.get('releaseTitle', '')
+            release_indexer = release.get('indexer', '')
+            release_size = release.get('size', 0)
+            
+            # Extract TMDB and IMDB IDs
+            tmdb_id = movie.get('tmdbId')
+            imdb_id = movie.get('imdbId')
+            
+            # Generate unique notification ID
+            notification_id = f"movie_{movie.get('id', int(datetime.now().timestamp()))}_{int(datetime.now().timestamp())}"
+            
+            parsed_data = {
+                'notification_id': notification_id,
+                'title': title,
+                'year': year,
+                'folder_path': folder_path,
+                'poster_url': poster_url,
+                'requested_by': requested_by,
+                'file_path': file_path,
+                'quality': quality,
+                'size': size,
+                'languages': languages,
+                'subtitles': subtitles,
+                'release_title': release_title,
+                'release_indexer': release_indexer,
+                'release_size': release_size,
+                'tmdb_id': tmdb_id,
+                'imdb_id': imdb_id,
+                'status': 'pending'
+            }
+            
+            print(f"📋 Parsed webhook data for movie: {title} ({year})")
+            return parsed_data
+            
+        except Exception as e:
+            print(f"❌ Error parsing webhook data: {e}")
+            import traceback
+            traceback.print_exc()
+            raise 

@@ -1616,13 +1616,15 @@ body {
 /* Refresh button specific styling */
 #refreshDiskUsageBtn,
 #refreshTransfersBtn,
-#refreshSyncStatusBtn {
+#refreshSyncStatusBtn,
+#refreshSyncBtn {
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 #refreshDiskUsageBtn:hover,
 #refreshTransfersBtn:hover,
-#refreshSyncStatusBtn:hover {
+#refreshSyncStatusBtn:hover,
+#refreshSyncBtn:hover {
     transform: translateY(-1px) scale(1.05);
     background: rgba(52, 152, 219, 0.2);
     border-color: rgba(52, 152, 219, 0.4);
@@ -1630,13 +1632,15 @@ body {
 
 #refreshDiskUsageBtn:active,
 #refreshTransfersBtn:active,
-#refreshSyncStatusBtn:active {
+#refreshSyncStatusBtn:active,
+#refreshSyncBtn:active {
     transform: translateY(0) scale(1);
 }
 
 #refreshDiskUsageBtn:disabled,
 #refreshTransfersBtn:disabled,
-#refreshSyncStatusBtn:disabled {
+#refreshSyncStatusBtn:disabled,
+#refreshSyncBtn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
     transform: none;
@@ -1644,7 +1648,8 @@ body {
 
 #refreshDiskUsageBtn:disabled:hover,
 #refreshTransfersBtn:disabled:hover,
-#refreshSyncStatusBtn:disabled:hover {
+#refreshSyncStatusBtn:disabled:hover,
+#refreshSyncBtn:disabled:hover {
     transform: none;
     background: rgba(255, 255, 255, 0.1);
     border-color: rgba(255, 255, 255, 0.2);
@@ -1653,14 +1658,16 @@ body {
 /* Spinning animation for refresh buttons */
 #refreshDiskUsageBtn.spinning i,
 #refreshTransfersBtn.spinning i,
-#refreshSyncStatusBtn.spinning i {
+#refreshSyncStatusBtn.spinning i,
+#refreshSyncBtn.spinning i {
     animation: smoothSpin 1.2s linear infinite;
     transform-origin: center;
 }
 
 #refreshDiskUsageBtn .spinner-border-sm,
 #refreshTransfersBtn .spinner-border-sm,
-#refreshSyncStatusBtn .spinner-border-sm {
+#refreshSyncStatusBtn .spinner-border-sm,
+#refreshSyncBtn .spinner-border-sm {
     animation: smoothSpin 1.2s linear infinite;
 }
 
@@ -3101,4 +3108,403 @@ button#refreshSyncStatusBtn i.spinning,
 #confirmDeleteBtn:disabled:hover {
     transform: none !important;
     box-shadow: none !important;
+}
+
+/* ===== MOVIE SYNC CARD STYLES ===== */
+
+.movie-notifications-container {
+    max-height: 600px;
+    overflow-y: auto;
+    padding: 0.75rem 0.5rem 0.5rem 0.5rem;
+}
+
+.movie-notifications-container::-webkit-scrollbar {
+    width: 6px;
+}
+
+.movie-notifications-container::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+.movie-notifications-container::-webkit-scrollbar-thumb {
+    background: var(--secondary-color);
+    border-radius: 3px;
+}
+
+.movie-notification-card {
+    transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.3s ease;
+    border: 1px solid var(--border-color);
+    background: var(--card-bg);
+    border-radius: 8px;
+    position: relative;
+    margin-bottom: 0.75rem;
+    min-height: 120px;
+}
+
+/* Limit list to show approximately 4 cards at a time, then scroll */
+#movieNotificationsList {
+    max-height: 520px; /* tune to roughly fit 4 cards including gaps */
+    overflow-y: auto;
+}
+
+/* Ensure movie list scrollbar uses secondary (blue) color */
+#movieNotificationsList::-webkit-scrollbar {
+    width: 6px;
+}
+
+#movieNotificationsList::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+}
+
+#movieNotificationsList::-webkit-scrollbar-thumb {
+    background: var(--secondary-color);
+    border-radius: 3px;
+}
+
+.movie-notification-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+    background: linear-gradient(45deg, var(--card-bg), #532373);
+    border-color: #994db7;
+}
+
+.movie-notification-card .card-body {
+    padding: 0.625rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.movie-poster-thumb {
+    width: 80px;
+    height: 100px;
+    object-fit: cover;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    flex-shrink: 0;
+}
+
+.movie-poster-thumb-placeholder {
+    width: 80px;
+    height: 100px;
+    background: var(--bs-dark);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.movie-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.movie-actions-section {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.5rem;
+}
+
+.movie-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-light);
+    margin-bottom: 0.5rem;
+}
+
+.movie-title .text-muted {
+    font-weight: 400;
+    font-size: 0.95rem;
+}
+
+.movie-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.movie-meta span {
+    display: flex;
+    align-items: center;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.movie-meta .requested-by {
+    color: var(--text-light) !important;
+    font-weight: 600;
+}
+
+.movie-meta .requested-by i {
+    color: var(--text-light) !important;
+    opacity: 1 !important;
+}
+
+.movie-meta i {
+    opacity: 0.7;
+}
+
+.movie-status-badge {
+    margin-bottom: 0.5rem;
+}
+
+.movie-all-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    justify-content: flex-end;
+}
+
+/* Status badges for movie notifications */
+.badge.bg-warning.text-dark {
+    color: #000 !important;
+    background-color: #ffc107 !important;
+}
+
+.badge.bg-info {
+    background-color: #0dcaf0 !important;
+}
+
+.badge.bg-success {
+    background-color: #198754 !important;
+}
+
+.badge.bg-danger {
+    background-color: #dc3545 !important;
+}
+
+/* Spinning animation for syncing status */
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.spinning {
+    animation: spin 1s linear infinite;
+}
+
+/* Movie details modal styling */
+#movieDetailsModal .modal-content {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+}
+
+#movieDetailsModal .modal-header {
+    border-bottom: 1px solid var(--border-color);
+}
+
+#movieDetailsModal .modal-body {
+    background: var(--card-bg);
+    color: var(--text-light);
+}
+
+.detail-section {
+    /* margin-bottom: 2rem; */
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 1.25rem;
+}
+
+.detail-section h6 {
+    color: var(--text-light);
+    padding-bottom: 0.5rem;
+    margin-bottom: 1rem;
+    font-size: 1rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    position: relative;
+}
+
+.detail-section h6::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    background: var(--gradient-accent);
+    border-radius: 2px;
+}
+
+.detail-section h6 i {
+    background: var(--gradient-accent);
+    background-size: 200% 200%;
+    animation: gradientShift 3s ease infinite;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.detail-section .table {
+    background: transparent;
+    margin-bottom: 0;
+}
+
+.detail-section .table td {
+    padding: 0.75rem 1rem;
+    border: none;
+    vertical-align: top;
+    background: transparent;
+}
+
+.detail-section .table td:first-child {
+    width: 30%;
+    color: var(--text-muted);
+    font-weight: 500;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.detail-section .table td:last-child {
+    color: var(--text-light);
+    font-weight: 400;
+    background: rgba(255, 255, 255, 0.01);
+}
+
+.detail-section .table tr:nth-child(even) td {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.detail-section .table tr:nth-child(even) td:first-child {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+/* Auto-sync toggle button styling */
+#autoSyncToggleBtn .text-success {
+    color: var(--secondary-color) !important;
+}
+
+/* External links styling */
+.external-links .btn {
+    border-radius: 6px;
+    font-size: 0.85rem;
+}
+
+/* Dropdown menu styling */
+.dropdown-menu {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+}
+
+.dropdown-item {
+    color: var(--text-light);
+    padding: 0.5rem 1rem;
+}
+
+.dropdown-item:hover {
+    background: var(--accent-color);
+    color: white;
+}
+
+.dropdown-item.text-danger {
+    color: #dc3545 !important;
+}
+
+.dropdown-item.text-danger:hover {
+    background: #dc3545;
+    color: white !important;
+}
+
+/* Responsive adjustments for movie cards */
+@media (max-width: 768px) {
+    .movie-notification-card .card-body {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.75rem;
+    }
+    
+    /* Hide inline poster and use as backdrop on mobile */
+    .movie-poster-thumb,
+    .movie-poster-thumb-placeholder {
+        display: none !important;
+    }
+    .movie-notification-card {
+        position: relative;
+        overflow: hidden;
+    }
+    .movie-notification-card::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background-image: var(--poster-url);
+        background-size: cover;
+        background-position: center;
+        filter: blur(3px) saturate(120%);
+        transform: scale(1.1);
+        opacity: 0.9;
+        pointer-events: none;
+    }
+    .movie-notification-card::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(180deg, rgba(0,0,0,0.55), rgba(0,0,0,0.85));
+        pointer-events: none;
+    }
+    .movie-notification-card .card-body {
+        position: relative;
+        z-index: 1;
+    }
+    /* Add extra space under title on mobile */
+    .movie-notification-card .movie-title {
+        margin-bottom: 1rem !important; /* matches Bootstrap mb-4 */
+        margin-top: 1rem !important;
+    }
+    
+    .movie-actions-section {
+        align-items: flex-start;
+        width: 100%;
+    }
+    
+    .movie-all-actions {
+        justify-content: flex-start;
+        width: 100%;
+    }
+    
+    .movie-notifications-container {
+        max-height: 500px;
+    }
+    
+    /* Modal responsive adjustments */
+    #movieDetailsModal .modal-dialog {
+        margin: 0.5rem;
+    }
+    
+    #movieDetailsModal .col-lg-3,
+    #movieDetailsModal .col-lg-9 {
+        flex: 0 0 100%;
+        max-width: 100%;
+    }
+    
+    #movieDetailsModal .col-md-4,
+    #movieDetailsModal .col-md-6,
+    #movieDetailsModal .col-md-8 {
+        flex: 0 0 100%;
+        max-width: 100%;
+    }
+}
+
+@media (max-width: 576px) {
+    .movie-all-actions {
+        flex-direction: column;
+    }
+    
+    .movie-all-actions .btn {
+        width: 100%;
+    }
+    
+    .movie-meta {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
 }
