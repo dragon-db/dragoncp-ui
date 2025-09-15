@@ -22,7 +22,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.7.1
+                   v1.7.2
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -514,9 +514,14 @@
                                     <div class="config-field">
                                         <label class="form-label">Current Connection Status</label>
                                         <div class="form-control-plaintext">
-                                            <span class="status-indicator" id="wsConfigStatusIndicator"></span>
-                                            <span id="wsConfigStatusText">Checking...</span>
-                                            <br>
+                                            <div class="d-flex align-items-center">
+                                                <span class="status-indicator" id="wsConfigStatusIndicator"></span>
+                                                <span class="text-light fw-semibold" id="wsConfigStatusText">Checking...</span>
+                                                <span class="badge bg-info ms-2" id="wsActiveConnectionsCount" style="display: none;">0</span>
+                                                <button type="button" class="btn btn-outline-secondary btn-sm ms-2" id="refreshWsStatusBtn" title="Refresh connection status">
+                                                    <i class="bi bi-arrow-clockwise"></i>
+                                                </button>
+                                            </div>
                                             <small class="text-muted" id="wsConfigStatusDetails">
                                                 Real-time transfer updates depend on app connection.
                                             </small>

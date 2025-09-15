@@ -283,6 +283,7 @@ export class ConfigManager {
     initializeConfigListeners() {
         this.addConfigFieldListeners();
         this.initializeDiscordConfigListeners();
+        this.initializeWebSocketStatusListeners();
     }
 
     addConfigFieldListeners() {
@@ -365,51 +366,9 @@ export class ConfigManager {
     updateWebSocketConfigStatusReadOnly() {
         // Same as updateWebSocketConfigStatus but doesn't reset activity timer
         // This is used when opening config modal to check status without extending session
-        const statusIndicator = document.getElementById('wsConfigStatusIndicator');
-        const statusText = document.getElementById('wsConfigStatusText');
-        const statusDetails = document.getElementById('wsConfigStatusDetails');
-        
-        if (!statusIndicator || !statusText || !statusDetails) return;
-        
-        // Check if we're in config-changed state
-        const currentStatus = document.getElementById('statusIndicator')?.className;
-        const isConfigChanged = currentStatus?.includes('status-config-changed');
-        
-        if (isConfigChanged) {
-            statusIndicator.className = 'status-indicator status-config-changed';
-            statusText.textContent = 'Configuration Updated';
-            statusDetails.innerHTML = `
-                <i class="bi bi-exclamation-triangle"></i> 
-                Settings changed. Click "Apply New Settings" to reconnect with updated configuration.
-            `;
-        } else if (this.app.websocket.isWebSocketConnected) {
-            statusIndicator.className = 'status-indicator status-connected';
-            statusText.textContent = 'Connected';
-            
-            const timeoutMinutes = Math.floor(this.app.websocket.websocketTimeout / 60000);
-            // Use the same calculation as status bar for consistency
-            const timeLeft = this.app.websocket.getTimeRemaining();
-            
-            statusDetails.innerHTML = `
-                <i class="bi bi-check-circle"></i> 
-                Real-time updates active. Timeout: ${timeoutMinutes} min. 
-                Time left: ${timeLeft} min.
-            `;
-        } else if (this.app.websocket.wasAutoDisconnected) {
-            statusIndicator.className = 'status-indicator status-auto-disconnected';
-            statusText.textContent = 'Auto-disconnected';
-            statusDetails.innerHTML = `
-                <i class="bi bi-clock"></i> 
-                Disconnected due to inactivity. Active transfers continue via background API monitoring.
-            `;
-        } else {
-            statusIndicator.className = 'status-indicator status-disconnected';
-            statusText.textContent = 'Disconnected';
-            statusDetails.innerHTML = `
-                <i class="bi bi-x-circle"></i> 
-                App connection not active. Click "Auto Connect" for real-time updates and full features.
-            `;
-        }
+        this.updateWebSocketConfigStatus();
+        // Also load WebSocket status for connections count
+        this.loadWebSocketStatus();
     }
 
     updateWebSocketConfigStatus() {
@@ -430,6 +389,23 @@ export class ConfigManager {
                 <i class="bi bi-exclamation-triangle"></i> 
                 Settings changed. Click "Apply New Settings" to reconnect with updated configuration.
             `;
+        } else if (this.app.websocket.lastConnectionError && !this.app.websocket.isWebSocketConnected) {
+            // Show websocket connection errors prominently
+            statusIndicator.className = 'status-indicator status-disconnected';
+            statusText.textContent = 'WebSocket Connection Failed';
+            
+            const sshConnected = this.app.currentState?.connected || false;
+            if (sshConnected) {
+                statusDetails.innerHTML = `
+                    <i class="bi bi-exclamation-triangle text-warning"></i> 
+                    Server connected but WebSocket connection failed. Click refresh to retry connection.
+                `;
+            } else {
+                statusDetails.innerHTML = `
+                    <i class="bi bi-x-circle text-danger"></i> 
+                    WebSocket connection failed. Check network connection and try again.
+                `;
+            }
         } else if (this.app.websocket.isWebSocketConnected) {
             statusIndicator.className = 'status-indicator status-connected';
             statusText.textContent = 'Connected';
@@ -452,12 +428,26 @@ export class ConfigManager {
             `;
         } else {
             statusIndicator.className = 'status-indicator status-disconnected';
-            statusText.textContent = 'Disconnected';
-            statusDetails.innerHTML = `
-                <i class="bi bi-x-circle"></i> 
-                App connection not active. Click "Auto Connect" for real-time updates and full features.
-            `;
+            statusText.textContent = 'App Connection Not Active';
+            
+            // Check if SSH server is connected for better context
+            const sshConnected = this.app.currentState?.connected || false;
+            
+            if (sshConnected) {
+                statusDetails.innerHTML = `
+                    <i class="bi bi-exclamation-triangle"></i> 
+                    Server connected but real-time app connection not active. Click "Auto Connect" to enable WebSocket features.
+                `;
+            } else {
+                statusDetails.innerHTML = `
+                    <i class="bi bi-x-circle"></i> 
+                    App connection not active. Click "Auto Connect" for real-time updates and full features.
+                `;
+            }
         }
+        
+        // Also load WebSocket connection count when updating status
+        this.loadWebSocketStatus();
     }
     
     initializeDiscordConfigListeners() {
@@ -619,6 +609,110 @@ export class ConfigManager {
             // Restore button state
             testBtn.innerHTML = originalText;
             testBtn.disabled = false;
+        }
+    }
+    
+    initializeWebSocketStatusListeners() {
+        // WebSocket status refresh button
+        const refreshWsStatusBtn = document.getElementById('refreshWsStatusBtn');
+        if (refreshWsStatusBtn) {
+            refreshWsStatusBtn.addEventListener('click', () => {
+                // Clear any previous websocket connection errors when refreshing
+                this.app.websocket.clearConnectionError();
+                
+                // Try to reconnect websocket if not connected
+                if (!this.app.websocket.isWebSocketConnected) {
+                    this.app.websocket.connect();
+                }
+                
+                // Update the status display
+                this.updateWebSocketConfigStatus();
+                this.loadWebSocketStatus();
+            });
+        }
+    }
+    
+    async loadWebSocketStatus() {
+        const refreshBtn = document.getElementById('refreshWsStatusBtn');
+        const connectionsCountEl = document.getElementById('wsActiveConnectionsCount');
+        const statusDetailsEl = document.getElementById('wsConfigStatusDetails');
+        
+        // Show loading state
+        if (refreshBtn) {
+            const originalIcon = refreshBtn.innerHTML;
+            refreshBtn.innerHTML = '<i class="bi bi-hourglass-split"></i>';
+            refreshBtn.disabled = true;
+        }
+        
+        try {
+            const response = await fetch('/api/websocket/status');
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                const wsStatus = result.websocket_status;
+                
+                // Update connections count badge
+                if (connectionsCountEl) {
+                    connectionsCountEl.textContent = wsStatus.active_connections;
+                    connectionsCountEl.style.display = 'inline-block';
+                    
+                    // Update badge color based on connection count
+                    connectionsCountEl.className = 'badge ms-2';
+                    if (wsStatus.active_connections === 0) {
+                        connectionsCountEl.classList.add('bg-secondary');
+                        connectionsCountEl.title = 'No active WebSocket connections';
+                    } else if (wsStatus.active_connections === 1) {
+                        connectionsCountEl.classList.add('bg-success');
+                        connectionsCountEl.title = '1 active WebSocket connection';
+                    } else {
+                        connectionsCountEl.classList.add('bg-info');
+                        connectionsCountEl.title = `${wsStatus.active_connections} active WebSocket connections`;
+                    }
+                }
+                
+                // Enhance status details with connection information
+                if (statusDetailsEl && wsStatus.active_connections > 0) {
+                    const existingContent = statusDetailsEl.innerHTML;
+                    let connectionInfo = '';
+                    
+                    if (wsStatus.active_connections === 1) {
+                        const conn = wsStatus.connection_details[0];
+                        connectionInfo = ` Connected for ${conn.connected_minutes_ago}m, last activity ${conn.last_activity_minutes_ago}m ago.`;
+                    } else {
+                        connectionInfo = ` ${wsStatus.active_connections} active connections.`;
+                    }
+                    
+                    // Only append connection info if it's not already there
+                    if (!existingContent.includes('Connected for') && !existingContent.includes('active connections')) {
+                        statusDetailsEl.innerHTML = existingContent + connectionInfo;
+                    }
+                }
+                
+                console.log('WebSocket Status:', wsStatus);
+                
+            } else {
+                console.error('Failed to load WebSocket status:', result.message);
+                if (connectionsCountEl) {
+                    connectionsCountEl.textContent = '?';
+                    connectionsCountEl.className = 'badge bg-warning ms-2';
+                    connectionsCountEl.style.display = 'inline-block';
+                    connectionsCountEl.title = 'Failed to load WebSocket status';
+                }
+            }
+        } catch (error) {
+            console.error('Error loading WebSocket status:', error);
+            if (connectionsCountEl) {
+                connectionsCountEl.textContent = '!';
+                connectionsCountEl.className = 'badge bg-danger ms-2';
+                connectionsCountEl.style.display = 'inline-block';
+                connectionsCountEl.title = 'Error loading WebSocket status';
+            }
+        } finally {
+            // Restore button state
+            if (refreshBtn) {
+                refreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
+                refreshBtn.disabled = false;
+            }
         }
     }
 }

@@ -11,7 +11,10 @@ export class WebSocketManager {
             autoConnect: false, 
             reconnection: false,
             timeout: 20000,
-            transports: ['polling', 'websocket']
+            transports: ['websocket', 'polling'],
+            upgrade: true,
+            rememberUpgrade: true,
+            forceNew: true
         });
         
         // WebSocket timeout management
@@ -21,6 +24,7 @@ export class WebSocketManager {
         this.isWebSocketConnected = false;
         this.wasAutoDisconnected = false;
         this.hasEverConnected = false;
+        this.lastConnectionError = null;
         
         this.initializeWebSocket();
         this.initializeActivityTracking();
@@ -38,6 +42,7 @@ export class WebSocketManager {
             this.isWebSocketConnected = true;
             this.wasAutoDisconnected = false;
             this.hasEverConnected = true;
+            this.lastConnectionError = null; // Clear any previous errors
             
             // Start activity tracking now that WebSocket is connected
             this.updateActivity(); // Start activity tracking
@@ -85,10 +90,25 @@ export class WebSocketManager {
                 this.activityTimer = null;
             }
             
-            // Hide WebSocket dependent UI elements on unexpected disconnect
+            // Handle status based on type of disconnect and SSH connection state
             if (!this.wasAutoDisconnected && reason !== 'io client disconnect') {
                 this.hideWebSocketDependentUI();
-                this.app.ui.updateStatus('Connection lost unexpectedly', 'disconnected');
+                
+                // Check if there was a recent connection error
+                if (this.lastConnectionError) {
+                    // Don't override connection error status
+                    return;
+                }
+                
+                // Update status based on SSH connection state
+                if (this.app.currentState.connected) {
+                    this.app.ui.updateStatus('Connected to server - Real-time updates unavailable', 'disconnected');
+                } else {
+                    this.app.ui.updateStatus('Connection lost unexpectedly', 'disconnected');
+                }
+            } else if (this.wasAutoDisconnected && this.app.currentState.connected) {
+                // Auto-disconnected but SSH still connected
+                this.app.ui.updateStatus('Connected to server - Background monitoring active', 'auto-disconnected');
             }
             
             // Update config modal status
@@ -104,10 +124,27 @@ export class WebSocketManager {
         this.socket.on('connect_error', (error) => {
             console.error('WebSocket connection error:', error);
             this.isWebSocketConnected = false;
-            this.app.ui.updateStatus('WebSocket connection failed', 'disconnected');
+            this.lastConnectionError = error;
+            
+            // Always show websocket connection failure prominently
+            if (this.app.currentState.connected) {
+                this.app.ui.updateStatus('Connected to server - WebSocket connection failed', 'disconnected');
+            } else {
+                this.app.ui.updateStatus('WebSocket connection failed', 'disconnected');
+            }
         });
 
         this.socket.on('error', (error) => {
+            // Filter out expected "Invalid frame header" errors during transport cleanup
+            const errorString = error.toString();
+            if (errorString.includes('Invalid frame header') || 
+                errorString.includes('WebSocket connection to') ||
+                errorString.includes('failed: Invalid frame header')) {
+                console.log('WebSocket transport cleanup (expected during disconnection)');
+                return;
+            }
+            
+            // Log other unexpected errors
             console.error('WebSocket error:', error);
         });
     }
@@ -313,8 +350,12 @@ export class WebSocketManager {
     showWebSocketTimeoutNotification() {
         this.app.ui.showAlert('App connection lost due to inactivity. Active transfers continue running automatically in the background. Click "Auto Connect" to restore real-time features.', 'info');
         
-        // Update status to show auto-disconnected state
-        this.app.ui.updateStatus('Disconnected due to inactivity - background monitoring active', 'auto-disconnected');
+        // Update status based on SSH connection state
+        if (this.app.currentState.connected) {
+            this.app.ui.updateStatus('Connected to server - Background monitoring active', 'auto-disconnected');
+        } else {
+            this.app.ui.updateStatus('Disconnected due to inactivity - background monitoring active', 'auto-disconnected');
+        }
         
         // Hide UI elements that depend on WebSocket
         this.hideWebSocketDependentUI();
@@ -433,12 +474,37 @@ export class WebSocketManager {
     }
 
     async updateStatusWithTimer() {
-        if (this.activityTimer) {
+        // Check if SSH server connection exists
+        const isServerConnected = this.app.currentState.connected;
+        
+        // Prioritize showing websocket connection errors
+        if (this.lastConnectionError && !this.isWebSocketConnected) {
+            if (isServerConnected) {
+                this.app.ui.updateStatus('Connected to server - WebSocket connection failed', 'disconnected');
+            } else {
+                this.app.ui.updateStatus('WebSocket connection failed', 'disconnected');
+            }
+            return;
+        }
+        
+        // Only update status if we have an active timer and websocket is connected
+        if (this.activityTimer && this.isWebSocketConnected) {
             const timeRemaining = this.getTimeRemaining();
-            if (timeRemaining > 0) {
-                this.app.ui.updateStatus(`Session active - ${timeRemaining} minutes remaining`, 'connected');
+            
+            if (timeRemaining > 0 && isServerConnected) {
+                this.app.ui.updateStatus(`Connected to server - Session: ${timeRemaining} min remaining`, 'connected');
+            } else if (timeRemaining > 0) {
+                // WebSocket connected but no SSH server connection
+                this.app.ui.updateStatus(`WebSocket connected - ${timeRemaining} min remaining`, 'connecting');
             } else {
                 this.app.ui.updateStatus('Session expired - reconnecting...', 'auto-disconnected');
+            }
+        } else if (!this.isWebSocketConnected && isServerConnected) {
+            // SSH connected but websocket disconnected - show appropriate status
+            if (this.wasAutoDisconnected) {
+                this.app.ui.updateStatus('Connected to server - Background monitoring active', 'auto-disconnected');
+            } else {
+                this.app.ui.updateStatus('Connected to server - Real-time updates unavailable', 'disconnected');
             }
         }
     }
@@ -446,6 +512,8 @@ export class WebSocketManager {
     // Public methods for external access
     connect() {
         if (!this.isWebSocketConnected) {
+            // Clear any previous connection errors when manually reconnecting
+            this.lastConnectionError = null;
             this.socket.connect();
         }
     }
@@ -456,5 +524,9 @@ export class WebSocketManager {
 
     setWebSocketTimeout(timeoutMinutes) {
         this.websocketTimeout = timeoutMinutes * 60 * 1000;
+    }
+    
+    clearConnectionError() {
+        this.lastConnectionError = null;
     }
 }
