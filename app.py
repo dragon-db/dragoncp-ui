@@ -1769,6 +1769,161 @@ def api_webhook_settings():
                 "message": f"Failed to update settings: {str(e)}"
             }), 500
 
+@app.route('/api/discord/settings', methods=['GET', 'POST'])
+def api_discord_settings():
+    """Get or update Discord notification settings"""
+    if request.method == 'GET':
+        try:
+            settings = {
+                "webhook_url": transfer_manager.settings.get('DISCORD_WEBHOOK_URL', ''),
+                "app_url": transfer_manager.settings.get('DISCORD_APP_URL', 'http://localhost:5000'),
+                "manual_sync_thumbnail_url": transfer_manager.settings.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', ''),
+                "icon_url": transfer_manager.settings.get('DISCORD_ICON_URL', ''),
+                "enabled": transfer_manager.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED', False)
+            }
+            return jsonify({
+                "status": "success",
+                "settings": settings
+            })
+        except Exception as e:
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to get Discord settings: {str(e)}"
+            }), 500
+    
+    else:  # POST
+        try:
+            data = request.json
+            if not data:
+                return jsonify({"status": "error", "message": "No data provided"}), 400
+            
+            # Update Discord settings
+            if "enabled" in data:
+                transfer_manager.settings.set_bool('DISCORD_NOTIFICATIONS_ENABLED', data["enabled"])
+                print(f"🎮 Discord notifications enabled: {data['enabled']}")
+            
+            if "webhook_url" in data:
+                transfer_manager.settings.set('DISCORD_WEBHOOK_URL', data["webhook_url"])
+                print(f"🎮 Discord webhook URL updated")
+            
+            if "app_url" in data:
+                transfer_manager.settings.set('DISCORD_APP_URL', data["app_url"])
+                print(f"🎮 Discord app URL updated")
+            
+            if "manual_sync_thumbnail_url" in data:
+                transfer_manager.settings.set('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', data["manual_sync_thumbnail_url"])
+                print(f"🎮 Discord manual sync thumbnail URL updated")
+            
+            if "icon_url" in data:
+                transfer_manager.settings.set('DISCORD_ICON_URL', data["icon_url"])
+                print(f"🎮 Discord icon URL updated")
+            
+            return jsonify({
+                "status": "success",
+                "message": "Discord settings updated successfully"
+            })
+            
+        except Exception as e:
+            print(f"❌ Error updating Discord settings: {e}")
+            return jsonify({
+                "status": "error",
+                "message": f"Failed to update Discord settings: {str(e)}"
+            }), 500
+
+@app.route('/api/discord/test', methods=['POST'])
+def api_discord_test():
+    """Test Discord webhook with a sample notification"""
+    try:
+        # Check if Discord notifications are enabled
+        notifications_enabled = transfer_manager.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED', False)
+        if not notifications_enabled:
+            return jsonify({
+                "status": "error",
+                "message": "Discord notifications are disabled. Please enable them first."
+            }), 400
+        
+        # Get Discord webhook URL from settings
+        discord_webhook_url = transfer_manager.settings.get('DISCORD_WEBHOOK_URL')
+        if not discord_webhook_url:
+            return jsonify({
+                "status": "error",
+                "message": "Discord webhook URL not configured"
+            }), 400
+        
+        # Get other Discord settings
+        app_url = transfer_manager.settings.get('DISCORD_APP_URL', 'http://localhost:5000')
+        manual_sync_thumbnail_url = transfer_manager.settings.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', '')
+        icon_url = transfer_manager.settings.get('DISCORD_ICON_URL', '')
+        
+        # Create test embed
+        embed = {
+            'title': 'DragonCP Test Notification',
+            'url': app_url,
+            'color': 11164867,  # Purple color
+            'fields': [
+                {
+                    'name': 'Folder Synced',
+                    'value': '/test/path/sample_movie',
+                    'inline': False
+                },
+                {
+                    'name': 'Files Info',
+                    'value': '```Transferred files: 5 Deleted Files: 0```',
+                    'inline': True
+                },
+                {
+                    'name': 'Speed Info',
+                    'value': '```Transferred Data: 2.5GB Avg Speed: 10MB/s```',
+                    'inline': True
+                }
+            ],
+            'author': {
+                'name': 'Test Notification',
+                'icon_url': icon_url
+            },
+            'timestamp': datetime.now().isoformat(),
+            'footer': {
+                'text': 'This is a test notification from DragonCP'
+            }
+        }
+        
+        # Add thumbnail if configured
+        if manual_sync_thumbnail_url:
+            embed['thumbnail'] = {
+                'url': manual_sync_thumbnail_url
+            }
+        
+        # Prepare Discord payload
+        payload = {
+            'embeds': [embed]
+        }
+        
+        # Send test notification
+        response = requests.post(
+            discord_webhook_url,
+            json=payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=10
+        )
+        
+        if response.status_code == 204:
+            return jsonify({
+                "status": "success",
+                "message": "Test Discord notification sent successfully!"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": f"Discord webhook test failed: {response.status_code} - {response.text}"
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error testing Discord webhook: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to test Discord webhook: {str(e)}"
+        }), 500
+
 # WebSocket Events for connection management
 @socketio.on('connect')
 def handle_connect():

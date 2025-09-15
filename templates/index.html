@@ -22,7 +22,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.7.0
+                   v1.7.1
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -525,6 +525,95 @@
                                 </div>
                             </div>
                         </div>
+
+                        <!-- Discord Notifications -->
+                        <div class="config-section">
+                            <h6><i class="bi bi-discord"></i> Discord Notifications</h6>
+                            <div class="row">
+                                <div class="col-md-12">
+                                    <div class="config-field">
+                                        <div class="form-check form-switch mb-3">
+                                            <input class="form-check-input" type="checkbox" id="discordNotificationsEnabled" name="DISCORD_NOTIFICATIONS_ENABLED">
+                                            <label class="form-check-label" for="discordNotificationsEnabled">
+                                                <strong>Enable Discord Notifications</strong>
+                                            </label>
+                                            <div class="modified-indicator" id="discordNotificationsEnabledIndicator" style="display: none;">
+                                                <i class="bi bi-pencil-square"></i>
+                                            </div>
+                                            <div class="original-value" id="discordNotificationsEnabledOriginal"></div>
+                                            <small class="form-text text-muted d-block mt-1">
+                                                <i class="bi bi-info-circle"></i> 
+                                                When enabled, Discord notifications will be sent for transfer completion events
+                                            </small>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row" id="discordConfigFields">
+                                <div class="col-md-12">
+                                    <div class="config-field">
+                                        <label for="discordWebhookUrl" class="form-label">Discord Webhook URL</label>
+                                        <input type="text" class="form-control" id="discordWebhookUrl" name="DISCORD_WEBHOOK_URL" placeholder="https://discord.com/api/webhooks/...">
+                                        <div class="modified-indicator" id="discordWebhookUrlIndicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="discordWebhookUrlOriginal"></div>
+                                        <small class="form-text text-muted">
+                                            <i class="bi bi-info-circle"></i> 
+                                            Discord webhook URL for transfer completion notifications
+                                        </small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row" id="discordConfigFields2">
+                                <div class="col-md-4">
+                                    <div class="config-field">
+                                        <label for="discordAppUrl" class="form-label">App URL</label>
+                                        <input type="text" class="form-control" id="discordAppUrl" name="DISCORD_APP_URL" placeholder="http://localhost:5000">
+                                        <div class="modified-indicator" id="discordAppUrlIndicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="discordAppUrlOriginal"></div>
+                                        <small class="form-text text-muted">URL to link back to DragonCP in Discord notifications</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="config-field">
+                                        <label for="discordIconUrl" class="form-label">Icon URL</label>
+                                        <input type="text" class="form-control" id="discordIconUrl" name="DISCORD_ICON_URL" placeholder="https://example.com/icon.png">
+                                        <div class="modified-indicator" id="discordIconUrlIndicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="discordIconUrlOriginal"></div>
+                                        <small class="form-text text-muted">Icon URL for Discord notification author</small>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="config-field">
+                                        <label for="discordManualSyncThumbnailUrl" class="form-label">Alt Thumbnail URL</label>
+                                        <input type="text" class="form-control" id="discordManualSyncThumbnailUrl" name="DISCORD_MANUAL_SYNC_THUMBNAIL_URL" placeholder="https://example.com/thumbnail.png">
+                                        <div class="modified-indicator" id="discordManualSyncThumbnailUrlIndicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="discordManualSyncThumbnailUrlOriginal"></div>
+                                        <small class="form-text text-muted">Thumbnail for manual sync notifications</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row" id="discordConfigActions">
+                                <div class="col-md-12">
+                                    <div class="d-flex gap-2 mt-3">
+                                        <button type="button" class="btn btn-success" id="testDiscordBtn">
+                                            <i class="bi bi-send"></i> Test Discord Notification
+                                        </button>
+                                        <button type="button" class="btn btn-info" id="loadDiscordSettingsBtn">
+                                            <i class="bi bi-arrow-clockwise"></i> Load Current Settings
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- SSH Connection Settings -->
                         <div class="config-section">
                             <h6><i class="bi bi-wifi"></i> SSH Connection Settings</h6>
@@ -720,6 +809,7 @@
                                 </div>
                             </div>
                         </div>
+
                     </form>
                 </div>
                 <div class="modal-footer">

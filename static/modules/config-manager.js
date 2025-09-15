@@ -61,7 +61,14 @@ export class ConfigManager {
             { id: 'diskApiToken', name: 'DISK_API_TOKEN', label: 'Remote Disk API Token', value: config.DISK_API_TOKEN, envValue: envConfig.DISK_API_TOKEN, type: 'password', placeholder: 'Bearer token for remote API' },
             
             // WebSocket settings
-            { id: 'websocketTimeout', name: 'WEBSOCKET_TIMEOUT_MINUTES', label: 'WebSocket Timeout (minutes)', value: Math.min(60, Math.max(5, config.WEBSOCKET_TIMEOUT_MINUTES || 30)), envValue: Math.min(60, Math.max(5, envConfig.WEBSOCKET_TIMEOUT_MINUTES || 30)), type: 'number', placeholder: '30' }
+            { id: 'websocketTimeout', name: 'WEBSOCKET_TIMEOUT_MINUTES', label: 'WebSocket Timeout (minutes)', value: Math.min(60, Math.max(5, config.WEBSOCKET_TIMEOUT_MINUTES || 30)), envValue: Math.min(60, Math.max(5, envConfig.WEBSOCKET_TIMEOUT_MINUTES || 30)), type: 'number', placeholder: '30' },
+            
+            // Discord Notifications (these are loaded separately as they're stored in database)
+            { id: 'discordNotificationsEnabled', name: 'DISCORD_NOTIFICATIONS_ENABLED', label: 'Enable Discord Notifications', value: false, envValue: false, type: 'checkbox', placeholder: '' },
+            { id: 'discordWebhookUrl', name: 'DISCORD_WEBHOOK_URL', label: 'Discord Webhook URL', value: '', envValue: '', placeholder: 'https://discord.com/api/webhooks/...' },
+            { id: 'discordAppUrl', name: 'DISCORD_APP_URL', label: 'Discord App URL', value: '', envValue: '', placeholder: 'http://localhost:5000' },
+            { id: 'discordIconUrl', name: 'DISCORD_ICON_URL', label: 'Discord Icon URL', value: '', envValue: '', placeholder: 'https://example.com/icon.png' },
+            { id: 'discordManualSyncThumbnailUrl', name: 'DISCORD_MANUAL_SYNC_THUMBNAIL_URL', label: 'Alt Thumbnail URL', value: '', envValue: '', placeholder: 'https://example.com/thumbnail.png' }
         ];
         
         // Populate each field
@@ -71,8 +78,12 @@ export class ConfigManager {
             const original = document.getElementById(field.id + 'Original');
             
             if (input) {
-                input.value = field.value || '';
-                input.placeholder = field.placeholder || '';
+                if (field.type === 'checkbox') {
+                    input.checked = field.value === true || field.value === 'true';
+                } else {
+                    input.value = field.value || '';
+                    input.placeholder = field.placeholder || '';
+                }
                 
                 // Update modification indicators
                 if (indicator && original) {
@@ -148,6 +159,9 @@ export class ConfigManager {
             const result = await response.json();
             
             if (result.status === 'success') {
+                // Save Discord settings separately (stored in database)
+                await this.saveDiscordSettings();
+                
                 // Determine if critical config changes were made
                 const hasCriticalChanges = this.hasCriticalConfigChanges(config);
                 
@@ -268,6 +282,7 @@ export class ConfigManager {
 
     initializeConfigListeners() {
         this.addConfigFieldListeners();
+        this.initializeDiscordConfigListeners();
     }
 
     addConfigFieldListeners() {
@@ -442,6 +457,168 @@ export class ConfigManager {
                 <i class="bi bi-x-circle"></i> 
                 App connection not active. Click "Auto Connect" for real-time updates and full features.
             `;
+        }
+    }
+    
+    initializeDiscordConfigListeners() {
+        // Discord notifications enabled toggle
+        const discordEnabledToggle = document.getElementById('discordNotificationsEnabled');
+        if (discordEnabledToggle) {
+            discordEnabledToggle.addEventListener('change', (e) => {
+                this.toggleDiscordFields(e.target.checked);
+            });
+        }
+        
+        // Test Discord notification button
+        const testDiscordBtn = document.getElementById('testDiscordBtn');
+        if (testDiscordBtn) {
+            testDiscordBtn.addEventListener('click', () => {
+                this.testDiscordNotification();
+            });
+        }
+        
+        // Load Discord settings button
+        const loadDiscordSettingsBtn = document.getElementById('loadDiscordSettingsBtn');
+        if (loadDiscordSettingsBtn) {
+            loadDiscordSettingsBtn.addEventListener('click', () => {
+                this.loadDiscordSettings();
+            });
+        }
+        
+        // Load Discord settings on config modal open
+        const configModal = document.getElementById('configModal');
+        if (configModal) {
+            configModal.addEventListener('shown.bs.modal', () => {
+                this.loadDiscordSettings();
+            });
+        }
+    }
+    
+    toggleDiscordFields(enabled) {
+        // Get Discord configuration field containers
+        const discordConfigFields = document.getElementById('discordConfigFields');
+        const discordConfigFields2 = document.getElementById('discordConfigFields2');
+        const discordConfigActions = document.getElementById('discordConfigActions');
+        
+        // Show/hide Discord configuration fields based on enabled state
+        const displayValue = enabled ? '' : 'none';
+        
+        if (discordConfigFields) discordConfigFields.style.display = displayValue;
+        if (discordConfigFields2) discordConfigFields2.style.display = displayValue;
+        if (discordConfigActions) discordConfigActions.style.display = displayValue;
+    }
+    
+    async loadDiscordSettings() {
+        try {
+            const response = await fetch('/api/discord/settings');
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                const settings = result.settings;
+                
+                // Populate Discord configuration fields
+                const discordNotificationsEnabled = document.getElementById('discordNotificationsEnabled');
+                const discordWebhookUrl = document.getElementById('discordWebhookUrl');
+                const discordAppUrl = document.getElementById('discordAppUrl');
+                const discordIconUrl = document.getElementById('discordIconUrl');
+                const discordManualSyncThumbnailUrl = document.getElementById('discordManualSyncThumbnailUrl');
+                
+                if (discordNotificationsEnabled) discordNotificationsEnabled.checked = settings.enabled || false;
+                if (discordWebhookUrl) discordWebhookUrl.value = settings.webhook_url || '';
+                if (discordAppUrl) discordAppUrl.value = settings.app_url || 'http://localhost:5000';
+                if (discordIconUrl) discordIconUrl.value = settings.icon_url || '';
+                if (discordManualSyncThumbnailUrl) discordManualSyncThumbnailUrl.value = settings.manual_sync_thumbnail_url || '';
+                
+                // Update Discord field visibility based on enabled state
+                this.toggleDiscordFields(settings.enabled || false);
+                
+                console.log('Discord settings loaded successfully');
+            } else {
+                console.error('Failed to load Discord settings:', result.message);
+            }
+        } catch (error) {
+            console.error('Error loading Discord settings:', error);
+        }
+    }
+    
+    async saveDiscordSettings() {
+        const discordNotificationsEnabled = document.getElementById('discordNotificationsEnabled')?.checked || false;
+        const discordWebhookUrl = document.getElementById('discordWebhookUrl')?.value || '';
+        const discordAppUrl = document.getElementById('discordAppUrl')?.value || 'http://localhost:5000';
+        const discordIconUrl = document.getElementById('discordIconUrl')?.value || '';
+        const discordManualSyncThumbnailUrl = document.getElementById('discordManualSyncThumbnailUrl')?.value || '';
+        
+        const discordData = {
+            enabled: discordNotificationsEnabled,
+            webhook_url: discordWebhookUrl,
+            app_url: discordAppUrl,
+            icon_url: discordIconUrl,
+            manual_sync_thumbnail_url: discordManualSyncThumbnailUrl
+        };
+        
+        try {
+            const response = await fetch('/api/discord/settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(discordData)
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                console.log('Discord settings saved successfully');
+                return true;
+            } else {
+                console.error('Failed to save Discord settings:', result.message);
+                this.app.ui.showAlert(`Failed to save Discord settings: ${result.message}`, 'danger');
+                return false;
+            }
+        } catch (error) {
+            console.error('Error saving Discord settings:', error);
+            this.app.ui.showAlert(`Error saving Discord settings: ${error.message}`, 'danger');
+            return false;
+        }
+    }
+    
+    async testDiscordNotification() {
+        const testBtn = document.getElementById('testDiscordBtn');
+        const originalText = testBtn.innerHTML;
+        
+        // Update button to show loading state
+        testBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Testing...';
+        testBtn.disabled = true;
+        
+        try {
+            // First save current Discord settings
+            const saveResult = await this.saveDiscordSettings();
+            if (!saveResult) {
+                return;
+            }
+            
+            // Then test Discord notification
+            const response = await fetch('/api/discord/test', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.app.ui.showAlert(result.message, 'success');
+            } else {
+                this.app.ui.showAlert(`Discord test failed: ${result.message}`, 'danger');
+            }
+        } catch (error) {
+            console.error('Error testing Discord notification:', error);
+            this.app.ui.showAlert(`Error testing Discord notification: ${error.message}`, 'danger');
+        } finally {
+            // Restore button state
+            testBtn.innerHTML = originalText;
+            testBtn.disabled = false;
         }
     }
 }
