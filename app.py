@@ -1897,7 +1897,6 @@ def api_discord_test():
         # Create test embed
         embed = {
             'title': 'DragonCP Test Notification',
-            'url': app_url,
             'color': 11164867,  # Purple color
             'fields': [
                 {
@@ -1907,12 +1906,17 @@ def api_discord_test():
                 },
                 {
                     'name': 'Files Info',
-                    'value': '```Transferred files: 5 Deleted Files: 0```',
+                    'value': '```Transferred files: 1\nDeleted Files: 2```',
                     'inline': True
                 },
                 {
                     'name': 'Speed Info',
-                    'value': '```Transferred Data: 2.5GB Avg Speed: 10MB/s```',
+                    'value': '```Transferred: 3.84G\nAvg Speed: 7.31M bytes/sec```',
+                    'inline': True
+                },
+                {
+                    'name': 'Requested by',
+                    'value': 'test',
                     'inline': True
                 }
             ],
@@ -1920,11 +1924,15 @@ def api_discord_test():
                 'name': 'Test Notification',
                 'icon_url': icon_url
             },
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
             'footer': {
                 'text': 'This is a test notification from DragonCP'
             }
         }
+        
+        # Add URL only if it's a valid format (Discord is strict about URL validation)
+        if app_url and _is_valid_discord_url(app_url):
+            embed['url'] = app_url
         
         # Add thumbnail if configured
         if manual_sync_thumbnail_url:
@@ -1962,6 +1970,17 @@ def api_discord_test():
             "status": "error",
             "message": f"Failed to test Discord webhook: {str(e)}"
         }), 500
+
+def _is_valid_discord_url(url: str) -> bool:
+    """Validate URL format for Discord embeds"""
+    try:
+        import re
+        # Discord accepts http/https URLs with proper domain format
+        # Allow localhost, IP addresses, and proper domain names
+        url_pattern = r'^https?://(?:(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d{1,5})?(?:/.*)?$'
+        return bool(re.match(url_pattern, url))
+    except Exception:
+        return False
 
 # WebSocket Events for connection management
 @socketio.on('connect')

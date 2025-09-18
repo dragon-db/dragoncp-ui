@@ -2321,7 +2321,6 @@ class TransferManager:
             # Build Discord embed
             embed = {
                 'title': title,
-                'url': app_url,
                 'color': 11164867,  # Purple color
                 'fields': [
                     {
@@ -2331,12 +2330,12 @@ class TransferManager:
                     },
                     {
                         'name': 'Files Info',
-                        'value': f"```Transferred files: {stats.get('regular_files_transferred', 'N/A')} Deleted Files: {stats.get('deleted_files', 'N/A')}```",
+                        'value': f"```Transferred files: {stats.get('regular_files_transferred', 'N/A')}\nDeleted Files: {stats.get('deleted_files', 'N/A')}```",
                         'inline': True
                     },
                     {
                         'name': 'Speed Info',
-                        'value': f"```Transferred Data: {stats.get('total_transferred_size', 'N/A')} Avg Speed: {stats.get('avg_speed', 'N/A')}```",
+                        'value': f"```Transferred: {stats.get('total_transferred_size', 'N/A')}\nAvg Speed: {stats.get('avg_speed', 'N/A')}```",
                         'inline': True
                     }
                 ],
@@ -2344,11 +2343,15 @@ class TransferManager:
                     'name': sync_type,
                     'icon_url': icon_url
                 },
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
                 'thumbnail': {
                     'url': thumbnail_url
                 } if thumbnail_url else None
             }
+            
+            # Add URL only if it's a valid format (Discord is strict about URL validation)
+            if app_url and self._is_valid_discord_url(app_url):
+                embed['url'] = app_url
             
             # Add requested_by field only for webhook transfers
             if requested_by:
@@ -2383,4 +2386,15 @@ class TransferManager:
         except Exception as e:
             print(f"❌ Error sending Discord notification for transfer {transfer_id}: {e}")
             import traceback
-            traceback.print_exc() 
+            traceback.print_exc()
+    
+    def _is_valid_discord_url(self, url: str) -> bool:
+        """Validate URL format for Discord embeds"""
+        try:
+            import re
+            # Discord accepts http/https URLs with proper domain format
+            # Allow localhost, IP addresses, and proper domain names
+            url_pattern = r'^https?://(?:(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d{1,5})?(?:/.*)?$'
+            return bool(re.match(url_pattern, url))
+        except Exception:
+            return False 
