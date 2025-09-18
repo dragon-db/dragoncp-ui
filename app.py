@@ -1620,6 +1620,32 @@ def api_webhook_movies_receiver():
         
         print(f"🎬 Webhook data received: {webhook_data.get('movie', {}).get('title', 'Unknown')}")
         
+        # Check if this is a TEST notification first
+        movie = webhook_data.get('movie', {})
+        event_type = webhook_data.get('eventType', '')
+        title = movie.get('title', '')
+        folder_path = movie.get('folderPath', '')
+        
+        is_test = (
+            event_type == 'Test' or
+            title == 'Test Title' or
+            'testpath' in folder_path
+        )
+        
+        if is_test:
+            print(f"🧪 TEST webhook received - webhook connectivity verified")
+            # Emit toast notification via WebSocket
+            if transfer_manager.socketio:
+                transfer_manager.socketio.emit('test_webhook_received', {
+                    'message': 'TEST webhook received - webhook connectivity verified',
+                    'timestamp': datetime.now().isoformat()
+                })
+            return jsonify({
+                "status": "success",
+                "message": "TEST webhook received - webhook connectivity verified",
+                "is_test": True
+            })
+        
         # Parse webhook data according to specification
         parsed_data = transfer_manager.parse_webhook_data(webhook_data)
         

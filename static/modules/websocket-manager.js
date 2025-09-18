@@ -77,6 +77,11 @@ export class WebSocketManager {
             // Don't count transfer completion as user activity
         });
 
+        this.socket.on('test_webhook_received', (data) => {
+            console.log('🧪 TEST webhook received:', data.message);
+            this.app.ui.showAlert(data.message, 'info');
+        });
+
         this.socket.on('disconnect', (reason) => {
             console.log('WebSocket disconnected:', reason);
             this.isWebSocketConnected = false;
