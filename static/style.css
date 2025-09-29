@@ -3292,16 +3292,19 @@ button#refreshSyncStatusBtn i.spinning,
 }
 
 /* Movie details modal styling */
-#movieDetailsModal .modal-content {
+#movieDetailsModal .modal-content,
+#seriesDetailsModal .modal-content {
     background: var(--card-bg);
     border: 1px solid var(--border-color);
 }
 
-#movieDetailsModal .modal-header {
+#movieDetailsModal .modal-header,
+#seriesDetailsModal .modal-header {
     border-bottom: 1px solid var(--border-color);
 }
 
-#movieDetailsModal .modal-body {
+#movieDetailsModal .modal-body,
+#seriesDetailsModal .modal-body {
     background: var(--card-bg);
     color: var(--text-light);
 }
@@ -3476,19 +3479,25 @@ button#refreshSyncStatusBtn i.spinning,
     }
     
     /* Modal responsive adjustments */
-    #movieDetailsModal .modal-dialog {
+    #movieDetailsModal .modal-dialog,
+    #seriesDetailsModal .modal-dialog {
         margin: 0.5rem;
     }
     
     #movieDetailsModal .col-lg-3,
-    #movieDetailsModal .col-lg-9 {
+    #movieDetailsModal .col-lg-9,
+    #seriesDetailsModal .col-lg-3,
+    #seriesDetailsModal .col-lg-9 {
         flex: 0 0 100%;
         max-width: 100%;
     }
     
     #movieDetailsModal .col-md-4,
     #movieDetailsModal .col-md-6,
-    #movieDetailsModal .col-md-8 {
+    #movieDetailsModal .col-md-8,
+    #seriesDetailsModal .col-md-4,
+    #seriesDetailsModal .col-md-6,
+    #seriesDetailsModal .col-md-8 {
         flex: 0 0 100%;
         max-width: 100%;
     }

@@ -79,6 +79,43 @@ class DatabaseManager:
                     transfer_id TEXT
                 )
             ''')
+            
+            # Webhook notifications for series/anime sync
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS series_webhook_notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    notification_id TEXT UNIQUE NOT NULL,
+                    media_type TEXT NOT NULL,  -- 'tvshows' or 'anime'
+                    series_title TEXT NOT NULL,
+                    series_title_slug TEXT,
+                    series_id INTEGER,
+                    series_path TEXT NOT NULL,
+                    year INTEGER,
+                    tvdb_id INTEGER,
+                    tv_maze_id INTEGER,
+                    tmdb_id INTEGER,
+                    imdb_id TEXT,
+                    poster_url TEXT,  -- Poster image URL
+                    banner_url TEXT,  -- Banner image URL
+                    tags TEXT DEFAULT '[]',
+                    original_language TEXT,
+                    requested_by TEXT,
+                    season_number INTEGER,
+                    episode_count INTEGER DEFAULT 1,
+                    episodes TEXT DEFAULT '[]',  -- JSON array of episode details
+                    episode_files TEXT DEFAULT '[]',  -- JSON array of episode file details
+                    season_path TEXT NOT NULL,  -- Season-level destination path
+                    release_title TEXT,
+                    release_indexer TEXT,
+                    release_size INTEGER DEFAULT 0,
+                    download_client TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    error_message TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    synced_at DATETIME,
+                    transfer_id TEXT
+                )
+            ''')
 
             # Application settings (key-value store for dynamic UI settings)
             conn.execute('''
@@ -935,6 +972,175 @@ class WebhookNotification:
             conn.commit()
             return cursor.rowcount
 
+class SeriesWebhookNotification:
+    """SeriesWebhookNotification model for series/anime webhook notifications"""
+    
+    def __init__(self, db_manager: DatabaseManager):
+        self.db = db_manager
+    
+    def create(self, notification_data: Dict) -> str:
+        """Create a new series webhook notification record"""
+        print(f"📝 Creating series webhook notification for {notification_data.get('series_title', 'Unknown')}")
+        
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.execute('''
+                    INSERT INTO series_webhook_notifications (
+                        notification_id, media_type, series_title, series_title_slug, series_id,
+                        series_path, year, tvdb_id, tv_maze_id, tmdb_id, imdb_id,
+                        poster_url, banner_url, tags, original_language, requested_by,
+                        season_number, episode_count, episodes, episode_files, season_path,
+                        release_title, release_indexer, release_size, download_client, status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    notification_data['notification_id'],
+                    notification_data['media_type'],
+                    notification_data['series_title'],
+                    notification_data.get('series_title_slug'),
+                    notification_data.get('series_id'),
+                    notification_data['series_path'],
+                    notification_data.get('year'),
+                    notification_data.get('tvdb_id'),
+                    notification_data.get('tv_maze_id'),
+                    notification_data.get('tmdb_id'),
+                    notification_data.get('imdb_id'),
+                    notification_data.get('poster_url'),
+                    notification_data.get('banner_url'),
+                    json.dumps(notification_data.get('tags', [])),
+                    notification_data.get('original_language'),
+                    notification_data.get('requested_by'),
+                    notification_data.get('season_number'),
+                    notification_data.get('episode_count', 1),
+                    json.dumps(notification_data.get('episodes', [])),
+                    json.dumps(notification_data.get('episode_files', [])),
+                    notification_data['season_path'],
+                    notification_data.get('release_title'),
+                    notification_data.get('release_indexer'),
+                    notification_data.get('release_size', 0),
+                    notification_data.get('download_client'),
+                    notification_data.get('status', 'pending')
+                ))
+                conn.commit()
+                print(f"✅ Series webhook notification created successfully for {notification_data.get('series_title', 'Unknown')}")
+                return notification_data['notification_id']
+        except Exception as e:
+            print(f"❌ Error creating series webhook notification: {e}")
+            raise
+    
+    def update(self, notification_id: str, updates: Dict) -> bool:
+        """Update series webhook notification"""
+        try:
+            with self.db.get_connection() as conn:
+                # Build dynamic update query
+                update_fields = []
+                values = []
+                
+                for key, value in updates.items():
+                    if key == 'notification_id':  # Skip updating the primary key
+                        continue
+                    update_fields.append(f"{key} = ?")
+                    values.append(value)
+                
+                if not update_fields:
+                    return False
+                
+                values.append(notification_id)
+                
+                cursor = conn.execute(f'''
+                    UPDATE series_webhook_notifications 
+                    SET {", ".join(update_fields)}
+                    WHERE notification_id = ?
+                ''', values)
+                
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"❌ Error updating series webhook notification: {e}")
+            return False
+    
+    def get(self, notification_id: str) -> Optional[Dict]:
+        """Get series webhook notification by ID"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                SELECT * FROM series_webhook_notifications WHERE notification_id = ?
+            ''', (notification_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                notification = dict(row)
+                # Parse JSON fields
+                for json_field in ['tags', 'episodes', 'episode_files']:
+                    try:
+                        notification[json_field] = json.loads(notification.get(json_field, '[]'))
+                    except json.JSONDecodeError:
+                        notification[json_field] = []
+                return notification
+            return None
+    
+    def get_all(self, media_type_filter: str = None, status_filter: str = None, limit: int = None) -> List[Dict]:
+        """Get all series webhook notifications with optional filtering"""
+        query = "SELECT * FROM series_webhook_notifications"
+        params = []
+        conditions = []
+        
+        if media_type_filter:
+            # Handle both 'tvshows' and legacy 'series' for backward compatibility
+            if media_type_filter == 'tvshows':
+                conditions.append("(media_type = ? OR media_type = ?)")
+                params.extend(['tvshows', 'series'])
+            else:
+                conditions.append("media_type = ?")
+                params.append(media_type_filter)
+            
+        if status_filter:
+            conditions.append("status = ?")
+            params.append(status_filter)
+        
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        
+        query += " ORDER BY created_at DESC"
+        
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+        
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(query, params)
+            notifications = []
+            
+            for row in cursor.fetchall():
+                notification = dict(row)
+                # Parse JSON fields
+                for json_field in ['tags', 'episodes', 'episode_files']:
+                    try:
+                        notification[json_field] = json.loads(notification.get(json_field, '[]'))
+                    except json.JSONDecodeError:
+                        notification[json_field] = []
+                notifications.append(notification)
+            
+            return notifications
+    
+    def delete(self, notification_id: str) -> bool:
+        """Delete series webhook notification record"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                DELETE FROM series_webhook_notifications WHERE notification_id = ?
+            ''', (notification_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def cleanup_old_notifications(self, days: int = 30) -> int:
+        """Clean up old processed notifications"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                DELETE FROM series_webhook_notifications 
+                WHERE status IN ('completed', 'failed') 
+                AND created_at < datetime('now', '-{} days')
+            '''.format(days))
+            conn.commit()
+            return cursor.rowcount
+
 class TransferManager:
     """Enhanced transfer manager with database persistence"""
     
@@ -945,6 +1151,7 @@ class TransferManager:
         self.transfer_model = Transfer(db_manager)
         self.backup_model = Backup(db_manager)
         self.webhook_model = WebhookNotification(db_manager)
+        self.series_webhook_model = SeriesWebhookNotification(db_manager)
         self.socketio = socketio
         # Settings API
         self.settings = AppSettings(db_manager)
@@ -1067,8 +1274,12 @@ class TransferManager:
             
             # Create destination directory
             try:
-                os.makedirs(dest_path, exist_ok=True)
-                print(f"✅ Created destination directory: {dest_path}")
+                # Check TEST_MODE before creating destination directory
+                if os.environ.get('TEST_MODE', '0') == '1':
+                    print(f"🧪 TEST_MODE: Would create destination directory: {dest_path}")
+                else:
+                    os.makedirs(dest_path, exist_ok=True)
+                    print(f"✅ Created destination directory: {dest_path}")
             except Exception as e:
                 print(f"❌ Failed to create destination directory: {e}")
                 self.transfer_model.update(transfer_id, {
@@ -1117,8 +1328,12 @@ class TransferManager:
             backup_id = transfer_id  # use transfer_id for stable association
             dynamic_backup_dir = os.path.join(backup_base, f"{safe_folder}_{backup_id}")
             try:
-                os.makedirs(dynamic_backup_dir, exist_ok=True)
-                os.makedirs(os.path.join(dynamic_backup_dir, '.rsync-partial'), exist_ok=True)
+                # Check TEST_MODE before creating backup directories
+                if os.environ.get('TEST_MODE', '0') == '1':
+                    print(f"🧪 TEST_MODE: Would create backup directories: {dynamic_backup_dir}")
+                else:
+                    os.makedirs(dynamic_backup_dir, exist_ok=True)
+                    os.makedirs(os.path.join(dynamic_backup_dir, '.rsync-partial'), exist_ok=True)
             except Exception as e:
                 print(f"⚠️  Could not prepare dynamic backup directory: {e}")
             
@@ -1150,6 +1365,11 @@ class TransferManager:
                 "--preallocate",
                 "--no-motd"
             ]
+            
+            # Add --dry-run flag when TEST_MODE is enabled
+            if os.environ.get('TEST_MODE', '0') == '1':
+                rsync_cmd.append("--dry-run")
+                print("🧪 TEST_MODE enabled - rsync will run in dry-run mode (no actual file transfers)")
             
             # Build SSH options for rsync
             ssh_options = ["-o", "StrictHostKeyChecking=no", "-o", "Compression=no"]
@@ -1431,7 +1651,11 @@ class TransferManager:
                 return False, 'Backup directory not found on disk'
             if not os.path.exists(dest_path):
                 try:
-                    os.makedirs(dest_path, exist_ok=True)
+                    # Check TEST_MODE before creating restore destination directory
+                    if os.environ.get('TEST_MODE', '0') == '1':
+                        print(f"🧪 TEST_MODE: Would create restore destination directory: {dest_path}")
+                    else:
+                        os.makedirs(dest_path, exist_ok=True)
                 except Exception as e:
                     return False, f'Failed to create destination: {e}'
 
@@ -1479,10 +1703,17 @@ class TransferManager:
                 target = op.get('target_delete')
                 if target and os.path.exists(target):
                     try:
-                        os.remove(target)
-                        deleted += 1
-                        ctx_disp = op.get('context_display') or op.get('backup_relative')
-                        self.transfer_model.add_log(restore_transfer_id, f"Deleted: {target}\nContext: {ctx_disp}")
+                        # Check TEST_MODE before deleting files
+                        if os.environ.get('TEST_MODE', '0') == '1':
+                            print(f"🧪 TEST_MODE: Would delete file: {target}")
+                            ctx_disp = op.get('context_display') or op.get('backup_relative')
+                            self.transfer_model.add_log(restore_transfer_id, f"[DRY-RUN] Would delete: {target}\nContext: {ctx_disp}")
+                            deleted += 1  # Count as if deleted for simulation
+                        else:
+                            os.remove(target)
+                            deleted += 1
+                            ctx_disp = op.get('context_display') or op.get('backup_relative')
+                            self.transfer_model.add_log(restore_transfer_id, f"Deleted: {target}\nContext: {ctx_disp}")
                     except Exception as e:
                         self.transfer_model.add_log(restore_transfer_id, f"ERROR deleting {target}: {e}")
 
@@ -1490,17 +1721,30 @@ class TransferManager:
             rsync_cmd = [
                 'rsync', '-av', '--progress', '--size-only', '--no-perms', '--no-owner', '--no-group', '--no-motd'
             ]
+            
+            # Add --dry-run flag when TEST_MODE is enabled
+            if os.environ.get('TEST_MODE', '0') == '1':
+                rsync_cmd.append("--dry-run")
+                print("🧪 TEST_MODE enabled - rsync restore will run in dry-run mode (no actual file transfers)")
             temp_list_file = None
             # Use backup_relative from operations to ensure we copy exactly those files
             selected_relatives = [op['backup_relative'] for op in operations]
             if selected_relatives:
-                temp_fd, temp_path = tempfile.mkstemp(prefix='backup_files_', text=True)
-                os.close(temp_fd)
-                with open(temp_path, 'w', newline='\n') as f:
-                    for p in selected_relatives:
-                        f.write(p.strip().lstrip('/').replace('\\', '/') + '\n')
-                rsync_cmd.extend(['-r', f"--files-from={temp_path}"])
-                temp_list_file = temp_path
+                # Check TEST_MODE before creating temporary files
+                if os.environ.get('TEST_MODE', '0') == '1':
+                    print(f"🧪 TEST_MODE: Would create temporary file list with {len(selected_relatives)} files")
+                    # In test mode, create a dummy path but don't create the actual file
+                    temp_path = f"/tmp/test_mode_dummy_file_{len(selected_relatives)}.txt"
+                    rsync_cmd.extend(['-r', f"--files-from={temp_path}"])
+                    temp_list_file = None  # Don't track for cleanup in test mode
+                else:
+                    temp_fd, temp_path = tempfile.mkstemp(prefix='backup_files_', text=True)
+                    os.close(temp_fd)
+                    with open(temp_path, 'w', newline='\n') as f:
+                        for p in selected_relatives:
+                            f.write(p.strip().lstrip('/').replace('\\', '/') + '\n')
+                    rsync_cmd.extend(['-r', f"--files-from={temp_path}"])
+                    temp_list_file = temp_path
 
             # Source and destination
             rsync_cmd.extend([f"{backup_dir}/", f"{dest_path}/"]) 
@@ -1512,7 +1756,11 @@ class TransferManager:
                 self.transfer_model.add_log(restore_transfer_id, f"Copied: {op.get('backup_relative')} -> {op.get('copy_to')}\nContext: {ctx_disp}")
             if temp_list_file and os.path.exists(temp_list_file):
                 try:
-                    os.remove(temp_list_file)
+                    # Check TEST_MODE before removing temporary file
+                    if os.environ.get('TEST_MODE', '0') == '1':
+                        print(f"🧪 TEST_MODE: Would remove temporary file: {temp_list_file}")
+                    else:
+                        os.remove(temp_list_file)
                 except Exception:
                     pass
 
@@ -1568,7 +1816,11 @@ class TransferManager:
                 if bdir and os.path.exists(bdir):
                     import shutil
                     try:
-                        shutil.rmtree(bdir)
+                        # Check TEST_MODE before removing backup directory
+                        if os.environ.get('TEST_MODE', '0') == '1':
+                            print(f"🧪 TEST_MODE: Would remove backup directory: {bdir}")
+                        else:
+                            shutil.rmtree(bdir)
                     except Exception as e:
                         return False, f'Failed to remove backup directory: {e}'
             with self.db.get_connection() as conn:
@@ -1590,7 +1842,11 @@ class TransferManager:
                 if bdir and os.path.exists(bdir):
                     import shutil
                     try:
-                        shutil.rmtree(bdir)
+                        # Check TEST_MODE before removing backup directory
+                        if os.environ.get('TEST_MODE', '0') == '1':
+                            print(f"🧪 TEST_MODE: Would remove backup directory: {bdir}")
+                        else:
+                            shutil.rmtree(bdir)
                     except Exception as e:
                         return False, f'Failed to remove backup directory: {e}'
             if delete_record:
@@ -2005,6 +2261,100 @@ class TransferManager:
         
         return False
     
+    def trigger_series_webhook_sync(self, notification_id: str) -> Tuple[bool, str]:
+        """Trigger sync for a series/anime webhook notification"""
+        try:
+            # Get notification details
+            notification = self.series_webhook_model.get(notification_id)
+            if not notification:
+                return False, "Notification not found"
+            
+            if notification['status'] == 'syncing':
+                return False, "Sync already in progress"
+            
+            if notification['status'] == 'completed':
+                return False, "Already synced"
+            
+            # Update notification status to syncing
+            self.series_webhook_model.update(notification_id, {
+                'status': 'syncing',
+                'synced_at': datetime.now().isoformat()
+            })
+            
+            # Generate transfer ID
+            transfer_id = f"series_webhook_{notification_id}_{int(datetime.now().timestamp())}"
+            
+            # Extract series details
+            series_title = notification['series_title']
+            season_number = notification.get('season_number')
+            media_type = notification['media_type']
+            
+            # Determine folder name (series title with year if available)
+            if notification.get('year'):
+                folder_name = f"{series_title} ({notification['year']})"
+            else:
+                folder_name = series_title
+            
+            # Use season_path as the final destination for this season
+            dest_path = notification['season_path']
+            
+            # For source path, use the series_path + season
+            source_path = notification['series_path']
+            if season_number:
+                # Add season folder to source path
+                source_path = f"{source_path}/Season {season_number:02d}"
+            
+            # Get the correct destination base path from config
+            dest_base_map = {
+                "anime": self.config.get("ANIME_DEST_PATH"),
+                "series": self.config.get("TVSHOW_DEST_PATH")
+            }
+            
+            dest_base = dest_base_map.get(media_type)
+            if not dest_base:
+                self.series_webhook_model.update(notification_id, {
+                    'status': 'failed',
+                    'error_message': f'{media_type.title()} destination path not configured'
+                })
+                return False, f"{media_type.title()} destination path not configured"
+            
+            # Override destination to use config destination + folder + season
+            season_name = f"Season {season_number:02d}" if season_number else "Season Unknown"
+            dest_path = f"{dest_base}/{folder_name}/{season_name}"
+            
+            # Store transfer ID in notification
+            self.series_webhook_model.update(notification_id, {'transfer_id': transfer_id})
+            
+            # Start the transfer using existing transfer logic
+            success = self.start_transfer(
+                transfer_id=transfer_id,
+                source_path=source_path,
+                dest_path=dest_path,
+                transfer_type='folder',
+                media_type=media_type,
+                folder_name=folder_name,
+                season_name=season_name,
+                episode_name=None
+            )
+            
+            if success:
+                print(f"✅ Series webhook sync started: {series_title} Season {season_number}")
+                return True, f"Sync started for {series_title} Season {season_number}"
+            else:
+                self.series_webhook_model.update(notification_id, {
+                    'status': 'failed',
+                    'error_message': 'Failed to start transfer'
+                })
+                return False, "Failed to start transfer"
+                
+        except Exception as e:
+            print(f"❌ Error triggering series webhook sync: {e}")
+            self.series_webhook_model.update(notification_id, {
+                'status': 'failed',
+                'error_message': str(e)
+            })
+            return False, f"Failed to trigger sync: {str(e)}"
+    
     def trigger_webhook_sync(self, notification_id: str) -> Tuple[bool, str]:
         """Trigger sync for a webhook notification"""
         try:
@@ -2088,14 +2438,33 @@ class TransferManager:
     def update_webhook_transfer_status(self, transfer_id: str, status: str):
         """Update webhook notification status based on transfer completion"""
         try:
-            # Find the webhook notification by transfer_id
-            notifications = self.webhook_model.get_all()
+            # Get the transfer record to determine media_type
+            transfer = self.transfer_model.get(transfer_id)
+            if not transfer:
+                print(f"⚠️  Transfer {transfer_id} not found, skipping webhook status update")
+                return
+            
+            media_type = transfer.get('media_type', '')
             webhook_notification = None
             
-            for notification in notifications:
-                if notification.get('transfer_id') == transfer_id:
-                    webhook_notification = notification
-                    break
+            # Search the appropriate webhook table based on transfer media_type
+            if media_type == 'movies':
+                # Search movie webhook notifications
+                notifications = self.webhook_model.get_all()
+                for notification in notifications:
+                    if notification.get('transfer_id') == transfer_id:
+                        webhook_notification = notification
+                        break
+            elif media_type in ['anime', 'tvshows', 'series']:
+                # Search series/anime webhook notifications
+                notifications = self.series_webhook_model.get_all()
+                for notification in notifications:
+                    if notification.get('transfer_id') == transfer_id:
+                        webhook_notification = notification
+                        break
+            else:
+                print(f"⚠️  Unknown media_type '{media_type}' for transfer {transfer_id}, skipping webhook status update")
+                return
             
             if webhook_notification:
                 update_data = {}
@@ -2111,8 +2480,16 @@ class TransferManager:
                     }
                 
                 if update_data:
-                    self.webhook_model.update(webhook_notification['notification_id'], update_data)
-                    print(f"📋 Updated webhook notification status to {status} for {webhook_notification['title']}")
+                    # Update the appropriate model based on media_type
+                    if media_type == 'movies':
+                        self.webhook_model.update(webhook_notification['notification_id'], update_data)
+                        print(f"📋 Updated movie webhook notification status to {status} for {webhook_notification['title']}")
+                    elif media_type in ['anime', 'tvshows', 'series']:
+                        self.series_webhook_model.update(webhook_notification['notification_id'], update_data)
+                        title = webhook_notification.get('series_title', webhook_notification.get('title', 'Unknown'))
+                        print(f"📋 Updated {media_type} webhook notification status to {status} for {title}")
+            else:
+                print(f"⚠️  No webhook notification found for transfer {transfer_id} (media_type: {media_type})")
                     
         except Exception as e:
             print(f"❌ Error updating webhook transfer status: {e}")
@@ -2204,6 +2581,107 @@ class TransferManager:
             
         except Exception as e:
             print(f"❌ Error parsing webhook data: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def parse_series_webhook_data(self, webhook_json: Dict, media_type: str) -> Dict:
+        """Parse series/anime webhook JSON data according to specification"""
+        try:
+            series = webhook_json.get('series', {})
+            episodes = webhook_json.get('episodes', [])
+            episode_files = webhook_json.get('episodeFiles', [])
+            release = webhook_json.get('release', {})
+            
+            # Extract series information
+            series_title = series.get('title', 'Unknown Series')
+            series_title_slug = series.get('titleSlug', '')
+            series_id = series.get('id')
+            series_path = series.get('path', '')
+            year = series.get('year')
+            
+            # Extract IDs
+            tvdb_id = series.get('tvdbId')
+            tv_maze_id = series.get('tvMazeId')
+            tmdb_id = series.get('tmdbId')
+            imdb_id = series.get('imdbId')
+            
+            # Extract series metadata
+            tags = series.get('tags', [])
+            original_language = series.get('originalLanguage', {}).get('name', '')
+            
+            # Extract poster and banner URLs from images
+            poster_url = None
+            banner_url = None
+            images = series.get('images', [])
+            for image in images:
+                if image.get('coverType') == 'poster':
+                    poster_url = image.get('remoteUrl')
+                elif image.get('coverType') == 'banner':
+                    banner_url = image.get('remoteUrl')
+            
+            # Extract requested by from tags (format: <number> - <name>)
+            requested_by = None
+            for tag in tags:
+                if isinstance(tag, str) and ' - ' in tag:
+                    parts = tag.split(' - ', 1)
+                    if len(parts) == 2 and parts[0].strip().isdigit():
+                        requested_by = parts[1].strip()
+                        break
+            
+            # Determine season number from episodes or destination path
+            season_number = None
+            if episodes:
+                season_number = episodes[0].get('seasonNumber')
+            
+            # Calculate season path at season level
+            season_path = webhook_json.get('destinationPath', '')
+            
+            # Extract release information
+            release_title = release.get('releaseTitle', '')
+            release_indexer = release.get('indexer', '')
+            release_size = release.get('size', 0)
+            
+            # Extract download information
+            download_client = webhook_json.get('downloadClient', '')
+            
+            # Generate unique notification ID
+            notification_id = f"{media_type}_{series_id or int(datetime.now().timestamp())}_s{season_number or 'unknown'}_{int(datetime.now().timestamp())}"
+            
+            parsed_data = {
+                'notification_id': notification_id,
+                'media_type': media_type,
+                'series_title': series_title,
+                'series_title_slug': series_title_slug,
+                'series_id': series_id,
+                'series_path': series_path,
+                'year': year,
+                'tvdb_id': tvdb_id,
+                'tv_maze_id': tv_maze_id,
+                'tmdb_id': tmdb_id,
+                'imdb_id': imdb_id,
+                'poster_url': poster_url,
+                'banner_url': banner_url,
+                'tags': tags,
+                'original_language': original_language,
+                'requested_by': requested_by,
+                'season_number': season_number,
+                'episode_count': len(episodes),
+                'episodes': episodes,
+                'episode_files': episode_files,
+                'season_path': season_path,
+                'release_title': release_title,
+                'release_indexer': release_indexer,
+                'release_size': release_size,
+                'download_client': download_client,
+                'status': 'pending'
+            }
+            
+            print(f"📋 Parsed {media_type} webhook data for: {series_title} Season {season_number}")
+            return parsed_data
+            
+        except Exception as e:
+            print(f"❌ Error parsing {media_type} webhook data: {e}")
             import traceback
             traceback.print_exc()
             raise

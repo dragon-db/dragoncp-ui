@@ -105,7 +105,11 @@ def setup_environment():
     if not os.path.exists(env_file):
         if os.path.exists(sample_env):
             print("📋 Creating environment file from sample...")
-            shutil.copy(sample_env, env_file)
+            # Check TEST_MODE before copying sample environment file
+            if os.environ.get('TEST_MODE', '0') == '1':
+                print(f"🧪 TEST_MODE: Would copy {sample_env} to {env_file}")
+            else:
+                shutil.copy(sample_env, env_file)
             print("✅ Environment file created: dragoncp_env.env")
             print("⚠️  Please edit dragoncp_env.env with your server details before running")
             return False

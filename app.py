@@ -138,11 +138,16 @@ class DragonCPConfig:
     def save_config(self, config_data: Dict[str, str]):
         """Save configuration to .env file (legacy method - use update_session_config instead)"""
         try:
-            with open(self.env_file, 'w') as f:
-                f.write("# DragonCP Configuration\n")
-                f.write(f"# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-                for key, value in config_data.items():
-                    f.write(f'{key}="{value}"\n')
+            # Check TEST_MODE before writing configuration file
+            if os.environ.get('TEST_MODE', '0') == '1':
+                print(f"🧪 TEST_MODE: Would write configuration to: {self.env_file}")
+                print(f"🧪 TEST_MODE: Configuration would contain {len(config_data)} settings")
+            else:
+                with open(self.env_file, 'w') as f:
+                    f.write("# DragonCP Configuration\n")
+                    f.write(f"# Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                    for key, value in config_data.items():
+                        f.write(f'{key}="{value}"\n')
             self.env_config = config_data
             print(f"✅ Configuration saved to .env file: {self.env_file}")
         except Exception as e:
@@ -1694,19 +1699,175 @@ def api_webhook_movies_receiver():
             "message": f"Failed to process webhook: {str(e)}"
         }), 500
 
+@app.route('/api/webhook/series', methods=['POST'])
+def api_webhook_series_receiver():
+    """Webhook receiver endpoint for series notifications from Sonarr"""
+    try:
+        print("📺 Series webhook received")
+        
+        # Validate content type
+        if not request.is_json:
+            return jsonify({"status": "error", "message": "Content-Type must be application/json"}), 400
+        
+        webhook_data = request.json
+        if not webhook_data:
+            return jsonify({"status": "error", "message": "Empty JSON payload"}), 400
+        
+        print(f"📺 Series webhook data received: {webhook_data.get('series', {}).get('title', 'Unknown')}")
+        
+        # Check if this is a TEST notification first
+        series = webhook_data.get('series', {})
+        event_type = webhook_data.get('eventType', '')
+        title = series.get('title', '')
+        series_path = series.get('path', '')
+        
+        is_test = (
+            event_type == 'Test' or
+            title == 'Test Title' or
+            'testpath' in series_path
+        )
+        
+        if is_test:
+            print(f"🧪 TEST series webhook received - webhook connectivity verified")
+            if transfer_manager.socketio:
+                transfer_manager.socketio.emit('test_webhook_received', {
+                    'message': 'TEST series webhook received - webhook connectivity verified',
+                    'timestamp': datetime.now().isoformat()
+                })
+            return jsonify({
+                "status": "success",
+                "message": "TEST series webhook received - webhook connectivity verified",
+                "is_test": True
+            })
+        
+        # Parse series webhook data
+        parsed_data = transfer_manager.parse_series_webhook_data(webhook_data, 'tvshows')
+        
+        # Store notification in database
+        notification_id = transfer_manager.series_webhook_model.create(parsed_data)
+        
+        # For series, auto-sync is disabled by default as per requirements
+        print(f"📺 Series auto-sync disabled by default, storing notification for manual sync")
+        return jsonify({
+            "status": "success",
+            "message": f"Series webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Manual sync required.",
+            "notification_id": notification_id,
+            "auto_sync": False
+        })
+        
+    except Exception as e:
+        print(f"❌ Error processing series webhook: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to process series webhook: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/anime', methods=['POST'])
+def api_webhook_anime_receiver():
+    """Webhook receiver endpoint for anime notifications from Sonarr"""
+    try:
+        print("🍙 Anime webhook received")
+        
+        # Validate content type
+        if not request.is_json:
+            return jsonify({"status": "error", "message": "Content-Type must be application/json"}), 400
+        
+        webhook_data = request.json
+        if not webhook_data:
+            return jsonify({"status": "error", "message": "Empty JSON payload"}), 400
+        
+        print(f"🍙 Anime webhook data received: {webhook_data.get('series', {}).get('title', 'Unknown')}")
+        
+        # Check if this is a TEST notification first
+        series = webhook_data.get('series', {})
+        event_type = webhook_data.get('eventType', '')
+        title = series.get('title', '')
+        series_path = series.get('path', '')
+        
+        is_test = (
+            event_type == 'Test' or
+            title == 'Test Title' or
+            'testpath' in series_path
+        )
+        
+        if is_test:
+            print(f"🧪 TEST anime webhook received - webhook connectivity verified")
+            if transfer_manager.socketio:
+                transfer_manager.socketio.emit('test_webhook_received', {
+                    'message': 'TEST anime webhook received - webhook connectivity verified',
+                    'timestamp': datetime.now().isoformat()
+                })
+            return jsonify({
+                "status": "success",
+                "message": "TEST anime webhook received - webhook connectivity verified",
+                "is_test": True
+            })
+        
+        # Parse anime webhook data
+        parsed_data = transfer_manager.parse_series_webhook_data(webhook_data, 'anime')
+        
+        # Store notification in database
+        notification_id = transfer_manager.series_webhook_model.create(parsed_data)
+        
+        # For anime, auto-sync is disabled by default as per requirements
+        print(f"🍙 Anime auto-sync disabled by default, storing notification for manual sync")
+        return jsonify({
+            "status": "success",
+            "message": f"Anime webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Manual sync required.",
+            "notification_id": notification_id,
+            "auto_sync": False
+        })
+        
+    except Exception as e:
+        print(f"❌ Error processing anime webhook: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to process anime webhook: {str(e)}"
+        }), 500
+
 @app.route('/api/webhook/notifications')
 def api_webhook_notifications():
-    """Get all webhook notifications"""
+    """Get all webhook notifications (movies, series, and anime)"""
     try:
         status_filter = request.args.get('status')
         limit = request.args.get('limit', 50, type=int)
         
-        notifications = transfer_manager.webhook_model.get_all(status_filter=status_filter, limit=limit)
+        # Get movie notifications
+        movie_notifications = transfer_manager.webhook_model.get_all(status_filter=status_filter, limit=limit)
+        
+        # Get series/anime notifications
+        series_notifications = transfer_manager.series_webhook_model.get_all(status_filter=status_filter, limit=limit)
+        
+        # Format notifications for consistent display
+        all_notifications = []
+        
+        # Add movie notifications with type indicator
+        for notification in movie_notifications:
+            notification['media_type'] = 'movie'
+            notification['display_title'] = notification['title']
+            all_notifications.append(notification)
+        
+        # Add series/anime notifications with type indicator
+        for notification in series_notifications:
+            season_text = f" Season {notification['season_number']}" if notification.get('season_number') else ""
+            notification['display_title'] = f"{notification['series_title']}{season_text}"
+            all_notifications.append(notification)
+        
+        # Sort by creation date (most recent first)
+        all_notifications.sort(key=lambda x: x['created_at'], reverse=True)
+        
+        # Apply limit to combined results
+        if limit:
+            all_notifications = all_notifications[:limit]
         
         return jsonify({
             "status": "success",
-            "notifications": notifications,
-            "total": len(notifications)
+            "notifications": all_notifications,
+            "total": len(all_notifications)
         })
         
     except Exception as e:
@@ -1716,18 +1877,80 @@ def api_webhook_notifications():
             "message": f"Failed to get notifications: {str(e)}"
         }), 500
 
-@app.route('/api/webhook/notifications/<notification_id>')
-def api_webhook_notification_details(notification_id):
-    """Get specific webhook notification details"""
+@app.route('/api/webhook/series/notifications')
+def api_series_webhook_notifications():
+    """Get series webhook notifications only"""
     try:
-        notification = transfer_manager.webhook_model.get(notification_id)
-        if not notification:
-            return jsonify({"status": "error", "message": "Notification not found"}), 404
+        status_filter = request.args.get('status')
+        limit = request.args.get('limit', 50, type=int)
+        
+        notifications = transfer_manager.series_webhook_model.get_all(
+            media_type_filter='tvshows', 
+            status_filter=status_filter, 
+            limit=limit
+        )
         
         return jsonify({
             "status": "success",
-            "notification": notification
+            "notifications": notifications,
+            "total": len(notifications)
         })
+        
+    except Exception as e:
+        print(f"❌ Error getting series webhook notifications: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get series notifications: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/anime/notifications')
+def api_anime_webhook_notifications():
+    """Get anime webhook notifications only"""
+    try:
+        status_filter = request.args.get('status')
+        limit = request.args.get('limit', 50, type=int)
+        
+        notifications = transfer_manager.series_webhook_model.get_all(
+            media_type_filter='anime', 
+            status_filter=status_filter, 
+            limit=limit
+        )
+        
+        return jsonify({
+            "status": "success",
+            "notifications": notifications,
+            "total": len(notifications)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting anime webhook notifications: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get anime notifications: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/notifications/<notification_id>')
+def api_webhook_notification_details(notification_id):
+    """Get specific webhook notification details (handles both movies and series/anime)"""
+    try:
+        # First try movie notifications
+        notification = transfer_manager.webhook_model.get(notification_id)
+        if notification:
+            notification['media_type'] = 'movie'  # Add media type for consistency
+            return jsonify({
+                "status": "success",
+                "notification": notification
+            })
+        
+        # If not found, try series/anime notifications
+        notification = transfer_manager.series_webhook_model.get(notification_id)
+        if notification:
+            return jsonify({
+                "status": "success",
+                "notification": notification
+            })
+        
+        return jsonify({"status": "error", "message": "Notification not found"}), 404
         
     except Exception as e:
         print(f"❌ Error getting notification details: {e}")
@@ -1738,7 +1961,7 @@ def api_webhook_notification_details(notification_id):
 
 @app.route('/api/webhook/notifications/<notification_id>/sync', methods=['POST'])
 def api_webhook_sync(notification_id):
-    """Manually trigger sync for a webhook notification"""
+    """Manually trigger sync for a webhook notification (movies)"""
     try:
         success, message = transfer_manager.trigger_webhook_sync(notification_id)
         
@@ -1758,6 +1981,102 @@ def api_webhook_sync(notification_id):
         return jsonify({
             "status": "error",
             "message": f"Failed to trigger sync: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/series/notifications/<notification_id>/sync', methods=['POST'])
+def api_series_webhook_sync(notification_id):
+    """Manually trigger sync for a series webhook notification"""
+    try:
+        success, message = transfer_manager.trigger_series_webhook_sync(notification_id)
+        
+        if success:
+            return jsonify({
+                "status": "success",
+                "message": message
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": message
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error triggering series webhook sync: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to trigger series sync: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/anime/notifications/<notification_id>/sync', methods=['POST'])
+def api_anime_webhook_sync(notification_id):
+    """Manually trigger sync for an anime webhook notification"""
+    try:
+        success, message = transfer_manager.trigger_series_webhook_sync(notification_id)
+        
+        if success:
+            return jsonify({
+                "status": "success",
+                "message": message
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": message
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error triggering anime webhook sync: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to trigger anime sync: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/series/notifications/<notification_id>/delete', methods=['POST'])
+def api_series_webhook_delete_notification(notification_id):
+    """Delete a series webhook notification"""
+    try:
+        success = transfer_manager.series_webhook_model.delete(notification_id)
+        
+        if success:
+            return jsonify({
+                "status": "success",
+                "message": "Series notification deleted successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to delete series notification"
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error deleting series notification: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to delete series notification: {str(e)}"
+        }), 500
+
+@app.route('/api/webhook/anime/notifications/<notification_id>/delete', methods=['POST'])
+def api_anime_webhook_delete_notification(notification_id):
+    """Delete an anime webhook notification"""
+    try:
+        success = transfer_manager.series_webhook_model.delete(notification_id)
+        
+        if success:
+            return jsonify({
+                "status": "success",
+                "message": "Anime notification deleted successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to delete anime notification"
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error deleting anime notification: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to delete anime notification: {str(e)}"
         }), 500
 
 @app.route('/api/webhook/notifications/<notification_id>/delete', methods=['POST'])
@@ -2075,8 +2394,12 @@ cleanup_thread.start()
 
 if __name__ == '__main__':
     # Create templates directory if it doesn't exist
-    os.makedirs('templates', exist_ok=True)
-    os.makedirs('static', exist_ok=True)
+    # Check TEST_MODE before creating app directories
+    if os.environ.get('TEST_MODE', '0') == '1':
+        print("🧪 TEST_MODE: Would create templates and static directories")
+    else:
+        os.makedirs('templates', exist_ok=True)
+        os.makedirs('static', exist_ok=True)
     
     print("DragonCP Web UI starting...")
     print("Access the application at: http://localhost:5000")
