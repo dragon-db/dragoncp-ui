@@ -19,8 +19,8 @@ from typing import Dict, List, Optional
 class TransferSimulator:
     """Simulate multiple concurrent transfers with periodic log updates."""
 
-    def __init__(self, transfer_manager, socketio):
-        self.transfer_manager = transfer_manager
+    def __init__(self, transfer_coordinator, socketio):
+        self.transfer_coordinator = transfer_coordinator
         self.socketio = socketio
         self._threads: Dict[str, threading.Thread] = {}
         self._stops: Dict[str, threading.Event] = {}
@@ -93,7 +93,7 @@ class TransferSimulator:
             season_name = f"Season {random.randint(1, 5)}"
 
         # Create DB record (pending -> running)
-        self.transfer_manager.transfer_model.create({
+        self.transfer_coordinator.transfer_model.create({
             "transfer_id": transfer_id,
             "media_type": media_type,
             "folder_name": folder_name,
@@ -105,7 +105,7 @@ class TransferSimulator:
             "status": "pending",
         })
 
-        self.transfer_manager.transfer_model.update(transfer_id, {
+        self.transfer_coordinator.transfer_model.update(transfer_id, {
             "status": "running",
             "progress": "Transfer started...",
             "start_time": datetime.now().isoformat(),
@@ -125,8 +125,8 @@ class TransferSimulator:
             log_line = f"{bytes_transferred:,}  {percent}%  {speed}/s"
 
             # Persist log and emit progress
-            self.transfer_manager.transfer_model.add_log(transfer_id, log_line)
-            transfer = self.transfer_manager.transfer_model.get(transfer_id)
+            self.transfer_coordinator.transfer_model.add_log(transfer_id, log_line)
+            transfer = self.transfer_coordinator.transfer_model.get(transfer_id)
             if self.socketio:
                 self.socketio.emit(
                     "transfer_progress",
@@ -148,11 +148,11 @@ class TransferSimulator:
             self._finalize(transfer_id, status="completed", message="Transfer completed successfully! (simulated)")
 
     def _finalize(self, transfer_id: str, status: str, message: str):
-        self.transfer_manager.transfer_model.update(
+        self.transfer_coordinator.transfer_model.update(
             transfer_id,
             {"status": status, "progress": message, "end_time": datetime.now().isoformat()},
         )
-        transfer = self.transfer_manager.transfer_model.get(transfer_id)
+        transfer = self.transfer_coordinator.transfer_model.get(transfer_id)
         if self.socketio:
             self.socketio.emit(
                 "transfer_complete",
