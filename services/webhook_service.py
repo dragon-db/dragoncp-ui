@@ -113,8 +113,9 @@ class WebhookService:
         try:
             series = webhook_json.get('series', {})
             episodes = webhook_json.get('episodes', [])
-            episode_files = webhook_json.get('episodeFiles', [])
+            episode_file = webhook_json.get('episodeFile', {})  # Fixed: singular, not plural
             release = webhook_json.get('release', {})
+            is_upgrade = webhook_json.get('isUpgrade', False)
             
             # Extract series information
             series_title = series.get('title', 'Unknown Series')
@@ -152,13 +153,26 @@ class WebhookService:
                         requested_by = parts[1].strip()
                         break
             
-            # Determine season number from episodes or destination path
+            # Determine season number from episodes
             season_number = None
             if episodes:
                 season_number = episodes[0].get('seasonNumber')
             
-            # Calculate season path at season level
-            season_path = webhook_json.get('destinationPath', '')
+            # Build episode_files array with current episode file only
+            episode_files = []
+            if episode_file:
+                episode_files.append(episode_file)
+            
+            # Calculate season_path from episode file path or construct from series path
+            season_path = ''
+            if episode_file and episode_file.get('path'):
+                # Extract directory from the episode file path
+                import os
+                file_path = episode_file['path']
+                season_path = os.path.dirname(file_path)
+            elif series_path and season_number is not None:
+                # Fallback: construct from series path + season number
+                season_path = f"{series_path}/Season {season_number:02d}"
             
             # Extract release information
             release_title = release.get('releaseTitle', '')
@@ -197,10 +211,12 @@ class WebhookService:
                 'release_indexer': release_indexer,
                 'release_size': release_size,
                 'download_client': download_client,
+                'is_upgrade': is_upgrade,
                 'status': 'pending'
             }
             
             print(f"📋 Parsed {media_type} webhook data for: {series_title} Season {season_number}")
+            print(f"   Episode files: {len(episode_files)} file(s), Season path: {season_path}")
             return parsed_data
             
         except Exception as e:
