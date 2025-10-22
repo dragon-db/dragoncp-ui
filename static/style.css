@@ -3517,3 +3517,212 @@ button#refreshSyncStatusBtn i.spinning,
         gap: 0.5rem;
     }
 }
+
+/* ===== ACCORDION DARK MODE STYLES (for grouped episodes) ===== */
+.accordion {
+    --bs-accordion-bg: rgba(255, 255, 255, 0.03);
+    --bs-accordion-border-color: var(--border-color);
+    --bs-accordion-color: var(--text-light);
+    --bs-accordion-btn-bg: rgba(255, 255, 255, 0.05);
+    --bs-accordion-btn-color: var(--text-light);
+    --bs-accordion-btn-focus-border-color: var(--secondary-color);
+    --bs-accordion-btn-focus-box-shadow: 0 0 0 0.2rem rgba(52, 152, 219, 0.25);
+    --bs-accordion-active-bg: rgba(52, 152, 219, 0.1);
+    --bs-accordion-active-color: var(--text-light);
+}
+
+.accordion-item {
+    background-color: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border-color);
+    border-radius: 6px !important;
+    margin-bottom: 0.5rem;
+    overflow: hidden;
+}
+
+.accordion-item:first-of-type {
+    border-top-left-radius: 6px !important;
+    border-top-right-radius: 6px !important;
+}
+
+.accordion-item:last-of-type {
+    border-bottom-left-radius: 6px !important;
+    border-bottom-right-radius: 6px !important;
+}
+
+.accordion-button {
+    background-color: rgba(255, 255, 255, 0.05);
+    color: var(--text-light);
+    border: none;
+    padding: 1rem;
+    font-weight: 500;
+    transition: all 0.3s ease;
+}
+
+.accordion-button:not(.collapsed) {
+    background-color: rgba(52, 152, 219, 0.15);
+    color: var(--text-light);
+    box-shadow: none;
+}
+
+.accordion-button:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: var(--text-light);
+}
+
+.accordion-button:focus {
+    border-color: var(--secondary-color);
+    box-shadow: 0 0 0 0.2rem rgba(52, 152, 219, 0.25);
+    background-color: rgba(255, 255, 255, 0.08);
+    color: var(--text-light);
+}
+
+.accordion-button::after {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23ecf0f1'%3e%3cpath fill-rule='evenodd' d='M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z'/%3e%3c/svg%3e");
+    filter: brightness(0.9);
+}
+
+.accordion-button:not(.collapsed)::after {
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23ecf0f1'%3e%3cpath fill-rule='evenodd' d='M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z'/%3e%3c/svg%3e");
+}
+
+.accordion-body {
+    background-color: rgba(0, 0, 0, 0.2);
+    color: var(--text-light);
+    padding: 1.25rem;
+    border-top: 1px solid var(--border-color);
+}
+
+/* Accordion header content styling */
+.accordion-button .badge {
+    flex-shrink: 0;
+}
+
+.accordion-button strong {
+    color: var(--text-light);
+    margin-right: 0.75rem;
+}
+
+/* Episode accordion specific styles */
+.accordion-body h6 {
+    color: var(--text-light);
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+}
+
+.accordion-body .table {
+    color: var(--text-light);
+    background-color: transparent;
+}
+
+.accordion-body .table-dark {
+    --bs-table-bg: rgba(0, 0, 0, 0.3);
+    --bs-table-border-color: var(--border-color);
+}
+
+.accordion-body .table-dark td,
+.accordion-body .table-dark th {
+    color: var(--text-light);
+    border-color: var(--border-color);
+    background-color: rgba(0, 0, 0, 0.2);
+}
+
+.accordion-body .table-dark tr:first-child td {
+    font-weight: 500;
+    color: var(--text-muted);
+}
+
+.accordion-body .table-dark tr:nth-child(even) td {
+    background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* Code/path display in accordion */
+.accordion-body code {
+    background-color: rgba(0, 0, 0, 0.4);
+    color: var(--text-light);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-family: 'Courier New', monospace;
+}
+
+/* Accordion action buttons */
+.accordion-body .btn {
+    border-radius: 6px;
+    font-size: 0.85rem;
+    padding: 0.4rem 0.8rem;
+}
+
+/* Badge styling in accordion headers */
+.accordion-button .badge {
+    font-size: 0.75rem;
+    padding: 0.3rem 0.6rem;
+}
+
+/* Alert styling in accordion */
+.accordion-body .alert {
+    background-color: rgba(220, 53, 69, 0.15);
+    border: 1px solid rgba(220, 53, 69, 0.3);
+    color: #ff6b6b;
+    border-radius: 6px;
+}
+
+/* Label styling in accordion */
+.accordion-body label {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+/* Path information boxes */
+.accordion-body .p-2.rounded {
+    background-color: rgba(0, 0, 0, 0.3) !important;
+    border: 1px solid var(--border-color) !important;
+    color: var(--text-light) !important;
+}
+
+.accordion-body .text-muted {
+    color: var(--text-muted) !important;
+}
+
+/* Responsive accordion adjustments */
+@media (max-width: 768px) {
+    .accordion-button {
+        padding: 0.75rem;
+        font-size: 0.9rem;
+    }
+    
+    .accordion-body {
+        padding: 1rem;
+    }
+    
+    .accordion-body h6 {
+        font-size: 0.85rem;
+    }
+    
+    .accordion-body .row.g-2 {
+        margin: 0 -0.25rem;
+    }
+    
+    .accordion-body .row.g-2 > div {
+        padding: 0 0.25rem;
+    }
+}
+
+@media (max-width: 576px) {
+    .accordion-button {
+        padding: 0.625rem;
+        font-size: 0.85rem;
+    }
+    
+    .accordion-body {
+        padding: 0.75rem;
+    }
+    
+    .accordion-body .d-flex.gap-2 {
+        flex-direction: column;
+    }
+    
+    .accordion-body .btn {
+        width: 100%;
+    }
+}

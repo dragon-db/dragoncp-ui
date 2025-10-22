@@ -132,13 +132,177 @@ export class WebhookManager {
         
         noNotificationsMessage.style.display = 'none';
         
-        this.notifications.forEach(notification => {
-            const notificationCard = this.createNotificationCard(notification);
+        // Group series/anime notifications by series_title_slug and season_number
+        const grouped = this.groupNotifications(this.notifications);
+        
+        grouped.forEach(item => {
+            const notificationCard = this.createNotificationCard(item);
             container.appendChild(notificationCard);
         });
     }
+    
+    groupNotifications(notifications) {
+        const groups = new Map();
+        const standalone = [];
+        
+        notifications.forEach(notification => {
+            const mediaType = notification.media_type || 'movie';
+            
+            // Only group series and anime, not movies
+            if (mediaType === 'series' || mediaType === 'tvshows' || mediaType === 'anime') {
+                const seriesKey = notification.series_title_slug || notification.series_title || 'unknown';
+                const seasonNum = notification.season_number || 0;
+                const groupKey = `${seriesKey}_S${seasonNum}`;
+                
+                if (!groups.has(groupKey)) {
+                    groups.set(groupKey, {
+                        isGroup: true,
+                        groupKey: groupKey,
+                        notifications: [],
+                        mediaType: mediaType,
+                        series_title: notification.series_title || notification.display_title,
+                        series_title_slug: seriesKey,
+                        season_number: seasonNum,
+                        poster_url: notification.poster_url,
+                        year: notification.year,
+                        requested_by: notification.requested_by,
+                        // Use the most recent notification's timestamp for sorting
+                        created_at: notification.created_at,
+                        tmdb_id: notification.tmdb_id,
+                        imdb_id: notification.imdb_id,
+                        tvdb_id: notification.tvdb_id
+                    });
+                }
+                
+                const group = groups.get(groupKey);
+                group.notifications.push(notification);
+                
+                // Update created_at to the most recent notification time
+                if (new Date(notification.created_at) > new Date(group.created_at)) {
+                    group.created_at = notification.created_at;
+                }
+            } else {
+                // Movies remain as standalone items
+                standalone.push({
+                    isGroup: false,
+                    notification: notification
+                });
+            }
+        });
+        
+        // Combine groups and standalone items
+        const result = [...Array.from(groups.values()), ...standalone];
+        
+        // Sort by created_at (most recent first)
+        result.sort((a, b) => {
+            const timeA = a.isGroup ? new Date(a.created_at) : new Date(a.notification.created_at);
+            const timeB = b.isGroup ? new Date(b.created_at) : new Date(b.notification.created_at);
+            return timeB - timeA;
+        });
+        
+        return result;
+    }
 
-    createNotificationCard(notification) {
+    createNotificationCard(item) {
+        // Handle both grouped and standalone notifications
+        if (item.isGroup) {
+            return this.createGroupedNotificationCard(item);
+        } else {
+            return this.createSingleNotificationCard(item.notification);
+        }
+    }
+    
+    createGroupedNotificationCard(group) {
+        const cardElement = document.createElement('div');
+        cardElement.className = 'movie-notification-card';
+        cardElement.id = `notification-group-${group.groupKey}`;
+        
+        const mediaType = group.mediaType;
+        const mediaIcon = this.getMediaIcon(mediaType);
+        const displayTitle = group.series_title;
+        const requestedBy = group.requested_by || 'Unknown';
+        const timeAgo = this.app.ui.getTimeAgo(group.created_at);
+        
+        // Calculate aggregate status for the group
+        const groupStatus = this.getGroupStatus(group.notifications);
+        const statusClass = this.getStatusClass(groupStatus);
+        const statusIcon = this.getStatusIcon(groupStatus);
+        
+        // Count episodes
+        const episodeCount = group.notifications.length;
+        const episodeText = episodeCount === 1 ? 'episode' : 'episodes';
+        
+        // Calculate total size
+        const totalSize = group.notifications.reduce((sum, n) => sum + (n.release_size || 0), 0);
+        const sizeFormatted = this.app.ui.humanReadableBytes(totalSize);
+        
+        // Create poster element
+        const posterUrl = group.poster_url;
+        const posterElement = posterUrl ? 
+            `<img src="${this.app.ui.escapeHtml(posterUrl)}" 
+                alt="${this.app.ui.escapeHtml(displayTitle)}" 
+                class="movie-poster-thumb"
+                onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+            <div class="movie-poster-thumb-placeholder" style="display: none;">
+                <i class="${mediaIcon}" style="font-size: 1.5rem;"></i>
+            </div>` : 
+            `<div class="movie-poster-thumb-placeholder">
+                <i class="${mediaIcon}" style="font-size: 1.5rem;"></i>
+            </div>`;
+        
+        cardElement.innerHTML = `
+            <div class="card-body">
+                ${posterElement}
+                <div class="movie-content">
+                    <h6 class="movie-title mb-1">
+                        <i class="${mediaIcon} me-2 disk-usage-icon"></i>
+                        ${this.app.ui.escapeHtml(displayTitle)}
+                        ${group.year ? ` <span class="text-muted">(${group.year})</span>` : ''}
+                        <span class="badge bg-secondary ms-1">${this.getDisplayMediaType(mediaType)}</span>
+                    </h6>
+                    <div class="movie-meta">
+                        <span class="requested-by">
+                            <i class="bi bi-person-fill me-1"></i>
+                            ${this.app.ui.escapeHtml(requestedBy)}
+                        </span>
+                        <span>
+                            <i class="bi bi-collection me-1"></i>
+                            Season ${group.season_number} · ${episodeCount} ${episodeText}
+                        </span>
+                        <span>
+                            <i class="bi bi-hdd me-1"></i>
+                            ${sizeFormatted}
+                        </span>
+                        <span>
+                            <i class="bi bi-clock me-1"></i>
+                            ${timeAgo}
+                        </span>
+                    </div>
+                </div>
+                <div class="movie-actions-section">
+                    <div class="movie-status-badge">
+                        <span class="badge ${statusClass}">
+                            <i class="${statusIcon}"></i> ${groupStatus.toUpperCase()}
+                        </span>
+                    </div>
+                    <div class="movie-all-actions">
+                        ${this.createGroupActionButtons(group)}
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Expose poster URL as CSS variable for mobile backdrop usage
+        try {
+            if (posterUrl) {
+                cardElement.style.setProperty('--poster-url', `url("${posterUrl}")`);
+            }
+        } catch (e) {}
+        
+        return cardElement;
+    }
+    
+    createSingleNotificationCard(notification) {
         const cardElement = document.createElement('div');
         cardElement.className = 'movie-notification-card';
         cardElement.id = `notification-${notification.notification_id}`;
@@ -220,6 +384,40 @@ export class WebhookManager {
         } catch (e) {}
         
         return cardElement;
+    }
+    
+    getGroupStatus(notifications) {
+        // Priority: syncing > failed > pending > completed
+        const statuses = notifications.map(n => n.status);
+        if (statuses.includes('syncing')) return 'syncing';
+        if (statuses.includes('failed')) return 'failed';
+        if (statuses.includes('pending')) return 'pending';
+        return 'completed';
+    }
+    
+    createGroupActionButtons(group) {
+        let buttons = [];
+        const mediaType = group.mediaType;
+        const groupStatus = this.getGroupStatus(group.notifications);
+        
+        // Show details button - this will open the grouped modal
+        buttons.push(`
+            <button class="btn btn-outline-secondary btn-sm" onclick="dragonCP.webhook.showGroupDetails('${this.app.ui.escapeJavaScriptString(group.groupKey)}', '${mediaType}')">
+                <i class="bi bi-eye me-1"></i> Details (${group.notifications.length})
+            </button>
+        `);
+        
+        // Show sync all button if there are pending episodes
+        const hasPending = group.notifications.some(n => n.status === 'pending' || n.status === 'failed');
+        if (hasPending && groupStatus !== 'syncing') {
+            buttons.push(`
+                <button class="btn btn-primary btn-sm" onclick="dragonCP.webhook.syncAllInGroup('${this.app.ui.escapeJavaScriptString(group.groupKey)}', '${mediaType}')">
+                    <i class="bi bi-play-fill me-1"></i> Sync All
+                </button>
+            `);
+        }
+        
+        return buttons.join('');
     }
     
     getDisplayTitle(notification) {
@@ -756,6 +954,380 @@ export class WebhookManager {
             console.error(`Failed to load ${mediaType} details:`, error);
             this.app.ui.showAlert(`Failed to load ${mediaType} details`, 'danger');
         }
+    }
+    
+    async showGroupDetails(groupKey, mediaType) {
+        // Find the group in current notifications
+        const grouped = this.groupNotifications(this.notifications);
+        const group = grouped.find(g => g.isGroup && g.groupKey === groupKey);
+        
+        if (!group) {
+            this.app.ui.showAlert('Group not found', 'danger');
+            return;
+        }
+        
+        // Render the grouped series modal
+        this.renderGroupedSeriesDetailsModal(group, mediaType);
+    }
+    
+    async syncAllInGroup(groupKey, mediaType) {
+        const grouped = this.groupNotifications(this.notifications);
+        const group = grouped.find(g => g.isGroup && g.groupKey === groupKey);
+        
+        if (!group) {
+            this.app.ui.showAlert('Group not found', 'danger');
+            return;
+        }
+        
+        // Sync all pending/failed episodes in the group
+        const toSync = group.notifications.filter(n => n.status === 'pending' || n.status === 'failed');
+        
+        if (toSync.length === 0) {
+            this.app.ui.showAlert('No episodes to sync', 'info');
+            return;
+        }
+        
+        this.app.ui.showAlert(`Starting sync for ${toSync.length} episode(s)...`, 'info');
+        
+        for (const notification of toSync) {
+            await this.syncNotification(notification.notification_id, mediaType);
+            // Small delay between syncs to avoid overwhelming the server
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+    }
+    
+    renderGroupedSeriesDetailsModal(group, mediaType) {
+        // Create or update dedicated series/anime modal
+        let modal = document.getElementById('seriesDetailsModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = 'seriesDetailsModal';
+            modal.innerHTML = `
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header gradient-accent">
+                            <h5 class="modal-title">
+                                <i class="bi bi-tv me-2"></i>
+                                Series Details
+                            </h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="seriesDetailsContent">
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        // Update modal title for media type
+        const modalTitle = modal.querySelector('.modal-title');
+        const mediaIcon = mediaType === 'anime' ? 'bi bi-collection-play' : 'bi bi-tv';
+        const displayTitle = this.getDisplayModalTitle(mediaType);
+        modalTitle.innerHTML = `
+            <i class="${mediaIcon} me-2"></i>
+            ${displayTitle}
+        `;
+
+        const content = document.getElementById('seriesDetailsContent');
+        
+        // Use the first notification for common information
+        const firstNotification = group.notifications[0];
+        
+        // Get aggregate information
+        const totalSize = group.notifications.reduce((sum, n) => sum + (n.release_size || 0), 0);
+        const sizeFormatted = this.app.ui.humanReadableBytes(totalSize);
+        
+        // Format languages (from first episode)
+        let languages = 'Not specified';
+        if (firstNotification.episode_files && firstNotification.episode_files.length > 0) {
+            const langNames = firstNotification.episode_files[0].languages?.map(lang => lang.name || lang).filter(Boolean);
+            languages = langNames && langNames.length > 0 ? langNames.join(', ') : 'Not specified';
+        }
+        
+        // Format subtitles (from first episode)
+        let subtitles = 'None';
+        if (firstNotification.episode_files && firstNotification.episode_files.length > 0 && 
+            firstNotification.episode_files[0].mediaInfo && firstNotification.episode_files[0].mediaInfo.subtitles) {
+            subtitles = firstNotification.episode_files[0].mediaInfo.subtitles.join(', ') || 'None';
+        }
+        
+        // Create external links if available
+        let externalLinks = '';
+        if (group.tmdb_id || group.imdb_id || firstNotification.tvdb_id) {
+            externalLinks = '<div class="external-links mb-3">';
+            if (group.tmdb_id) {
+                externalLinks += `
+                    <a href="https://www.themoviedb.org/tv/${group.tmdb_id}" target="_blank" class="btn btn-sm btn-outline-info me-2">
+                        <i class="bi bi-box-arrow-up-right me-1"></i> TMDB
+                    </a>
+                `;
+            }
+            if (group.imdb_id) {
+                externalLinks += `
+                    <a href="https://www.imdb.com/title/${group.imdb_id}" target="_blank" class="btn btn-sm btn-outline-warning me-2">
+                        <i class="bi bi-box-arrow-up-right me-1"></i> IMDB
+                    </a>
+                `;
+            }
+            if (firstNotification.tvdb_id) {
+                externalLinks += `
+                    <a href="https://thetvdb.com/?tab=series&id=${firstNotification.tvdb_id}" target="_blank" class="btn btn-sm btn-outline-success me-2">
+                        <i class="bi bi-box-arrow-up-right me-1"></i> TVDB
+                    </a>
+                `;
+            }
+            externalLinks += '</div>';
+        }
+        
+        // Sort episodes by episode number
+        const sortedNotifications = [...group.notifications].sort((a, b) => {
+            const aNum = a.episodes && a.episodes[0] ? a.episodes[0].episodeNumber : 0;
+            const bNum = b.episodes && b.episodes[0] ? b.episodes[0].episodeNumber : 0;
+            return aNum - bNum;
+        });
+        
+        // Create accordion for episodes
+        const episodeAccordionHtml = this.createEpisodeAccordion(sortedNotifications, mediaType, group.groupKey);
+        
+        content.innerHTML = `
+            <!-- Top Row: Poster and Basic Information -->
+            <div class="row g-3 mb-2 align-items-stretch">
+                <div class="col-lg-3 d-flex">
+                    <div class="w-100 text-center d-flex flex-column">
+                        ${group.poster_url ? 
+                            `<img src="${this.app.ui.escapeHtml(group.poster_url)}" 
+                                alt="${this.app.ui.escapeHtml(group.series_title)}" 
+                                class="img-fluid rounded shadow-lg"
+                                style="max-height: 420px; width: 100%; object-fit: cover; border: 2px solid var(--border-color);">` : 
+                            `<div class="text-center text-muted p-4 border rounded flex-grow-1" style="border: 2px solid var(--border-color); background: rgba(255,255,255,0.02); min-height: 420px; display: flex; flex-direction: column; justify-content: center;">
+                                <i class="${mediaIcon}" style="font-size: 3rem; color: var(--text-muted);"></i>
+                                <div class="mt-2" style="color: var(--text-muted);">No poster available</div>
+                            </div>`
+                        }
+                        <div class="mt-3">
+                            ${externalLinks}
+                        </div>
+                    </div>
+                </div>
+                <div class="col-lg-9 d-flex flex-column">
+                    <!-- Title and Status -->
+                    <div class="mb-2">
+                        <h3 class="mb-2" style="color: var(--text-light); font-weight: 600;">
+                            ${this.app.ui.escapeHtml(group.series_title)} 
+                            ${group.year ? `<span style="color: var(--text-muted); font-weight: 400;">(${group.year})</span>` : ''}
+                        </h3>
+                        <div class="d-flex align-items-center gap-3">
+                            <span class="badge bg-secondary fs-6 px-3 py-2">
+                                <i class="bi bi-collection me-1"></i> Season ${group.season_number}
+                            </span>
+                            <small style="color: var(--text-muted);">
+                                <i class="bi bi-film me-1"></i>
+                                ${group.notifications.length} Episode${group.notifications.length !== 1 ? 's' : ''}
+                            </small>
+                            <small style="color: var(--text-muted);">
+                                <i class="bi bi-clock me-1"></i>
+                                Latest: ${this.app.ui.getTimeAgo(group.created_at)}
+                            </small>
+                        </div>
+                    </div>
+
+                    <!-- Basic Information -->
+                    <div class="detail-section">
+                        <h6><i class="bi bi-info-circle me-2"></i>Basic Information</h6>
+                        <table class="table table-sm">
+                            <tr>
+                                <td>Season:</td>
+                                <td><strong>${group.season_number}</strong></td>
+                            </tr>
+                            <tr>
+                                <td>Total Size:</td>
+                                <td><strong>${sizeFormatted}</strong></td>
+                            </tr>
+                            <tr>
+                                <td>Requested by:</td>
+                                <td><span style="color: var(--text-light); font-weight: 600;">${this.app.ui.escapeHtml(group.requested_by || 'Unknown')}</span></td>
+                            </tr>
+                            <tr>
+                                <td>Languages:</td>
+                                <td>${this.app.ui.escapeHtml(languages)}</td>
+                            </tr>
+                            <tr>
+                                <td>Subtitles:</td>
+                                <td>${this.app.ui.escapeHtml(subtitles)}</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Episodes Section -->
+            <div class="row g-3">
+                <div class="col-12">
+                    <div class="detail-section">
+                        <h6><i class="bi bi-collection me-2"></i>Episodes</h6>
+                        ${episodeAccordionHtml}
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        const bootstrapModal = new bootstrap.Modal(modal);
+        bootstrapModal.show();
+    }
+    
+    createEpisodeAccordion(notifications, mediaType, groupKey) {
+        const accordionId = `episodeAccordion-${groupKey}`;
+        
+        let html = `<div class="accordion" id="${accordionId}">`;
+        
+        notifications.forEach((notification, index) => {
+            const collapseId = `collapse-${groupKey}-${index}`;
+            const statusClass = this.getStatusClass(notification.status);
+            const statusIcon = this.getStatusIcon(notification.status);
+            
+            // Extract episode information
+            const episodes = notification.episodes || [];
+            const episodeFiles = notification.episode_files || [];
+            const episodeNum = episodes[0]?.episodeNumber || 0;
+            const seasonNum = episodes[0]?.seasonNumber || notification.season_number || 0;
+            const episodeTitle = episodes[0]?.title || 'Unknown Episode';
+            const episodeCode = `S${String(seasonNum).padStart(2, '0')}E${String(episodeNum).padStart(2, '0')}`;
+            
+            // Get quality
+            let qualityLabel = '';
+            if (episodeFiles.length > 0) {
+                const q = episodeFiles[0].quality;
+                if (typeof q === 'string') {
+                    qualityLabel = q;
+                } else if (q && typeof q === 'object') {
+                    if (q.quality && typeof q.quality === 'object' && q.quality.name) {
+                        qualityLabel = q.quality.name;
+                    } else if (typeof q.quality === 'string') {
+                        qualityLabel = q.quality;
+                    } else if (q.name) {
+                        qualityLabel = q.name;
+                    }
+                }
+            }
+            
+            const sizeFormatted = this.app.ui.humanReadableBytes(notification.release_size || 0);
+            const firstFilePath = episodeFiles.length > 0 ? (episodeFiles[0].path || episodeFiles[0].relativePath || '') : '';
+            
+            html += `
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#${collapseId}">
+                            <div class="d-flex align-items-center justify-content-between w-100 pe-3">
+                                <div class="d-flex align-items-center gap-3">
+                                    <strong>${episodeCode}</strong>
+                                    <span>${this.app.ui.escapeHtml(episodeTitle)}</span>
+                                </div>
+                                <span class="badge ${statusClass}">
+                                    <i class="${statusIcon}"></i> ${notification.status.toUpperCase()}
+                                </span>
+                            </div>
+                        </button>
+                    </h2>
+                    <div id="${collapseId}" class="accordion-collapse collapse" data-bs-parent="#${accordionId}">
+                        <div class="accordion-body">
+                            <!-- Release Information -->
+                            <div class="mb-3">
+                                <h6 class="mb-2"><i class="bi bi-download me-2"></i>Release Information</h6>
+                                <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                                    <span class="badge bg-secondary">
+                                        <i class="bi bi-database-fill me-1"></i>${sizeFormatted}
+                                    </span>
+                                    ${qualityLabel ? `<span class="badge bg-primary">
+                                        <i class="bi bi-badge-hd me-1"></i>${this.app.ui.escapeHtml(qualityLabel)}
+                                    </span>` : ''}
+                                    ${notification.release_indexer ? `<span class="badge bg-info text-dark">
+                                        <i class="bi bi-globe2 me-1"></i>${this.app.ui.escapeHtml(notification.release_indexer)}
+                                    </span>` : ''}
+                                </div>
+                                <div class="p-2 rounded" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-color);">
+                                    <div class="small text-muted mb-1">Release Title</div>
+                                    <code class="d-block small" style="white-space: normal; word-break: break-all;">
+                                        ${this.app.ui.escapeHtml(notification.release_title || 'Unknown')}
+                                    </code>
+                                </div>
+                            </div>
+                            
+                            <!-- Episode Details -->
+                            ${episodes.length > 0 ? `
+                            <div class="mb-3">
+                                <h6 class="mb-2"><i class="bi bi-info-circle me-2"></i>Episode Details</h6>
+                                <table class="table table-sm table-dark">
+                                    <tr>
+                                        <td>Episode:</td>
+                                        <td><strong>${episodeCode}</strong></td>
+                                    </tr>
+                                    <tr>
+                                        <td>Title:</td>
+                                        <td>${this.app.ui.escapeHtml(episodeTitle)}</td>
+                                    </tr>
+                                    <tr>
+                                        <td>Air Date:</td>
+                                        <td>${episodes[0].airDate || 'Unknown'}</td>
+                                    </tr>
+                                </table>
+                            </div>` : ''}
+                            
+                            <!-- Path Information -->
+                            ${(notification.season_path || firstFilePath) ? `
+                            <div class="mb-3">
+                                <h6 class="mb-2"><i class="bi bi-folder me-2"></i>Path Information</h6>
+                                <div class="row g-2">
+                                    <div class="col-md-6">
+                                        <label class="small mb-1 d-block text-muted">Season Path:</label>
+                                        <div class="p-2 rounded small" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); font-family: 'Courier New', monospace; word-break: break-all;">
+                                            ${this.app.ui.escapeHtml(notification.season_path || 'Unknown')}
+                                        </div>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="small mb-1 d-block text-muted">File Path:</label>
+                                        <div class="p-2 rounded small" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); font-family: 'Courier New', monospace; word-break: break-all;">
+                                            ${this.app.ui.escapeHtml(firstFilePath || 'Unknown')}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>` : ''}
+                            
+                            <!-- Actions -->
+                            <div class="d-flex gap-2 justify-content-end">
+                                ${notification.status === 'pending' ? `
+                                    <button class="btn btn-primary btn-sm" onclick="dragonCP.webhook.syncNotification('${notification.notification_id}', '${mediaType}')">
+                                        <i class="bi bi-play-fill me-1"></i> Sync
+                                    </button>
+                                ` : ''}
+                                ${notification.status === 'failed' ? `
+                                    <button class="btn btn-warning btn-sm" onclick="dragonCP.webhook.syncNotification('${notification.notification_id}', '${mediaType}')">
+                                        <i class="bi bi-arrow-clockwise me-1"></i> Retry
+                                    </button>
+                                ` : ''}
+                                ${notification.status !== 'syncing' ? `
+                                    <button class="btn btn-outline-danger btn-sm" onclick="dragonCP.webhook.deleteNotification('${notification.notification_id}', '${mediaType}')">
+                                        <i class="bi bi-trash me-1"></i> Delete
+                                    </button>
+                                ` : ''}
+                            </div>
+                            
+                            ${notification.error_message ? `
+                            <div class="alert alert-danger mt-3 mb-0" style="background: rgba(220, 53, 69, 0.1); border: 1px solid rgba(220, 53, 69, 0.3);">
+                                <strong>Error:</strong> ${this.app.ui.escapeHtml(notification.error_message)}
+                            </div>` : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += '</div>';
+        return html;
     }
     
     renderSeriesDetailsModal(notification, mediaType) {
