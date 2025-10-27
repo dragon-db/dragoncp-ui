@@ -149,6 +149,7 @@ body {
     position: relative;
     border-radius: 0.375rem 0.375rem 0 0;
     padding: 1rem;
+    z-index: 2000; /* Ensure header (and its dropdowns) sit above list content */
 }
 
 .card-header {
@@ -3140,6 +3141,7 @@ button#refreshSyncStatusBtn i.spinning,
     position: relative;
     margin-bottom: 0.75rem;
     min-height: 120px;
+    z-index: 1; /* Keep notification cards below dropdowns */
 }
 
 /* Limit list to show approximately 4 cards at a time, then scroll */
@@ -3397,6 +3399,7 @@ button#refreshSyncStatusBtn i.spinning,
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+    z-index: 9999 !important; /* Ensure dropdown appears above notification cards */
 }
 
 .dropdown-item {
@@ -3416,6 +3419,29 @@ button#refreshSyncStatusBtn i.spinning,
 .dropdown-item.text-danger:hover {
     background: #dc3545;
     color: white !important;
+}
+
+/* Auto-sync dropdown specific styling */
+.collapsible-header .dropdown-menu {
+    z-index: 9999 !important;
+}
+
+.collapsible-header .dropdown-menu li {
+    color: var(--text-light) !important;
+}
+
+.collapsible-header .dropdown-menu span {
+    color: var(--text-light) !important;
+}
+
+/* Ensure the btn-group containing the dropdown has proper z-index */
+.collapsible-header .btn-group {
+    position: relative;
+    z-index: 1000;
+}
+
+.collapsible-header .btn-group.show {
+    z-index: 10000 !important; /* Higher z-index when dropdown is open */
 }
 
 /* Responsive adjustments for movie cards */

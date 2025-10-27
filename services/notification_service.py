@@ -13,11 +13,12 @@ from typing import Dict, List
 class NotificationService:
     """Service for Discord notifications and log parsing"""
     
-    def __init__(self, config, settings, transfer_model, webhook_model):
+    def __init__(self, config, settings, transfer_model, webhook_model, series_webhook_model=None):
         self.config = config
         self.settings = settings
         self.transfer_model = transfer_model
         self.webhook_model = webhook_model
+        self.series_webhook_model = series_webhook_model
     
     def parse_transfer_logs(self, logs: List[str]) -> Dict:
         """Parse rsync transfer logs to extract transfer statistics"""
@@ -112,22 +113,49 @@ class NotificationService:
             # Check if this was a webhook-triggered transfer to get poster and requested_by
             requested_by = None
             webhook_notification = None
+            is_auto_sync = False
             
-            # Look for webhook notification linked to this transfer
-            notifications = self.webhook_model.get_all()
-            for notification in notifications:
-                if notification.get('transfer_id') == transfer_id:
-                    webhook_notification = notification
-                    break
+            # Get the transfer's media_type to determine which webhook model to check
+            media_type = transfer.get('media_type', '')
             
+            if media_type == 'movies':
+                # Look for movie webhook notification linked to this transfer
+                notifications = self.webhook_model.get_all()
+                for notification in notifications:
+                    if notification.get('transfer_id') == transfer_id:
+                        webhook_notification = notification
+                        break
+                
+                if webhook_notification:
+                    # Use poster from webhook if available
+                    if webhook_notification.get('poster_url'):
+                        thumbnail_url = webhook_notification['poster_url']
+                    requested_by = webhook_notification.get('requested_by')
+                    # Movies are always auto-sync if from webhook
+                    is_auto_sync = True
+                    
+            elif media_type in ['series', 'anime', 'tvshows']:
+                # Look for series/anime webhook notification linked to this transfer
+                if self.series_webhook_model:
+                    notifications = self.series_webhook_model.get_all()
+                    for notification in notifications:
+                        if notification.get('transfer_id') == transfer_id:
+                            webhook_notification = notification
+                            break
+                    
+                    if webhook_notification:
+                        # Use poster from webhook if available
+                        if webhook_notification.get('poster_url'):
+                            thumbnail_url = webhook_notification['poster_url']
+                        requested_by = webhook_notification.get('requested_by')
+                        # Check if this was auto-sync (has auto_sync_scheduled_at)
+                        is_auto_sync = webhook_notification.get('auto_sync_scheduled_at') is not None
+            
+            # Determine sync type based on whether it was auto-synced
             if webhook_notification:
-                # Use poster from webhook if available
-                if webhook_notification.get('poster_url'):
-                    thumbnail_url = webhook_notification['poster_url']
-                requested_by = webhook_notification.get('requested_by')
-            
-            # Determine sync type
-            sync_type = "Automated Sync" if webhook_notification else "Manual Sync"
+                sync_type = "Automated Sync" if is_auto_sync else "Manual Sync"
+            else:
+                sync_type = "Manual Sync"
             
             # Build Discord embed
             embed = {

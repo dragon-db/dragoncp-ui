@@ -7,6 +7,8 @@ Main orchestrator that coordinates transfer, backup, webhook, and notification s
 import os
 import re
 import time
+import json
+import requests
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -15,6 +17,7 @@ from services.backup_service import BackupService
 from services.transfer_service import TransferService
 from services.notification_service import NotificationService
 from services.webhook_service import WebhookService
+from services.auto_sync_scheduler import AutoSyncScheduler
 
 
 class TransferCoordinator:
@@ -39,8 +42,12 @@ class TransferCoordinator:
         # Initialize services
         self.backup_service = BackupService(config, db_manager, self.backup_model, self.transfer_model, socketio)
         self.transfer_service = TransferService(config, db_manager, self.transfer_model, socketio)
-        self.notification_service = NotificationService(config, self.settings, self.transfer_model, self.webhook_model)
+        self.notification_service = NotificationService(config, self.settings, self.transfer_model, self.webhook_model, self.series_webhook_model)
         self.webhook_service = WebhookService(config, self.webhook_model, self.series_webhook_model, self)
+        self.auto_sync_scheduler = AutoSyncScheduler(db_manager, self.settings)
+        
+        # Set coordinator reference in scheduler (circular dependency)
+        self.auto_sync_scheduler.set_coordinator(self)
         
         print(f"✅ TransferCoordinator initialized")
         
@@ -195,4 +202,205 @@ class TransferCoordinator:
     def send_discord_notification(self, transfer_id: str, transfer_status: str):
         """Send Discord webhook notification for completed transfer"""
         self.notification_service.send_discord_notification(transfer_id, transfer_status)
+    
+    # Auto-Sync Operations
+    def schedule_auto_sync(self, notification_id: str, series_title_slug: str, 
+                          season_number: int, media_type: str):
+        """Schedule an auto-sync job for series/anime"""
+        wait_time = int(self.settings.get('SERIES_ANIME_SYNC_WAIT_TIME', '60'))
+        self.auto_sync_scheduler.schedule_job(
+            notification_id=notification_id,
+            series_title_slug=series_title_slug,
+            season_number=season_number,
+            wait_time=wait_time,
+            media_type=media_type
+        )
+    
+    def perform_dry_run_validation(self, notification: Dict) -> Dict:
+        """
+        Perform dry-run validation for series/anime sync
+        Returns validation results with safety status
+        """
+        try:
+            # Source: Server path (where files currently exist)
+            source_path = notification['season_path']
+            
+            # Destination: Construct local destination path from config
+            media_type = notification['media_type']
+            series_title = notification['series_title']
+            season_number = notification.get('season_number')
+            
+            # Get the correct destination base path from config
+            dest_base_map = {
+                "anime": self.config.get("ANIME_DEST_PATH"),
+                "series": self.config.get("TVSHOW_DEST_PATH"),
+                "tvshows": self.config.get("TVSHOW_DEST_PATH")
+            }
+            
+            dest_base = dest_base_map.get(media_type)
+            if not dest_base:
+                return {
+                    'safe_to_sync': False,
+                    'reason': f'{media_type.title()} destination path not configured',
+                    'deleted_count': 0,
+                    'incoming_count': 0,
+                    'server_file_count': 0,
+                    'local_file_count': 0,
+                    'deleted_files': [],
+                    'incoming_files': []
+                }
+            
+            # Build folder name (series title with year if available)
+            if notification.get('year'):
+                folder_name = f"{series_title} ({notification['year']})"
+            else:
+                folder_name = series_title
+            
+            # Build destination path: {dest_base}/{folder_name}/Season {season_number}
+            season_name = f"Season {season_number:02d}" if season_number else "Season Unknown"
+            dest_path = f"{dest_base}/{folder_name}/{season_name}"
+            
+            print(f"🔍 Dry-run validation:")
+            print(f"   Source (server): {source_path}")
+            print(f"   Destination (local): {dest_path}")
+            
+            # Perform dry-run using transfer service
+            validation_result = self.transfer_service.perform_dry_run_rsync(
+                source_path=source_path,
+                dest_path=dest_path,
+                is_season_folder=True
+            )
+            
+            # Store dry-run result in notification
+            self.series_webhook_model.update(notification['notification_id'], {
+                'dry_run_result': json.dumps(validation_result),
+                'dry_run_performed_at': datetime.now().isoformat()
+            })
+            
+            return validation_result
+            
+        except Exception as e:
+            print(f"❌ Error performing dry-run validation: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'safe_to_sync': False,
+                'reason': f'Validation error: {str(e)}',
+                'deleted_count': 0,
+                'incoming_count': 0,
+                'server_file_count': 0,
+                'local_file_count': 0,
+                'deleted_files': [],
+                'incoming_files': []
+            }
+    
+    def mark_for_manual_sync(self, notification_id: str, reason: str, validation_result: Dict = None):
+        """Mark a notification as requiring manual sync"""
+        updates = {
+            'status': 'pending',  # Keep as pending but flag for manual sync
+            'requires_manual_sync': 1,
+            'manual_sync_reason': reason
+        }
+        
+        # Store validation result if provided
+        if validation_result:
+            updates['dry_run_result'] = json.dumps(validation_result)
+            updates['dry_run_performed_at'] = datetime.now().isoformat()
+        
+        self.series_webhook_model.update(notification_id, updates)
+        print(f"⚠️  Marked {notification_id} for manual sync: {reason}")
+    
+    def send_manual_sync_discord_alert(self, notification: Dict, validation_result: Dict):
+        """Send Discord notification when manual sync is required"""
+        try:
+            # Check if Discord notifications are enabled
+            if not self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED', False):
+                return
+            
+            webhook_url = self.settings.get('DISCORD_WEBHOOK_URL')
+            if not webhook_url:
+                return
+            
+            media_type = notification['media_type']
+            series_title = notification['series_title']
+            season_number = notification['season_number']
+            season_path = notification['season_path']
+            
+            # Get app URL for the link
+            app_url = self.settings.get('DISCORD_APP_URL', 'http://localhost:5000')
+            
+            # Create embed
+            embed = {
+                'title': f'**{series_title}** - Season {season_number}',
+                'description': 'Media Type: ' + media_type.upper(),
+                'color': 15844367,  # Gold/warning color
+                'fields': [
+                    {   
+                        'name': 'Season Path',
+                        'value': f'```{season_path}```',
+                        'inline': False
+                    },
+                    {
+                        'name': 'Reason',
+                        'value': validation_result['reason'],
+                        'inline': False
+                    },
+                    {
+                        'name': 'File Analysis',
+                        'value': (
+                            f"```\n"
+                            f"Server Files: {validation_result.get('server_file_count', 0)}\n"
+                            f"Local Files: {validation_result.get('local_file_count', 0)}\n"
+                            f"Would Delete: {validation_result.get('deleted_count', 0)} media files\n"
+                            f"Would Add: {validation_result.get('incoming_count', 0)} media files\n"
+                            f"```"
+                        ),
+                        'inline': False
+                    }
+                ],
+                'footer': {
+                    'text': 'DRAGONCP Auto-Sync Safety Check'
+                },
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            
+            # Add app URL if valid
+            if app_url and self._is_valid_discord_url(app_url):
+                embed['url'] = app_url
+            
+            # Add icon if configured
+            icon_url = self.settings.get('DISCORD_ICON_URL')
+            if icon_url:
+                embed['author'] = {
+                    'name': 'Manual Sync Alert ⚠️',
+                    'icon_url': icon_url
+                }
+            
+            # Send to Discord
+            payload = {'embeds': [embed]}
+            response = requests.post(
+                webhook_url,
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=10
+            )
+            
+            if response.status_code == 204:
+                print(f"✅ Discord manual sync alert sent for {series_title} Season {season_number}")
+            else:
+                print(f"⚠️  Discord alert failed: {response.status_code}")
+                
+        except Exception as e:
+            print(f"❌ Error sending Discord manual sync alert: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _is_valid_discord_url(self, url: str) -> bool:
+        """Validate URL format for Discord embeds"""
+        try:
+            # Discord accepts http/https URLs with proper domain format
+            url_pattern = r'^https?://(?:(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d{1,5})?(?:/.*)?$'
+            return bool(re.match(url_pattern, url))
+        except Exception:
+            return False
 

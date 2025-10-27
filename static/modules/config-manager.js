@@ -162,6 +162,9 @@ export class ConfigManager {
                 // Save Discord settings separately (stored in database)
                 await this.saveDiscordSettings();
                 
+                // Save webhook settings separately (stored in database)
+                await this.saveWebhookSettings();
+                
                 // Determine if critical config changes were made
                 const hasCriticalChanges = this.hasCriticalConfigChanges(config);
                 
@@ -480,6 +483,15 @@ export class ConfigManager {
         if (configModal) {
             configModal.addEventListener('shown.bs.modal', () => {
                 this.loadDiscordSettings();
+                this.loadWebhookSettings();
+            });
+        }
+        
+        // Update wait time display when input changes
+        const seriesAnimeWaitTime = document.getElementById('seriesAnimeWaitTime');
+        if (seriesAnimeWaitTime) {
+            seriesAnimeWaitTime.addEventListener('input', () => {
+                this.updateWaitTimeDisplay();
             });
         }
     }
@@ -712,6 +724,89 @@ export class ConfigManager {
             if (refreshBtn) {
                 refreshBtn.innerHTML = '<i class="bi bi-arrow-clockwise"></i>';
                 refreshBtn.disabled = false;
+            }
+        }
+    }
+    
+    async loadWebhookSettings() {
+        try {
+            const response = await fetch('/api/webhook/settings');
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                const settings = result.settings;
+                
+                // Populate series/anime wait time field
+                const seriesAnimeWaitTime = document.getElementById('seriesAnimeWaitTime');
+                if (seriesAnimeWaitTime) {
+                    seriesAnimeWaitTime.value = settings.series_anime_sync_wait_time || 60;
+                    this.updateWaitTimeDisplay();
+                }
+                
+                console.log('Webhook settings loaded successfully');
+            } else {
+                console.error('Failed to load webhook settings:', result.message);
+            }
+        } catch (error) {
+            console.error('Error loading webhook settings:', error);
+        }
+    }
+    
+    async saveWebhookSettings() {
+        const seriesAnimeWaitTime = document.getElementById('seriesAnimeWaitTime')?.value || 60;
+        
+        const webhookData = {
+            series_anime_sync_wait_time: parseInt(seriesAnimeWaitTime)
+        };
+        
+        try {
+            const response = await fetch('/api/webhook/settings', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(webhookData)
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                console.log('Webhook settings saved successfully');
+                return true;
+            } else {
+                console.error('Failed to save webhook settings:', result.message);
+                this.app.ui.showAlert(`Failed to save webhook settings: ${result.message}`, 'danger');
+                return false;
+            }
+        } catch (error) {
+            console.error('Error saving webhook settings:', error);
+            this.app.ui.showAlert(`Error saving webhook settings: ${error.message}`, 'danger');
+            return false;
+        }
+    }
+    
+    updateWaitTimeDisplay() {
+        const seriesAnimeWaitTime = document.getElementById('seriesAnimeWaitTime');
+        const displayEl = document.getElementById('seriesAnimeWaitTimeDisplay');
+        
+        if (seriesAnimeWaitTime && displayEl) {
+            const seconds = parseInt(seriesAnimeWaitTime.value) || 60;
+            
+            // Convert seconds to human-readable format
+            if (seconds < 60) {
+                displayEl.textContent = `${seconds} seconds`;
+            } else if (seconds < 3600) {
+                const minutes = Math.floor(seconds / 60);
+                const remainingSeconds = seconds % 60;
+                if (remainingSeconds === 0) {
+                    displayEl.textContent = `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+                } else {
+                    displayEl.textContent = `${minutes} minute${minutes !== 1 ? 's' : ''} ${remainingSeconds} second${remainingSeconds !== 1 ? 's' : ''}`;
+                }
+            } else {
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                displayEl.textContent = `${hours} hour${hours !== 1 ? 's' : ''} ${minutes} minute${minutes !== 1 ? 's' : ''}`;
             }
         }
     }

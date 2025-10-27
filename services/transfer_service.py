@@ -7,8 +7,9 @@ Handles rsync process lifecycle: start, monitor, cancel, restart
 import os
 import subprocess
 import threading
+import re
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 
 class TransferService:
@@ -20,6 +21,230 @@ class TransferService:
         self.transfer_model = transfer_model
         self.socketio = socketio
         self.transfers = {}  # Active transfer processes: {transfer_id: process}
+    
+    def perform_dry_run_rsync(self, source_path: str, dest_path: str, is_season_folder: bool = True) -> Dict:
+        """
+        Perform rsync dry-run to validate sync safety
+        
+        Returns detailed validation results including:
+        - Deleted file count
+        - Incoming file count
+        - Total file counts (server vs local)
+        - List of deleted/incoming files
+        - Safety status
+        """
+        try:
+            print(f"🔍 Starting dry-run validation")
+            print(f"   Source: {source_path}")
+            print(f"   Dest: {dest_path}")
+            
+            # Get SSH connection details
+            ssh_user = self.config.get("REMOTE_USER")
+            ssh_host = self.config.get("REMOTE_IP")
+            ssh_key_path = self.config.get("SSH_KEY_PATH", "")
+            
+            if not ssh_user or not ssh_host:
+                return {
+                    'safe_to_sync': False,
+                    'reason': 'SSH credentials not configured',
+                    'deleted_count': 0,
+                    'incoming_count': 0,
+                    'server_file_count': 0,
+                    'local_file_count': 0,
+                    'deleted_files': [],
+                    'incoming_files': []
+                }
+            
+            # Resolve SSH key path
+            if ssh_key_path:
+                if not os.path.isabs(ssh_key_path):
+                    script_dir = os.path.dirname(os.path.abspath(__file__))
+                    ssh_key_path = os.path.join(os.path.dirname(script_dir), ssh_key_path)
+                if not os.path.exists(ssh_key_path):
+                    ssh_key_path = ""
+            
+            # Build SSH options
+            ssh_options = ["-o", "StrictHostKeyChecking=no", "-o", "Compression=no"]
+            if ssh_key_path and os.path.exists(ssh_key_path):
+                ssh_options.extend(["-i", ssh_key_path])
+            
+            # Build dry-run rsync command
+            rsync_cmd = [
+                "rsync", "-av",
+                "--dry-run",
+                "--stats",
+                "--itemize-changes",
+                "--delete",
+                "--exclude", ".*",
+                "--exclude", "*.tmp",
+                "--exclude", "*.log",
+                "--size-only",
+                "--no-perms",
+                "--no-owner",
+                "--no-group",
+                "-e", f"ssh {' '.join(ssh_options)}"
+            ]
+            
+            # Add source and destination
+            if is_season_folder:
+                rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
+            else:
+                rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}", f"{dest_path}/"])
+            
+            print(f"🔄 Executing dry-run: {' '.join(rsync_cmd)}")
+            
+            # Execute dry-run
+            result = subprocess.run(
+                rsync_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                timeout=300  # 5 minute timeout
+            )
+            
+            # Parse output with destination path for local file counting
+            validation_result = self._parse_dry_run_output(result.stdout, result.stderr, dest_path)
+            
+            # Perform safety checks
+            deleted_count = validation_result['deleted_count']
+            incoming_count = validation_result['incoming_count']
+            server_file_count = validation_result['server_file_count']
+            local_file_count = validation_result['local_file_count']
+            
+            # BOTH validation approaches:
+            # 1. Server files >= Local files
+            # 2. Deleted files <= Incoming files
+            
+            reasons = []
+            
+            # Check 1: Server should have at least as many files as local
+            if server_file_count > 0 and local_file_count > 0:
+                if server_file_count < local_file_count:
+                    reasons.append(f"Server has fewer media files ({server_file_count}) than local ({local_file_count})")
+            
+            # Check 2: Deleted files should not exceed incoming files
+            if deleted_count > incoming_count:
+                reasons.append(f"Would delete {deleted_count} media files but only receive {incoming_count} new files")
+            
+            safe_to_sync = len(reasons) == 0
+            reason = "; ".join(reasons) if reasons else "All safety checks passed"
+            
+            validation_result['safe_to_sync'] = safe_to_sync
+            validation_result['reason'] = reason
+            
+            print(f"📊 Dry-run results:")
+            print(f"   Server files: {server_file_count}")
+            print(f"   Local files: {local_file_count}")
+            print(f"   Deleted: {deleted_count}")
+            print(f"   Incoming: {incoming_count}")
+            print(f"   Safe to sync: {safe_to_sync}")
+            if not safe_to_sync:
+                print(f"   Reason: {reason}")
+            
+            return validation_result
+            
+        except subprocess.TimeoutExpired:
+            print(f"❌ Dry-run timed out")
+            return {
+                'safe_to_sync': False,
+                'reason': 'Dry-run operation timed out',
+                'deleted_count': 0,
+                'incoming_count': 0,
+                'server_file_count': 0,
+                'local_file_count': 0,
+                'deleted_files': [],
+                'incoming_files': []
+            }
+        except Exception as e:
+            print(f"❌ Error during dry-run: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'safe_to_sync': False,
+                'reason': f'Dry-run execution error: {str(e)}',
+                'deleted_count': 0,
+                'incoming_count': 0,
+                'server_file_count': 0,
+                'local_file_count': 0,
+                'deleted_files': [],
+                'incoming_files': []
+            }
+    
+    def _count_local_media_files(self, dest_path: str) -> int:
+        """Count media files in the local destination directory"""
+        media_extensions = ('.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.flv', '.webm', '.ts')
+        
+        # Check if destination exists
+        if not os.path.exists(dest_path):
+            return 0
+        
+        count = 0
+        try:
+            for root, dirs, files in os.walk(dest_path):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in media_extensions):
+                        count += 1
+        except Exception as e:
+            print(f"⚠️  Error counting local media files in {dest_path}: {e}")
+            return 0
+        
+        return count
+    
+    def _parse_dry_run_output(self, stdout: str, stderr: str, dest_path: str = None) -> Dict:
+        """Parse rsync dry-run output to extract file counts and lists"""
+        
+        deleted_files = []
+        incoming_files = []
+        
+        # Media file extensions to count
+        media_extensions = ('.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.flv', '.webm', '.ts')
+        
+        # Parse itemize-changes output
+        for line in stdout.split('\n'):
+            line = line.strip()
+            
+            # *deleting indicates a file will be deleted
+            if line.startswith('*deleting'):
+                file_path = line.replace('*deleting', '').strip()
+                # Only count media files
+                if any(file_path.lower().endswith(ext) for ext in media_extensions):
+                    deleted_files.append(file_path)
+            
+            # >f+++++++++ indicates a new file will be transferred
+            # >f.st...... indicates file size/time change
+            elif line.startswith('>f'):
+                # Extract filename (after the itemize prefix)
+                if len(line) > 11:
+                    file_path = line[11:].strip()
+                    if any(file_path.lower().endswith(ext) for ext in media_extensions):
+                        incoming_files.append(file_path)
+        
+        # Count server files from rsync stats section
+        server_file_count = 0
+        stats_pattern = r'Number of (?:regular )?files: (\d+)'
+        stats_match = re.search(stats_pattern, stdout)
+        if stats_match:
+            server_file_count = int(stats_match.group(1))
+        
+        # If we can't get exact server count, estimate it
+        if server_file_count == 0:
+            server_file_count = len(incoming_files)
+        
+        # Count actual local media files from filesystem
+        local_file_count = 0
+        if dest_path:
+            local_file_count = self._count_local_media_files(dest_path)
+            print(f"📊 Local media file count in {dest_path}: {local_file_count}")
+        
+        return {
+            'deleted_count': len(deleted_files),
+            'incoming_count': len(incoming_files),
+            'server_file_count': server_file_count,
+            'local_file_count': local_file_count,
+            'deleted_files': deleted_files[:50],  # Limit to first 50 for storage
+            'incoming_files': incoming_files[:50],
+            'raw_output': stdout[:5000]  # Store first 5000 chars of output for debugging
+        }
     
     def start_rsync_process(self, transfer_id: str, source_path: str, dest_path: str, transfer_type: str, backup_dir: str) -> bool:
         """Start the rsync process"""

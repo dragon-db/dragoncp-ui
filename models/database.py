@@ -107,7 +107,13 @@ class DatabaseManager:
                     error_message TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     synced_at DATETIME,
-                    transfer_id TEXT
+                    transfer_id TEXT,
+                    -- Auto-sync related fields
+                    requires_manual_sync INTEGER DEFAULT 0,  -- 0=false, 1=true
+                    manual_sync_reason TEXT,
+                    auto_sync_scheduled_at DATETIME,
+                    dry_run_result TEXT,  -- JSON with dry-run validation results
+                    dry_run_performed_at DATETIME
                 )
             ''')
 
@@ -185,6 +191,7 @@ class DatabaseManager:
         self._ensure_backup_file_context_columns()
         self._ensure_webhook_notification_columns()
         self._ensure_app_settings_table()
+        self._ensure_series_webhook_auto_sync_columns()
 
     def _ensure_backup_file_context_columns(self):
         """MIGRATION CODE: Ensure context columns exist on transfer_backup_files for upgrades."""
@@ -256,6 +263,31 @@ class DatabaseManager:
                 conn.commit()
         except Exception as e:
             print(f"⚠️  App settings table check failed: {e}")
+    
+    def _ensure_series_webhook_auto_sync_columns(self):
+        """MIGRATION CODE: Ensure auto-sync columns exist on series_webhook_notifications."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cols = {row[1] for row in conn.execute('PRAGMA table_info(series_webhook_notifications)')}
+                to_add = []
+                def add(col, type_decl):
+                    if col not in cols:
+                        to_add.append((col, type_decl))
+                add('requires_manual_sync', 'INTEGER DEFAULT 0')
+                add('manual_sync_reason', 'TEXT')
+                add('auto_sync_scheduled_at', 'DATETIME')
+                add('dry_run_result', 'TEXT')
+                add('dry_run_performed_at', 'DATETIME')
+                for col, typ in to_add:
+                    try:
+                        conn.execute(f'ALTER TABLE series_webhook_notifications ADD COLUMN {col} {typ}')
+                    except Exception as e:
+                        # Ignore if concurrent/multiple attempts
+                        pass
+                conn.commit()
+        except Exception as e:
+            print(f"⚠️  Series webhook auto-sync columns migration check failed: {e}")
     
     def get_connection(self):
         """Get database connection with row factory"""

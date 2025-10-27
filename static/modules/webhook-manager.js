@@ -6,7 +6,9 @@ export class WebhookManager {
     constructor(app) {
         this.app = app;
         this.notifications = [];
-        this.autoSyncEnabled = false;
+        this.autoSyncMovies = false;
+        this.autoSyncSeries = false;
+        this.autoSyncAnime = false;
         
         this.initializeEventListeners();
         this.loadWebhookSettings();
@@ -18,8 +20,20 @@ export class WebhookManager {
             this.loadNotifications();
         });
 
-        document.getElementById('autoSyncToggleBtn').addEventListener('click', () => {
-            this.toggleAutoSync();
+        // Auto-sync toggle buttons
+        document.getElementById('autoSyncMoviesToggle').addEventListener('click', (e) => {
+            e.preventDefault();
+            this.toggleAutoSync('movies');
+        });
+        
+        document.getElementById('autoSyncSeriesToggle').addEventListener('click', (e) => {
+            e.preventDefault();
+            this.toggleAutoSync('series');
+        });
+        
+        document.getElementById('autoSyncAnimeToggle').addEventListener('click', (e) => {
+            e.preventDefault();
+            this.toggleAutoSync('anime');
         });
     }
 
@@ -29,37 +43,51 @@ export class WebhookManager {
             const result = await response.json();
             
             if (result.status === 'success') {
-                this.autoSyncEnabled = result.settings.auto_sync_movies;
-                this.updateAutoSyncButton();
+                this.autoSyncMovies = result.settings.auto_sync_movies;
+                this.autoSyncSeries = result.settings.auto_sync_series;
+                this.autoSyncAnime = result.settings.auto_sync_anime;
+                this.updateAutoSyncButtons();
             }
         } catch (error) {
             console.error('Failed to load webhook settings:', error);
         }
     }
 
-    async toggleAutoSync() {
+    async toggleAutoSync(mediaType) {
         try {
-            const newState = !this.autoSyncEnabled;
+            const currentState = mediaType === 'movies' ? this.autoSyncMovies : 
+                                mediaType === 'series' ? this.autoSyncSeries : 
+                                this.autoSyncAnime;
+            const newState = !currentState;
+            
+            const payload = {};
+            payload[`auto_sync_${mediaType}`] = newState;
             
             const response = await fetch('/api/webhook/settings', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    auto_sync_movies: newState
-                })
+                body: JSON.stringify(payload)
             });
             
             const result = await response.json();
             
             if (result.status === 'success') {
-                this.autoSyncEnabled = newState;
-                this.updateAutoSyncButton();
+                if (mediaType === 'movies') {
+                    this.autoSyncMovies = newState;
+                } else if (mediaType === 'series') {
+                    this.autoSyncSeries = newState;
+                } else {
+                    this.autoSyncAnime = newState;
+                }
                 
+                this.updateAutoSyncButtons();
+                
+                const mediaName = mediaType.charAt(0).toUpperCase() + mediaType.slice(1);
                 const message = newState ? 
-                    'Auto-sync enabled. New movies will sync automatically.' : 
-                    'Auto-sync disabled. Movies require manual sync.';
+                    `${mediaName} auto-sync enabled. New ${mediaType} will sync automatically.` : 
+                    `${mediaName} auto-sync disabled. ${mediaName} require manual sync.`;
                 this.app.ui.showAlert(message, 'info');
             } else {
                 this.app.ui.showAlert('Failed to update auto-sync setting', 'danger');
@@ -70,18 +98,26 @@ export class WebhookManager {
         }
     }
 
-    updateAutoSyncButton() {
-        const button = document.getElementById('autoSyncToggleBtn');
+    updateAutoSyncButtons() {
+        this.updateToggleButton('autoSyncMoviesToggle', this.autoSyncMovies);
+        this.updateToggleButton('autoSyncSeriesToggle', this.autoSyncSeries);
+        this.updateToggleButton('autoSyncAnimeToggle', this.autoSyncAnime);
+    }
+    
+    updateToggleButton(buttonId, isEnabled) {
+        const button = document.getElementById(buttonId);
+        if (!button) return;
+        
         const icon = button.querySelector('i');
         
-        if (this.autoSyncEnabled) {
+        if (isEnabled) {
             icon.className = 'bi bi-toggle-on text-success';
-            button.innerHTML = '<i class="bi bi-toggle-on text-success"></i> Auto-Sync: ON';
-            button.title = 'Disable auto-sync';
+            button.classList.remove('btn-outline-secondary');
+            button.classList.add('text-success');
         } else {
             icon.className = 'bi bi-toggle-off';
-            button.innerHTML = '<i class="bi bi-toggle-off"></i> Auto-Sync: OFF';
-            button.title = 'Enable auto-sync';
+            button.classList.add('btn-outline-secondary');
+            button.classList.remove('text-success');
         }
     }
 
@@ -387,10 +423,11 @@ export class WebhookManager {
     }
     
     getGroupStatus(notifications) {
-        // Priority: syncing > failed > pending > completed
+        // Priority: syncing > failed > waiting_auto_sync > pending > completed
         const statuses = notifications.map(n => n.status);
         if (statuses.includes('syncing')) return 'syncing';
         if (statuses.includes('failed')) return 'failed';
+        if (statuses.includes('waiting_auto_sync')) return 'waiting_auto_sync';
         if (statuses.includes('pending')) return 'pending';
         return 'completed';
     }
@@ -545,6 +582,7 @@ export class WebhookManager {
     getStatusClass(status) {
         switch (status) {
             case 'pending': return 'bg-warning text-dark';
+            case 'waiting_auto_sync': return 'bg-primary';
             case 'syncing': return 'bg-info';
             case 'completed': return 'bg-success';
             case 'failed': return 'bg-danger';
@@ -555,6 +593,7 @@ export class WebhookManager {
     getStatusIcon(status) {
         switch (status) {
             case 'pending': return 'bi bi-clock';
+            case 'waiting_auto_sync': return 'bi bi-hourglass-split';
             case 'syncing': return 'bi bi-arrow-clockwise spinning';
             case 'completed': return 'bi bi-check-circle';
             case 'failed': return 'bi bi-x-circle';
@@ -565,11 +604,14 @@ export class WebhookManager {
     updateNotificationCount() {
         const countElement = document.getElementById('syncNotificationCount');
         const pendingCount = this.notifications.filter(n => n.status === 'pending').length;
+        const waitingAutoSyncCount = this.notifications.filter(n => n.status === 'waiting_auto_sync').length;
         const syncingCount = this.notifications.filter(n => n.status === 'syncing').length;
         
         let text = '';
         if (syncingCount > 0) {
             text = `${syncingCount} syncing`;
+        } else if (waitingAutoSyncCount > 0) {
+            text = `${waitingAutoSyncCount} scheduled`;
         } else if (pendingCount > 0) {
             text = `${pendingCount} pending`;
         } else {
@@ -1608,10 +1650,140 @@ export class WebhookManager {
                     </div>
                 </div>
             </div>` : ''}
+            
+            ${this.renderDryRunResults(notification)}
         `;
         
         const bootstrapModal = new bootstrap.Modal(modal);
         bootstrapModal.show();
+    }
+    
+    renderDryRunResults(notification) {
+        // Check if dry-run result exists
+        if (!notification.dry_run_result) {
+            return '';
+        }
+        
+        try {
+            const dryRunResult = typeof notification.dry_run_result === 'string' 
+                ? JSON.parse(notification.dry_run_result) 
+                : notification.dry_run_result;
+            
+            const safeToSync = dryRunResult.safe_to_sync;
+            const reason = dryRunResult.reason || 'No reason provided';
+            const deletedCount = dryRunResult.deleted_count || 0;
+            const incomingCount = dryRunResult.incoming_count || 0;
+            const serverFileCount = dryRunResult.server_file_count || 0;
+            const localFileCount = dryRunResult.local_file_count || 0;
+            const deletedFiles = dryRunResult.deleted_files || [];
+            const incomingFiles = dryRunResult.incoming_files || [];
+            
+            // Determine alert color based on safety
+            const alertClass = safeToSync ? 'alert-success' : 'alert-warning';
+            const alertBg = safeToSync ? 'rgba(40, 167, 69, 0.1)' : 'rgba(255, 193, 7, 0.1)';
+            const alertBorder = safeToSync ? 'rgba(40, 167, 69, 0.3)' : 'rgba(255, 193, 7, 0.3)';
+            const alertColor = safeToSync ? '#4ecdc4' : '#f39c12';
+            const icon = safeToSync ? 'bi bi-check-circle' : 'bi bi-exclamation-triangle';
+            
+            let html = `
+            <div class="row g-3 mt-2">
+                <div class="col-12">
+                    <div class="detail-section">
+                        <h6><i class="bi bi-shield-check me-2"></i>Auto-Sync Validation Results</h6>
+                        <div class="alert ${alertClass} border-0 mb-3" style="background: ${alertBg}; color: ${alertColor}; border: 1px solid ${alertBorder} !important;">
+                            <div class="d-flex align-items-center mb-2">
+                                <i class="${icon} me-2" style="font-size: 1.2rem;"></i>
+                                <strong>${safeToSync ? 'Safe to Auto-Sync' : 'Manual Sync Required'}</strong>
+                            </div>
+                            <div style="font-size: 0.9rem;">${this.app.ui.escapeHtml(reason)}</div>
+                        </div>
+                        
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <div class="p-3 rounded" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-color);">
+                                    <h6 class="mb-3 text-light"><i class="bi bi-server me-2"></i>File Count Analysis</h6>
+                                    <table class="table table-sm table-dark mb-0">
+                                        <tr>
+                                            <td>Server Media Files:</td>
+                                            <td class="text-end"><strong>${serverFileCount}</strong></td>
+                                        </tr>
+                                        <tr>
+                                            <td>Local Media Files:</td>
+                                            <td class="text-end"><strong>${localFileCount}</strong></td>
+                                        </tr>
+                                        <tr class="border-top">
+                                            <td>Would Delete:</td>
+                                            <td class="text-end ${deletedCount > 0 ? 'text-danger' : ''}"><strong>${deletedCount}</strong></td>
+                                        </tr>
+                                        <tr>
+                                            <td>Would Add/Update:</td>
+                                            <td class="text-end ${incomingCount > 0 ? 'text-success' : ''}"><strong>${incomingCount}</strong></td>
+                                        </tr>
+                                    </table>
+                                </div>
+                            </div>
+                            
+                            <div class="col-md-6">
+                                <div class="p-3 rounded" style="background: rgba(0,0,0,0.3); border: 1px solid var(--border-color); max-height: 250px; overflow-y: auto;">
+                                    <h6 class="mb-3 text-light"><i class="bi bi-info-circle me-2"></i>File Details</h6>
+            `;
+            
+            if (deletedFiles.length > 0) {
+                html += `
+                    <div class="mb-3">
+                        <strong class="text-danger d-block mb-2"><i class="bi bi-trash me-1"></i>Files to Delete (${deletedCount}):</strong>
+                        <ul class="list-unstyled mb-0" style="font-size: 0.85rem;">
+                `;
+                deletedFiles.slice(0, 10).forEach(file => {
+                    html += `<li class="text-muted mb-1">• ${this.app.ui.escapeHtml(file)}</li>`;
+                });
+                if (deletedCount > 10) {
+                    html += `<li class="text-muted">... and ${deletedCount - 10} more</li>`;
+                }
+                html += `</ul></div>`;
+            }
+            
+            if (incomingFiles.length > 0) {
+                html += `
+                    <div class="mb-3">
+                        <strong class="text-success d-block mb-2"><i class="bi bi-plus-circle me-1"></i>Files to Add/Update (${incomingCount}):</strong>
+                        <ul class="list-unstyled mb-0" style="font-size: 0.85rem;">
+                `;
+                incomingFiles.slice(0, 10).forEach(file => {
+                    html += `<li class="text-muted mb-1">• ${this.app.ui.escapeHtml(file)}</li>`;
+                });
+                if (incomingCount > 10) {
+                    html += `<li class="text-muted">... and ${incomingCount - 10} more</li>`;
+                }
+                html += `</ul></div>`;
+            }
+            
+            if (deletedFiles.length === 0 && incomingFiles.length === 0) {
+                html += `<p class="text-muted mb-0">No file changes detected.</p>`;
+            }
+            
+            html += `
+                                </div>
+                            </div>
+                        </div>
+                        
+                        ${notification.dry_run_performed_at ? `
+                        <div class="mt-2">
+                            <small class="text-muted">
+                                <i class="bi bi-clock me-1"></i>
+                                Validation performed: ${this.app.ui.getTimeAgo(notification.dry_run_performed_at)}
+                            </small>
+                        </div>` : ''}
+                    </div>
+                </div>
+            </div>
+            `;
+            
+            return html;
+        } catch (error) {
+            console.error('Error parsing dry-run results:', error);
+            return '';
+        }
     }
 
     // Initialize the webhook manager

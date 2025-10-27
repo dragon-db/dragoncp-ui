@@ -22,7 +22,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.8.3
+                   v1.8.4
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -293,9 +293,45 @@
                         <button class="btn btn-outline-light btn-sm" id="refreshSyncBtn" title="Refresh notifications">
                             <i class="bi bi-arrow-clockwise"></i>
                         </button>
-                        <button class="btn btn-outline-light btn-sm" id="autoSyncToggleBtn" title="Toggle auto-sync">
-                            <i class="bi bi-toggle-off"></i> Auto-Sync: OFF
-                        </button>
+                        <div class="btn-group">
+                            <button class="btn btn-outline-light btn-sm dropdown-toggle" data-bs-toggle="dropdown" title="Auto-sync settings">
+                                <i class="bi bi-gear-fill me-1"></i> Auto-Sync
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end" style="min-width: 250px;">
+                                <li class="px-3 py-2">
+                                    <div class="d-flex align-items-center justify-content-between mb-2">
+                                        <span>
+                                            <i class="bi bi-film me-2"></i>Movies
+                                        </span>
+                                        <button id="autoSyncMoviesToggle" class="btn btn-sm btn-outline-secondary">
+                                            <i class="bi bi-toggle-off"></i>
+                                        </button>
+                                    </div>
+                                </li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li class="px-3 py-2">
+                                    <div class="d-flex align-items-center justify-content-between mb-2">
+                                        <span>
+                                            <i class="bi bi-tv me-2"></i>Series
+                                        </span>
+                                        <button id="autoSyncSeriesToggle" class="btn btn-sm btn-outline-secondary">
+                                            <i class="bi bi-toggle-off"></i>
+                                        </button>
+                                    </div>
+                                </li>
+                                <li><hr class="dropdown-divider"></li>
+                                <li class="px-3 py-2">
+                                    <div class="d-flex align-items-center justify-content-between">
+                                        <span>
+                                            <i class="bi bi-collection-play me-2"></i>Anime
+                                        </span>
+                                        <button id="autoSyncAnimeToggle" class="btn btn-sm btn-outline-secondary">
+                                            <i class="bi bi-toggle-off"></i>
+                                        </button>
+                                    </div>
+                                </li>
+                            </ul>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -614,6 +650,38 @@
                                         <button type="button" class="btn btn-info" id="loadDiscordSettingsBtn">
                                             <i class="bi bi-arrow-clockwise"></i> Load Current Settings
                                         </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Series/Anime Auto-Sync Settings -->
+                        <div class="config-section">
+                            <h6><i class="bi bi-clock-history me-2"></i>Series/Anime Auto-Sync Settings</h6>
+                            <div class="row">
+                                <div class="col-md-12">
+                                    <div class="config-field">
+                                        <label for="seriesAnimeWaitTime" class="form-label">
+                                            Wait Time Before Auto-Sync (seconds)
+                                            <i class="bi bi-info-circle" data-bs-toggle="tooltip" 
+                                               title="Time to wait before starting auto-sync for series/anime. Allows multiple episodes to be batched together."></i>
+                                        </label>
+                                        <input type="number" class="form-control" id="seriesAnimeWaitTime" name="SERIES_ANIME_SYNC_WAIT_TIME"
+                                               min="30" max="900" step="30" value="60" placeholder="60">
+                                        <div class="modified-indicator" id="seriesAnimeWaitTimeIndicator" style="display: none;">
+                                            <i class="bi bi-pencil-square"></i>
+                                        </div>
+                                        <div class="original-value" id="seriesAnimeWaitTimeOriginal"></div>
+                                        <small class="form-text text-muted">
+                                            <i class="bi bi-info-circle"></i> 
+                                            Current: <span id="seriesAnimeWaitTimeDisplay" class="fw-semibold">1 minute</span>
+                                            <br>
+                                            When a series/anime episode notification is received, the system waits this amount of time before syncing.
+                                            If additional episodes arrive during the wait time, the timer extends (max 15 minutes total).
+                                            This ensures all episodes in a batch sync together.
+                                            <br>
+                                            <span class="text-warning">Range: 30 seconds to 900 seconds (15 minutes)</span>
+                                        </small>
                                     </div>
                                 </div>
                             </div>

@@ -162,14 +162,32 @@ def api_webhook_series_receiver():
         # Store notification in database
         notification_id = transfer_coordinator.series_webhook_model.create(parsed_data)
         
-        # For series, auto-sync is disabled by default as per requirements
-        print(f"📺 Series auto-sync disabled by default, storing notification for manual sync")
-        return jsonify({
-            "status": "success",
-            "message": f"Series webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Manual sync required.",
-            "notification_id": notification_id,
-            "auto_sync": False
-        })
+        # Check if auto-sync is enabled for series
+        auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_SERIES', False)
+        
+        if auto_sync_enabled:
+            print(f"📺 Series auto-sync enabled, scheduling auto-sync for {parsed_data['series_title']}")
+            # Schedule auto-sync job
+            transfer_coordinator.schedule_auto_sync(
+                notification_id=notification_id,
+                series_title_slug=parsed_data['series_title_slug'],
+                season_number=parsed_data['season_number'],
+                media_type='tvshows'
+            )
+            return jsonify({
+                "status": "success",
+                "message": f"Series webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Auto-sync scheduled.",
+                "notification_id": notification_id,
+                "auto_sync": True
+            })
+        else:
+            print(f"📺 Series auto-sync disabled, storing notification for manual sync")
+            return jsonify({
+                "status": "success",
+                "message": f"Series webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Manual sync required.",
+                "notification_id": notification_id,
+                "auto_sync": False
+            })
         
     except Exception as e:
         print(f"❌ Error processing series webhook: {e}")
@@ -228,14 +246,32 @@ def api_webhook_anime_receiver():
         # Store notification in database
         notification_id = transfer_coordinator.series_webhook_model.create(parsed_data)
         
-        # For anime, auto-sync is disabled by default as per requirements
-        print(f"🍙 Anime auto-sync disabled by default, storing notification for manual sync")
-        return jsonify({
-            "status": "success",
-            "message": f"Anime webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Manual sync required.",
-            "notification_id": notification_id,
-            "auto_sync": False
-        })
+        # Check if auto-sync is enabled for anime
+        auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_ANIME', False)
+        
+        if auto_sync_enabled:
+            print(f"🍙 Anime auto-sync enabled, scheduling auto-sync for {parsed_data['series_title']}")
+            # Schedule auto-sync job
+            transfer_coordinator.schedule_auto_sync(
+                notification_id=notification_id,
+                series_title_slug=parsed_data['series_title_slug'],
+                season_number=parsed_data['season_number'],
+                media_type='anime'
+            )
+            return jsonify({
+                "status": "success",
+                "message": f"Anime webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Auto-sync scheduled.",
+                "notification_id": notification_id,
+                "auto_sync": True
+            })
+        else:
+            print(f"🍙 Anime auto-sync disabled, storing notification for manual sync")
+            return jsonify({
+                "status": "success",
+                "message": f"Anime webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Manual sync required.",
+                "notification_id": notification_id,
+                "auto_sync": False
+            })
         
     except Exception as e:
         print(f"❌ Error processing anime webhook: {e}")
@@ -544,15 +580,13 @@ def api_webhook_settings():
     """Get or update webhook settings"""
     if request.method == 'GET':
         try:
-            # Prefer DB app_settings value when present, fallback to env
-            db_val = None
-            try:
-                db_val = transfer_coordinator.settings.get('AUTO_SYNC_MOVIES')
-            except Exception:
-                db_val = None
-            env_val = config.get("AUTO_SYNC_MOVIES", "false").lower() == "true"
+            # Get auto-sync settings for all media types
             settings = {
-                "auto_sync_movies": (str(db_val).lower() in ('true','1','yes','on')) if db_val is not None else env_val
+                "auto_sync_movies": transfer_coordinator.settings.get_bool('AUTO_SYNC_MOVIES', 
+                    default=(config.get("AUTO_SYNC_MOVIES", "false").lower() == "true")),
+                "auto_sync_series": transfer_coordinator.settings.get_bool('AUTO_SYNC_SERIES', False),
+                "auto_sync_anime": transfer_coordinator.settings.get_bool('AUTO_SYNC_ANIME', False),
+                "series_anime_sync_wait_time": int(transfer_coordinator.settings.get('SERIES_ANIME_SYNC_WAIT_TIME', '60'))
             }
             return jsonify({
                 "status": "success",
@@ -570,12 +604,31 @@ def api_webhook_settings():
             if not data:
                 return jsonify({"status": "error", "message": "No data provided"}), 400
             
-            # Update auto-sync setting (store only in DB; no .env write)
+            # Update auto-sync settings (store only in DB; no .env write)
             if "auto_sync_movies" in data:
                 new_val = bool(data["auto_sync_movies"])
-                # Save to DB app_settings
                 transfer_coordinator.settings.set_bool('AUTO_SYNC_MOVIES', new_val)
                 print(f"🎬 Auto-sync movies setting updated (DB): {new_val}")
+            
+            if "auto_sync_series" in data:
+                new_val = bool(data["auto_sync_series"])
+                transfer_coordinator.settings.set_bool('AUTO_SYNC_SERIES', new_val)
+                print(f"📺 Auto-sync series setting updated (DB): {new_val}")
+            
+            if "auto_sync_anime" in data:
+                new_val = bool(data["auto_sync_anime"])
+                transfer_coordinator.settings.set_bool('AUTO_SYNC_ANIME', new_val)
+                print(f"🍙 Auto-sync anime setting updated (DB): {new_val}")
+            
+            if "series_anime_sync_wait_time" in data:
+                wait_time = int(data["series_anime_sync_wait_time"])
+                # Validate wait time (min 30s, max 900s/15min)
+                if wait_time < 30:
+                    wait_time = 30
+                elif wait_time > 900:
+                    wait_time = 900
+                transfer_coordinator.settings.set('SERIES_ANIME_SYNC_WAIT_TIME', str(wait_time))
+                print(f"⏰ Series/Anime sync wait time updated (DB): {wait_time}s")
             
             return jsonify({
                 "status": "success",
