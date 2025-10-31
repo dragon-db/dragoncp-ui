@@ -92,22 +92,38 @@ class TransferSimulator:
         if media_type in ("tvshows", "anime"):
             season_name = f"Season {random.randint(1, 5)}"
 
-        # Create DB record (pending -> running)
+        # Build paths
+        source_path = f"/remote/{media_type}/{folder_name}"
+        dest_path = f"/local/{media_type}/{folder_name}"
+        
+        # Register with queue manager to track this simulated transfer
+        can_start, queue_status = self.transfer_coordinator.queue_manager.register_transfer(transfer_id, dest_path)
+        
+        # Create DB record
         self.transfer_coordinator.transfer_model.create({
             "transfer_id": transfer_id,
             "media_type": media_type,
             "folder_name": folder_name,
             "season_name": season_name,
             "episode_name": None,
-            "source_path": f"/remote/{media_type}/{folder_name}",
-            "dest_path": f"/local/{media_type}/{folder_name}",
+            "source_path": source_path,
+            "dest_path": dest_path,
             "transfer_type": "folder",
             "status": "pending",
         })
 
+        # If queued (shouldn't happen in simulation but handle it)
+        if queue_status == 'queued':
+            self.transfer_coordinator.transfer_model.update(transfer_id, {
+                "status": "queued",
+                "progress": "Waiting in queue (simulated)...",
+            })
+            # For simulation, we'll still run it (not realistic but good for testing queue display)
+        
+        # Update to running
         self.transfer_coordinator.transfer_model.update(transfer_id, {
             "status": "running",
-            "progress": "Transfer started...",
+            "progress": "Transfer started (simulated)...",
             "start_time": datetime.now().isoformat(),
         })
 
@@ -148,6 +164,9 @@ class TransferSimulator:
             self._finalize(transfer_id, status="completed", message="Transfer completed successfully! (simulated)")
 
     def _finalize(self, transfer_id: str, status: str, message: str):
+        # Unregister from queue manager when simulation completes
+        self.transfer_coordinator.queue_manager.unregister_transfer(transfer_id)
+        
         self.transfer_coordinator.transfer_model.update(
             transfer_id,
             {"status": status, "progress": message, "end_time": datetime.now().isoformat()},

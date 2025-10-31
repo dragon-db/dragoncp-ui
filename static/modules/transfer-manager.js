@@ -815,6 +815,11 @@ export class TransferManager {
                 // Cache active transfers for tab display names
                 this.cachedActiveTransfers = result.transfers;
                 
+                // Update queue status display
+                if (result.queue_status) {
+                    this.updateQueueStatusDisplay(result.queue_status);
+                }
+                
                 // Update active transfer tabs
                 this.updateActiveTransferTabs(result.transfers);
                 
@@ -825,6 +830,22 @@ export class TransferManager {
             }
         } catch (error) {
             console.error('Failed to load active transfers:', error);
+        }
+    }
+    
+    updateQueueStatusDisplay(queueStatus) {
+        // Update the badge to show queue status
+        const badge = document.getElementById('activeTransferCount');
+        if (badge && queueStatus) {
+            const runningCount = queueStatus.running_count || 0;
+            const queuedCount = queueStatus.queued_count || 0;
+            const maxConcurrent = queueStatus.max_concurrent || 3;
+            
+            if (queuedCount > 0) {
+                badge.textContent = `${runningCount}/${maxConcurrent} running, ${queuedCount} queued`;
+            } else {
+                badge.textContent = `${runningCount}/${maxConcurrent} running`;
+            }
         }
     }
 
@@ -876,9 +897,9 @@ export class TransferManager {
         const countBadge = document.getElementById('activeTransferCount');
         const noTransfersMessage = document.getElementById('noTransfersMessage');
 
-        // Update count badge
-        const activeCount = transfers.filter(t => t.status === 'running' || t.status === 'pending').length;
-        countBadge.textContent = `${activeCount} active`;
+        // Update count badge (handled by updateQueueStatusDisplay now)
+        // const activeCount = transfers.filter(t => t.status === 'running' || t.status === 'pending').length;
+        // countBadge.textContent = `${activeCount} active`;
 
         // Handle empty state
         if (transfers.length === 0) {

@@ -1880,6 +1880,16 @@ button#refreshSyncStatusBtn i.spinning,
     color: black;
 }
 
+.transfer-status-queued {
+    background-color: #6f42c1;
+    color: white;
+}
+
+.transfer-status-duplicate {
+    background-color: #fd7e14;
+    color: white;
+}
+
 .transfer-status-completed {
     background-color: #28a745;
     color: white;

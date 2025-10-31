@@ -15,11 +15,12 @@ from typing import Dict, Optional, List
 class TransferService:
     """Service for rsync process management and monitoring"""
     
-    def __init__(self, config, db_manager, transfer_model, socketio=None):
+    def __init__(self, config, db_manager, transfer_model, socketio=None, queue_manager=None):
         self.config = config
         self.db = db_manager
         self.transfer_model = transfer_model
         self.socketio = socketio
+        self.queue_manager = queue_manager
         self.transfers = {}  # Active transfer processes: {transfer_id: process}
     
     def perform_dry_run_rsync(self, source_path: str, dest_path: str, is_season_folder: bool = True) -> Dict:
@@ -516,11 +517,22 @@ class TransferService:
             return 'failed'
 
     def cancel_transfer(self, transfer_id: str) -> bool:
-        """Cancel a running transfer"""
+        """Cancel a running or queued transfer"""
         transfer = self.transfer_model.get(transfer_id)
         if not transfer:
             return False
         
+        # Handle queued transfers (not yet started)
+        if transfer['status'] == 'queued':
+            self.transfer_model.update(transfer_id, {
+                'status': 'cancelled',
+                'progress': 'Transfer cancelled by user (was in queue)',
+                'end_time': datetime.now().isoformat()
+            })
+            print(f"✅ Queued transfer {transfer_id} cancelled")
+            return True
+        
+        # Handle running transfers
         if transfer['status'] == 'running' and transfer['process_id']:
             try:
                 import psutil

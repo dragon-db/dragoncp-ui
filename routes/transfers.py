@@ -242,9 +242,12 @@ def api_all_transfers():
 
 @transfers_bp.route('/transfers/active')
 def api_active_transfers():
-    """Get only active (running/pending) transfers"""
+    """Get only active (running/pending/queued) transfers"""
     try:
         active_transfers = transfer_coordinator.get_active_transfers()
+        
+        # Get queue status
+        queue_status = transfer_coordinator.get_queue_status()
         
         # Format transfers for response
         formatted_transfers = []
@@ -272,12 +275,27 @@ def api_active_transfers():
         return jsonify({
             "status": "success",
             "transfers": formatted_transfers,
-            "total": len(formatted_transfers)
+            "total": len(formatted_transfers),
+            "queue_status": queue_status
         })
         
     except Exception as e:
         print(f"❌ Error getting active transfers: {e}")
         return jsonify({"status": "error", "message": f"Failed to get active transfers: {str(e)}"})
+
+
+@transfers_bp.route('/transfers/queue/status')
+def api_queue_status():
+    """Get queue status"""
+    try:
+        queue_status = transfer_coordinator.get_queue_status()
+        return jsonify({
+            "status": "success",
+            "queue": queue_status
+        })
+    except Exception as e:
+        print(f"❌ Error getting queue status: {e}")
+        return jsonify({"status": "error", "message": f"Failed to get queue status: {str(e)}"})
 
 
 @transfers_bp.route('/transfer/<transfer_id>/restart', methods=['POST'])

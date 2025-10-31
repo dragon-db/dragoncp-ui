@@ -18,6 +18,7 @@ from services.transfer_service import TransferService
 from services.notification_service import NotificationService
 from services.webhook_service import WebhookService
 from services.auto_sync_scheduler import AutoSyncScheduler
+from services.queue_manager import QueueManager
 
 
 class TransferCoordinator:
@@ -39,17 +40,24 @@ class TransferCoordinator:
         self.series_webhook_model = SeriesWebhookNotification(db_manager)
         self.settings = AppSettings(db_manager)
         
+        # Initialize queue manager (must be before transfer service)
+        self.queue_manager = QueueManager(self.transfer_model, socketio)
+        
         # Initialize services
         self.backup_service = BackupService(config, db_manager, self.backup_model, self.transfer_model, socketio)
-        self.transfer_service = TransferService(config, db_manager, self.transfer_model, socketio)
+        self.transfer_service = TransferService(config, db_manager, self.transfer_model, socketio, self.queue_manager)
         self.notification_service = NotificationService(config, self.settings, self.transfer_model, self.webhook_model, self.series_webhook_model)
         self.webhook_service = WebhookService(config, self.webhook_model, self.series_webhook_model, self)
         self.auto_sync_scheduler = AutoSyncScheduler(db_manager, self.settings)
         
-        # Set coordinator reference in scheduler (circular dependency)
+        # Set coordinator reference in scheduler and queue manager (circular dependencies)
         self.auto_sync_scheduler.set_coordinator(self)
+        self.queue_manager.set_coordinator(self)
         
         print(f"✅ TransferCoordinator initialized")
+        
+        # Clean up stale transfer tracking before resuming
+        self.queue_manager.force_unregister_stale_transfers()
         
         # Resume any transfers that were running when the app was stopped
         self.transfer_service.resume_active_transfers()
@@ -58,40 +66,141 @@ class TransferCoordinator:
     def start_transfer(self, transfer_id: str, source_path: str, dest_path: str, 
                       transfer_type: str = "folder", media_type: str = "", 
                       folder_name: str = "", season_name: str = None, episode_name: str = None) -> bool:
-        """Start a new transfer with database persistence"""
+        """
+        Start a new transfer with database persistence and queue management
         
-        # Create transfer record in database
-        transfer_data = {
-            'transfer_id': transfer_id,
-            'media_type': media_type,
-            'folder_name': folder_name,
-            'season_name': season_name,
-            'episode_name': episode_name,
-            'source_path': source_path,
-            'dest_path': dest_path,
-            'transfer_type': transfer_type,
-            'status': 'pending'
-        }
+        Returns True if transfer started/queued successfully, False if duplicate
+        """
         
-        self.transfer_model.create(transfer_data)
+        print(f"🎯 TransferCoordinator.start_transfer() called for {transfer_id}")
+        print(f"   dest_path: {dest_path}")
         
-        # Calculate dynamic backup directory for this transfer
-        transfer = self.transfer_model.get(transfer_id)
-        backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
+        # STRICT VALIDATION: Check for duplicate destination BEFORE creating transfer
+        print(f"🔍 Checking for duplicate destination...")
+        is_duplicate, existing_transfer_id = self.queue_manager.check_duplicate_destination(dest_path, transfer_id)
+        print(f"   is_duplicate: {is_duplicate}, existing: {existing_transfer_id}")
         
-        # Start the actual transfer process
-        success = self.transfer_service.start_rsync_process(transfer_id, source_path, dest_path, transfer_type, backup_dir)
+        if is_duplicate:
+            print(f"🚫 DUPLICATE DESTINATION DETECTED!")
+            print(f"   Transfer {transfer_id} -> {dest_path}")
+            print(f"   Existing transfer {existing_transfer_id} already syncing to this path")
+            
+            # Get the existing transfer details for a better message
+            existing_transfer = self.transfer_model.get(existing_transfer_id)
+            if existing_transfer:
+                existing_title = existing_transfer.get('parsed_title') or existing_transfer.get('folder_name') or 'Unknown'
+                if existing_transfer.get('season_name'):
+                    existing_info = f"{existing_title} - {existing_transfer['season_name']}"
+                else:
+                    existing_info = existing_title
+                duplicate_message = f'Duplicate: Another transfer "{existing_info}" is already syncing to this destination'
+            else:
+                duplicate_message = f'Duplicate: Another transfer is already syncing to: {dest_path}'
+            
+            # Create transfer record with 'duplicate' status
+            transfer_data = {
+                'transfer_id': transfer_id,
+                'media_type': media_type,
+                'folder_name': folder_name,
+                'season_name': season_name,
+                'episode_name': episode_name,
+                'source_path': source_path,
+                'dest_path': dest_path,
+                'transfer_type': transfer_type,
+                'status': 'duplicate',
+                'progress': duplicate_message,
+                'end_time': datetime.now().isoformat()
+            }
+            
+            self.transfer_model.create(transfer_data)
+            
+            # Emit WebSocket notification
+            if self.socketio:
+                self.socketio.emit('transfer_duplicate', {
+                    'transfer_id': transfer_id,
+                    'existing_transfer_id': existing_transfer_id,
+                    'dest_path': dest_path,
+                    'message': 'Duplicate destination detected'
+                })
+            
+            return False
         
-        if success:
-            # Start a thread to finalize backup and send notifications after completion
-            import threading
-            threading.Thread(
-                target=self._post_transfer_completion, 
-                args=(transfer_id,), 
-                daemon=True
-            ).start()
+        # Register transfer with queue manager
+        print(f"📝 Registering transfer with queue manager...")
+        can_start, queue_status = self.queue_manager.register_transfer(transfer_id, dest_path)
+        print(f"   can_start: {can_start}, queue_status: {queue_status}")
         
-        return success
+        # If queued, create record with 'queued' status and return
+        if queue_status == 'queued':
+            transfer_data = {
+                'transfer_id': transfer_id,
+                'media_type': media_type,
+                'folder_name': folder_name,
+                'season_name': season_name,
+                'episode_name': episode_name,
+                'source_path': source_path,
+                'dest_path': dest_path,
+                'transfer_type': transfer_type,
+                'status': 'queued',
+                'progress': 'Waiting in queue...'
+            }
+            
+            self.transfer_model.create(transfer_data)
+            print(f"⏳ Transfer {transfer_id} added to queue")
+            
+            # Emit WebSocket notification
+            if self.socketio:
+                self.socketio.emit('transfer_queued', {
+                    'transfer_id': transfer_id,
+                    'message': 'Transfer added to queue'
+                })
+            
+            return True
+        
+        # If can start immediately, create with 'pending' status and start transfer
+        if can_start:
+            print(f"✅ Can start immediately, creating transfer record...")
+            # Create transfer record with 'pending' status (will be updated to 'running' by start_rsync_process)
+            transfer_data = {
+                'transfer_id': transfer_id,
+                'media_type': media_type,
+                'folder_name': folder_name,
+                'season_name': season_name,
+                'episode_name': episode_name,
+                'source_path': source_path,
+                'dest_path': dest_path,
+                'transfer_type': transfer_type,
+                'status': 'pending'
+            }
+            
+            self.transfer_model.create(transfer_data)
+            print(f"✅ Transfer record created with status 'pending'")
+            
+            # Calculate dynamic backup directory for this transfer
+            transfer = self.transfer_model.get(transfer_id)
+            backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
+            print(f"📁 Backup dir: {backup_dir}")
+            
+            # Start the actual transfer process
+            print(f"🚀 Calling start_rsync_process...")
+            success = self.transfer_service.start_rsync_process(transfer_id, source_path, dest_path, transfer_type, backup_dir)
+            print(f"   start_rsync_process returned: {success}")
+            
+            if success:
+                # Start a thread to finalize backup and send notifications after completion
+                import threading
+                threading.Thread(
+                    target=self._post_transfer_completion, 
+                    args=(transfer_id,), 
+                    daemon=True
+                ).start()
+            else:
+                # If failed to start, unregister from queue manager
+                self.queue_manager.unregister_transfer(transfer_id)
+            
+            return success
+        
+        return False
     
     def _post_transfer_completion(self, transfer_id: str):
         """Wait for transfer to complete, then finalize backup and send notifications"""
@@ -105,6 +214,10 @@ class TransferCoordinator:
             if not transfer or transfer['status'] not in ['running', 'pending']:
                 # Transfer completed or failed
                 status = transfer['status'] if transfer else 'unknown'
+                
+                # Unregister from queue manager (will promote next queued transfer)
+                print(f"🏁 Transfer {transfer_id} finished with status: {status}")
+                self.queue_manager.unregister_transfer(transfer_id)
                 
                 # Update webhook notification status
                 self.webhook_service.update_webhook_transfer_status(transfer_id, status, self.transfer_model)
@@ -128,8 +241,14 @@ class TransferCoordinator:
             waited += check_interval
     
     def cancel_transfer(self, transfer_id: str) -> bool:
-        """Cancel a running transfer"""
-        return self.transfer_service.cancel_transfer(transfer_id)
+        """Cancel a running or queued transfer"""
+        result = self.transfer_service.cancel_transfer(transfer_id)
+        
+        # Unregister from queue manager if it was running
+        if result:
+            self.queue_manager.unregister_transfer(transfer_id)
+        
+        return result
     
     def restart_transfer(self, transfer_id: str) -> bool:
         """Restart a failed or cancelled transfer"""
@@ -148,9 +267,57 @@ class TransferCoordinator:
         return self.transfer_model.get_all(limit=limit)
     
     def get_active_transfers(self) -> List[Dict]:
-        """Get active transfers (running/pending)"""
+        """Get active transfers (running/pending/queued)"""
         all_transfers = self.transfer_model.get_all()
-        return [t for t in all_transfers if t['status'] in ['running', 'pending']]
+        return [t for t in all_transfers if t['status'] in ['running', 'pending', 'queued']]
+    
+    def start_queued_transfer(self, transfer_id: str) -> bool:
+        """
+        Start a queued transfer (called by queue manager when promoting)
+        """
+        transfer = self.transfer_model.get(transfer_id)
+        if not transfer:
+            return False
+        
+        # Update status from 'queued' to 'pending' before starting
+        # (start_rsync_process will update it to 'running')
+        self.transfer_model.update(transfer_id, {
+            'status': 'pending',
+            'progress': 'Starting transfer...'
+        })
+        
+        # Refresh transfer data after update
+        transfer = self.transfer_model.get(transfer_id)
+        
+        # Calculate dynamic backup directory
+        backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
+        
+        # Start the transfer
+        success = self.transfer_service.start_rsync_process(
+            transfer_id,
+            transfer['source_path'],
+            transfer['dest_path'],
+            transfer['transfer_type'],
+            backup_dir
+        )
+        
+        if success:
+            # Start post-completion thread
+            import threading
+            threading.Thread(
+                target=self._post_transfer_completion,
+                args=(transfer_id,),
+                daemon=True
+            ).start()
+        else:
+            # If failed to start, unregister from queue manager
+            self.queue_manager.unregister_transfer(transfer_id)
+        
+        return success
+    
+    def get_queue_status(self) -> Dict:
+        """Get current queue status"""
+        return self.queue_manager.get_queue_status()
     
     # Backup Operations
     def restore_backup(self, backup_id: str, files: List[str] = None) -> Tuple[bool, str]:
