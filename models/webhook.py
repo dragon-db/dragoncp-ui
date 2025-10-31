@@ -322,4 +322,33 @@ class SeriesWebhookNotification:
             '''.format(days))
             conn.commit()
             return cursor.rowcount
+    
+    def mark_pending_by_series_season_completed(self, series_title: str, season_number: int, media_type: str) -> int:
+        """
+        Mark all PENDING notifications as COMPLETED for a given series/season
+        Returns count of updated records
+        """
+        #TODO: improve this function to match only SEASON PATH insted of parsing season number and series title
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.execute('''
+                    UPDATE series_webhook_notifications 
+                    SET status = 'completed', synced_at = CURRENT_TIMESTAMP
+                    WHERE status = 'pending'
+                    AND media_type = ?
+                    AND series_title = ?
+                    AND season_number = ?
+                ''', (media_type, series_title, season_number))
+                conn.commit()
+                updated_count = cursor.rowcount
+                
+                if updated_count > 0:
+                    print(f"✅ Marked {updated_count} PENDING notification(s) as COMPLETED for {series_title} Season {season_number}")
+                
+                return updated_count
+        except Exception as e:
+            print(f"❌ Error marking pending notifications as completed: {e}")
+            import traceback
+            traceback.print_exc()
+            return 0
 

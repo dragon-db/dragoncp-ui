@@ -453,9 +453,80 @@ class WebhookService:
                         self.series_webhook_model.update(webhook_notification['notification_id'], update_data)
                         title = webhook_notification.get('series_title', webhook_notification.get('title', 'Unknown'))
                         print(f"📋 Updated {media_type} webhook notification status to {status} for {title}")
+                        
+                        # After successful series/anime season sync, mark all PENDING notifications for the same season as COMPLETED
+                        if status == 'completed' and transfer.get('transfer_type') == 'folder':
+                            self._mark_pending_season_notifications_completed(transfer, webhook_notification)
             else:
                 print(f"⚠️  No webhook notification found for transfer {transfer_id} (media_type: {media_type})")
+                
+                # For manual syncs without linked notification, still mark pending notifications as completed
+                if status == 'completed' and media_type in ['anime', 'tvshows', 'series'] and transfer.get('transfer_type') == 'folder':
+                    self._mark_pending_season_notifications_completed_from_transfer(transfer)
                     
         except Exception as e:
             print(f"❌ Error updating webhook transfer status: {e}")
+    
+    def _mark_pending_season_notifications_completed(self, transfer: Dict, completed_notification: Dict):
+        """Mark all pending notifications for the same series/season as completed"""
+        try:
+            series_title = completed_notification.get('series_title')
+            season_number = completed_notification.get('season_number')
+            media_type = completed_notification.get('media_type')
+            
+            if not series_title or season_number is None:
+                return
+            
+            print(f"🔄 Checking for other PENDING notifications for {series_title} Season {season_number}")
+            updated_count = self.series_webhook_model.mark_pending_by_series_season_completed(
+                series_title=series_title,
+                season_number=season_number,
+                media_type=media_type
+            )
+            
+            if updated_count > 0:
+                print(f"✅ Marked {updated_count} additional PENDING notification(s) as COMPLETED")
+        except Exception as e:
+            print(f"❌ Error marking pending season notifications: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _mark_pending_season_notifications_completed_from_transfer(self, transfer: Dict):
+        """Mark pending notifications based on manual sync transfer details"""
+        try:
+            # Extract series details from transfer
+            media_type = transfer.get('media_type')
+            folder_name = transfer.get('folder_name')  # e.g., "Series Name (2023)"
+            season_name = transfer.get('season_name')  # e.g., "Season 01"
+
+            #TODO: improve this function to match only SEASON PATH insted of parsing season number and series title
+            
+            if not folder_name or not season_name or not media_type:
+                return
+            
+            # Parse season number from season_name (e.g., "Season 01" -> 1)
+            import re
+            season_match = re.search(r'Season\s+(\d+)', season_name, re.IGNORECASE)
+            if not season_match:
+                return
+            
+            season_number = int(season_match.group(1))
+            
+            # Parse series_title from folder_name (remove year if present)
+            # e.g., "Series Name (2023)" -> "Series Name"
+            series_title = re.sub(r'\s*\(\d{4}\)\s*$', '', folder_name).strip()
+            
+            print(f"🔄 Checking for PENDING notifications for manual sync: {series_title} Season {season_number}")
+            updated_count = self.series_webhook_model.mark_pending_by_series_season_completed(
+                series_title=series_title,
+                season_number=season_number,
+                media_type=media_type
+            )
+            
+            if updated_count > 0:
+                print(f"✅ Marked {updated_count} PENDING notification(s) as COMPLETED for manual sync")
+        except Exception as e:
+            print(f"❌ Error marking pending notifications from manual sync: {e}")
+            import traceback
+            traceback.print_exc()
 
