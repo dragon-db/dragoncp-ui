@@ -1950,10 +1950,6 @@ button#refreshSyncStatusBtn i.spinning,
     word-break: break-all;
 }
 
-#transferManagementCard .badge {
-    animation: pulse 2s infinite;
-}
-
 /* Dark mode table styling */
 .table-dark {
     --bs-table-bg: #212529;
