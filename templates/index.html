@@ -22,7 +22,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.8.7
+                   v1.8.8
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -286,14 +286,14 @@
                     <div class="d-flex align-items-center">
                         <i class="bi bi-film"></i>
                         <span class="fw-semibold">Media Sync</span>
+                        <span class="badge bg-light text-dark" id="syncNotificationCount">0 pending</span>
                         <i class="bi bi-chevron-down collapse-icon"></i>
-                        <span class="ms-2 badge bg-light text-dark" id="syncNotificationCount">0 pending</span>
                     </div>
                     <div class="d-flex align-items-center btn-group">
                         <button class="btn btn-outline-light btn-sm" id="refreshSyncBtn" title="Refresh notifications">
                             <i class="bi bi-arrow-clockwise"></i>
                         </button>
-                        <div class="btn-group">
+                        <!-- <div class="btn-group"> -->
                             <button class="btn btn-outline-light btn-sm dropdown-toggle" data-bs-toggle="dropdown" title="Auto-sync settings">
                                 <i class="bi bi-gear-fill me-1"></i> Auto-Sync
                             </button>
@@ -331,7 +331,7 @@
                                     </div>
                                 </li>
                             </ul>
-                        </div>
+                        <!-- </div> -->
                     </div>
                 </div>
             </div>
@@ -554,7 +554,7 @@
                                                 <span class="status-indicator" id="wsConfigStatusIndicator"></span>
                                                 <span class="text-light fw-semibold" id="wsConfigStatusText">Checking...</span>
                                                 <span class="badge bg-info ms-2" id="wsActiveConnectionsCount" style="display: none;">0</span>
-                                                <button type="button" class="btn btn-outline-secondary btn-sm ms-2" id="refreshWsStatusBtn" title="Refresh connection status">
+                                                <button type="button" class="btn btn-outline-secondary btn-sm mt-2" id="refreshWsStatusBtn" title="Refresh connection status">
                                                     <i class="bi bi-arrow-clockwise"></i>
                                                 </button>
                                             </div>

@@ -2163,24 +2163,41 @@ button#refreshSyncStatusBtn i.spinning,
     
     .collapsible-header .d-flex {
         flex-direction: column;
-        align-items: flex-start;
+        align-items: stretch; /* Changed from flex-start to stretch for better layout */
         gap: 0.5rem;
     }
     
     .collapsible-header .d-flex > div:first-child {
         width: 100%;
         justify-content: space-between;
+        align-items: center; /* Ensure vertical centering of all child elements */
     }
     
     .collapsible-header .d-flex > div:last-child {
         width: 100%;
         justify-content: flex-end;
         gap: 0.25rem;
+        align-items: center; /* Ensure vertical centering of buttons */
     }
     
     .collapsible-header .collapse-icon {
         font-size: 1rem;
-        margin-left: 0;
+        margin-left: 0 !important; /* Force remove left margin on mobile for better alignment */
+        display: inline-flex;
+        align-items: center;
+    }
+    
+    /* Ensure all icons in header are vertically centered */
+    .collapsible-header .bi {
+        display: inline-flex;
+        align-items: center;
+    }
+    
+    /* Ensure title text is vertically centered */
+    .collapsible-header .fw-semibold {
+        display: inline-flex;
+        align-items: center;
+        line-height: 1.2; /* Consistent line height for better vertical alignment */
     }
     
     .collapsible-header:hover {
@@ -2220,8 +2237,28 @@ button#refreshSyncStatusBtn i.spinning,
         gap: 0.25rem;
     }
     
+    .collapsible-header .d-flex > div:first-child {
+        align-items: center; /* Maintain vertical centering on very small screens */
+    }
+    
     .collapsible-header .collapse-icon {
         font-size: 1.1rem;
+        margin-left: 0 !important; /* Force remove left margin on mobile for better alignment */
+        display: inline-flex;
+        align-items: center;
+    }
+    
+    /* Ensure all icons in header are vertically centered */
+    .collapsible-header .bi {
+        display: inline-flex;
+        align-items: center;
+    }
+    
+    /* Ensure title text is vertically centered */
+    .collapsible-header .fw-semibold {
+        display: inline-flex;
+        align-items: center;
+        line-height: 1.2; /* Consistent line height for better vertical alignment */
     }
     
     .collapsible-header .btn {
@@ -2743,7 +2780,7 @@ button#refreshSyncStatusBtn i.spinning,
     .collapsible-header .badge {
         font-size: 0.7rem;
         padding: 0.3rem 0.6rem;
-        margin-left: 0.5rem;
+        margin-left: 0; /* Remove left margin on mobile for better alignment */
     }
     
     /* Improve button spacing */
@@ -2760,10 +2797,14 @@ button#refreshSyncStatusBtn i.spinning,
     /* Better icon spacing */
     .collapsible-header .bi {
         font-size: 0.9rem;
+        display: inline-flex;
+        align-items: center; /* Ensure vertical centering of all icons */
     }
     
     .collapsible-header .collapse-icon {
-        margin-left: auto;
+        margin-left: 0 !important; /* Force remove left margin on mobile for better alignment */
+        display: inline-flex;
+        align-items: center; /* Ensure vertical centering */
     }
     
     /* Improve breadcrumb on mobile */
@@ -2790,6 +2831,8 @@ button#refreshSyncStatusBtn i.spinning,
     
     .collapsible-header .bi {
         font-size: 0.85rem;
+        display: inline-flex;
+        align-items: center; /* Ensure vertical centering of all icons */
     }
     
     /* Improve button layout on very small screens */
@@ -2823,6 +2866,8 @@ button#refreshSyncStatusBtn i.spinning,
 .collapsible-header .collapse-icon {
     margin-left: 0.5rem;
     opacity: 0.9;
+    display: inline-flex;
+    align-items: center; /* Ensure vertical centering on all screen sizes */
 }
 
 .collapsible-header:hover .collapse-icon {
@@ -3756,5 +3801,68 @@ button#refreshSyncStatusBtn i.spinning,
     
     .accordion-body .btn {
         width: 100%;
+    }
+}
+
+/* ===== MOBILE-SPECIFIC FIXES FOR CONFIGURATION MODAL ===== */
+
+/* Fix Current Connection Status spacing and button size on mobile */
+@media (max-width: 768px) {
+    /* Fix form-control-plaintext layout and spacing */
+    #wsConfigStatusIndicator + .text-light {
+        font-size: 0.85rem;
+        margin-right: 0.5rem;
+    }
+    
+    /* Make refresh button smaller on mobile */
+    #refreshWsStatusBtn {
+        padding: 0.5rem 0.5rem !important;
+        font-size: 0.75rem !important;
+        min-height: 28px !important;
+        min-width: 28px !important;
+    }
+    
+    #refreshWsStatusBtn i {
+        font-size: 0.75rem !important;
+    }
+    
+    /* Improve spacing in form-control-plaintext container */
+    .config-field .form-control-plaintext .d-flex {
+        gap: 0.5rem !important;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+    
+    .config-field .form-control-plaintext .badge {
+        font-size: 0.7rem;
+        padding: 0.2rem 0.4rem;
+    }
+    
+    /* Stack Discord buttons vertically on mobile */
+    #discordConfigActions .d-flex {
+        flex-direction: column !important;
+        gap: 0.5rem !important;
+    }
+    
+    #discordConfigActions .btn {
+        width: 100% !important;
+    }
+}
+
+/* Additional refinements for very small screens */
+@media (max-width: 480px) {
+    #refreshWsStatusBtn {
+        padding: 0.5rem 0.4rem !important;
+        font-size: 0.7rem !important;
+        min-height: 24px !important;
+        min-width: 24px !important;
+    }
+    
+    #refreshWsStatusBtn i {
+        font-size: 0.7rem !important;
+    }
+    
+    .config-field .form-control-plaintext .d-flex {
+        gap: 0.3rem !important;
     }
 }
