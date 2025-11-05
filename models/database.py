@@ -192,6 +192,7 @@ class DatabaseManager:
         self._ensure_webhook_notification_columns()
         self._ensure_app_settings_table()
         self._ensure_series_webhook_auto_sync_columns()
+        self._ensure_raw_webhook_data_columns()
 
     def _ensure_backup_file_context_columns(self):
         """MIGRATION CODE: Ensure context columns exist on transfer_backup_files for upgrades."""
@@ -279,6 +280,7 @@ class DatabaseManager:
                 add('auto_sync_scheduled_at', 'DATETIME')
                 add('dry_run_result', 'TEXT')
                 add('dry_run_performed_at', 'DATETIME')
+                add('raw_webhook_data', 'TEXT')
                 for col, typ in to_add:
                     try:
                         conn.execute(f'ALTER TABLE series_webhook_notifications ADD COLUMN {col} {typ}')
@@ -288,6 +290,31 @@ class DatabaseManager:
                 conn.commit()
         except Exception as e:
             print(f"⚠️  Series webhook auto-sync columns migration check failed: {e}")
+    
+    def _ensure_raw_webhook_data_columns(self):
+        """MIGRATION CODE: Ensure raw_webhook_data columns exist for storing full webhook JSON."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                # Check webhook_notifications table
+                cols = {row[1] for row in conn.execute('PRAGMA table_info(webhook_notifications)')}
+                if 'raw_webhook_data' not in cols:
+                    try:
+                        conn.execute('ALTER TABLE webhook_notifications ADD COLUMN raw_webhook_data TEXT')
+                    except Exception:
+                        pass
+                
+                # Check series_webhook_notifications table
+                cols = {row[1] for row in conn.execute('PRAGMA table_info(series_webhook_notifications)')}
+                if 'raw_webhook_data' not in cols:
+                    try:
+                        conn.execute('ALTER TABLE series_webhook_notifications ADD COLUMN raw_webhook_data TEXT')
+                    except Exception:
+                        pass
+                
+                conn.commit()
+        except Exception as e:
+            print(f"⚠️  Raw webhook data columns migration check failed: {e}")
     
     def get_connection(self):
         """Get database connection with row factory"""

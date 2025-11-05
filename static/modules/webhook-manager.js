@@ -578,6 +578,11 @@ export class WebhookManager {
         
         return buttons.join('');
     }
+    
+    viewWebhookJson(notificationId) {
+        // Open the webhook JSON in a new tab
+        window.open(`/api/webhook/notifications/${notificationId}/json`, '_blank');
+    }
 
     getStatusClass(status) {
         switch (status) {
@@ -919,6 +924,9 @@ export class WebhookManager {
         if (footer) {
             const isCompleted = notification.status === 'completed';
             footer.innerHTML = `
+                <button type="button" class="btn btn-outline-info" onclick="dragonCP.webhook.viewWebhookJson('${notification.notification_id}')">
+                    <i class="bi bi-code-square me-1"></i> View JSON
+                </button>
                 ${!isCompleted ? `
                     <button type="button" class="btn btn-success" onclick="dragonCP.webhook.markNotificationComplete('${notification.notification_id}', 'movie')">
                         <i class="bi bi-check-circle me-1"></i> Mark as Complete
@@ -1459,6 +1467,9 @@ export class WebhookManager {
                                         <i class="bi bi-arrow-clockwise me-1"></i> Retry
                                     </button>
                                 ` : ''}
+                                <button class="btn btn-outline-info btn-sm" onclick="dragonCP.webhook.viewWebhookJson('${notification.notification_id}')">
+                                    <i class="bi bi-code-square me-1"></i> View JSON
+                                </button>
                                 ${notification.status !== 'completed' ? `
                                     <button class="btn btn-success btn-sm" onclick="dragonCP.webhook.markNotificationComplete('${notification.notification_id}', '${mediaType}')">
                                         <i class="bi bi-check-circle me-1"></i> Mark as Complete
@@ -1772,6 +1783,9 @@ export class WebhookManager {
         if (footer) {
             const isCompleted = notification.status === 'completed';
             footer.innerHTML = `
+                <button type="button" class="btn btn-outline-info" onclick="dragonCP.webhook.viewWebhookJson('${notification.notification_id}')">
+                    <i class="bi bi-code-square me-1"></i> View JSON
+                </button>
                 ${!isCompleted ? `
                     <button type="button" class="btn btn-success" onclick="dragonCP.webhook.markNotificationComplete('${notification.notification_id}', '${mediaType}')">
                         <i class="bi bi-check-circle me-1"></i> Mark as Complete

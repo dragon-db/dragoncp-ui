@@ -5,8 +5,9 @@ Handles webhook receivers for Radarr/Sonarr and webhook management
 """
 
 from datetime import datetime
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, Response
 import requests
+import json
 
 webhooks_bp = Blueprint('webhooks', __name__)
 
@@ -69,8 +70,9 @@ def api_webhook_movies_receiver():
         # Parse webhook data according to specification
         parsed_data = transfer_coordinator.parse_webhook_data(webhook_data)
         
-        # Store notification in database
-        notification_id = transfer_coordinator.webhook_model.create(parsed_data)
+        # Store notification in database (with raw webhook JSON)
+        raw_webhook_json = json.dumps(webhook_data, indent=2)
+        notification_id = transfer_coordinator.webhook_model.create(parsed_data, raw_webhook_json)
         
         # Check if auto-sync is enabled (prefer DB app_settings, fallback to env)
         try:
@@ -159,8 +161,9 @@ def api_webhook_series_receiver():
         # Parse series webhook data
         parsed_data = transfer_coordinator.parse_series_webhook_data(webhook_data, 'tvshows')
         
-        # Store notification in database
-        notification_id = transfer_coordinator.series_webhook_model.create(parsed_data)
+        # Store notification in database (with raw webhook JSON)
+        raw_webhook_json = json.dumps(webhook_data, indent=2)
+        notification_id = transfer_coordinator.series_webhook_model.create(parsed_data, raw_webhook_json)
         
         # Check if auto-sync is enabled for series
         auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_SERIES', False)
@@ -243,8 +246,9 @@ def api_webhook_anime_receiver():
         # Parse anime webhook data
         parsed_data = transfer_coordinator.parse_series_webhook_data(webhook_data, 'anime')
         
-        # Store notification in database
-        notification_id = transfer_coordinator.series_webhook_model.create(parsed_data)
+        # Store notification in database (with raw webhook JSON)
+        raw_webhook_json = json.dumps(webhook_data, indent=2)
+        notification_id = transfer_coordinator.series_webhook_model.create(parsed_data, raw_webhook_json)
         
         # Check if auto-sync is enabled for anime
         auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_ANIME', False)
@@ -417,6 +421,51 @@ def api_webhook_notification_details(notification_id):
             "status": "error",
             "message": f"Failed to get notification details: {str(e)}"
         }), 500
+
+
+@webhooks_bp.route('/webhook/notifications/<notification_id>/json')
+def api_webhook_notification_json(notification_id):
+    """Get raw webhook JSON for a notification (movies, series, or anime)"""
+    try:
+        # First try movie notifications
+        notification = transfer_coordinator.webhook_model.get(notification_id)
+        if not notification:
+            # If not found, try series/anime notifications
+            notification = transfer_coordinator.series_webhook_model.get(notification_id)
+        
+        if not notification:
+            return Response(
+                json.dumps({"error": "Notification not found"}, indent=2),
+                mimetype='application/json',
+                status=404
+            )
+        
+        # Get the raw webhook data
+        raw_webhook_data = notification.get('raw_webhook_data')
+        
+        if not raw_webhook_data:
+            return Response(
+                json.dumps({"error": "Raw webhook data not available for this notification"}, indent=2),
+                mimetype='application/json',
+                status=404
+            )
+        
+        # Return the raw webhook JSON with proper formatting
+        return Response(
+            raw_webhook_data,
+            mimetype='application/json',
+            headers={
+                'Content-Disposition': f'inline; filename="webhook_{notification_id}.json"'
+            }
+        )
+        
+    except Exception as e:
+        print(f"❌ Error getting webhook JSON: {e}")
+        return Response(
+            json.dumps({"error": f"Failed to get webhook JSON: {str(e)}"}, indent=2),
+            mimetype='application/json',
+            status=500
+        )
 
 
 # ===== WEBHOOK SYNC OPERATIONS =====

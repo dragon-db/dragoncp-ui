@@ -14,7 +14,7 @@ class WebhookNotification:
     def __init__(self, db_manager):
         self.db = db_manager
     
-    def create(self, notification_data: Dict) -> str:
+    def create(self, notification_data: Dict, raw_webhook_data: str = None) -> str:
         """Create a new webhook notification record"""
         print(f"📝 Creating webhook notification for {notification_data.get('title', 'Unknown')}")
         
@@ -24,8 +24,8 @@ class WebhookNotification:
                     INSERT INTO webhook_notifications (
                         notification_id, title, year, folder_path, poster_url, requested_by,
                         file_path, quality, size, languages, subtitles, 
-                        release_title, release_indexer, release_size, tmdb_id, imdb_id, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        release_title, release_indexer, release_size, tmdb_id, imdb_id, status, raw_webhook_data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     notification_data['notification_id'],
                     notification_data['title'],
@@ -43,7 +43,8 @@ class WebhookNotification:
                     notification_data.get('release_size', 0),
                     notification_data.get('tmdb_id'),
                     notification_data.get('imdb_id'),
-                    notification_data.get('status', 'pending')
+                    notification_data.get('status', 'pending'),
+                    raw_webhook_data
                 ))
                 conn.commit()
                 print(f"✅ Webhook notification created successfully for {notification_data['title']}")
@@ -160,7 +161,7 @@ class SeriesWebhookNotification:
     def __init__(self, db_manager):
         self.db = db_manager
     
-    def create(self, notification_data: Dict) -> str:
+    def create(self, notification_data: Dict, raw_webhook_data: str = None) -> str:
         """Create a new series webhook notification record"""
         print(f"📝 Creating series webhook notification for {notification_data.get('series_title', 'Unknown')}")
         
@@ -172,8 +173,8 @@ class SeriesWebhookNotification:
                         series_path, year, tvdb_id, tv_maze_id, tmdb_id, imdb_id,
                         poster_url, banner_url, tags, original_language, requested_by,
                         season_number, episode_count, episodes, episode_files, season_path,
-                        release_title, release_indexer, release_size, download_client, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        release_title, release_indexer, release_size, download_client, status, raw_webhook_data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     notification_data['notification_id'],
                     notification_data['media_type'],
@@ -200,7 +201,8 @@ class SeriesWebhookNotification:
                     notification_data.get('release_indexer'),
                     notification_data.get('release_size', 0),
                     notification_data.get('download_client'),
-                    notification_data.get('status', 'pending')
+                    notification_data.get('status', 'pending'),
+                    raw_webhook_data
                 ))
                 conn.commit()
                 print(f"✅ Series webhook notification created successfully for {notification_data.get('series_title', 'Unknown')}")
