@@ -729,7 +729,7 @@ export class WebhookManager {
                         </div>
                         <div class="modal-body" id="movieDetailsContent">
                         </div>
-                        <div class="modal-footer">
+                        <div class="modal-footer" id="movieDetailsFooter">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                         </div>
                     </div>
@@ -914,6 +914,20 @@ export class WebhookManager {
             ` : ''}
         `;
         
+        // Update modal footer with action buttons
+        const footer = document.getElementById('movieDetailsFooter');
+        if (footer) {
+            const isCompleted = notification.status === 'completed';
+            footer.innerHTML = `
+                ${!isCompleted ? `
+                    <button type="button" class="btn btn-success" onclick="dragonCP.webhook.markNotificationComplete('${notification.notification_id}', 'movie')">
+                        <i class="bi bi-check-circle me-1"></i> Mark as Complete
+                    </button>
+                ` : ''}
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            `;
+        }
+        
         const bootstrapModal = new bootstrap.Modal(modal);
         bootstrapModal.show();
     }
@@ -960,6 +974,100 @@ export class WebhookManager {
         } catch (error) {
             console.error('Failed to delete notification:', error);
             this.app.ui.showAlert('Failed to delete notification', 'danger');
+        }
+    }
+
+    async markNotificationComplete(notificationId, mediaType) {
+        try {
+            const mediaTypeText = mediaType || 'movie';
+            const confirmed = await this.app.ui.showCustomConfirm(
+                `Are you sure you want to mark this ${mediaTypeText} notification as complete? This will update its status to COMPLETED.`,
+                `Mark ${mediaTypeText.charAt(0).toUpperCase() + mediaTypeText.slice(1)} as Complete`,
+                'Mark as Complete',
+                'Cancel'
+            );
+            
+            if (!confirmed) return;
+            
+            let endpoint;
+            switch (mediaType) {
+                case 'series':
+                case 'tvshows':
+                    endpoint = `/api/webhook/series/notifications/${notificationId}/complete`;
+                    break;
+                case 'anime':
+                    endpoint = `/api/webhook/anime/notifications/${notificationId}/complete`;
+                    break;
+                case 'movie':
+                default:
+                    endpoint = `/api/webhook/notifications/${notificationId}/complete`;
+                    break;
+            }
+            
+            const response = await fetch(endpoint, {
+                method: 'POST'
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.app.ui.showAlert(`${mediaTypeText.charAt(0).toUpperCase() + mediaTypeText.slice(1)} notification marked as complete successfully`, 'success');
+                
+                // For series/anime, update the status badge and buttons in place
+                if (mediaType === 'series' || mediaType === 'tvshows' || mediaType === 'anime') {
+                    // Update accordion items for this notification
+                    const accordionItems = document.querySelectorAll('.accordion-item');
+                    accordionItems.forEach(item => {
+                        // Find the accordion button with this notification's data
+                        const accordionButton = item.querySelector('.accordion-button');
+                        if (accordionButton) {
+                            // Check if this accordion item contains our notification ID in any onclick handlers
+                            const actionButtons = item.querySelectorAll('button[onclick*="' + notificationId + '"]');
+                            if (actionButtons.length > 0) {
+                                // Update the status badge in the accordion header
+                                const statusBadge = accordionButton.querySelector('.badge');
+                                if (statusBadge) {
+                                    statusBadge.className = 'badge bg-success';
+                                    statusBadge.innerHTML = '<i class="bi bi-check-circle"></i> COMPLETED';
+                                }
+                                
+                                // Find and hide the "Mark as Complete" button in the accordion body
+                                const markCompleteBtn = item.querySelector('button[onclick*="markNotificationComplete"][onclick*="' + notificationId + '"]');
+                                if (markCompleteBtn) {
+                                    markCompleteBtn.style.display = 'none';
+                                }
+                            }
+                        }
+                    });
+                    
+                    // Update status badge in the modal footer if present
+                    const seriesModal = document.getElementById('seriesDetailsModal');
+                    if (seriesModal) {
+                        // Update the footer to hide the Mark as Complete button
+                        const footer = document.getElementById('seriesDetailsFooter');
+                        if (footer) {
+                            footer.innerHTML = `
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                            `;
+                        }
+                    }
+                } else {
+                    // For movies, close the modal
+                    const movieModal = document.getElementById('movieDetailsModal');
+                    if (movieModal) {
+                        const bsModal = bootstrap.Modal.getInstance(movieModal);
+                        if (bsModal) bsModal.hide();
+                    }
+                }
+                
+                // Reload notifications list to reflect the change
+                this.loadNotifications();
+            } else {
+                this.app.ui.showAlert(result.message, 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to mark notification as complete:', error);
+            this.app.ui.showAlert('Failed to mark notification as complete', 'danger');
         }
     }
 
@@ -1351,6 +1459,11 @@ export class WebhookManager {
                                         <i class="bi bi-arrow-clockwise me-1"></i> Retry
                                     </button>
                                 ` : ''}
+                                ${notification.status !== 'completed' ? `
+                                    <button class="btn btn-success btn-sm" onclick="dragonCP.webhook.markNotificationComplete('${notification.notification_id}', '${mediaType}')">
+                                        <i class="bi bi-check-circle me-1"></i> Mark as Complete
+                                    </button>
+                                ` : ''}
                                 ${notification.status !== 'syncing' ? `
                                     <button class="btn btn-outline-danger btn-sm" onclick="dragonCP.webhook.deleteNotification('${notification.notification_id}', '${mediaType}')">
                                         <i class="bi bi-trash me-1"></i> Delete
@@ -1391,7 +1504,7 @@ export class WebhookManager {
                         </div>
                         <div class="modal-body" id="seriesDetailsContent">
                         </div>
-                        <div class="modal-footer">
+                        <div class="modal-footer" id="seriesDetailsFooter">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                         </div>
                     </div>
@@ -1653,6 +1766,20 @@ export class WebhookManager {
             
             ${this.renderDryRunResults(notification)}
         `;
+        
+        // Update modal footer with action buttons
+        const footer = document.getElementById('seriesDetailsFooter');
+        if (footer) {
+            const isCompleted = notification.status === 'completed';
+            footer.innerHTML = `
+                ${!isCompleted ? `
+                    <button type="button" class="btn btn-success" onclick="dragonCP.webhook.markNotificationComplete('${notification.notification_id}', '${mediaType}')">
+                        <i class="bi bi-check-circle me-1"></i> Mark as Complete
+                    </button>
+                ` : ''}
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            `;
+        }
         
         const bootstrapModal = new bootstrap.Modal(modal);
         bootstrapModal.show();

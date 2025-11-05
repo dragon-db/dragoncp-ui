@@ -573,6 +573,130 @@ def api_webhook_delete_notification(notification_id):
         }), 500
 
 
+# ===== WEBHOOK MARK AS COMPLETE =====
+
+@webhooks_bp.route('/webhook/notifications/<notification_id>/complete', methods=['POST'])
+def api_webhook_mark_notification_complete(notification_id):
+    """Mark a movie webhook notification as complete"""
+    try:
+        # Get the notification first to verify it exists
+        notification = transfer_coordinator.webhook_model.get(notification_id)
+        
+        if not notification:
+            return jsonify({
+                "status": "error",
+                "message": "Notification not found"
+            }), 404
+        
+        # Update the status to completed
+        from datetime import datetime
+        success = transfer_coordinator.webhook_model.update(notification_id, {
+            'status': 'completed',
+            'synced_at': datetime.now().isoformat()
+        })
+        
+        if success:
+            print(f"✅ Movie notification {notification_id} manually marked as complete")
+            return jsonify({
+                "status": "success",
+                "message": "Movie notification marked as complete successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to mark notification as complete"
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error marking movie notification as complete: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to mark notification as complete: {str(e)}"
+        }), 500
+
+
+@webhooks_bp.route('/webhook/series/notifications/<notification_id>/complete', methods=['POST'])
+def api_series_webhook_mark_notification_complete(notification_id):
+    """Mark a series webhook notification as complete"""
+    try:
+        # Get the notification first to verify it exists
+        notification = transfer_coordinator.series_webhook_model.get(notification_id)
+        
+        if not notification:
+            return jsonify({
+                "status": "error",
+                "message": "Series notification not found"
+            }), 404
+        
+        # Update the status to completed
+        from datetime import datetime
+        success = transfer_coordinator.series_webhook_model.update(notification_id, {
+            'status': 'completed',
+            'synced_at': datetime.now().isoformat()
+        })
+        
+        if success:
+            series_title = notification.get('series_title', 'Unknown')
+            print(f"✅ Series notification {notification_id} ({series_title}) manually marked as complete")
+            return jsonify({
+                "status": "success",
+                "message": "Series notification marked as complete successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to mark series notification as complete"
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error marking series notification as complete: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to mark series notification as complete: {str(e)}"
+        }), 500
+
+
+@webhooks_bp.route('/webhook/anime/notifications/<notification_id>/complete', methods=['POST'])
+def api_anime_webhook_mark_notification_complete(notification_id):
+    """Mark an anime webhook notification as complete"""
+    try:
+        # Get the notification first to verify it exists
+        notification = transfer_coordinator.series_webhook_model.get(notification_id)
+        
+        if not notification:
+            return jsonify({
+                "status": "error",
+                "message": "Anime notification not found"
+            }), 404
+        
+        # Update the status to completed
+        from datetime import datetime
+        success = transfer_coordinator.series_webhook_model.update(notification_id, {
+            'status': 'completed',
+            'synced_at': datetime.now().isoformat()
+        })
+        
+        if success:
+            series_title = notification.get('series_title', 'Unknown')
+            print(f"✅ Anime notification {notification_id} ({series_title}) manually marked as complete")
+            return jsonify({
+                "status": "success",
+                "message": "Anime notification marked as complete successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to mark anime notification as complete"
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error marking anime notification as complete: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to mark anime notification as complete: {str(e)}"
+        }), 500
+
+
 # ===== WEBHOOK SETTINGS =====
 
 @webhooks_bp.route('/webhook/settings', methods=['GET', 'POST'])
