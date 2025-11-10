@@ -9,7 +9,7 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from flask_socketio import SocketIO
 
 # Import configuration and managers
-from config import DragonCPConfig
+from config import DragonCPConfig, APP_VERSION
 from ssh import SSHManager
 from websocket import register_websocket_handlers, start_cleanup_thread, websocket_connections
 from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT
@@ -63,6 +63,14 @@ app.register_blueprint(transfers_bp, url_prefix='/api')
 app.register_blueprint(backups_bp, url_prefix='/api')
 app.register_blueprint(webhooks_bp, url_prefix='/api')
 app.register_blueprint(debug_bp, url_prefix='/api')
+
+
+# ===== CONTEXT PROCESSORS =====
+
+@app.context_processor
+def inject_app_version():
+    """Inject APP_VERSION into all templates for cache busting"""
+    return {'APP_VERSION': APP_VERSION}
 
 
 # ===== SIMPLE ROUTES (non-blueprint) =====

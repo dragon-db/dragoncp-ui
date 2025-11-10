@@ -3,14 +3,14 @@
  * Coordinates between feature modules and manages application state
  */
 
-import { WebSocketManager } from './modules/websocket-manager.js';
-import { ConfigManager } from './modules/config-manager.js';
-import { UIComponents } from './modules/ui-components.js';
-import { DiskMonitor } from './modules/disk-monitor.js';
-import { MediaBrowser } from './modules/media-browser.js';
-import { TransferManager } from './modules/transfer-manager.js';
-import { BackupManager } from './modules/backup-manager.js';
-import { WebhookManager } from './modules/webhook-manager.js';
+import { WebSocketManager } from 'websocket-manager';
+import { ConfigManager } from 'config-manager';
+import { UIComponents } from 'ui-components';
+import { DiskMonitor } from 'disk-monitor';
+import { MediaBrowser } from 'media-browser';
+import { TransferManager } from 'transfer-manager';
+import { BackupManager } from 'backup-manager';
+import { WebhookManager } from 'webhook-manager';
 
 class DragonCPUI {
     constructor() {

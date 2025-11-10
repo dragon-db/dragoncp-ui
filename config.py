@@ -10,6 +10,10 @@ from typing import Dict
 from flask import session, has_request_context
 
 
+# Application version for cache busting
+APP_VERSION = "1.8.11"
+
+
 class DragonCPConfig:
     """Configuration manager for DragonCP"""
     

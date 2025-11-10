@@ -10,7 +10,7 @@
     <!-- Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <!-- Custom CSS -->
-    <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet">
+    <link href="{{ url_for('static', filename='style.css') }}?v={{ APP_VERSION }}" rel="stylesheet">
 </head>
 <body>
     <!-- Navigation -->
@@ -22,7 +22,7 @@
             </a>
             <div class="navbar-nav ms-auto">
                 <span class="navbar-text version-badge me-3">
-                   v1.8.10
+                   v{{ APP_VERSION }}
                 </span>
                 <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
                     <i class="bi bi-gear"></i> Config
@@ -989,7 +989,24 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Socket.IO -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
+    
+    <!-- Import Map for ES6 Modules with Cache Busting (using bare specifiers) -->
+    <script type="importmap">
+    {
+        "imports": {
+            "websocket-manager": "{{ url_for('static', filename='modules/websocket-manager.js') }}?v={{ APP_VERSION }}",
+            "config-manager": "{{ url_for('static', filename='modules/config-manager.js') }}?v={{ APP_VERSION }}",
+            "ui-components": "{{ url_for('static', filename='modules/ui-components.js') }}?v={{ APP_VERSION }}",
+            "disk-monitor": "{{ url_for('static', filename='modules/disk-monitor.js') }}?v={{ APP_VERSION }}",
+            "media-browser": "{{ url_for('static', filename='modules/media-browser.js') }}?v={{ APP_VERSION }}",
+            "transfer-manager": "{{ url_for('static', filename='modules/transfer-manager.js') }}?v={{ APP_VERSION }}",
+            "backup-manager": "{{ url_for('static', filename='modules/backup-manager.js') }}?v={{ APP_VERSION }}",
+            "webhook-manager": "{{ url_for('static', filename='modules/webhook-manager.js') }}?v={{ APP_VERSION }}"
+        }
+    }
+    </script>
+    
     <!-- Custom JS -->
-    <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
+    <script type="module" src="{{ url_for('static', filename='app.js') }}?v={{ APP_VERSION }}"></script>
 </body>
 </html> 
