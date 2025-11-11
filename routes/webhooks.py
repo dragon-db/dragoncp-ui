@@ -1034,8 +1034,7 @@ def api_webhook_dry_run(notification_id):
         # Perform dry-run using transfer service
         dry_run_result = transfer_coordinator.transfer_service.perform_dry_run_rsync(
             source_path=source_path,
-            dest_path=dest_path,
-            is_season_folder=False  # Movies are single folders
+            dest_path=dest_path
         )
         
         print(f"✅ Dry-run completed: {dry_run_result.get('safe_to_sync', False)}")
@@ -1099,8 +1098,7 @@ def api_series_webhook_dry_run(notification_id):
         # Perform dry-run using transfer service
         dry_run_result = transfer_coordinator.transfer_service.perform_dry_run_rsync(
             source_path=source_path,
-            dest_path=dest_path,
-            is_season_folder=True  # Series/anime are season folders
+            dest_path=dest_path
         )
         
         print(f"✅ Dry-run completed: {dry_run_result.get('safe_to_sync', False)}")

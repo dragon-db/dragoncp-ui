@@ -23,7 +23,7 @@ class TransferService:
         self.queue_manager = queue_manager
         self.transfers = {}  # Active transfer processes: {transfer_id: process}
     
-    def perform_dry_run_rsync(self, source_path: str, dest_path: str, is_season_folder: bool = True) -> Dict:
+    def perform_dry_run_rsync(self, source_path: str, dest_path: str) -> Dict:
         """
         Perform rsync dry-run to validate sync safety
         
@@ -70,8 +70,10 @@ class TransferService:
                 ssh_options.extend(["-i", ssh_key_path])
             
             # Build dry-run rsync command
+            # Note: Using -avv (double verbose) to get ALL files in itemize-changes output,
+            # including unchanged files (.f notation), not just transferred files (>f notation)
             rsync_cmd = [
-                "rsync", "-av",
+                "rsync", "-avv",
                 "--dry-run",
                 "--stats",
                 "--itemize-changes",
@@ -87,10 +89,9 @@ class TransferService:
             ]
             
             # Add source and destination
-            if is_season_folder:
-                rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
-            else:
-                rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}", f"{dest_path}/"])
+            # IMPORTANT: Always use trailing slash for source to sync folder contents, not the folder itself
+            # This ensures consistent behavior and proper file comparison in itemize-changes output
+            rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
             
             print(f"🔄 Executing dry-run: {' '.join(rsync_cmd)}")
             
@@ -196,46 +197,54 @@ class TransferService:
         
         deleted_files = []
         incoming_files = []
+        server_media_files = []  # Track all media files on server
         
         # Media file extensions to count
         media_extensions = ('.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.flv', '.webm', '.ts')
         
-        # Parse itemize-changes output
+        # Parse itemize-changes output to count server media files accurately
         for line in stdout.split('\n'):
             line = line.strip()
             
-            # *deleting indicates a file will be deleted
+            # *deleting indicates a file will be deleted (exists locally but not on server)
             if line.startswith('*deleting'):
                 file_path = line.replace('*deleting', '').strip()
                 # Only count media files
                 if any(file_path.lower().endswith(ext) for ext in media_extensions):
                     deleted_files.append(file_path)
             
-            # >f+++++++++ indicates a new file will be transferred
-            # >f.st...... indicates file size/time change
-            elif line.startswith('>f'):
-                # Extract filename (after the itemize prefix)
-                if len(line) > 11:
-                    file_path = line[11:].strip()
-                    if any(file_path.lower().endswith(ext) for ext in media_extensions):
+            # Parse itemize-changes format: XYZcstpoguax path
+            # X = file type: '.' = unchanged, '>' = transferred, 'c' = created, '*' = message
+            # First character tells us about the file:
+            # - '>f' = file being transferred (new or changed)
+            # - '.f' = file exists and is unchanged
+            # - 'cf' = file being created
+            elif len(line) > 11 and line[0] in ('>', '.', 'c') and line[1] == 'f':
+                # Extract filename (after the 11-character itemize prefix)
+                file_path = line[11:].strip()
+                
+                # Check if it's a media file
+                if any(file_path.lower().endswith(ext) for ext in media_extensions):
+                    # Add to server media files (these exist on server)
+                    if file_path not in server_media_files:
+                        server_media_files.append(file_path)
+                    
+                    # If it's being transferred (new or changed), add to incoming
+                    if line[0] == '>':
                         incoming_files.append(file_path)
         
-        # Count server files from rsync stats section
-        server_file_count = 0
-        stats_pattern = r'Number of (?:regular )?files: (\d+)'
-        stats_match = re.search(stats_pattern, stdout)
-        if stats_match:
-            server_file_count = int(stats_match.group(1))
-        
-        # If we can't get exact server count, estimate it
-        if server_file_count == 0:
-            server_file_count = len(incoming_files)
+        # Server media file count is based on itemize-changes parsing (accurate)
+        server_file_count = len(server_media_files)
         
         # Count actual local media files from filesystem
         local_file_count = 0
         if dest_path:
             local_file_count = self._count_local_media_files(dest_path)
             print(f"📊 Local media file count in {dest_path}: {local_file_count}")
+        
+        print(f"📊 Server media file count from itemize-changes: {server_file_count}")
+        print(f"   - Files to transfer/update: {len(incoming_files)}")
+        print(f"   - Files to delete: {len(deleted_files)}")
         
         return {
             'deleted_count': len(deleted_files),
@@ -356,6 +365,8 @@ class TransferService:
             
             rsync_cmd.extend(["-e", f"ssh {' '.join(ssh_options)}"])
             
+            # IMPORTANT: Always use trailing slash for folder syncs to sync contents, not the folder itself
+            # For 'file' type, no trailing slash; for 'folder' type, trailing slash on both source and dest
             if transfer_type == "file":
                 rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}", f"{dest_path}/"])
             else:

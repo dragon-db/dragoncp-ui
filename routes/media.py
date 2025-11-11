@@ -464,8 +464,7 @@ def api_media_dry_run():
         # Perform dry-run using transfer service
         dry_run_result = transfer_coordinator.transfer_service.perform_dry_run_rsync(
             source_path=source_path,
-            dest_path=dest_path,
-            is_season_folder=is_season_folder
+            dest_path=dest_path
         )
         
         print(f"✅ Dry-run completed: {dry_run_result.get('safe_to_sync', False)}")
