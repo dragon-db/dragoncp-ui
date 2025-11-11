@@ -382,3 +382,104 @@ def api_enhanced_folder_sync_status(media_type, folder_name):
         traceback.print_exc()
         return jsonify({"status": "error", "message": f"Failed to get enhanced folder sync status: {str(e)}"})
 
+
+# ===== DRY-RUN ENDPOINT =====
+
+@media_bp.route('/media/dry-run', methods=['POST'])
+def api_media_dry_run():
+    """Perform manual dry-run for a selected media folder"""
+    try:
+        data = request.json
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "No data provided"
+            }), 400
+        
+        media_type = data.get('media_type')
+        folder_name = data.get('folder_name')
+        season_name = data.get('season_name')  # Optional, for series/anime
+        
+        if not media_type or not folder_name:
+            return jsonify({
+                "status": "error",
+                "message": "media_type and folder_name are required"
+            }), 400
+        
+        print(f"🔍 Manual dry-run requested from media browser")
+        print(f"   Media type: {media_type}")
+        print(f"   Folder: {folder_name}")
+        if season_name:
+            print(f"   Season: {season_name}")
+        
+        # Get source path based on media type
+        path_map = {
+            "movies": config.get("MOVIE_PATH"),
+            "tvshows": config.get("TVSHOW_PATH"),
+            "anime": config.get("ANIME_PATH")
+        }
+        
+        source_base = path_map.get(media_type)
+        if not source_base:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid media type"
+            }), 400
+        
+        # Build source path
+        if season_name:
+            # For series/anime with season
+            source_path = f"{source_base}/{folder_name}/{season_name}"
+            is_season_folder = True
+        else:
+            # For movies or entire series folder
+            source_path = f"{source_base}/{folder_name}"
+            is_season_folder = (media_type in ['tvshows', 'anime'])
+        
+        # Get destination path based on media type
+        dest_path_map = {
+            "movies": config.get("MOVIE_DEST_PATH"),
+            "tvshows": config.get("TVSHOW_DEST_PATH"),
+            "anime": config.get("ANIME_DEST_PATH")
+        }
+        
+        dest_base = dest_path_map.get(media_type)
+        if not dest_base:
+            return jsonify({
+                "status": "error",
+                "message": f"{media_type.capitalize()} destination path not configured"
+            }), 400
+        
+        # Build destination path
+        if season_name:
+            # For series/anime with season
+            dest_path = f"{dest_base}/{folder_name}/{season_name}"
+        else:
+            # For movies or entire series folder
+            dest_path = f"{dest_base}/{folder_name}"
+        
+        print(f"📁 Source: {source_path}")
+        print(f"📁 Dest: {dest_path}")
+        
+        # Perform dry-run using transfer service
+        dry_run_result = transfer_coordinator.transfer_service.perform_dry_run_rsync(
+            source_path=source_path,
+            dest_path=dest_path,
+            is_season_folder=is_season_folder
+        )
+        
+        print(f"✅ Dry-run completed: {dry_run_result.get('safe_to_sync', False)}")
+        
+        return jsonify({
+            "status": "success",
+            "dry_run_result": dry_run_result
+        })
+        
+    except Exception as e:
+        print(f"❌ Error performing media dry-run: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to perform dry-run: {str(e)}"
+        }), 500

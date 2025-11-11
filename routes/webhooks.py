@@ -4,6 +4,7 @@ DragonCP Webhook Routes
 Handles webhook receivers for Radarr/Sonarr and webhook management
 """
 
+import os
 from datetime import datetime
 from flask import Blueprint, jsonify, request, Response
 import requests
@@ -994,3 +995,132 @@ def _is_valid_discord_url(url: str) -> bool:
     except Exception:
         return False
 
+
+# ===== DRY-RUN ENDPOINTS =====
+
+@webhooks_bp.route('/webhook/notifications/<notification_id>/dry-run', methods=['POST'])
+def api_webhook_dry_run(notification_id):
+    """Perform manual dry-run for a movie webhook notification"""
+    try:
+        # Get the notification
+        notification = transfer_coordinator.webhook_model.get(notification_id)
+        
+        if not notification:
+            return jsonify({
+                "status": "error",
+                "message": "Notification not found"
+            }), 404
+        
+        print(f"🔍 Manual dry-run requested for movie: {notification['title']}")
+        
+        # Get source and destination paths
+        source_path = notification['folder_path']
+        
+        # Determine destination path based on media type
+        movie_dest_base = config.get("MOVIE_DEST_PATH", "")
+        if not movie_dest_base:
+            return jsonify({
+                "status": "error",
+                "message": "Movie destination path not configured"
+            }), 400
+        
+        # Extract folder name from source path
+        folder_name = os.path.basename(source_path.rstrip('/'))
+        dest_path = os.path.join(movie_dest_base, folder_name)
+        
+        print(f"📁 Source: {source_path}")
+        print(f"📁 Dest: {dest_path}")
+        
+        # Perform dry-run using transfer service
+        dry_run_result = transfer_coordinator.transfer_service.perform_dry_run_rsync(
+            source_path=source_path,
+            dest_path=dest_path,
+            is_season_folder=False  # Movies are single folders
+        )
+        
+        print(f"✅ Dry-run completed: {dry_run_result.get('safe_to_sync', False)}")
+        
+        return jsonify({
+            "status": "success",
+            "dry_run_result": dry_run_result
+        })
+        
+    except Exception as e:
+        print(f"❌ Error performing dry-run: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to perform dry-run: {str(e)}"
+        }), 500
+
+
+@webhooks_bp.route('/webhook/series/notifications/<notification_id>/dry-run', methods=['POST'])
+def api_series_webhook_dry_run(notification_id):
+    """Perform manual dry-run for a series webhook notification"""
+    try:
+        # Get the notification
+        notification = transfer_coordinator.series_webhook_model.get(notification_id)
+        
+        if not notification:
+            return jsonify({
+                "status": "error",
+                "message": "Series notification not found"
+            }), 404
+        
+        print(f"🔍 Manual dry-run requested for series: {notification['series_title']} Season {notification.get('season_number', 'Unknown')}")
+        
+        # Get source path (season_path from notification)
+        source_path = notification['season_path']
+        
+        # Determine destination based on media type
+        media_type = notification['media_type']
+        if media_type == 'anime':
+            dest_base = config.get("ANIME_DEST_PATH", "")
+        else:
+            dest_base = config.get("TVSHOW_DEST_PATH", "")
+        
+        if not dest_base:
+            return jsonify({
+                "status": "error",
+                "message": f"{media_type.capitalize()} destination path not configured"
+            }), 400
+        
+        # Build destination path: base / series_title / Season X
+        series_path = notification['series_path']
+        series_folder = os.path.basename(series_path.rstrip('/'))
+        season_folder = os.path.basename(source_path.rstrip('/'))
+        
+        dest_path = os.path.join(dest_base, series_folder, season_folder)
+        
+        print(f"📁 Source: {source_path}")
+        print(f"📁 Dest: {dest_path}")
+        
+        # Perform dry-run using transfer service
+        dry_run_result = transfer_coordinator.transfer_service.perform_dry_run_rsync(
+            source_path=source_path,
+            dest_path=dest_path,
+            is_season_folder=True  # Series/anime are season folders
+        )
+        
+        print(f"✅ Dry-run completed: {dry_run_result.get('safe_to_sync', False)}")
+        
+        return jsonify({
+            "status": "success",
+            "dry_run_result": dry_run_result
+        })
+        
+    except Exception as e:
+        print(f"❌ Error performing series dry-run: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to perform dry-run: {str(e)}"
+        }), 500
+
+
+@webhooks_bp.route('/webhook/anime/notifications/<notification_id>/dry-run', methods=['POST'])
+def api_anime_webhook_dry_run(notification_id):
+    """Perform manual dry-run for an anime webhook notification (same as series)"""
+    return api_series_webhook_dry_run(notification_id)

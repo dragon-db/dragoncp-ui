@@ -927,6 +927,9 @@ export class WebhookManager {
                 <button type="button" class="btn btn-outline-info" onclick="dragonCP.webhook.viewWebhookJson('${notification.notification_id}')">
                     <i class="bi bi-code-square me-1"></i> View JSON
                 </button>
+                <button type="button" class="btn btn-outline-primary" onclick="dragonCP.webhook.performDryRun('${notification.notification_id}', 'movie')">
+                    <i class="bi bi-shield-check me-1"></i> Dry-Run
+                </button>
                 ${!isCompleted ? `
                     <button type="button" class="btn btn-success" onclick="dragonCP.webhook.markNotificationComplete('${notification.notification_id}', 'movie')">
                         <i class="bi bi-check-circle me-1"></i> Mark as Complete
@@ -1456,7 +1459,7 @@ export class WebhookManager {
                             </div>` : ''}
                             
                             <!-- Actions -->
-                            <div class="d-flex gap-2 justify-content-end">
+                            <div class="d-flex gap-2 justify-content-end flex-wrap">
                                 ${notification.status === 'pending' ? `
                                     <button class="btn btn-primary btn-sm" onclick="dragonCP.webhook.syncNotification('${notification.notification_id}', '${mediaType}')">
                                         <i class="bi bi-play-fill me-1"></i> Sync
@@ -1469,6 +1472,9 @@ export class WebhookManager {
                                 ` : ''}
                                 <button class="btn btn-outline-info btn-sm" onclick="dragonCP.webhook.viewWebhookJson('${notification.notification_id}')">
                                     <i class="bi bi-code-square me-1"></i> View JSON
+                                </button>
+                                <button class="btn btn-outline-primary btn-sm" onclick="dragonCP.webhook.performDryRun('${notification.notification_id}', '${mediaType}')">
+                                    <i class="bi bi-shield-check me-1"></i> Dry-Run
                                 </button>
                                 ${notification.status !== 'completed' ? `
                                     <button class="btn btn-success btn-sm" onclick="dragonCP.webhook.markNotificationComplete('${notification.notification_id}', '${mediaType}')">
@@ -1786,6 +1792,9 @@ export class WebhookManager {
                 <button type="button" class="btn btn-outline-info" onclick="dragonCP.webhook.viewWebhookJson('${notification.notification_id}')">
                     <i class="bi bi-code-square me-1"></i> View JSON
                 </button>
+                <button type="button" class="btn btn-outline-primary" onclick="dragonCP.webhook.performDryRun('${notification.notification_id}', '${mediaType}')">
+                    <i class="bi bi-shield-check me-1"></i> Dry-Run
+                </button>
                 ${!isCompleted ? `
                     <button type="button" class="btn btn-success" onclick="dragonCP.webhook.markNotificationComplete('${notification.notification_id}', '${mediaType}')">
                         <i class="bi bi-check-circle me-1"></i> Mark as Complete
@@ -1925,6 +1934,207 @@ export class WebhookManager {
             console.error('Error parsing dry-run results:', error);
             return '';
         }
+    }
+
+    async performDryRun(notificationId, mediaType) {
+        try {
+            // Show loading indicator
+            this.app.ui.showAlert('Performing dry-run validation...', 'info');
+            
+            // Determine endpoint based on media type
+            let endpoint;
+            switch (mediaType) {
+                case 'series':
+                case 'tvshows':
+                    endpoint = `/api/webhook/series/notifications/${notificationId}/dry-run`;
+                    break;
+                case 'anime':
+                    endpoint = `/api/webhook/anime/notifications/${notificationId}/dry-run`;
+                    break;
+                case 'movie':
+                default:
+                    endpoint = `/api/webhook/notifications/${notificationId}/dry-run`;
+                    break;
+            }
+            
+            const response = await fetch(endpoint, {
+                method: 'POST'
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                // Show dry-run results in modal
+                this.showDryRunModal(result.dry_run_result, mediaType);
+            } else {
+                this.app.ui.showAlert(`Failed to perform dry-run: ${result.message}`, 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to perform dry-run:', error);
+            this.app.ui.showAlert('Failed to perform dry-run', 'danger');
+        }
+    }
+    
+    showDryRunModal(dryRunResult, mediaType) {
+        // Create or update dry-run results modal
+        let modal = document.getElementById('dryRunResultsModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = 'dryRunResultsModal';
+            // Set higher z-index to appear above other modals (Bootstrap default is 1055)
+            modal.style.zIndex = '1060';
+            modal.innerHTML = `
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header gradient-accent">
+                            <h5 class="modal-title">
+                                <i class="bi bi-shield-check me-2"></i>
+                                Dry-Run Results
+                            </h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="dryRunResultsContent">
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        } else {
+            // Ensure z-index is set even if modal already exists
+            modal.style.zIndex = '1060';
+        }
+        
+        const content = document.getElementById('dryRunResultsContent');
+        
+        const safeToSync = dryRunResult.safe_to_sync;
+        const reason = dryRunResult.reason || 'No reason provided';
+        const deletedCount = dryRunResult.deleted_count || 0;
+        const incomingCount = dryRunResult.incoming_count || 0;
+        const serverFileCount = dryRunResult.server_file_count || 0;
+        const localFileCount = dryRunResult.local_file_count || 0;
+        const deletedFiles = dryRunResult.deleted_files || [];
+        const incomingFiles = dryRunResult.incoming_files || [];
+        const rawOutput = dryRunResult.raw_output || '';
+        
+        // Determine alert styling based on safety
+        const alertClass = safeToSync ? 'alert-success' : 'alert-warning';
+        const alertBg = safeToSync ? 'rgba(40, 167, 69, 0.1)' : 'rgba(255, 193, 7, 0.1)';
+        const alertBorder = safeToSync ? 'rgba(40, 167, 69, 0.3)' : 'rgba(255, 193, 7, 0.3)';
+        const alertColor = safeToSync ? '#4ecdc4' : '#f39c12';
+        const icon = safeToSync ? 'bi bi-check-circle' : 'bi bi-exclamation-triangle';
+        
+        content.innerHTML = `
+            <!-- Safety Status -->
+            <div class="alert ${alertClass} border-0 mb-3" style="background: ${alertBg}; color: ${alertColor}; border: 1px solid ${alertBorder} !important;">
+                <div class="d-flex align-items-center mb-2">
+                    <i class="${icon} me-2" style="font-size: 1.5rem;"></i>
+                    <h5 class="mb-0">${safeToSync ? 'Safe to Sync' : 'Manual Sync Required'}</h5>
+                </div>
+                <div style="font-size: 1rem;">${this.app.ui.escapeHtml(reason)}</div>
+            </div>
+            
+            <!-- File Analysis -->
+            <div class="row g-3 mb-3">
+                <!-- File Count Summary -->
+                <div class="col-md-6">
+                    <div class="card h-100">
+                        <div class="card-header">
+                            <h6 class="mb-0"><i class="bi bi-bar-chart me-2"></i>File Count Analysis</h6>
+                        </div>
+                        <div class="card-body d-flex flex-column" style="min-height: 280px;">
+                            <table class="table table-sm table-dark mb-0" style="background-color: transparent;">
+                                <tbody>
+                                    <tr style="background-color: transparent;">
+                                        <td class="py-3" style="background-color: transparent;"><i class="bi bi-server me-2"></i>Server Media Files:</td>
+                                        <td class="text-end py-3" style="background-color: transparent;"><strong class="fs-5">${serverFileCount}</strong></td>
+                                    </tr>
+                                    <tr style="background-color: transparent;">
+                                        <td class="py-3" style="background-color: transparent;"><i class="bi bi-pc-display me-2"></i>Local Media Files:</td>
+                                        <td class="text-end py-3" style="background-color: transparent;"><strong class="fs-5">${localFileCount}</strong></td>
+                                    </tr>
+                                    <tr class="border-top" style="background-color: transparent;">
+                                        <td class="py-3" style="background-color: transparent;"><i class="bi bi-trash me-2 text-danger"></i>Would Delete:</td>
+                                        <td class="text-end py-3 ${deletedCount > 0 ? 'text-danger' : ''}" style="background-color: transparent;"><strong class="fs-5">${deletedCount}</strong></td>
+                                    </tr>
+                                    <tr style="background-color: transparent;">
+                                        <td class="py-3" style="background-color: transparent;"><i class="bi bi-plus-circle me-2 text-success"></i>Would Add/Update:</td>
+                                        <td class="text-end py-3 ${incomingCount > 0 ? 'text-success' : ''}" style="background-color: transparent;"><strong class="fs-5">${incomingCount}</strong></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- File Details -->
+                <div class="col-md-6">
+                    <div class="card h-100">
+                        <div class="card-header">
+                            <h6 class="mb-0"><i class="bi bi-info-circle me-2"></i>File Details</h6>
+                        </div>
+                        <div class="card-body" style="height: 280px; overflow-y: auto;">
+                            ${deletedFiles.length > 0 ? `
+                                <div class="mb-3">
+                                    <strong class="text-danger d-block mb-2">
+                                        <i class="bi bi-trash me-1"></i>Files to Delete (${deletedCount}):
+                                    </strong>
+                                    <ul class="list-unstyled mb-0" style="font-size: 0.85rem;">
+                                        ${deletedFiles.slice(0, 10).map(file => 
+                                            `<li class="text-muted mb-1">• ${this.app.ui.escapeHtml(file)}</li>`
+                                        ).join('')}
+                                        ${deletedCount > 10 ? `<li class="text-muted">... and ${deletedCount - 10} more</li>` : ''}
+                                    </ul>
+                                </div>
+                            ` : ''}
+                            
+                            ${incomingFiles.length > 0 ? `
+                                <div class="${deletedFiles.length > 0 ? 'mb-3' : ''}">
+                                    <strong class="text-success d-block mb-2">
+                                        <i class="bi bi-plus-circle me-1"></i>Files to Add/Update (${incomingCount}):
+                                    </strong>
+                                    <ul class="list-unstyled mb-0" style="font-size: 0.85rem;">
+                                        ${incomingFiles.slice(0, 10).map(file => 
+                                            `<li class="text-muted mb-1">• ${this.app.ui.escapeHtml(file)}</li>`
+                                        ).join('')}
+                                        ${incomingCount > 10 ? `<li class="text-muted">... and ${incomingCount - 10} more</li>` : ''}
+                                    </ul>
+                                </div>
+                            ` : ''}
+                            
+                            ${deletedFiles.length === 0 && incomingFiles.length === 0 ? 
+                                '<div class="d-flex align-items-center justify-content-center h-100"><p class="text-muted mb-0">No file changes detected.</p></div>' : ''}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Raw Output -->
+            ${rawOutput ? `
+                <div class="card">
+                    <div class="card-header">
+                        <h6 class="mb-0"><i class="bi bi-terminal me-2"></i>Raw Rsync Dry-Run Output</h6>
+                    </div>
+                    <div class="card-body">
+                        <pre class="bg-dark text-light p-3 rounded" style="max-height: 400px; overflow-y: auto; font-size: 0.85rem; white-space: pre-wrap; word-break: break-all;">${this.app.ui.escapeHtml(rawOutput)}</pre>
+                    </div>
+                </div>
+            ` : ''}
+        `;
+        
+        const bootstrapModal = new bootstrap.Modal(modal);
+        bootstrapModal.show();
+        
+        // Ensure backdrop z-index is set correctly (just below the modal)
+        setTimeout(() => {
+            const backdrop = document.querySelector('.modal-backdrop.show:last-of-type');
+            if (backdrop) {
+                backdrop.style.zIndex = '1059';
+            }
+        }, 100);
     }
 
     // Initialize the webhook manager

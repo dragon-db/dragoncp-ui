@@ -559,6 +559,12 @@ export class MediaBrowser {
                 description: seasonName ? `Sync entire ${this.app.ui.escapeHtml(seasonName)} folder` : `Sync entire ${this.app.ui.escapeHtml(folderName)} folder`,
                 icon: 'folder-plus',
                 action: () => this.startTransfer('folder', mediaType, folderName, seasonName)
+            },
+            {
+                title: 'Dry-Run',
+                description: 'Preview what changes would be made without actually syncing',
+                icon: 'shield-check',
+                action: () => this.performManualDryRun(mediaType, folderName, seasonName)
             }
         ];
 
@@ -642,6 +648,39 @@ export class MediaBrowser {
         } catch (error) {
             console.error('Transfer error:', error);
             this.app.ui.showAlert('Failed to start transfer', 'danger');
+        }
+    }
+
+    async performManualDryRun(mediaType, folderName, seasonName = null) {
+        try {
+            // Show loading indicator
+            this.app.ui.showAlert('Performing dry-run validation...', 'info');
+            
+            const data = {
+                media_type: mediaType,
+                folder_name: folderName,
+                season_name: seasonName
+            };
+            
+            const response = await fetch('/api/media/dry-run', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            });
+            
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                // Use the webhook manager's dry-run modal to display results
+                this.app.webhook.showDryRunModal(result.dry_run_result, mediaType);
+            } else {
+                this.app.ui.showAlert(`Failed to perform dry-run: ${result.message}`, 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to perform manual dry-run:', error);
+            this.app.ui.showAlert('Failed to perform dry-run', 'danger');
         }
     }
 
