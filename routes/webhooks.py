@@ -1013,20 +1013,22 @@ def api_webhook_dry_run(notification_id):
         
         print(f"🔍 Manual dry-run requested for movie: {notification['title']}")
         
-        # Get source and destination paths
+        # Get source path
         source_path = notification['folder_path']
-        
-        # Determine destination path based on media type
-        movie_dest_base = config.get("MOVIE_DEST_PATH", "")
-        if not movie_dest_base:
+        if not source_path:
             return jsonify({
                 "status": "error",
-                "message": "Movie destination path not configured"
+                "message": "Missing folder_path in notification"
             }), 400
         
-        # Extract folder name from source path
-        folder_name = os.path.basename(source_path.rstrip('/'))
-        dest_path = os.path.join(movie_dest_base, folder_name)
+        # Use PathService to construct destination path (consistent with actual sync)
+        try:
+            dest_path = transfer_coordinator.path_service.get_destination_path(source_path, 'movies')
+        except ValueError as e:
+            return jsonify({
+                "status": "error",
+                "message": str(e)
+            }), 400
         
         print(f"📁 Source: {source_path}")
         print(f"📁 Dest: {dest_path}")
@@ -1069,28 +1071,42 @@ def api_series_webhook_dry_run(notification_id):
         
         print(f"🔍 Manual dry-run requested for series: {notification['series_title']} Season {notification.get('season_number', 'Unknown')}")
         
-        # Get source path (season_path from notification)
-        source_path = notification['season_path']
-        
-        # Determine destination based on media type
+        # Extract paths
         media_type = notification['media_type']
-        if media_type == 'anime':
-            dest_base = config.get("ANIME_DEST_PATH", "")
-        else:
-            dest_base = config.get("TVSHOW_DEST_PATH", "")
+        series_path = notification.get('series_path')
+        season_path = notification.get('season_path')
+        season_number = notification.get('season_number')
         
-        if not dest_base:
+        # Determine source path - prefer the actual season_path from webhook
+        # (extracted from real episode file path on remote server)
+        if season_path:
+            # PRIMARY: Use the actual season path from webhook notification
+            # This is extracted from the episode file path and represents the real folder on disk
+            source_path = season_path
+            print(f"📁 Using actual season_path from webhook: {source_path}")
+        elif series_path and season_number is not None:
+            # FALLBACK: Reconstruct season path if season_path is not available
+            # This is a fallback only, assumes Sonarr's standard "Season XX" format
+            source_path = f"{series_path.rstrip('/')}/Season {season_number:02d}"
+            print(f"⚠️  season_path not in notification, reconstructed: {source_path}")
+        elif series_path:
+            # Whole series sync (rare case, no season specified)
+            source_path = series_path
+            print(f"📁 Using series_path for whole series sync: {source_path}")
+        else:
             return jsonify({
                 "status": "error",
-                "message": f"{media_type.capitalize()} destination path not configured"
+                "message": "Missing series_path and season_path in notification"
             }), 400
         
-        # Build destination path: base / series_title / Season X
-        series_path = notification['series_path']
-        series_folder = os.path.basename(series_path.rstrip('/'))
-        season_folder = os.path.basename(source_path.rstrip('/'))
-        
-        dest_path = os.path.join(dest_base, series_folder, season_folder)
+        # Use PathService to construct destination path (consistent with actual sync)
+        try:
+            dest_path = transfer_coordinator.path_service.get_destination_path(source_path, media_type)
+        except ValueError as e:
+            return jsonify({
+                "status": "error",
+                "message": str(e)
+            }), 400
         
         print(f"📁 Source: {source_path}")
         print(f"📁 Dest: {dest_path}")

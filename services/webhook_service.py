@@ -6,6 +6,7 @@ Handles webhook data parsing and sync triggering for movies, series, and anime
 
 from datetime import datetime
 from typing import Dict, Tuple
+from services.path_service import PathService
 
 
 class WebhookService:
@@ -16,6 +17,7 @@ class WebhookService:
         self.webhook_model = webhook_model
         self.series_webhook_model = series_webhook_model
         self.transfer_coordinator = transfer_coordinator
+        self.path_service = PathService(config)
     
     def parse_webhook_data(self, webhook_json: Dict) -> Dict:
         """Parse webhook JSON data according to specification"""
@@ -248,24 +250,29 @@ class WebhookService:
             # Generate transfer ID
             transfer_id = f"webhook_{notification_id}_{int(datetime.now().timestamp())}"
             
-            # Extract movie details
-            folder_name = notification['title']
-            if notification.get('year'):
-                folder_name = f"{notification['title']} ({notification['year']})"
-            
-            # Use folder_path as source_path and determine destination
+            # Use folder_path as source_path (contains actual folder name from remote server)
             source_path = notification['folder_path']
-            
-            # Get movie destination path from config
-            dest_base = self.config.get("MOVIE_DEST_PATH")
-            if not dest_base:
+            if not source_path:
                 self.webhook_model.update(notification_id, {
                     'status': 'failed',
-                    'error_message': 'Movie destination path not configured'
+                    'error_message': 'Missing folder_path in notification'
                 })
-                return False, "Movie destination path not configured"
+                return False, "Missing folder_path in notification"
             
-            dest_path = f"{dest_base}/{folder_name}"
+            # Use PathService to construct destination path consistently
+            # This ensures folder names match the remote server (already sanitized by Radarr)
+            try:
+                dest_path = self.path_service.get_destination_path(source_path, 'movies')
+            except ValueError as e:
+                self.webhook_model.update(notification_id, {
+                    'status': 'failed',
+                    'error_message': str(e)
+                })
+                return False, str(e)
+            
+            # Extract folder name for transfer record (from actual path, not title)
+            import os
+            folder_name = os.path.basename(source_path.rstrip('/'))
             
             # Store transfer ID in notification
             self.webhook_model.update(notification_id, {'transfer_id': transfer_id})
@@ -329,43 +336,48 @@ class WebhookService:
             transfer_id = f"series_webhook_{notification_id}_{int(datetime.now().timestamp())}"
             
             # Extract series details
-            series_title = notification['series_title']
+            series_path = notification.get('series_path')
+            season_path = notification.get('season_path')
             season_number = notification.get('season_number')
             media_type = notification['media_type']
             
-            # Determine folder name (series title with year if available)
-            if notification.get('year'):
-                folder_name = f"{series_title} ({notification['year']})"
+            # Determine source path - prefer the actual season_path from webhook
+            # (extracted from real episode file path on remote server)
+            if season_path:
+                # PRIMARY: Use the actual season path from webhook notification
+                # This is extracted from the episode file path and represents the real folder on disk
+                source_path = season_path
+                print(f"📁 Using actual season_path from webhook: {source_path}")
+            elif series_path and season_number is not None:
+                # FALLBACK: Reconstruct season path if season_path is not available
+                # This is a fallback only, assumes Sonarr's standard "Season XX" format
+                source_path = f"{series_path.rstrip('/')}/Season {season_number:02d}"
+                print(f"⚠️  season_path not in notification, reconstructed: {source_path}")
+            elif series_path:
+                # Whole series sync (rare case, no season specified)
+                source_path = series_path
+                print(f"📁 Using series_path for whole series sync: {source_path}")
             else:
-                folder_name = series_title
-            
-            # Use season_path as the final destination for this season
-            dest_path = notification['season_path']
-            
-            # For source path, use the series_path + season
-            source_path = notification['series_path']
-            if season_number:
-                # Add season folder to source path
-                source_path = f"{source_path}/Season {season_number:02d}"
-            
-            # Get the correct destination base path from config
-            dest_base_map = {
-                "anime": self.config.get("ANIME_DEST_PATH"),
-                "series": self.config.get("TVSHOW_DEST_PATH"),
-                "tvshows": self.config.get("TVSHOW_DEST_PATH")
-            }
-            
-            dest_base = dest_base_map.get(media_type)
-            if not dest_base:
                 self.series_webhook_model.update(notification_id, {
                     'status': 'failed',
-                    'error_message': f'{media_type.title()} destination path not configured'
+                    'error_message': 'Missing series_path and season_path in notification'
                 })
-                return False, f"{media_type.title()} destination path not configured"
+                return False, "Missing series_path and season_path in notification"
             
-            # Override destination to use config destination + folder + season
-            season_name = f"Season {season_number:02d}" if season_number else "Season Unknown"
-            dest_path = f"{dest_base}/{folder_name}/{season_name}"
+            # Use PathService to construct destination path consistently
+            # This ensures folder names match the remote server (already sanitized by Sonarr)
+            try:
+                dest_path = self.path_service.get_destination_path(source_path, media_type)
+            except ValueError as e:
+                self.series_webhook_model.update(notification_id, {
+                    'status': 'failed',
+                    'error_message': str(e)
+                })
+                return False, str(e)
+            
+            # Extract folder and season names for transfer record (from actual paths, not title)
+            import os
+            folder_name, season_name = self.path_service.extract_folder_components(source_path, media_type)
             
             # Store transfer ID in notification
             self.series_webhook_model.update(notification_id, {'transfer_id': transfer_id})
@@ -383,6 +395,7 @@ class WebhookService:
             )
             
             if success:
+                series_title = notification['series_title']
                 print(f"✅ Series webhook sync started: {series_title} Season {season_number}")
                 return True, f"Sync started for {series_title} Season {season_number}"
             else:

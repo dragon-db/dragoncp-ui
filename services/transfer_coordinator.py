@@ -19,6 +19,7 @@ from services.notification_service import NotificationService
 from services.webhook_service import WebhookService
 from services.auto_sync_scheduler import AutoSyncScheduler
 from services.queue_manager import QueueManager
+from services.path_service import PathService
 
 
 class TransferCoordinator:
@@ -44,6 +45,7 @@ class TransferCoordinator:
         self.queue_manager = QueueManager(self.transfer_model, socketio)
         
         # Initialize services
+        self.path_service = PathService(config)
         self.backup_service = BackupService(config, db_manager, self.backup_model, self.transfer_model, socketio)
         self.transfer_service = TransferService(config, db_manager, self.transfer_model, socketio, self.queue_manager)
         self.notification_service = NotificationService(config, self.settings, self.transfer_model, self.webhook_model, self.series_webhook_model)
@@ -389,26 +391,32 @@ class TransferCoordinator:
         Returns validation results with safety status
         """
         try:
-            # Source: Server path (where files currently exist)
-            source_path = notification['season_path']
-            
-            # Destination: Construct local destination path from config
+            # Extract media type and paths
             media_type = notification['media_type']
-            series_title = notification['series_title']
+            series_path = notification.get('series_path')
+            season_path = notification.get('season_path')
             season_number = notification.get('season_number')
             
-            # Get the correct destination base path from config
-            dest_base_map = {
-                "anime": self.config.get("ANIME_DEST_PATH"),
-                "series": self.config.get("TVSHOW_DEST_PATH"),
-                "tvshows": self.config.get("TVSHOW_DEST_PATH")
-            }
-            
-            dest_base = dest_base_map.get(media_type)
-            if not dest_base:
+            # Determine source path - prefer the actual season_path from webhook
+            # (extracted from real episode file path on remote server)
+            if season_path:
+                # PRIMARY: Use the actual season path from webhook notification
+                # This is extracted from the episode file path and represents the real folder on disk
+                source_path = season_path
+                print(f"📁 Using actual season_path from webhook: {source_path}")
+            elif series_path and season_number is not None:
+                # FALLBACK: Reconstruct season path if season_path is not available
+                # This is a fallback only, assumes Sonarr's standard "Season XX" format
+                source_path = f"{series_path.rstrip('/')}/Season {season_number:02d}"
+                print(f"⚠️  season_path not in notification, reconstructed: {source_path}")
+            elif series_path:
+                # Whole series sync (rare case, no season specified)
+                source_path = series_path
+                print(f"📁 Using series_path for whole series sync: {source_path}")
+            else:
                 return {
                     'safe_to_sync': False,
-                    'reason': f'{media_type.title()} destination path not configured',
+                    'reason': 'Missing series_path and season_path in notification',
                     'deleted_count': 0,
                     'incoming_count': 0,
                     'server_file_count': 0,
@@ -417,15 +425,21 @@ class TransferCoordinator:
                     'incoming_files': []
                 }
             
-            # Build folder name (series title with year if available)
-            if notification.get('year'):
-                folder_name = f"{series_title} ({notification['year']})"
-            else:
-                folder_name = series_title
-            
-            # Build destination path: {dest_base}/{folder_name}/Season {season_number}
-            season_name = f"Season {season_number:02d}" if season_number else "Season Unknown"
-            dest_path = f"{dest_base}/{folder_name}/{season_name}"
+            # Use PathService to construct destination path consistently
+            # This ensures dry-run uses the same path as actual sync
+            try:
+                dest_path = self.path_service.get_destination_path(source_path, media_type)
+            except ValueError as e:
+                return {
+                    'safe_to_sync': False,
+                    'reason': str(e),
+                    'deleted_count': 0,
+                    'incoming_count': 0,
+                    'server_file_count': 0,
+                    'local_file_count': 0,
+                    'deleted_files': [],
+                    'incoming_files': []
+                }
             
             print(f"🔍 Dry-run validation:")
             print(f"   Source (server): {source_path}")
