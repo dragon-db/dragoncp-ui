@@ -251,9 +251,9 @@ class TransferService:
             'incoming_count': len(incoming_files),
             'server_file_count': server_file_count,
             'local_file_count': local_file_count,
-            'deleted_files': deleted_files[:50],  # Limit to first 50 for storage
-            'incoming_files': incoming_files[:50],
-            'raw_output': stdout[:5000]  # Store first 5000 chars of output for debugging
+            'deleted_files': deleted_files,  # Store full list of files to be deleted
+            'incoming_files': incoming_files,  # Store full list of files to be transferred
+            'raw_output': stdout  # Store full output for complete log display
         }
     
     def start_rsync_process(self, transfer_id: str, source_path: str, dest_path: str, transfer_type: str, backup_dir: str) -> bool:

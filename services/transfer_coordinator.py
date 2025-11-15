@@ -448,8 +448,7 @@ class TransferCoordinator:
             # Perform dry-run using transfer service
             validation_result = self.transfer_service.perform_dry_run_rsync(
                 source_path=source_path,
-                dest_path=dest_path,
-                is_season_folder=True
+                dest_path=dest_path
             )
             
             # Store dry-run result in notification
