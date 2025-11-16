@@ -71,8 +71,46 @@ class NotificationService:
             print(f"❌ Error parsing transfer logs: {e}")
             return {}
     
+    def extract_rsync_errors(self, logs: List[str]) -> List[str]:
+        """Extract rsync error messages from transfer logs"""
+        try:
+            errors = []
+            
+            if not logs:
+                return errors
+            
+            # Look for rsync errors in logs
+            for line in logs:
+                line = line.strip()
+                
+                # Capture rsync error lines (case-insensitive)
+                if 'rsync:' in line.lower() and ('error' in line.lower() or 'failed' in line.lower()):
+                    # Clean up the error message
+                    errors.append(line)
+                
+                # Capture specific error patterns
+                elif 'no space left on device' in line.lower():
+                    errors.append(line)
+                elif 'permission denied' in line.lower():
+                    errors.append(line)
+                elif 'connection refused' in line.lower():
+                    errors.append(line)
+                elif 'timeout' in line.lower() and 'rsync' in line.lower():
+                    errors.append(line)
+            
+            # Limit to last 10 errors to avoid overly long messages
+            if len(errors) > 10:
+                errors = errors[-10:]
+            
+            print(f"🔍 Extracted {len(errors)} error messages from logs")
+            return errors
+            
+        except Exception as e:
+            print(f"❌ Error extracting rsync errors: {e}")
+            return []
+    
     def send_discord_notification(self, transfer_id: str, transfer_status: str):
-        """Send Discord webhook notification for completed transfer"""
+        """Send Discord webhook notification for completed or failed transfer"""
         try:
             # Check if Discord notifications are enabled
             notifications_enabled = self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED', False)
@@ -92,14 +130,15 @@ class NotificationService:
                 print(f"❌ Transfer {transfer_id} not found for Discord notification")
                 return
             
-            # Only send notifications for completed transfers
-            if transfer_status != 'completed':
+            # Only send notifications for completed and failed transfers
+            if transfer_status not in ['completed', 'failed']:
                 print(f"📭 Skipping Discord notification for transfer {transfer_id} with status: {transfer_status}")
                 return
             
-            # Parse transfer logs for statistics
+            # Parse transfer logs for statistics and errors
             logs = transfer.get('logs', [])
             stats = self.parse_transfer_logs(logs)
+            errors = self.extract_rsync_errors(logs) if transfer_status == 'failed' else []
             
             # Get settings for Discord notification
             app_url = self.settings.get('DISCORD_APP_URL', 'http://localhost:5000')
@@ -157,36 +196,91 @@ class NotificationService:
             else:
                 sync_type = "Manual Sync"
             
-            # Build Discord embed
-            embed = {
-                'title': title,
-                'color': 11164867,  # Purple color
-                'fields': [
-                    {
-                        'name': 'Folder Synced',
-                        'value': transfer.get('dest_path', 'Unknown'),
+            # Build Discord embed based on transfer status
+            if transfer_status == 'failed':
+                # Failed transfer - use red color and include error details
+                embed = {
+                    'title': title,
+                    'color': 15158332,  # Red color for failures
+                    'fields': [
+                        {
+                            'name': 'Folder Path',
+                            'value': transfer.get('dest_path', 'Unknown'),
+                            'inline': False
+                        }
+                    ],
+                    'author': {
+                        'name': f"{sync_type} - FAILED ❌",
+                        'icon_url': icon_url
+                    },
+                    'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+                    'thumbnail': {
+                        'url': thumbnail_url
+                    } if thumbnail_url else None
+                }
+                
+                # Add error messages if available
+                if errors:
+                    # Combine error messages, truncate if too long
+                    error_text = '\n'.join(errors)
+                    if len(error_text) > 1000:
+                        error_text = error_text[:997] + '...'
+                    
+                    embed['fields'].append({
+                        'name': 'Error Details',
+                        'value': f"```\n{error_text}\n```",
                         'inline': False
-                    },
-                    {
-                        'name': 'Files Info',
-                        'value': f"```Transferred files: {stats.get('regular_files_transferred', 'N/A')}\nDeleted Files: {stats.get('deleted_files', 'N/A')}```",
+                    })
+                else:
+                    # If no specific errors found, use the progress message
+                    progress_msg = transfer.get('progress', 'Unknown error')
+                    if len(progress_msg) > 1000:
+                        progress_msg = progress_msg[:997] + '...'
+                    
+                    embed['fields'].append({
+                        'name': 'Error Details',
+                        'value': f"```\n{progress_msg}\n```",
+                        'inline': False
+                    })
+                
+                # Add partial stats if available
+                if stats.get('regular_files_transferred') is not None or stats.get('deleted_files') is not None:
+                    embed['fields'].append({
+                        'name': 'Partial Transfer Stats',
+                        'value': f"```Transferred: {stats.get('regular_files_transferred', 'N/A')}\nDeleted: {stats.get('deleted_files', 'N/A')}```",
                         'inline': True
+                    })
+            else:
+                # Successful transfer - use purple color
+                embed = {
+                    'title': title,
+                    'color': 11164867,  # Purple color
+                    'fields': [
+                        {
+                            'name': 'Folder Synced',
+                            'value': transfer.get('dest_path', 'Unknown'),
+                            'inline': False
+                        },
+                        {
+                            'name': 'Files Info',
+                            'value': f"```Transferred files: {stats.get('regular_files_transferred', 'N/A')}\nDeleted Files: {stats.get('deleted_files', 'N/A')}```",
+                            'inline': True
+                        },
+                        {
+                            'name': 'Speed Info',
+                            'value': f"```Transferred: {stats.get('total_transferred_size', 'N/A')}\nAvg Speed: {stats.get('avg_speed', 'N/A')}```",
+                            'inline': True
+                        }
+                    ],
+                    'author': {
+                        'name': sync_type,
+                        'icon_url': icon_url
                     },
-                    {
-                        'name': 'Speed Info',
-                        'value': f"```Transferred: {stats.get('total_transferred_size', 'N/A')}\nAvg Speed: {stats.get('avg_speed', 'N/A')}```",
-                        'inline': True
-                    }
-                ],
-                'author': {
-                    'name': sync_type,
-                    'icon_url': icon_url
-                },
-                'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-                'thumbnail': {
-                    'url': thumbnail_url
-                } if thumbnail_url else None
-            }
+                    'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+                    'thumbnail': {
+                        'url': thumbnail_url
+                    } if thumbnail_url else None
+                }
             
             # Add URL only if it's a valid format (Discord is strict about URL validation)
             if app_url and self._is_valid_discord_url(app_url):
@@ -218,7 +312,7 @@ class NotificationService:
             )
             
             if response.status_code == 204:
-                print(f"✅ Discord notification sent successfully for transfer {transfer_id}")
+                print(f"✅ Discord notification sent successfully for transfer {transfer_id} (status: {transfer_status})")
             else:
                 print(f"❌ Discord notification failed for transfer {transfer_id}: {response.status_code} - {response.text}")
                 

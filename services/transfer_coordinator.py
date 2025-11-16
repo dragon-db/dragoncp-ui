@@ -224,8 +224,8 @@ class TransferCoordinator:
                 # Update webhook notification status
                 self.webhook_service.update_webhook_transfer_status(transfer_id, status, self.transfer_model)
                 
-                # Send Discord notification for completed transfers
-                if status == 'completed':
+                # Send Discord notification for completed and failed transfers
+                if status in ['completed', 'failed']:
                     try:
                         self.notification_service.send_discord_notification(transfer_id, status)
                     except Exception as de:
