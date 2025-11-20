@@ -455,21 +455,13 @@ class WebhookService:
             media_type = transfer.get('media_type', '')
             webhook_notification = None
             
-            # Search the appropriate webhook table based on transfer media_type
+            # Lookup webhook notification by transfer_id (efficient indexed query)
             if media_type == 'movies':
-                # Search movie webhook notifications
-                notifications = self.webhook_model.get_all()
-                for notification in notifications:
-                    if notification.get('transfer_id') == transfer_id:
-                        webhook_notification = notification
-                        break
+                # Direct lookup using indexed transfer_id column
+                webhook_notification = self.webhook_model.get_by_transfer_id(transfer_id)
             elif media_type in ['anime', 'tvshows', 'series']:
-                # Search series/anime webhook notifications
-                notifications = self.series_webhook_model.get_all()
-                for notification in notifications:
-                    if notification.get('transfer_id') == transfer_id:
-                        webhook_notification = notification
-                        break
+                # Direct lookup using indexed transfer_id column
+                webhook_notification = self.series_webhook_model.get_by_transfer_id(transfer_id)
             else:
                 print(f"⚠️  Unknown media_type '{media_type}' for transfer {transfer_id}, skipping webhook status update")
                 return

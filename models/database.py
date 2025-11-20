@@ -182,6 +182,10 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_webhook_status ON webhook_notifications(status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_webhook_created_at ON webhook_notifications(created_at)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_webhook_transfer_id ON webhook_notifications(transfer_id)')
+            # Series webhook notifications indexes
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_series_webhook_notification_id ON series_webhook_notifications(notification_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_series_webhook_status ON series_webhook_notifications(status)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_series_webhook_transfer_id ON series_webhook_notifications(transfer_id)')
             
             conn.commit()
         

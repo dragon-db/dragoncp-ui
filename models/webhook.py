@@ -100,6 +100,28 @@ class WebhookNotification:
                 return notification
             return None
     
+    def get_by_transfer_id(self, transfer_id: str) -> Optional[Dict]:
+        """Get webhook notification by transfer_id (efficient indexed lookup)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                SELECT * FROM webhook_notifications WHERE transfer_id = ?
+            ''', (transfer_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                notification = dict(row)
+                # Parse JSON fields
+                try:
+                    notification['languages'] = json.loads(notification.get('languages', '[]'))
+                except json.JSONDecodeError:
+                    notification['languages'] = []
+                try:
+                    notification['subtitles'] = json.loads(notification.get('subtitles', '[]'))
+                except json.JSONDecodeError:
+                    notification['subtitles'] = []
+                return notification
+            return None
+    
     def get_all(self, status_filter: str = None, limit: int = None) -> List[Dict]:
         """Get all webhook notifications with optional filtering"""
         query = "SELECT * FROM webhook_notifications"
@@ -248,6 +270,25 @@ class SeriesWebhookNotification:
             cursor = conn.execute('''
                 SELECT * FROM series_webhook_notifications WHERE notification_id = ?
             ''', (notification_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                notification = dict(row)
+                # Parse JSON fields
+                for json_field in ['tags', 'episodes', 'episode_files']:
+                    try:
+                        notification[json_field] = json.loads(notification.get(json_field, '[]'))
+                    except json.JSONDecodeError:
+                        notification[json_field] = []
+                return notification
+            return None
+    
+    def get_by_transfer_id(self, transfer_id: str) -> Optional[Dict]:
+        """Get series webhook notification by transfer_id (efficient indexed lookup)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                SELECT * FROM series_webhook_notifications WHERE transfer_id = ?
+            ''', (transfer_id,))
             row = cursor.fetchone()
             
             if row:
