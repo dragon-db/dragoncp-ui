@@ -79,6 +79,14 @@ class WebhookService:
             imdb_id = movie.get('imdbId')
             
             # Generate unique notification ID
+            # FORMAT: movie_{movie_id}_{timestamp}
+            # 
+            # NOTE: Movies use second-precision timestamps because each movie has a unique
+            # movie_id from Radarr. Unlike series where the same series/season can have
+            # multiple episodes processed simultaneously, movies are processed one at a time
+            # per movie_id, making collisions extremely unlikely.
+            # 
+            # Example: "movie_123_1732103526"
             notification_id = f"movie_{movie.get('id', int(datetime.now().timestamp()))}_{int(datetime.now().timestamp())}"
             
             parsed_data = {
@@ -185,7 +193,29 @@ class WebhookService:
             download_client = webhook_json.get('downloadClient', '')
             
             # Generate unique notification ID
-            notification_id = f"{media_type}_{series_id or int(datetime.now().timestamp())}_s{season_number or 'unknown'}_{int(datetime.now().timestamp())}"
+            # FORMAT: {media_type}_{series_id}_s{season_number}_ef{episode_file_id}
+            # 
+            # WHY: Previously used second-precision timestamps which caused UNIQUE constraint
+            # violations when multiple episodes from the same series/season were processed
+            # within the same second (common during batch imports/season packs).
+            # 
+            # SOLUTION: Use episode_file_id from Sonarr (unique per file) as primary identifier.
+            # If episode_file_id is unavailable, fallback to microsecond-precision timestamp
+            # to ensure uniqueness even for rapid consecutive webhooks.
+            # 
+            # Examples:
+            #   - With episode_file_id: "tvshows_123_s2_ef456"
+            #   - Fallback (no file_id): "tvshows_123_s2_1732103526789456"
+            episode_file_id = episode_file.get('id') if episode_file else None
+            
+            if episode_file_id:
+                # Primary method: Use Sonarr's episode file ID (guaranteed unique)
+                notification_id = f"{media_type}_{series_id or 'unknown'}_s{season_number or 0}_ef{episode_file_id}"
+            else:
+                # Fallback: Use microsecond-precision timestamp for uniqueness
+                # (Season packs or cases where episode_file is not provided)
+                timestamp_microseconds = int(datetime.now().timestamp() * 1000000)
+                notification_id = f"{media_type}_{series_id or 'unknown'}_s{season_number or 0}_{timestamp_microseconds}"
             
             parsed_data = {
                 'notification_id': notification_id,

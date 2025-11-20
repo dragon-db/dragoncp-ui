@@ -11,7 +11,7 @@ from flask import session, has_request_context
 
 
 # Application version for cache busting
-APP_VERSION = "1.8.15"
+APP_VERSION = "1.8.16"
 
 
 class DragonCPConfig:
