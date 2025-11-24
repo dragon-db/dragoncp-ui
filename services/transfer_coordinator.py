@@ -18,6 +18,7 @@ from services.transfer_service import TransferService
 from services.notification_service import NotificationService
 from services.webhook_service import WebhookService
 from services.auto_sync_scheduler import AutoSyncScheduler
+from services.sync_logger import log_sync, log_validation, log_state_change
 from services.queue_manager import QueueManager
 from services.path_service import PathService
 
@@ -67,23 +68,27 @@ class TransferCoordinator:
     # Transfer Operations
     def start_transfer(self, transfer_id: str, source_path: str, dest_path: str, 
                       transfer_type: str = "folder", media_type: str = "", 
-                      folder_name: str = "", season_name: str = None, episode_name: str = None) -> bool:
+                      folder_name: str = "", season_name: str = None, episode_name: str = None) -> Tuple[bool, str]:
         """
         Start a new transfer with database persistence and queue management
         
         Returns True if transfer started/queued successfully, False if duplicate
         """
         
-        print(f"🎯 TransferCoordinator.start_transfer() called for {transfer_id}")
-        print(f"   dest_path: {dest_path}")
+        log_sync("TransferCoordinator", f"start_transfer() called", 
+                icon="🎯", transfer_id=transfer_id)
+        log_sync("TransferCoordinator", f"dest_path: {dest_path}", 
+                icon="📁", transfer_id=transfer_id, indent=1)
         
         # STRICT VALIDATION: Check for duplicate destination BEFORE creating transfer
-        print(f"🔍 Checking for duplicate destination...")
+        log_sync("TransferCoordinator", f"Checking for duplicate destination...", 
+                icon="🔍", transfer_id=transfer_id)
         is_duplicate, existing_transfer_id = self.queue_manager.check_duplicate_destination(dest_path, transfer_id)
-        print(f"   is_duplicate: {is_duplicate}, existing: {existing_transfer_id}")
+        log_sync("TransferCoordinator", f"is_duplicate={is_duplicate}, existing={existing_transfer_id}", 
+                icon="📋", transfer_id=transfer_id, indent=1)
         
         if is_duplicate:
-            print(f"🚫 DUPLICATE DESTINATION DETECTED!")
+            print(f"🚫 PATH CONFLICT DETECTED - QUEUING!")
             print(f"   Transfer {transfer_id} -> {dest_path}")
             print(f"   Existing transfer {existing_transfer_id} already syncing to this path")
             
@@ -95,11 +100,11 @@ class TransferCoordinator:
                     existing_info = f"{existing_title} - {existing_transfer['season_name']}"
                 else:
                     existing_info = existing_title
-                duplicate_message = f'Duplicate: Another transfer "{existing_info}" is already syncing to this destination'
+                queue_message = f'Queued: Waiting for "{existing_info}" to complete (same destination path)'
             else:
-                duplicate_message = f'Duplicate: Another transfer is already syncing to: {dest_path}'
+                queue_message = f'Queued: Waiting for path to be available: {dest_path}'
             
-            # Create transfer record with 'duplicate' status
+            # Create transfer record with 'queued' status (will be promoted when path is free)
             transfer_data = {
                 'transfer_id': transfer_id,
                 'media_type': media_type,
@@ -109,23 +114,31 @@ class TransferCoordinator:
                 'source_path': source_path,
                 'dest_path': dest_path,
                 'transfer_type': transfer_type,
-                'status': 'duplicate',
-                'progress': duplicate_message,
-                'end_time': datetime.now().isoformat()
+                'status': 'queued',  # Changed from 'duplicate' to 'queued'
+                'progress': queue_message,
+                'queue_reason': 'path',  # Explicit tracking: 'path' or 'slot'
+                'start_time': datetime.now().isoformat()  # Track when queued
             }
             
             self.transfer_model.create(transfer_data)
             
+            # Update webhook notification status to QUEUED_PATH if this is from a webhook
+            # This will be handled by the calling service (webhook_service or auto_sync_scheduler)
+            
+            print(f"✅ Transfer {transfer_id} queued (QUEUED_PATH) - will start when path is free")
+            
             # Emit WebSocket notification
             if self.socketio:
-                self.socketio.emit('transfer_duplicate', {
+                self.socketio.emit('transfer_update', {
                     'transfer_id': transfer_id,
+                    'status': 'queued',
+                    'queue_type': 'path',
                     'existing_transfer_id': existing_transfer_id,
                     'dest_path': dest_path,
-                    'message': 'Duplicate destination detected'
+                    'message': queue_message
                 })
             
-            return False
+            return (True, 'QUEUED_PATH')  # Transfer queued due to path conflict
         
         # Register transfer with queue manager
         print(f"📝 Registering transfer with queue manager...")
@@ -144,7 +157,8 @@ class TransferCoordinator:
                 'dest_path': dest_path,
                 'transfer_type': transfer_type,
                 'status': 'queued',
-                'progress': 'Waiting in queue...'
+                'progress': 'Waiting in queue...',
+                'queue_reason': 'slot'  # Explicit tracking: 'path' or 'slot'
             }
             
             self.transfer_model.create(transfer_data)
@@ -157,7 +171,7 @@ class TransferCoordinator:
                     'message': 'Transfer added to queue'
                 })
             
-            return True
+            return (True, 'QUEUED_SLOT')  # Transfer queued due to slot limit
         
         # If can start immediately, create with 'pending' status and start transfer
         if can_start:
@@ -196,13 +210,13 @@ class TransferCoordinator:
                     args=(transfer_id,), 
                     daemon=True
                 ).start()
+                return (True, 'running')  # Transfer started successfully
             else:
                 # If failed to start, unregister from queue manager
                 self.queue_manager.unregister_transfer(transfer_id)
-            
-            return success
+                return (False, 'failed')  # Failed to start
         
-        return False
+        return (False, 'failed')  # Shouldn't reach here, but return failure
     
     def _post_transfer_completion(self, transfer_id: str):
         """Wait for transfer to complete, then finalize backup and send notifications"""
@@ -216,10 +230,12 @@ class TransferCoordinator:
             if not transfer or transfer['status'] not in ['running', 'pending']:
                 # Transfer completed or failed
                 status = transfer['status'] if transfer else 'unknown'
+                dest_path = transfer.get('dest_path') if transfer else None
                 
                 # Unregister from queue manager (will promote next queued transfer)
+                # Pass dest_path for path-specific queue promotion
                 print(f"🏁 Transfer {transfer_id} finished with status: {status}")
-                self.queue_manager.unregister_transfer(transfer_id)
+                self.queue_manager.unregister_transfer(transfer_id, dest_path)
                 
                 # Update webhook notification status
                 self.webhook_service.update_webhook_transfer_status(transfer_id, status, self.transfer_model)
@@ -288,6 +304,20 @@ class TransferCoordinator:
             'progress': 'Starting transfer...'
         })
         
+        # Update ALL webhook notifications linked to this transfer from QUEUED_* to 'syncing'
+        # This ensures all batched episodes transition together
+        if transfer.get('media_type') in ['anime', 'tvshows', 'series']:
+            # Use transfer_id to update all linked notifications at once
+            updated_count = self.series_webhook_model.update_notifications_by_transfer_id(
+                transfer_id,
+                {
+                    'status': 'syncing',
+                    'synced_at': datetime.now().isoformat()
+                }
+            )
+            if updated_count > 0:
+                print(f"📋 Updated {updated_count} notification(s) linked to transfer {transfer_id} to SYNCING (transfer starting)")
+        
         # Refresh transfer data after update
         transfer = self.transfer_model.get(transfer_id)
         
@@ -355,9 +385,9 @@ class TransferCoordinator:
         """Trigger sync for a webhook notification (movies)"""
         return self.webhook_service.trigger_webhook_sync(notification_id)
     
-    def trigger_series_webhook_sync(self, notification_id: str) -> Tuple[bool, str]:
+    def trigger_series_webhook_sync(self, notification_id: str, batched_notification_ids: List[str] = None) -> Tuple[bool, str]:
         """Trigger sync for a series/anime webhook notification"""
-        return self.webhook_service.trigger_series_webhook_sync(notification_id)
+        return self.webhook_service.trigger_series_webhook_sync(notification_id, batched_notification_ids)
     
     def update_webhook_transfer_status(self, transfer_id: str, status: str):
         """Update webhook notification status based on transfer completion"""

@@ -423,12 +423,16 @@ export class WebhookManager {
     }
     
     getGroupStatus(notifications) {
-        // Priority: syncing > failed > waiting_auto_sync > pending > completed
+        // Priority: syncing > failed > queued_path > queued_slot > READY_FOR_TRANSFER > pending > manual_sync_required > completed
         const statuses = notifications.map(n => n.status);
         if (statuses.includes('syncing')) return 'syncing';
         if (statuses.includes('failed')) return 'failed';
-        if (statuses.includes('waiting_auto_sync')) return 'waiting_auto_sync';
+        if (statuses.includes('QUEUED_PATH')) return 'QUEUED_PATH';
+        if (statuses.includes('QUEUED_SLOT')) return 'QUEUED_SLOT';
+        if (statuses.includes('READY_FOR_TRANSFER')) return 'READY_FOR_TRANSFER';
         if (statuses.includes('pending')) return 'pending';
+        if (statuses.includes('MANUAL_SYNC_REQUIRED')) return 'MANUAL_SYNC_REQUIRED';
+        if (statuses.includes('manual_sync_required')) return 'manual_sync_required';
         return 'completed';
     }
     
@@ -587,10 +591,17 @@ export class WebhookManager {
     getStatusClass(status) {
         switch (status) {
             case 'pending': return 'bg-warning text-dark';
-            case 'waiting_auto_sync': return 'bg-primary';
+            case 'READY_FOR_TRANSFER': return 'bg-primary';
+            case 'QUEUED_SLOT': return 'bg-warning';
+            case 'QUEUED_PATH': return 'bg-warning';
             case 'syncing': return 'bg-info';
             case 'completed': return 'bg-success';
             case 'failed': return 'bg-danger';
+            case 'MANUAL_SYNC_REQUIRED': return 'bg-danger';
+            case 'manual_sync_required': return 'bg-danger';
+            case 'cancelled': return 'bg-dark';
+            // Legacy state support
+            case 'waiting_auto_sync': return 'bg-primary';
             default: return 'bg-secondary';
         }
     }
@@ -598,10 +609,17 @@ export class WebhookManager {
     getStatusIcon(status) {
         switch (status) {
             case 'pending': return 'bi bi-clock';
-            case 'waiting_auto_sync': return 'bi bi-hourglass-split';
+            case 'READY_FOR_TRANSFER': return 'bi bi-check2-square';
+            case 'QUEUED_SLOT': return 'bi bi-list-ul';
+            case 'QUEUED_PATH': return 'bi bi-folder-symlink';
             case 'syncing': return 'bi bi-arrow-clockwise spinning';
             case 'completed': return 'bi bi-check-circle';
             case 'failed': return 'bi bi-x-circle';
+            case 'MANUAL_SYNC_REQUIRED': return 'bi bi-exclamation-triangle';
+            case 'manual_sync_required': return 'bi bi-exclamation-triangle';
+            case 'cancelled': return 'bi bi-dash-circle';
+            // Legacy state support
+            case 'waiting_auto_sync': return 'bi bi-hourglass-split';
             default: return 'bi bi-question-circle';
         }
     }
@@ -609,16 +627,24 @@ export class WebhookManager {
     updateNotificationCount() {
         const countElement = document.getElementById('syncNotificationCount');
         const pendingCount = this.notifications.filter(n => n.status === 'pending').length;
-        const waitingAutoSyncCount = this.notifications.filter(n => n.status === 'waiting_auto_sync').length;
+        const readyForTransferCount = this.notifications.filter(n => n.status === 'READY_FOR_TRANSFER').length;
+        const queuedSlotCount = this.notifications.filter(n => n.status === 'QUEUED_SLOT').length;
+        const queuedPathCount = this.notifications.filter(n => n.status === 'QUEUED_PATH').length;
         const syncingCount = this.notifications.filter(n => n.status === 'syncing').length;
+        const manualSyncCount = this.notifications.filter(n => n.status === 'MANUAL_SYNC_REQUIRED' || n.status === 'manual_sync_required').length;
         
         let text = '';
         if (syncingCount > 0) {
             text = `${syncingCount} syncing`;
-        } else if (waitingAutoSyncCount > 0) {
-            text = `${waitingAutoSyncCount} scheduled`;
+        } else if (queuedPathCount > 0 || queuedSlotCount > 0) {
+            const totalQueued = queuedPathCount + queuedSlotCount;
+            text = `${totalQueued} queued`;
+        } else if (readyForTransferCount > 0) {
+            text = `${readyForTransferCount} ready`;
         } else if (pendingCount > 0) {
             text = `${pendingCount} pending`;
+        } else if (manualSyncCount > 0) {
+            text = `${manualSyncCount} need attention`;
         } else {
             text = `${this.notifications.length} total`;
         }

@@ -8,6 +8,7 @@ import time
 import threading
 from datetime import datetime
 from typing import Dict, Optional
+from services.sync_logger import log_sync, log_batch, log_validation, log_state_change
 
 
 class AutoSyncJob:
@@ -50,6 +51,39 @@ class AutoSyncScheduler:
         """
         Schedule an auto-sync job
         If a job for the same series/season exists, extend its wait time instead
+        
+        TODO: Dynamic Wait Time with Sonarr API Integration
+        =====================================================
+        Instead of using a fixed wait time, query Sonarr's queue to dynamically
+        determine optimal wait time based on actual download status.
+        
+        APPROACH:
+        1. Query Sonarr API: GET /api/v3/queue?seriesId={series_id}
+        2. Filter queue for episodes from the same season
+        3. If queue has pending episodes:
+           - Extend wait time (up to max 15 minutes)
+           - Check periodically until queue is empty
+        4. If queue is empty:
+           - Proceed with dry-run immediately (no need to wait)
+        5. Respect max_wait_time cap (900s/15 minutes)
+        
+        CONFIGURATION NEEDED:
+        - SONARR_API_URL: Base URL for Sonarr API (e.g., http://localhost:8989)
+        - SONARR_API_KEY: API key for authentication
+        - USE_DYNAMIC_WAIT: Boolean toggle (default: false, use fixed wait time)
+        - SONARR_QUEUE_CHECK_INTERVAL: How often to check queue (default: 30s)
+        
+        BENEFITS:
+        - No need to guess appropriate wait time
+        - Adapts to actual download speed
+        - Reduces unnecessary waiting when all episodes are ready
+        - Better handles slow downloads by waiting longer
+        
+        IMPLEMENTATION NOTES:
+        - Add sonarr_api_client module with queue checking methods
+        - Modify this schedule_job method to optionally use dynamic wait
+        - Add periodic queue checking in _execute_job wait loop
+        - Log queue status for debugging
         """
         batch_key = f"{series_title_slug}_S{season_number}"
         
@@ -70,10 +104,12 @@ class AutoSyncScheduler:
                 )
                 self.jobs[batch_key] = job
                 
-                print(f"📅 Scheduled auto-sync for {batch_key} in {wait_time}s (notification: {notification_id})")
+                log_sync("AutoSyncScheduler", f"Scheduled auto-sync for {batch_key} in {wait_time}s", 
+                        icon="📅", notification_id=notification_id)
                 
-                # Update notification status to 'waiting_auto_sync'
-                self._update_notification_status(notification_id, 'waiting_auto_sync', scheduled_time)
+                # Update notification status to 'pending' with scheduled time
+                # Notification stays in PENDING during batching window
+                self._update_notification_status(notification_id, 'pending', scheduled_time)
                 
                 # Start job execution thread
                 threading.Thread(
@@ -92,8 +128,8 @@ class AutoSyncScheduler:
             job.notification_ids.append(new_notification_id)
             print(f"⏰ Extended wait time for {job.get_batch_key()} by {additional_seconds}s")
             
-            # Update new notification status
-            self._update_notification_status(new_notification_id, 'waiting_auto_sync', job.scheduled_time)
+            # Update new notification status to pending (batching)
+            self._update_notification_status(new_notification_id, 'pending', job.scheduled_time)
         else:
             # Cap at max wait time
             max_additional = job.max_wait_time - (time.time() - job.created_at + current_wait)
@@ -102,13 +138,13 @@ class AutoSyncScheduler:
                 job.notification_ids.append(new_notification_id)
                 print(f"⏰ Extended wait time for {job.get_batch_key()} by {max_additional}s (capped at max)")
                 
-                # Update new notification status
-                self._update_notification_status(new_notification_id, 'waiting_auto_sync', job.scheduled_time)
+                # Update new notification status to pending (batching)
+                self._update_notification_status(new_notification_id, 'pending', job.scheduled_time)
             else:
                 print(f"⚠️  Cannot extend wait time for {job.get_batch_key()} (already at max)")
                 # Still add to batch but don't extend time
                 job.notification_ids.append(new_notification_id)
-                self._update_notification_status(new_notification_id, 'waiting_auto_sync', job.scheduled_time)
+                self._update_notification_status(new_notification_id, 'pending', job.scheduled_time)
     
     def _update_notification_status(self, notification_id: str, status: str, scheduled_time: float = None):
         """Update notification status in database"""
@@ -129,36 +165,49 @@ class AutoSyncScheduler:
             while time.time() < job.scheduled_time:
                 time.sleep(1)
             
-            print(f"⚡ Executing auto-sync job for {job.get_batch_key()} ({len(job.notification_ids)} episodes)")
+            log_batch("AutoSyncScheduler", f"Executing auto-sync job for {job.get_batch_key()}", 
+                     len(job.notification_ids), icon="⚡", notification_ids=job.notification_ids)
             
             # Get the first notification for details (all share same series/season)
             notification = self.coordinator.series_webhook_model.get(job.notification_ids[0])
             if not notification:
-                print(f"❌ Notification {job.notification_ids[0]} not found")
+                log_sync("AutoSyncScheduler", f"Notification not found", icon="❌", 
+                        notification_id=job.notification_ids[0])
                 return
             
             # Perform dry-run validation
-            print(f"🔍 Performing dry-run validation for {job.get_batch_key()}")
+            log_sync("AutoSyncScheduler", f"Performing dry-run validation for {job.get_batch_key()}", 
+                    icon="🔍", notification_id=job.notification_ids[0])
             validation = self.coordinator.perform_dry_run_validation(notification)
             
             if validation['safe_to_sync']:
-                # Proceed with auto-sync
-                print(f"✅ Validation passed for {job.get_batch_key()}, proceeding with auto-sync")
-                success, message = self.coordinator.trigger_series_webhook_sync(job.notification_ids[0])
+                # Dry-run validation passed - mark all notifications as READY_FOR_TRANSFER
+                print(f"✅ Validation passed for {job.get_batch_key()}, marking {len(job.notification_ids)} notification(s) as READY_FOR_TRANSFER")
+                for notif_id in job.notification_ids:
+                    self.coordinator.series_webhook_model.update(notif_id, {
+                        'status': 'READY_FOR_TRANSFER'
+                    })
+                
+                # Now attempt to start transfer (will check slot/path availability)
+                print(f"🚀 Attempting to start transfer for {job.get_batch_key()} with {len(job.notification_ids)} batched notification(s)")
+                success, message = self.coordinator.trigger_series_webhook_sync(
+                    job.notification_ids[0],  # Primary notification
+                    batched_notification_ids=job.notification_ids  # Pass all IDs for linking
+                )
                 
                 if success:
-                    print(f"✅ Auto-sync completed for {job.get_batch_key()}")
-                    # Mark all notifications in batch as syncing/completed
-                    for notif_id in job.notification_ids:
-                        # They'll be updated by the transfer completion callback
-                        pass
+                    print(f"✅ Transfer started/queued for {job.get_batch_key()}")
+                    # Notifications will be updated by transfer coordinator based on slot/path checks:
+                    # - If started immediately: SYNCING
+                    # - If slot full: QUEUED_SLOT
+                    # - If path conflict: QUEUED_PATH
                 else:
-                    print(f"❌ Auto-sync failed for {job.get_batch_key()}: {message}")
+                    print(f"❌ Failed to start transfer for {job.get_batch_key()}: {message}")
                     # Mark all as failed
                     for notif_id in job.notification_ids:
                         self.coordinator.series_webhook_model.update(notif_id, {
                             'status': 'failed',
-                            'error_message': f'Auto-sync failed: {message}'
+                            'error_message': f'Failed to start transfer: {message}'
                         })
             else:
                 # Mark for manual sync
@@ -191,12 +240,12 @@ class AutoSyncScheduler:
                     except Exception:
                         pass
         finally:
-            # Remove job from queue
+            # Remove auto-sync batch job from scheduler (not the transfer queue)
             with self.lock:
                 batch_key = job.get_batch_key()
                 if batch_key in self.jobs:
                     del self.jobs[batch_key]
-                    print(f"🗑️  Removed job {batch_key} from queue")
+                    print(f"🗑️  Removed auto-sync batch job {batch_key} from scheduler (batching complete)")
     
     def cancel_job(self, series_title_slug: str, season_number: int) -> bool:
         """Cancel a scheduled auto-sync job"""

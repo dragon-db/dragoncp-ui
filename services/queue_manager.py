@@ -143,38 +143,137 @@ class QueueManager:
                 print(f"   Destination reserved to prevent duplicates")
                 return (False, 'queued')
     
-    def unregister_transfer(self, transfer_id: str):
+    def unregister_transfer(self, transfer_id: str, dest_path: str = None):
         """
         Unregister a completed/failed/cancelled transfer and promote next queued transfer
+        
+        Args:
+            transfer_id: The transfer ID to unregister
+            dest_path: The destination path (used for path-specific queue promotion)
         """
+        completed_dest_path = dest_path  # Track for path-specific promotion
+        
         with self.lock:
             # Remove from running transfers
             if transfer_id in self.running_transfers:
-                dest_path = self.running_transfers[transfer_id]
+                stored_dest_path = self.running_transfers[transfer_id]
+                if not completed_dest_path:
+                    completed_dest_path = stored_dest_path
                 del self.running_transfers[transfer_id]
                 
                 # Remove from active destinations
-                if dest_path in self.active_destinations:
-                    if self.active_destinations[dest_path] == transfer_id:
-                        del self.active_destinations[dest_path]
+                if stored_dest_path in self.active_destinations:
+                    if self.active_destinations[stored_dest_path] == transfer_id:
+                        del self.active_destinations[stored_dest_path]
                 
                 print(f"✅ Transfer {transfer_id} unregistered")
                 print(f"📊 Queue status: {len(self.running_transfers)}/{self.MAX_CONCURRENT_TRANSFERS} running")
             else:
                 # Handle queued/cancelled transfers that never ran
                 # Still need to remove from active_destinations
-                for dest_path, tid in list(self.active_destinations.items()):
+                for stored_dest_path, tid in list(self.active_destinations.items()):
                     if tid == transfer_id:
-                        del self.active_destinations[dest_path]
+                        if not completed_dest_path:
+                            completed_dest_path = stored_dest_path
+                        del self.active_destinations[stored_dest_path]
                         print(f"✅ Queued transfer {transfer_id} unregistered (freed destination)")
                         break
             
-            # After unregistering, check if we can promote a queued transfer
+            # After unregistering, promote queued transfers
+            # Priority: Path-specific queue first, then general slot queue
+            if completed_dest_path:
+                self._promote_same_path_queued(completed_dest_path)
+            
+            # Then check for general slot-based queue promotion
             self._promote_next_queued_transfer()
+    
+    def _promote_same_path_queued(self, dest_path: str):
+        """
+        Internal method to promote QUEUED_PATH transfers for a specific destination path
+        
+        This is called when a transfer for a specific path completes. It looks for
+        webhook notifications in QUEUED_PATH state waiting for this exact path,
+        and promotes ONE of them (oldest first) back to READY_FOR_TRANSFER for re-validation.
+        
+        Args:
+            dest_path: The destination path that just became available
+        """
+        if not self.coordinator:
+            return
+        
+        # Check if we have capacity for another transfer
+        if len(self.running_transfers) >= self.MAX_CONCURRENT_TRANSFERS:
+            print(f"⏸️  Path {dest_path} freed, but max transfers ({self.MAX_CONCURRENT_TRANSFERS}) reached")
+            return
+        
+        # Get all queued transfers from database (both transfer records and webhook notifications)
+        all_transfers = self.transfer_model.get_all()
+        
+        # Filter for transfers with status='queued' and same dest_path
+        queued_path_transfers = [
+            t for t in all_transfers
+            if t['status'] == 'queued' and self._normalize_path(t.get('dest_path', '')) == self._normalize_path(dest_path)
+        ]
+        
+        # Sort by creation time (oldest first)
+        queued_path_transfers.sort(key=lambda t: t.get('created_at', t.get('start_time', '')))
+        
+        if not queued_path_transfers:
+            print(f"✅ No QUEUED_PATH transfers found for {dest_path}")
+            return
+        
+        # Promote the oldest one
+        queued_transfer = queued_path_transfers[0]
+        transfer_id = queued_transfer['transfer_id']
+        
+        # Re-check for duplicate destination (safety check)
+        is_duplicate, existing_transfer_id = self._check_duplicate_destination_internal(dest_path, transfer_id)
+        if is_duplicate:
+            print(f"⚠️  Path {dest_path} still has active transfer {existing_transfer_id}, cannot promote yet")
+            return
+        
+        print(f"🎉 PROMOTING QUEUED_PATH: Transfer {transfer_id} for path {dest_path}")
+        
+        # Update transfer status from 'queued' to 'pending'
+        self.transfer_model.update(transfer_id, {
+            'status': 'pending',
+            'progress': 'Promoted from path queue, validating...'
+        })
+        
+        # Update associated webhook notification status from QUEUED_PATH to READY_FOR_TRANSFER
+        if self.coordinator.series_webhook_model:
+            # Get the webhook notification by transfer_id
+            webhook_notification = self.coordinator.series_webhook_model.get_by_transfer_id(transfer_id)
+            if webhook_notification:
+                self.coordinator.series_webhook_model.update(
+                    webhook_notification['notification_id'],
+                    {'status': 'READY_FOR_TRANSFER'}
+                )
+                print(f"📋 Updated webhook notification to READY_FOR_TRANSFER")
+        
+        # Emit WebSocket event if available
+        if self.socketio:
+            self.socketio.emit('transfer_promoted', {
+                'transfer_id': transfer_id,
+                'message': f'Transfer promoted from path queue for {dest_path}',
+                'queue_type': 'path'
+            })
+        
+        # Start the transfer by calling the coordinator
+        if self.coordinator:
+            import threading
+            threading.Thread(
+                target=self.coordinator.start_queued_transfer,
+                args=(transfer_id,),
+                daemon=True
+            ).start()
     
     def _promote_next_queued_transfer(self):
         """
-        Internal method to promote next queued transfer (should be called with lock held)
+        Internal method to promote next general queued transfer (should be called with lock held)
+        
+        This promotes transfers in QUEUED_SLOT state (waiting for any slot to free up).
+        It's called after path-specific promotion to fill remaining capacity.
         """
         # Check if we have capacity
         if len(self.running_transfers) >= self.MAX_CONCURRENT_TRANSFERS:
@@ -197,29 +296,66 @@ class QueueManager:
         for queued_transfer in queued_transfers:
             transfer_id = queued_transfer['transfer_id']
             dest_path = queued_transfer['dest_path']
+            queue_reason = queued_transfer.get('queue_reason', '')
+            progress_msg = queued_transfer.get('progress', '')
+            
+            # Determine if this is a path-specific queue or slot queue
+            # First check explicit queue_reason field (added for reliability)
+            if queue_reason:
+                is_path_queue = (queue_reason == 'path')
+            else:
+                # Fallback to progress message parsing (for legacy transfers)
+                is_path_queue = (
+                    'same destination' in progress_msg.lower() or
+                    'same path' in progress_msg.lower() or
+                    ('waiting for' in progress_msg.lower() and 'complete' in progress_msg.lower())
+                )
             
             # Re-check for duplicate destination (using internal method since we hold the lock)
             is_duplicate, existing_transfer_id = self._check_duplicate_destination_internal(dest_path, transfer_id)
             if is_duplicate:
-                # Mark as duplicate now - get better message with existing transfer details
-                existing_transfer = self.transfer_model.get(existing_transfer_id)
-                if existing_transfer:
-                    existing_title = existing_transfer.get('parsed_title') or existing_transfer.get('folder_name') or 'Unknown'
-                    if existing_transfer.get('season_name'):
-                        existing_info = f"{existing_title} - {existing_transfer['season_name']}"
-                    else:
-                        existing_info = existing_title
-                    duplicate_message = f'Duplicate: Another transfer "{existing_info}" is already syncing to this destination'
+                if is_path_queue:
+                    # This is a QUEUED_PATH transfer waiting for this specific path to complete
+                    # Don't mark as duplicate - just skip it and keep it in queue
+                    # It will be promoted by _promote_same_path_queued() when the path completes
+                    print(f"⏭️  Skipping QUEUED_PATH transfer {transfer_id} (path {dest_path} still occupied by {existing_transfer_id})")
+                    continue
                 else:
-                    duplicate_message = f'Duplicate: Another transfer is already syncing to: {dest_path}'
-                
-                print(f"🚫 Queued transfer {transfer_id} is now DUPLICATE (destination taken by {existing_transfer_id})")
-                self.transfer_model.update(transfer_id, {
-                    'status': 'duplicate',
-                    'progress': duplicate_message,
-                    'end_time': datetime.now().isoformat()
-                })
-                continue
+                    # This is a QUEUED_SLOT transfer that now encounters a path conflict
+                    # Convert it to QUEUED_PATH instead of marking as duplicate
+                    existing_transfer = self.transfer_model.get(existing_transfer_id)
+                    if existing_transfer:
+                        existing_title = existing_transfer.get('parsed_title') or existing_transfer.get('folder_name') or 'Unknown'
+                        if existing_transfer.get('season_name'):
+                            existing_info = f"{existing_title} - {existing_transfer['season_name']}"
+                        else:
+                            existing_info = existing_title
+                        queue_message = f'Queued: Waiting for "{existing_info}" to complete (same destination path)'
+                    else:
+                        queue_message = f'Queued: Waiting for path to be available: {dest_path}'
+                    
+                    print(f"🔄 Converting QUEUED_SLOT → QUEUED_PATH for {transfer_id} (destination taken by {existing_transfer_id})")
+                    self.transfer_model.update(transfer_id, {
+                        'queue_reason': 'path',  # Convert from 'slot' to 'path'
+                        'progress': queue_message
+                    })
+                    
+                    # Update webhook notification status from QUEUED_SLOT to QUEUED_PATH
+                    # Get the transfer record to find the notification(s)
+                    transfer = self.transfer_model.get(transfer_id)
+                    if transfer and transfer.get('media_type') in ['tvshows', 'anime', 'series']:
+                        # Import here to avoid circular dependency
+                        from models.webhook import SeriesWebhookNotification
+                        series_webhook_model = SeriesWebhookNotification()
+                        updated = series_webhook_model.update_notifications_by_transfer_id(
+                            transfer_id,
+                            {'status': 'QUEUED_PATH'}
+                        )
+                        if updated:
+                            print(f"   ✅ Updated {updated} webhook notification(s) to QUEUED_PATH")
+                    
+                    # Skip promotion for now - will be picked up by _promote_same_path_queued()
+                    continue
             
             # Promote this transfer
             normalized_dest = self._normalize_path(dest_path)
