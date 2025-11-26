@@ -241,15 +241,14 @@ class QueueManager:
         })
         
         # Update associated webhook notification status from QUEUED_PATH to READY_FOR_TRANSFER
-        if self.coordinator.series_webhook_model:
-            # Get the webhook notification by transfer_id
-            webhook_notification = self.coordinator.series_webhook_model.get_by_transfer_id(transfer_id)
-            if webhook_notification:
-                self.coordinator.series_webhook_model.update(
-                    webhook_notification['notification_id'],
-                    {'status': 'READY_FOR_TRANSFER'}
-                )
-                print(f"📋 Updated webhook notification to READY_FOR_TRANSFER")
+        if self.coordinator and self.coordinator.series_webhook_model:
+            # Update ALL webhook notifications linked to this transfer_id
+            updated = self.coordinator.series_webhook_model.update_notifications_by_transfer_id(
+                transfer_id,
+                {'status': 'READY_FOR_TRANSFER'}
+            )
+            if updated:
+                print(f"📋 Updated {updated} webhook notification(s) to READY_FOR_TRANSFER")
         
         # Emit WebSocket event if available
         if self.socketio:
@@ -344,15 +343,14 @@ class QueueManager:
                     # Get the transfer record to find the notification(s)
                     transfer = self.transfer_model.get(transfer_id)
                     if transfer and transfer.get('media_type') in ['tvshows', 'anime', 'series']:
-                        # Import here to avoid circular dependency
-                        from models.webhook import SeriesWebhookNotification
-                        series_webhook_model = SeriesWebhookNotification()
-                        updated = series_webhook_model.update_notifications_by_transfer_id(
-                            transfer_id,
-                            {'status': 'QUEUED_PATH'}
-                        )
-                        if updated:
-                            print(f"   ✅ Updated {updated} webhook notification(s) to QUEUED_PATH")
+                        # Use the already-initialized series_webhook_model from coordinator
+                        if self.coordinator and self.coordinator.series_webhook_model:
+                            updated = self.coordinator.series_webhook_model.update_notifications_by_transfer_id(
+                                transfer_id,
+                                {'status': 'QUEUED_PATH'}
+                            )
+                            if updated:
+                                print(f"   ✅ Updated {updated} webhook notification(s) to QUEUED_PATH")
                     
                     # Skip promotion for now - will be picked up by _promote_same_path_queued()
                     continue
@@ -446,4 +444,3 @@ class QueueManager:
                 print(f"✅ Removed {len(stale_transfers)} stale transfer entries")
                 # Try to promote queued transfers after cleanup
                 self._promote_next_queued_transfer()
-
