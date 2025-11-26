@@ -321,6 +321,147 @@ class NotificationService:
             import traceback
             traceback.print_exc()
     
+    def send_rename_discord_notification(self, rename_result: Dict):
+        """
+        Send Discord webhook notification for completed file rename operation.
+        
+        Args:
+            rename_result: Dictionary containing rename operation results with:
+                - notification_id: Unique ID for this rename operation
+                - series_title: Name of the series
+                - total_files: Total number of files to rename
+                - success_count: Number of files successfully renamed
+                - failed_count: Number of files that failed to rename
+                - status: 'completed', 'partial', or 'failed'
+                - renamed_files: List of file rename results
+                - media_type: Type of media (tvshows, anime)
+        """
+        try:
+            # Check if Discord notifications are enabled
+            notifications_enabled = self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED', False)
+            if not notifications_enabled:
+                print("📭 Discord notifications are disabled, skipping rename notification")
+                return
+            
+            # Get Discord webhook URL from settings
+            discord_webhook_url = self.settings.get('DISCORD_WEBHOOK_URL')
+            if not discord_webhook_url:
+                print("📭 Discord webhook URL not configured, skipping rename notification")
+                return
+            
+            # Extract rename information
+            series_title = rename_result.get('series_title', 'Unknown Series')
+            total_files = rename_result.get('total_files', 0)
+            success_count = rename_result.get('success_count', 0)
+            failed_count = rename_result.get('failed_count', 0)
+            status = rename_result.get('status', 'unknown')
+            renamed_files = rename_result.get('renamed_files', [])
+            media_type = rename_result.get('media_type', 'series')
+            
+            # Get settings for Discord notification
+            app_url = self.settings.get('DISCORD_APP_URL', 'http://localhost:5000')
+            icon_url = self.settings.get('DISCORD_ICON_URL', '')
+            
+            # Determine color based on status
+            # Teal/Cyan color (1752220) for successful renames - unique to rename operation
+            # Orange (15105570) for partial renames
+            # Red (15158332) for failed renames
+            if status == 'completed':
+                color = 1752220  # Teal/Cyan - unique to rename
+                status_icon = '✅'
+                status_text = 'Completed'
+            elif status == 'partial':
+                color = 15105570  # Orange for partial
+                status_icon = '⚠️'
+                status_text = 'Partial'
+            else:
+                color = 15158332  # Red for failed
+                status_icon = '❌'
+                status_text = 'Failed'
+            
+            # Build file rename summary (show result file names only)
+            rename_summary_lines = []
+            for file_info in renamed_files[:5]:  # Show first 5 renames
+                new_name = file_info.get('new_name', 'Unknown')
+                file_status = file_info.get('status', 'unknown')
+                
+                if file_status == 'success':
+                    rename_summary_lines.append(f"✓ {new_name}")
+                else:
+                    rename_summary_lines.append(f"✗ {new_name}")
+            
+            if len(renamed_files) > 5:
+                rename_summary_lines.append(f"... and {len(renamed_files) - 5} more files")
+            
+            rename_summary = '\n'.join(rename_summary_lines) if rename_summary_lines else 'No files renamed'
+            
+            # Truncate if too long for Discord
+            if len(rename_summary) > 900:
+                rename_summary = rename_summary[:897] + '...'
+            
+            # Build Discord embed
+            embed = {
+                'title': series_title,
+                'color': color,
+                'fields': [
+                    {
+                        'name': 'Media Type',
+                        'value': media_type.upper() if media_type else 'SERIES',
+                        'inline': True
+                    },
+                    {
+                        'name': 'Rename Status',
+                        'value': f"{status_icon} {status_text}",
+                        'inline': True
+                    },
+                    {
+                        'name': 'Files Summary',
+                        'value': f"```Total: {total_files}\nRenamed: {success_count}\nFailed: {failed_count}```",
+                        'inline': False
+                    },
+                    {
+                        'name': 'Renamed Files',
+                        'value': f"```{rename_summary}```",
+                        'inline': False
+                    }
+                ],
+                'author': {
+                    'name': f'File Rename',
+                    'icon_url': icon_url
+                },
+                'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+                'footer': {
+                    'text': 'DragonCP Rename Operation'
+                }
+            }
+            
+            # Add URL only if it's a valid format
+            if app_url and self._is_valid_discord_url(app_url):
+                embed['url'] = app_url
+            
+            # Prepare Discord payload
+            payload = {
+                'embeds': [embed]
+            }
+            
+            # Send Discord webhook
+            response = requests.post(
+                discord_webhook_url,
+                json=payload,
+                headers={'Content-Type': 'application/json'},
+                timeout=10
+            )
+            
+            if response.status_code == 204:
+                print(f"✅ Discord rename notification sent successfully for {series_title} (status: {status})")
+            else:
+                print(f"❌ Discord rename notification failed for {series_title}: {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            print(f"❌ Error sending Discord rename notification: {e}")
+            import traceback
+            traceback.print_exc()
+    
     def _is_valid_discord_url(self, url: str) -> bool:
         """Validate URL format for Discord embeds"""
         try:

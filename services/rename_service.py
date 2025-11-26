@@ -25,7 +25,7 @@ class RenameService:
     files that were renamed on the server side and need to be reflected locally.
     """
     
-    def __init__(self, config, rename_model, socketio=None):
+    def __init__(self, config, rename_model, socketio=None, notification_service=None):
         """
         Initialize the rename service.
         
@@ -33,10 +33,12 @@ class RenameService:
             config: Application configuration (for path mappings)
             rename_model: RenameNotification database model
             socketio: Optional SocketIO instance for real-time updates
+            notification_service: Optional NotificationService for Discord notifications
         """
         self.config = config
         self.rename_model = rename_model
         self.socketio = socketio
+        self.notification_service = notification_service
         self.path_service = PathService(config)
     
     def process_rename_webhook(self, webhook_data: Dict, media_type: str) -> Tuple[bool, Dict]:
@@ -127,6 +129,12 @@ class RenameService:
             # Log result
             status_icon = '✅' if status == 'completed' else ('⚠️' if status == 'partial' else '❌')
             print(f"{status_icon} Rename {status}: {success_count}/{rename_data['total_files']} files renamed for {rename_data['series_title']}")
+            
+            # Send Discord notification
+            if self.notification_service:
+                # Add media_type to result for notification
+                result['media_type'] = rename_data['media_type']
+                self.notification_service.send_rename_discord_notification(result)
             
             return (status != 'failed', result)
             

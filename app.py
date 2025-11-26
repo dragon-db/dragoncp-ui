@@ -50,7 +50,7 @@ transfer_coordinator = TransferCoordinator(config, db_manager, socketio)
 
 # Initialize rename service
 rename_model = RenameNotification(db_manager)
-rename_service = RenameService(config, rename_model, socketio)
+rename_service = RenameService(config, rename_model, socketio, transfer_coordinator.notification_service)
 
 # Register WebSocket handlers
 register_websocket_handlers(socketio)
