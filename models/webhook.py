@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 DragonCP Webhook Models
-Database models for webhook notifications (movies, series, anime)
+Database models for webhook notifications (movies, series, anime, renames)
 """
 
 import json
+from datetime import datetime
 from typing import List, Dict, Optional
 
 
@@ -726,4 +727,158 @@ class SeriesWebhookNotification:
             import traceback
             traceback.print_exc()
             return 0
+
+
+class RenameNotification:
+    """
+    RenameNotification model for file rename webhook notifications from Sonarr
+    
+    Handles rename events where Sonarr renames files on the server and we need
+    to reflect those changes in local files.
+    
+    STATUS VALUES:
+    - 'pending': Webhook received, not yet processed
+    - 'completed': All files renamed successfully
+    - 'partial': Some files renamed, some failed
+    - 'failed': All files failed to rename
+    """
+    
+    def __init__(self, db_manager):
+        self.db = db_manager
+    
+    def create(self, notification_data: Dict, raw_webhook_data: str = None) -> str:
+        """Create a new rename notification record"""
+        print(f"📝 Creating rename notification for {notification_data.get('series_title', 'Unknown')}")
+        
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.execute('''
+                    INSERT INTO rename_notifications (
+                        notification_id, media_type, series_title, series_id, series_path,
+                        renamed_files, total_files, success_count, failed_count,
+                        status, error_message, raw_webhook_data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    notification_data['notification_id'],
+                    notification_data['media_type'],
+                    notification_data['series_title'],
+                    notification_data.get('series_id'),
+                    notification_data['series_path'],
+                    json.dumps(notification_data.get('renamed_files', [])),
+                    notification_data.get('total_files', 0),
+                    notification_data.get('success_count', 0),
+                    notification_data.get('failed_count', 0),
+                    notification_data.get('status', 'pending'),
+                    notification_data.get('error_message'),
+                    raw_webhook_data
+                ))
+                conn.commit()
+                print(f"✅ Rename notification created successfully for {notification_data.get('series_title', 'Unknown')}")
+                return notification_data['notification_id']
+        except Exception as e:
+            print(f"❌ Error creating rename notification: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def update(self, notification_id: str, updates: Dict) -> bool:
+        """Update rename notification record"""
+        if not updates:
+            return False
+        
+        # Convert lists to JSON strings if present
+        if 'renamed_files' in updates and isinstance(updates['renamed_files'], list):
+            updates['renamed_files'] = json.dumps(updates['renamed_files'])
+        
+        try:
+            with self.db.get_connection() as conn:
+                # Build dynamic update query
+                set_clause = ', '.join([f"{key} = ?" for key in updates.keys()])
+                values = list(updates.values()) + [notification_id]
+                
+                cursor = conn.execute(f'''
+                    UPDATE rename_notifications SET {set_clause}
+                    WHERE notification_id = ?
+                ''', values)
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"❌ Error updating rename notification: {e}")
+            return False
+    
+    def get(self, notification_id: str) -> Optional[Dict]:
+        """Get rename notification by ID"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                SELECT * FROM rename_notifications WHERE notification_id = ?
+            ''', (notification_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                notification = dict(row)
+                # Parse JSON fields
+                try:
+                    notification['renamed_files'] = json.loads(notification.get('renamed_files', '[]'))
+                except json.JSONDecodeError:
+                    notification['renamed_files'] = []
+                return notification
+            return None
+    
+    def get_all(self, status_filter: str = None, media_type_filter: str = None, limit: int = None) -> List[Dict]:
+        """Get all rename notifications with optional filtering"""
+        query = "SELECT * FROM rename_notifications"
+        params = []
+        conditions = []
+        
+        if status_filter:
+            conditions.append("status = ?")
+            params.append(status_filter)
+        
+        if media_type_filter:
+            conditions.append("media_type = ?")
+            params.append(media_type_filter)
+        
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        
+        query += " ORDER BY created_at DESC"
+        
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+        
+        with self.db.get_connection() as conn:
+            cursor = conn.execute(query, params)
+            notifications = []
+            
+            for row in cursor.fetchall():
+                notification = dict(row)
+                # Parse JSON fields
+                try:
+                    notification['renamed_files'] = json.loads(notification.get('renamed_files', '[]'))
+                except json.JSONDecodeError:
+                    notification['renamed_files'] = []
+                notifications.append(notification)
+            
+            return notifications
+    
+    def delete(self, notification_id: str) -> bool:
+        """Delete rename notification record"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                DELETE FROM rename_notifications WHERE notification_id = ?
+            ''', (notification_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+    
+    def cleanup_old_notifications(self, days: int = 30) -> int:
+        """Clean up old processed notifications"""
+        with self.db.get_connection() as conn:
+            cursor = conn.execute('''
+                DELETE FROM rename_notifications 
+                WHERE status IN ('completed', 'partial', 'failed')
+                AND created_at < datetime('now', '-{} days')
+            '''.format(days))
+            conn.commit()
+            return cursor.rowcount
 

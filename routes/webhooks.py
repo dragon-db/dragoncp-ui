@@ -15,13 +15,15 @@ webhooks_bp = Blueprint('webhooks', __name__)
 # Global references to be set by app.py
 config = None
 transfer_coordinator = None
+rename_service = None
 
 
-def init_webhook_routes(app_config, app_transfer_coordinator):
+def init_webhook_routes(app_config, app_transfer_coordinator, app_rename_service=None):
     """Initialize route dependencies"""
-    global config, transfer_coordinator
+    global config, transfer_coordinator, rename_service
     config = app_config
     transfer_coordinator = app_transfer_coordinator
+    rename_service = app_rename_service
 
 
 # ===== WEBHOOK RECEIVER ENDPOINTS =====
@@ -159,6 +161,23 @@ def api_webhook_series_receiver():
                 "is_test": True
             })
         
+        # Check if this is a RENAME event
+        if event_type == 'Rename':
+            print(f"📝 Series RENAME webhook received for {title}")
+            if rename_service:
+                success, result = rename_service.process_rename_webhook(webhook_data, 'tvshows')
+                return jsonify({
+                    "status": "success" if success else "error",
+                    "event_type": "Rename",
+                    "result": result
+                }), 200 if success else 400
+            else:
+                print(f"⚠️  Rename service not initialized, skipping rename webhook")
+                return jsonify({
+                    "status": "error",
+                    "message": "Rename service not initialized"
+                }), 500
+        
         # Parse series webhook data
         parsed_data = transfer_coordinator.parse_series_webhook_data(webhook_data, 'tvshows')
         
@@ -243,6 +262,23 @@ def api_webhook_anime_receiver():
                 "message": "TEST anime webhook received - webhook connectivity verified",
                 "is_test": True
             })
+        
+        # Check if this is a RENAME event
+        if event_type == 'Rename':
+            print(f"📝 Anime RENAME webhook received for {title}")
+            if rename_service:
+                success, result = rename_service.process_rename_webhook(webhook_data, 'anime')
+                return jsonify({
+                    "status": "success" if success else "error",
+                    "event_type": "Rename",
+                    "result": result
+                }), 200 if success else 400
+            else:
+                print(f"⚠️  Rename service not initialized, skipping rename webhook")
+                return jsonify({
+                    "status": "error",
+                    "message": "Rename service not initialized"
+                }), 500
         
         # Parse anime webhook data
         parsed_data = transfer_coordinator.parse_series_webhook_data(webhook_data, 'anime')
@@ -1138,3 +1174,147 @@ def api_series_webhook_dry_run(notification_id):
 def api_anime_webhook_dry_run(notification_id):
     """Perform manual dry-run for an anime webhook notification (same as series)"""
     return api_series_webhook_dry_run(notification_id)
+
+
+# ===== RENAME NOTIFICATION ENDPOINTS =====
+
+@webhooks_bp.route('/webhook/rename/notifications')
+def api_rename_notifications():
+    """Get all rename notifications"""
+    try:
+        status_filter = request.args.get('status')
+        media_type_filter = request.args.get('media_type')
+        limit = request.args.get('limit', 50, type=int)
+        
+        if not rename_service:
+            return jsonify({
+                "status": "error",
+                "message": "Rename service not initialized"
+            }), 500
+        
+        notifications = rename_service.rename_model.get_all(
+            status_filter=status_filter,
+            media_type_filter=media_type_filter,
+            limit=limit
+        )
+        
+        return jsonify({
+            "status": "success",
+            "notifications": notifications,
+            "total": len(notifications)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting rename notifications: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get rename notifications: {str(e)}"
+        }), 500
+
+
+@webhooks_bp.route('/webhook/rename/notifications/<notification_id>')
+def api_rename_notification_details(notification_id):
+    """Get specific rename notification details"""
+    try:
+        if not rename_service:
+            return jsonify({
+                "status": "error",
+                "message": "Rename service not initialized"
+            }), 500
+        
+        notification = rename_service.rename_model.get(notification_id)
+        
+        if not notification:
+            return jsonify({
+                "status": "error",
+                "message": "Rename notification not found"
+            }), 404
+        
+        return jsonify({
+            "status": "success",
+            "notification": notification
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting rename notification details: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get rename notification details: {str(e)}"
+        }), 500
+
+
+@webhooks_bp.route('/webhook/rename/notifications/<notification_id>/json')
+def api_rename_notification_json(notification_id):
+    """Get raw webhook JSON for a rename notification"""
+    try:
+        if not rename_service:
+            return Response(
+                json.dumps({"error": "Rename service not initialized"}, indent=2),
+                mimetype='application/json',
+                status=500
+            )
+        
+        notification = rename_service.rename_model.get(notification_id)
+        
+        if not notification:
+            return Response(
+                json.dumps({"error": "Rename notification not found"}, indent=2),
+                mimetype='application/json',
+                status=404
+            )
+        
+        raw_webhook_data = notification.get('raw_webhook_data')
+        
+        if not raw_webhook_data:
+            return Response(
+                json.dumps({"error": "Raw webhook data not available for this notification"}, indent=2),
+                mimetype='application/json',
+                status=404
+            )
+        
+        return Response(
+            raw_webhook_data,
+            mimetype='application/json',
+            headers={
+                'Content-Disposition': f'inline; filename="rename_webhook_{notification_id}.json"'
+            }
+        )
+        
+    except Exception as e:
+        print(f"❌ Error getting rename webhook JSON: {e}")
+        return Response(
+            json.dumps({"error": f"Failed to get rename webhook JSON: {str(e)}"}, indent=2),
+            mimetype='application/json',
+            status=500
+        )
+
+
+@webhooks_bp.route('/webhook/rename/notifications/<notification_id>/delete', methods=['POST'])
+def api_rename_notification_delete(notification_id):
+    """Delete a rename notification"""
+    try:
+        if not rename_service:
+            return jsonify({
+                "status": "error",
+                "message": "Rename service not initialized"
+            }), 500
+        
+        success = rename_service.rename_model.delete(notification_id)
+        
+        if success:
+            return jsonify({
+                "status": "success",
+                "message": "Rename notification deleted successfully"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to delete rename notification"
+            }), 400
+            
+    except Exception as e:
+        print(f"❌ Error deleting rename notification: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to delete rename notification: {str(e)}"
+        }), 500

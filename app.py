@@ -16,9 +16,11 @@ from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT
 
 # Import models
 from models import DatabaseManager
+from models.webhook import RenameNotification
 
 # Import services
 from services import TransferCoordinator
+from services.rename_service import RenameService
 
 # Import routes
 from routes import (
@@ -46,6 +48,10 @@ ssh_manager = None
 db_manager = DatabaseManager()
 transfer_coordinator = TransferCoordinator(config, db_manager, socketio)
 
+# Initialize rename service
+rename_model = RenameNotification(db_manager)
+rename_service = RenameService(config, rename_model, socketio)
+
 # Register WebSocket handlers
 register_websocket_handlers(socketio)
 start_cleanup_thread(socketio)
@@ -54,7 +60,7 @@ start_cleanup_thread(socketio)
 init_media_routes(config, ssh_manager, transfer_coordinator)
 init_transfer_routes(config, transfer_coordinator)
 init_backup_routes(transfer_coordinator)
-init_webhook_routes(config, transfer_coordinator)
+init_webhook_routes(config, transfer_coordinator, rename_service)
 init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections)
 
 # Register route blueprints

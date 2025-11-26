@@ -12,6 +12,7 @@ export class WebhookManager {
         
         this.initializeEventListeners();
         this.loadWebhookSettings();
+        this.initializeRenameWebSocketListeners();
     }
 
     initializeEventListeners() {
@@ -2161,6 +2162,404 @@ export class WebhookManager {
                 backdrop.style.zIndex = '1059';
             }
         }, 100);
+    }
+
+    // ===== RENAME NOTIFICATION METHODS =====
+    
+    initializeRenameWebSocketListeners() {
+        // Listen for rename webhook events to refresh the notifications list
+        // Toast notifications are handled in websocket-manager.js
+        if (this.app.socket) {
+            this.app.socket.on('rename_webhook_received', () => {
+                // Refresh rename notifications when a new rename arrives
+                this.loadRenameNotifications();
+            });
+            
+            this.app.socket.on('rename_completed', () => {
+                // Refresh rename notifications when a rename completes
+                this.loadRenameNotifications();
+            });
+        }
+    }
+    
+    async loadRenameNotifications() {
+        try {
+            const response = await fetch('/api/webhook/rename/notifications?limit=50');
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.renameNotifications = result.notifications;
+                this.updateRenameNotificationsDisplay();
+            } else {
+                console.error('Failed to load rename notifications:', result.message);
+            }
+        } catch (error) {
+            console.error('Failed to load rename notifications:', error);
+        }
+    }
+    
+    updateRenameNotificationsDisplay() {
+        const container = document.getElementById('renameNotificationsList');
+        if (!container) return;
+        
+        container.innerHTML = '';
+        
+        if (this.renameNotifications.length === 0) {
+            container.innerHTML = `
+                <div class="text-center py-3" style="color: var(--text-muted);">
+                    <i class="bi bi-pencil-square fs-3 d-block mb-2"></i>
+                    <p class="mb-0">No rename operations yet</p>
+                </div>
+            `;
+            return;
+        }
+        
+        this.renameNotifications.forEach(notification => {
+            const card = this.createRenameNotificationCard(notification);
+            container.appendChild(card);
+        });
+    }
+    
+    createRenameNotificationCard(notification) {
+        const div = document.createElement('div');
+        div.className = 'card mb-2';
+        // Apply dark theme styling to card
+        div.style.background = 'var(--card-bg)';
+        div.style.border = '1px solid var(--border-color)';
+        
+        const statusBadge = this.getRenameStatusBadge(notification.status);
+        const createdAt = notification.created_at ? 
+            new Date(notification.created_at).toLocaleString() : 'Unknown';
+        
+        div.innerHTML = `
+            <div class="card-body py-2 px-3">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-pencil-square me-2 text-info"></i>
+                        <div>
+                            <span class="fw-semibold" style="color: var(--text-light);">${this.app.ui.escapeHtml(notification.series_title)}</span>
+                            <span class="badge ${notification.media_type === 'anime' ? 'bg-purple' : 'bg-info'} ms-2">
+                                ${notification.media_type === 'anime' ? 'Anime' : 'Series'}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        ${statusBadge}
+                        <button class="btn btn-outline-secondary btn-sm" 
+                                onclick="dragonCP.webhook.showRenameDetails('${notification.notification_id}')">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between mt-1">
+                    <small class="text-muted">
+                        ${notification.success_count}/${notification.total_files} renamed
+                        ${notification.failed_count > 0 ? `<span class="text-danger">(${notification.failed_count} failed)</span>` : ''}
+                    </small>
+                    <small class="text-muted">${createdAt}</small>
+                </div>
+            </div>
+        `;
+        
+        return div;
+    }
+    
+    getRenameStatusBadge(status) {
+        const badges = {
+            'pending': '<span class="badge bg-secondary">Pending</span>',
+            'completed': '<span class="badge bg-success">Completed</span>',
+            'partial': '<span class="badge bg-warning text-dark">Partial</span>',
+            'failed': '<span class="badge bg-danger">Failed</span>'
+        };
+        return badges[status] || badges['pending'];
+    }
+    
+    async showRenameDetails(notificationId) {
+        try {
+            const response = await fetch(`/api/webhook/rename/notifications/${notificationId}`);
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.renderRenameDetailsModal(result.notification);
+            } else {
+                this.app.ui.showAlert('Failed to load rename details', 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to load rename details:', error);
+            this.app.ui.showAlert('Failed to load rename details', 'danger');
+        }
+    }
+    
+    renderRenameDetailsModal(notification) {
+        // Create or update modal
+        let modal = document.getElementById('renameDetailsModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = 'renameDetailsModal';
+            modal.innerHTML = `
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header gradient-accent">
+                            <h5 class="modal-title">
+                                <i class="bi bi-pencil-square me-2"></i>
+                                Rename Details
+                            </h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="renameDetailsContent">
+                        </div>
+                        <div class="modal-footer" id="renameDetailsFooter">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+        
+        const content = document.getElementById('renameDetailsContent');
+        const statusBadge = this.getRenameStatusBadge(notification.status);
+        const createdAt = notification.created_at ? 
+            new Date(notification.created_at).toLocaleString() : 'Unknown';
+        const processedAt = notification.processed_at ? 
+            new Date(notification.processed_at).toLocaleString() : 'Not processed';
+        
+        // Calculate progress percentage
+        const total = notification.total_files || 0;
+        const success = notification.success_count || 0;
+        const failed = notification.failed_count || 0;
+        const successPercent = total > 0 ? Math.round((success / total) * 100) : 0;
+        const failedPercent = total > 0 ? Math.round((failed / total) * 100) : 0;
+        
+        // Determine progress bar color based on status
+        let progressBarClass = 'bg-success';
+        if (notification.status === 'failed') {
+            progressBarClass = 'bg-danger';
+        } else if (notification.status === 'partial') {
+            progressBarClass = 'bg-warning';
+        }
+        
+        // Build renamed files list with clean table-like layout
+        const renamedFiles = notification.renamed_files || [];
+        let filesListHtml = '';
+        
+        if (renamedFiles.length > 0) {
+            filesListHtml = renamedFiles.map((file, index) => {
+                // Determine status styling
+                let statusIcon, statusClass, bgClass, statusLabel;
+                if (file.status === 'success') {
+                    if (file.message && file.message.includes('already renamed')) {
+                        statusIcon = '<i class="bi bi-check-circle text-info"></i>';
+                        statusClass = 'text-info';
+                        bgClass = 'bg-info bg-opacity-10';
+                        statusLabel = 'Already renamed';
+                    } else {
+                        statusIcon = '<i class="bi bi-check-circle-fill text-success"></i>';
+                        statusClass = 'text-success';
+                        bgClass = 'bg-success bg-opacity-10';
+                        statusLabel = 'Renamed';
+                    }
+                } else if (file.status === 'failed') {
+                    statusIcon = '<i class="bi bi-x-circle-fill text-danger"></i>';
+                    statusClass = 'text-danger';
+                    bgClass = 'bg-danger bg-opacity-10';
+                    statusLabel = 'Failed';
+                } else {
+                    statusIcon = '<i class="bi bi-hourglass text-secondary"></i>';
+                    statusClass = 'text-secondary';
+                    bgClass = '';
+                    statusLabel = 'Pending';
+                }
+                
+                const displayMessage = file.message || file.error || '';
+                const prevName = this.app.ui.escapeHtml(file.previous_name || '');
+                const newName = this.app.ui.escapeHtml(file.new_name || '');
+                
+                return `
+                    <div class="rounded ${bgClass} p-3 mb-2" style="border: 1px solid var(--border-color);">
+                        <!-- Header: Status and file number -->
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <div class="d-flex align-items-center gap-2">
+                                ${statusIcon}
+                                <span class="small fw-semibold ${statusClass}">${statusLabel}</span>
+                            </div>
+                            <span class="badge bg-secondary">#${index + 1}</span>
+                        </div>
+                        
+                        <!-- Old filename -->
+                        <div class="d-flex align-items-start mb-1">
+                            <span class="text-muted me-2" style="min-width: 50px; font-size: 0.75rem;">FROM:</span>
+                            <code class="small text-muted" style="word-break: break-all; text-decoration: line-through;">${prevName}</code>
+                        </div>
+                        
+                        <!-- New filename -->
+                        <div class="d-flex align-items-start">
+                            <span class="${statusClass} me-2" style="min-width: 50px; font-size: 0.75rem;">TO:</span>
+                            <code class="small" style="word-break: break-all; color: var(--text-light);">${newName}</code>
+                        </div>
+                        
+                        <!-- Message if present -->
+                        ${displayMessage && !displayMessage.includes(statusLabel) ? `
+                            <div class="mt-2 pt-2" style="border-top: 1px dashed var(--border-color);">
+                                <small class="${statusClass}"><i class="bi bi-info-circle me-1"></i>${this.app.ui.escapeHtml(displayMessage)}</small>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        } else {
+            filesListHtml = '<p class="text-muted text-center py-3">No file information available</p>';
+        }
+        
+        content.innerHTML = `
+            <!-- Compact Header with Series Info and Status -->
+            <div class="d-flex flex-wrap justify-content-between align-items-start mb-4 pb-3 border-bottom">
+                <div>
+                    <h4 class="mb-1">${this.app.ui.escapeHtml(notification.series_title)}</h4>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge ${notification.media_type === 'anime' ? 'bg-purple' : 'bg-info'}">
+                            ${notification.media_type === 'anime' ? 'Anime' : 'Series'}
+                        </span>
+                        ${statusBadge}
+                        <small class="text-muted">${processedAt}</small>
+                    </div>
+                </div>
+                <div class="text-end mt-2 mt-md-0">
+                    <div class="d-flex align-items-center gap-3">
+                        <div class="text-center">
+                            <div class="fs-4 fw-bold text-success">${success}</div>
+                            <small class="text-muted">Success</small>
+                        </div>
+                        <div class="text-center">
+                            <div class="fs-4 fw-bold text-danger">${failed}</div>
+                            <small class="text-muted">Failed</small>
+                        </div>
+                        <div class="text-center">
+                            <div class="fs-4 fw-bold">${total}</div>
+                            <small class="text-muted">Total</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Progress Bar -->
+            <div class="mb-4">
+                <div class="d-flex justify-content-between mb-1">
+                    <small class="text-muted">Rename Progress</small>
+                    <small class="text-muted">${success}/${total} files</small>
+                </div>
+                <div class="progress" style="height: 8px;">
+                    <div class="progress-bar ${progressBarClass}" role="progressbar" style="width: ${successPercent}%"></div>
+                    ${failed > 0 ? `<div class="progress-bar bg-danger" role="progressbar" style="width: ${failedPercent}%"></div>` : ''}
+                </div>
+            </div>
+            
+            <!-- Files List -->
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h6 class="mb-0"><i class="bi bi-files me-2"></i>File Operations</h6>
+                    <small class="text-muted">${renamedFiles.length} file(s)</small>
+                </div>
+                <div class="card-body" style="max-height: 350px; overflow-y: auto;">
+                    ${filesListHtml}
+                </div>
+            </div>
+        `;
+        
+        // Update footer with View JSON button
+        const footer = document.getElementById('renameDetailsFooter');
+        if (footer) {
+            footer.innerHTML = `
+                <button type="button" class="btn btn-outline-info btn-sm" onclick="dragonCP.webhook.viewRenameWebhookJson('${notification.notification_id}')">
+                    <i class="bi bi-code-square me-1"></i> View JSON
+                </button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            `;
+        }
+        
+        const bootstrapModal = new bootstrap.Modal(modal);
+        bootstrapModal.show();
+    }
+    
+    viewRenameWebhookJson(notificationId) {
+        // Open the webhook JSON in a new tab (same behavior as series/movies)
+        window.open(`/api/webhook/rename/notifications/${notificationId}/json`, '_blank');
+    }
+    
+    async deleteRenameNotification(notificationId) {
+        if (!confirm('Are you sure you want to delete this rename notification?')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch(`/api/webhook/rename/notifications/${notificationId}/delete`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            
+            if (result.status === 'success') {
+                this.app.ui.showAlert('Rename notification deleted', 'success');
+                this.loadRenameNotifications();
+                
+                // Close modal if open
+                const modal = document.getElementById('renameDetailsModal');
+                if (modal) {
+                    const bsModal = bootstrap.Modal.getInstance(modal);
+                    if (bsModal) bsModal.hide();
+                }
+            } else {
+                this.app.ui.showAlert(`Failed to delete: ${result.message}`, 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to delete rename notification:', error);
+            this.app.ui.showAlert('Failed to delete rename notification', 'danger');
+        }
+    }
+    
+    showRenameHistoryModal() {
+        // Load and show rename history
+        this.loadRenameNotifications();
+        
+        // Create or update modal
+        let modal = document.getElementById('renameHistoryModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = 'renameHistoryModal';
+            modal.innerHTML = `
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header gradient-accent">
+                            <h5 class="modal-title">
+                                <i class="bi bi-pencil-square me-2"></i>
+                                Rename History
+                            </h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+                            <div id="renameNotificationsList">
+                                <div class="text-center py-4">
+                                    <div class="spinner-border text-primary" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="dragonCP.webhook.loadRenameNotifications()">
+                                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                            </button>
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+        
+        const bootstrapModal = new bootstrap.Modal(modal);
+        bootstrapModal.show();
     }
 
     // Initialize the webhook manager

@@ -117,6 +117,27 @@ class DatabaseManager:
                 )
             ''')
 
+            # Rename notifications for file rename webhooks from Sonarr
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS rename_notifications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    notification_id TEXT UNIQUE NOT NULL,
+                    media_type TEXT NOT NULL,  -- 'tvshows' or 'anime'
+                    series_title TEXT NOT NULL,
+                    series_id INTEGER,
+                    series_path TEXT NOT NULL,
+                    renamed_files TEXT DEFAULT '[]',  -- JSON array of {previousPath, newPath, localPreviousPath, localNewPath, status, error}
+                    total_files INTEGER DEFAULT 0,
+                    success_count INTEGER DEFAULT 0,
+                    failed_count INTEGER DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'pending',  -- 'pending', 'completed', 'partial', 'failed'
+                    error_message TEXT,
+                    raw_webhook_data TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    processed_at DATETIME
+                )
+            ''')
+
             # Application settings (key-value store for dynamic UI settings)
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS app_settings (
@@ -186,6 +207,10 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_series_webhook_notification_id ON series_webhook_notifications(notification_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_series_webhook_status ON series_webhook_notifications(status)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_series_webhook_transfer_id ON series_webhook_notifications(transfer_id)')
+            # Rename notifications indexes
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_rename_notification_id ON rename_notifications(notification_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_rename_status ON rename_notifications(status)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_rename_created_at ON rename_notifications(created_at)')
             
             conn.commit()
         
@@ -197,6 +222,7 @@ class DatabaseManager:
         self._ensure_app_settings_table()
         self._ensure_series_webhook_auto_sync_columns()
         self._ensure_raw_webhook_data_columns()
+        self._ensure_rename_notifications_table()
 
     def _ensure_backup_file_context_columns(self):
         """MIGRATION CODE: Ensure context columns exist on transfer_backup_files for upgrades."""
@@ -319,6 +345,37 @@ class DatabaseManager:
                 conn.commit()
         except Exception as e:
             print(f"⚠️  Raw webhook data columns migration check failed: {e}")
+    
+    def _ensure_rename_notifications_table(self):
+        """MIGRATION CODE: Ensure rename_notifications table exists (for upgrades)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS rename_notifications (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        notification_id TEXT UNIQUE NOT NULL,
+                        media_type TEXT NOT NULL,
+                        series_title TEXT NOT NULL,
+                        series_id INTEGER,
+                        series_path TEXT NOT NULL,
+                        renamed_files TEXT DEFAULT '[]',
+                        total_files INTEGER DEFAULT 0,
+                        success_count INTEGER DEFAULT 0,
+                        failed_count INTEGER DEFAULT 0,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        error_message TEXT,
+                        raw_webhook_data TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        processed_at DATETIME
+                    )
+                ''')
+                # Ensure indexes
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_rename_notification_id ON rename_notifications(notification_id)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_rename_status ON rename_notifications(status)')
+                conn.execute('CREATE INDEX IF NOT EXISTS idx_rename_created_at ON rename_notifications(created_at)')
+                conn.commit()
+        except Exception as e:
+            print(f"⚠️  Rename notifications table migration check failed: {e}")
     
     def get_connection(self):
         """Get database connection with row factory"""

@@ -82,6 +82,24 @@ export class WebSocketManager {
             this.app.ui.showAlert(data.message, 'info');
         });
 
+        // Rename webhook notifications
+        this.socket.on('rename_webhook_received', (data) => {
+            console.log('📝 Rename webhook received:', data);
+            this.app.ui.showAlert(
+                `📝 Rename webhook received for "${data.series_title}" (${data.total_files} file${data.total_files > 1 ? 's' : ''})`,
+                'info'
+            );
+        });
+
+        this.socket.on('rename_completed', (data) => {
+            console.log('📝 Rename completed:', data);
+            const statusIcon = data.status === 'completed' ? '✅' : 
+                               data.status === 'partial' ? '⚠️' : '❌';
+            const alertType = data.status === 'failed' ? 'danger' : 
+                              data.status === 'partial' ? 'warning' : 'success';
+            this.app.ui.showAlert(`${statusIcon} ${data.message}`, alertType);
+        });
+
         this.socket.on('disconnect', (reason) => {
             console.log('WebSocket disconnected:', reason);
             this.isWebSocketConnected = false;
