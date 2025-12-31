@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-DragonCP Transfer Model
+DragonCP Transfer Model (v2)
 Database model for transfer operations and metadata parsing
+
+Schema v2 Changes:
+- Removed: episode_name, parsed_episode columns
+- Renamed: transfer_type → operation_type
+- Renamed: process_id → rsync_process_id
 """
 
 import json
@@ -25,7 +30,6 @@ class Transfer:
         parsed_data = self._parse_metadata(
             transfer_data.get('folder_name', ''),
             transfer_data.get('season_name', ''),
-            transfer_data.get('episode_name', ''),
             transfer_data.get('media_type', '')
         )
         
@@ -35,24 +39,22 @@ class Transfer:
             with self.db.get_connection() as conn:
                 cursor = conn.execute('''
                     INSERT INTO transfers (
-                        transfer_id, media_type, folder_name, season_name, episode_name,
-                        source_path, dest_path, transfer_type, status, process_id,
-                        parsed_title, parsed_season, parsed_episode, start_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        transfer_id, media_type, folder_name, season_name,
+                        source_path, dest_path, operation_type, status, rsync_process_id,
+                        parsed_title, parsed_season, start_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     transfer_data['transfer_id'],
                     transfer_data['media_type'],
                     transfer_data['folder_name'],
                     transfer_data.get('season_name'),
-                    transfer_data.get('episode_name'),
                     transfer_data['source_path'],
                     transfer_data['dest_path'],
-                    transfer_data['transfer_type'],
+                    transfer_data['operation_type'],
                     transfer_data.get('status', 'pending'),
-                    transfer_data.get('process_id'),
+                    transfer_data.get('rsync_process_id'),
                     parsed_data['title'],
                     parsed_data['season'],
-                    parsed_data['episode'],
                     datetime.now().isoformat()
                 ))
                 conn.commit()
@@ -229,13 +231,12 @@ class Transfer:
         })
     
     def _parse_metadata(self, folder_name: str, season_name: str = None, 
-                       episode_name: str = None, media_type: str = '') -> Dict[str, str]:
-        """Parse metadata from folder and file names"""
+                       media_type: str = '') -> Dict[str, str]:
+        """Parse metadata from folder and season names"""
         
         # Clean and normalize names
         title = self._clean_title(folder_name)
         season = None
-        episode = None
         
         # Parse season information
         if season_name:
@@ -243,26 +244,9 @@ class Transfer:
             if season_match:
                 season = season_match.group(1) or season_match.group(2) or season_match.group(3)
         
-        # Parse episode information
-        if episode_name:
-            # Try to extract episode number from filename
-            episode_patterns = [
-                r'[Ee](\d+)',  # E01, e01
-                r'[Ee]pisode\s*(\d+)',  # Episode 01
-                r'(\d+)x(\d+)',  # 1x01 format
-                r'[Ss]\d+[Ee](\d+)',  # S01E01 format
-            ]
-            
-            for pattern in episode_patterns:
-                match = re.search(pattern, episode_name)
-                if match:
-                    episode = match.group(1) if len(match.groups()) == 1 else match.group(2)
-                    break
-        
         return {
             'title': title,
-            'season': season,
-            'episode': episode
+            'season': season
         }
     
     def _clean_title(self, title: str) -> str:

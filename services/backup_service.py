@@ -84,10 +84,9 @@ class BackupService:
             'media_type': transfer.get('media_type'),
             'folder_name': transfer.get('folder_name'),
             'season_name': transfer.get('season_name'),
-            'episode_name': transfer.get('episode_name'),
             'source_path': transfer.get('source_path'),
             'dest_path': transfer.get('dest_path'),
-            'backup_dir': dynamic_backup_dir,
+            'backup_path': dynamic_backup_dir,
             'file_count': file_count,
             'total_size': total_size,
             'status': 'ready',
@@ -96,7 +95,7 @@ class BackupService:
         self.backup_model.create_or_replace_backup(backup_record)
         # Replace existing file list if any
         with self.db.get_connection() as conn:
-            conn.execute('DELETE FROM transfer_backup_files WHERE backup_id = ?', (transfer_id,))
+            conn.execute('DELETE FROM backup_file WHERE backup_id = ?', (transfer_id,))
             conn.commit()
         self.backup_model.add_backup_files(transfer_id, files)
 
@@ -112,9 +111,9 @@ class BackupService:
             record = self.backup_model.get(backup_id)
             if not record:
                 return False, 'Backup not found'
-            backup_dir = record['backup_dir']
+            backup_path = record['backup_path']
             dest_path = record['dest_path']
-            if not os.path.exists(backup_dir):
+            if not os.path.exists(backup_path):
                 return False, 'Backup directory not found on disk'
             if not os.path.exists(dest_path):
                 try:
@@ -140,12 +139,11 @@ class BackupService:
                 'media_type': record.get('media_type') or 'backup',
                 'folder_name': record.get('folder_name') or '',
                 'season_name': record.get('season_name'),
-                'episode_name': None,
-                'source_path': backup_dir,
+                'source_path': backup_path,
                 'dest_path': dest_path,
-                'transfer_type': 'restore',
+                'operation_type': 'restore',
                 'status': 'running',
-                'process_id': None
+                'rsync_process_id': None
             })
 
             # Emit initial plan summary via socket (include context)
@@ -214,7 +212,7 @@ class BackupService:
                     temp_list_file = temp_path
 
             # Source and destination
-            rsync_cmd.extend([f"{backup_dir}/", f"{dest_path}/"]) 
+            rsync_cmd.extend([f"{backup_path}/", f"{dest_path}/"]) 
             print(f"🔄 Context-aware restore {backup_id}: {' '.join(rsync_cmd)}")
             result = subprocess.run(rsync_cmd, capture_output=True, text=True)
             # Log copy actions per operation (best-effort), include context on next line
@@ -280,18 +278,18 @@ class BackupService:
                 return False, 'Backup not found'
             # This method now only deletes both by default; for independent controls, use delete_backup_options
             if delete_files:
-                bdir = record.get('backup_dir')
-                if bdir and os.path.exists(bdir):
+                bpath = record.get('backup_path')
+                if bpath and os.path.exists(bpath):
                     try:
                         # Check TEST_MODE before removing backup directory
                         if os.environ.get('TEST_MODE', '0') == '1':
-                            print(f"🧪 TEST_MODE: Would remove backup directory: {bdir}")
+                            print(f"🧪 TEST_MODE: Would remove backup directory: {bpath}")
                         else:
-                            shutil.rmtree(bdir)
+                            shutil.rmtree(bpath)
                     except Exception as e:
                         return False, f'Failed to remove backup directory: {e}'
             with self.db.get_connection() as conn:
-                conn.execute('DELETE FROM transfer_backup_files WHERE backup_id = ?', (backup_id,))
+                conn.execute('DELETE FROM backup_file WHERE backup_id = ?', (backup_id,))
                 conn.commit()
             self.backup_model.update(backup_id, {'status': 'deleted'})
             return True, 'Backup deleted'
@@ -305,20 +303,20 @@ class BackupService:
             if not record:
                 return False, 'Backup not found'
             if delete_files:
-                bdir = record.get('backup_dir')
-                if bdir and os.path.exists(bdir):
+                bpath = record.get('backup_path')
+                if bpath and os.path.exists(bpath):
                     try:
                         # Check TEST_MODE before removing backup directory
                         if os.environ.get('TEST_MODE', '0') == '1':
-                            print(f"🧪 TEST_MODE: Would remove backup directory: {bdir}")
+                            print(f"🧪 TEST_MODE: Would remove backup directory: {bpath}")
                         else:
-                            shutil.rmtree(bdir)
+                            shutil.rmtree(bpath)
                     except Exception as e:
                         return False, f'Failed to remove backup directory: {e}'
             if delete_record:
                 # Remove file rows and high-level record
                 with self.db.get_connection() as conn:
-                    conn.execute('DELETE FROM transfer_backup_files WHERE backup_id = ?', (backup_id,))
+                    conn.execute('DELETE FROM backup_file WHERE backup_id = ?', (backup_id,))
                     conn.commit()
                 deleted = self.backup_model.delete(backup_id)
                 return True, 'Backup record deleted' if deleted else 'Backup record deletion attempted'
@@ -338,7 +336,7 @@ class BackupService:
         record = self.backup_model.get(backup_id)
         if not record:
             return {'operations': []}
-        backup_dir = record['backup_dir']
+        backup_path = record['backup_path']
         dest_path = record['dest_path'] or ''
         # Load files with context
         file_rows = self.backup_model.get_files(backup_id)
@@ -348,7 +346,7 @@ class BackupService:
         ops = []
         for row in file_rows:
             rel = row.get('relative_path')
-            backup_full = os.path.join(backup_dir, rel)
+            backup_full = os.path.join(backup_path, rel)
             copy_to = row.get('original_path') or os.path.join(dest_path, rel)
             # Determine target delete by scanning dest_path for context match
             target = self._find_dest_match_for_context(dest_path, row, fallback_path=copy_to)
@@ -407,7 +405,6 @@ class BackupService:
                 media_type = t.get('media_type')
                 folder_name = t.get('folder_name')
                 season_name = t.get('season_name')
-                episode_name = t.get('episode_name')
                 source_path = t.get('source_path')
             else:
                 # Unknown transfer; best-effort import with dest unknown
@@ -416,7 +413,6 @@ class BackupService:
                 # derive a readable title from safe folder (underscores -> spaces)
                 folder_name = (safe_folder or '').replace('_', ' ').strip() or None
                 season_name = None
-                episode_name = None
                 source_path = ''
             # Walk files for stats
             total_size = 0
@@ -482,10 +478,9 @@ class BackupService:
                 'media_type': media_type,
                 'folder_name': folder_name,
                 'season_name': season_name,
-                'episode_name': episode_name,
                 'source_path': source_path,
                 'dest_path': dest_path,
-                'backup_dir': full,
+                'backup_path': full,
                 'file_count': len(files),
                 'total_size': total_size,
                 'status': 'ready',
@@ -493,7 +488,7 @@ class BackupService:
             }
             self.backup_model.create_or_replace_backup(backup_record)
             with self.db.get_connection() as conn:
-                conn.execute('DELETE FROM transfer_backup_files WHERE backup_id = ?', (backup_id_to_use,))
+                conn.execute('DELETE FROM backup_file WHERE backup_id = ?', (backup_id_to_use,))
                 conn.commit()
             self.backup_model.add_backup_files(backup_id_to_use, files)
             imported += 1

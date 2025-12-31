@@ -67,8 +67,8 @@ class TransferCoordinator:
     
     # Transfer Operations
     def start_transfer(self, transfer_id: str, source_path: str, dest_path: str, 
-                      transfer_type: str = "folder", media_type: str = "", 
-                      folder_name: str = "", season_name: str = None, episode_name: str = None) -> Tuple[bool, str]:
+                      operation_type: str = "folder", media_type: str = "", 
+                      folder_name: str = "", season_name: str = None) -> Tuple[bool, str]:
         """
         Start a new transfer with database persistence and queue management
         
@@ -110,10 +110,9 @@ class TransferCoordinator:
                 'media_type': media_type,
                 'folder_name': folder_name,
                 'season_name': season_name,
-                'episode_name': episode_name,
                 'source_path': source_path,
                 'dest_path': dest_path,
-                'transfer_type': transfer_type,
+                'operation_type': operation_type,
                 'status': 'queued',  # Changed from 'duplicate' to 'queued'
                 'progress': queue_message,
                 'queue_reason': 'path',  # Explicit tracking: 'path' or 'slot'
@@ -152,10 +151,9 @@ class TransferCoordinator:
                 'media_type': media_type,
                 'folder_name': folder_name,
                 'season_name': season_name,
-                'episode_name': episode_name,
                 'source_path': source_path,
                 'dest_path': dest_path,
-                'transfer_type': transfer_type,
+                'operation_type': operation_type,
                 'status': 'queued',
                 'progress': 'Waiting in queue...',
                 'queue_reason': 'slot'  # Explicit tracking: 'path' or 'slot'
@@ -182,10 +180,9 @@ class TransferCoordinator:
                 'media_type': media_type,
                 'folder_name': folder_name,
                 'season_name': season_name,
-                'episode_name': episode_name,
                 'source_path': source_path,
                 'dest_path': dest_path,
-                'transfer_type': transfer_type,
+                'operation_type': operation_type,
                 'status': 'pending'
             }
             
@@ -199,7 +196,7 @@ class TransferCoordinator:
             
             # Start the actual transfer process
             print(f"🚀 Calling start_rsync_process...")
-            success = self.transfer_service.start_rsync_process(transfer_id, source_path, dest_path, transfer_type, backup_dir)
+            success = self.transfer_service.start_rsync_process(transfer_id, source_path, dest_path, operation_type, backup_dir)
             print(f"   start_rsync_process returned: {success}")
             
             if success:
@@ -312,7 +309,7 @@ class TransferCoordinator:
                 transfer_id,
                 {
                     'status': 'syncing',
-                    'synced_at': datetime.now().isoformat()
+                    'completed_at': datetime.now().isoformat()
                 }
             )
             if updated_count > 0:
@@ -329,7 +326,7 @@ class TransferCoordinator:
             transfer_id,
             transfer['source_path'],
             transfer['dest_path'],
-            transfer['transfer_type'],
+            transfer['operation_type'],
             backup_dir
         )
         

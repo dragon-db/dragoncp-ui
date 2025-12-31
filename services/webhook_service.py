@@ -275,7 +275,7 @@ class WebhookService:
             # Update notification status to syncing
             self.webhook_model.update(notification_id, {
                 'status': 'syncing',
-                'synced_at': datetime.now().isoformat()
+                'completed_at': datetime.now().isoformat()
             })
             
             # Generate transfer ID
@@ -314,11 +314,10 @@ class WebhookService:
                 transfer_id=transfer_id,
                 source_path=source_path,
                 dest_path=dest_path,
-                transfer_type="folder",
+                operation_type="folder",
                 media_type="movies",
                 folder_name=folder_name,
-                season_name=None,
-                episode_name=None
+                season_name=None
             )
             
             if success:
@@ -456,11 +455,10 @@ class WebhookService:
                 transfer_id=transfer_id,
                 source_path=source_path,
                 dest_path=dest_path,
-                transfer_type='folder',
+                operation_type='folder',
                 media_type=media_type,
                 folder_name=folder_name,
-                season_name=season_name,
-                episode_name=None
+                season_name=season_name
             )
             
             series_title = notification['series_title']
@@ -490,7 +488,7 @@ class WebhookService:
                     # Mark all notifications with this transfer_id as SYNCING
                     self.series_webhook_model.update_notifications_by_transfer_id(
                         transfer_id,
-                        {'status': 'syncing', 'synced_at': datetime.now().isoformat()}
+                        {'status': 'syncing', 'completed_at': datetime.now().isoformat()}
                     )
                 elif webhook_status in ['QUEUED_SLOT', 'QUEUED_PATH']:
                     # Mark all notifications with this transfer_id as queued
@@ -563,12 +561,12 @@ class WebhookService:
                 if status == 'running':
                     update_data = {
                         'status': 'syncing',  # Transfer running -> Webhook SYNCING
-                        'synced_at': datetime.now().isoformat()
+                        'completed_at': datetime.now().isoformat()
                     }
                 elif status == 'completed':
                     update_data = {
                         'status': 'completed',
-                        'synced_at': datetime.now().isoformat()
+                        'completed_at': datetime.now().isoformat()
                     }
                 elif status == 'failed':
                     update_data = {

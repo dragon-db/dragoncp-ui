@@ -26,11 +26,10 @@ def api_transfer():
     """Start a transfer"""
     try:
         data = request.json
-        transfer_type = data.get('type')  # 'folder' or 'file'
+        operation_type = data.get('type')  # 'folder' or 'file'
         media_type = data.get('media_type')
         folder_name = data.get('folder_name')
         season_name = data.get('season_name')
-        episode_name = data.get('episode_name')
         
         print(f"🔄 Transfer request: {data}")
         
@@ -88,19 +87,17 @@ def api_transfer():
         print(f"   - media_type: {media_type}")
         print(f"   - folder_name: {folder_name}")
         print(f"   - season_name: {season_name}")
-        print(f"   - episode_name: {episode_name}")
-        print(f"   - transfer_type: {transfer_type}")
+        print(f"   - operation_type: {operation_type}")
         
         try:
             success = transfer_coordinator.start_transfer(
                 transfer_id, 
                 source_path, 
                 dest_path, 
-                transfer_type,
+                operation_type,
                 media_type,
                 folder_name,
-                season_name,
-                episode_name
+                season_name
             )
             
             if success:
@@ -154,11 +151,9 @@ def api_transfer_status(transfer_id):
                 "media_type": transfer["media_type"],
                 "folder_name": transfer["folder_name"],
                 "season_name": transfer.get("season_name"),
-                "episode_name": transfer.get("episode_name"),
                 "parsed_title": transfer.get("parsed_title"),
                 "parsed_season": transfer.get("parsed_season"),
-                "parsed_episode": transfer.get("parsed_episode"),
-                "transfer_type": transfer["transfer_type"],
+                "operation_type": transfer["operation_type"],
                 "source_path": transfer["source_path"],
                 "dest_path": transfer["dest_path"]
             }
@@ -215,11 +210,9 @@ def api_all_transfers():
                 "media_type": transfer["media_type"],
                 "folder_name": transfer["folder_name"],
                 "season_name": transfer.get("season_name"),
-                "episode_name": transfer.get("episode_name"),
                 "parsed_title": transfer.get("parsed_title"),
                 "parsed_season": transfer.get("parsed_season"),
-                "parsed_episode": transfer.get("parsed_episode"),
-                "transfer_type": transfer["transfer_type"],
+                "operation_type": transfer["operation_type"],
                 "source_path": transfer["source_path"],
                 "dest_path": transfer["dest_path"],
                 "start_time": transfer["start_time"],
@@ -259,15 +252,13 @@ def api_active_transfers():
                 "media_type": transfer["media_type"],
                 "folder_name": transfer["folder_name"],
                 "season_name": transfer.get("season_name"),
-                "episode_name": transfer.get("episode_name"),
                 "parsed_title": transfer.get("parsed_title"),
                 "parsed_season": transfer.get("parsed_season"),
-                "parsed_episode": transfer.get("parsed_episode"),
-                "transfer_type": transfer["transfer_type"],
+                "operation_type": transfer["operation_type"],
                 "source_path": transfer["source_path"],
                 "dest_path": transfer["dest_path"],
                 "start_time": transfer["start_time"],
-                "process_id": transfer.get("process_id"),
+                "rsync_process_id": transfer.get("rsync_process_id"),
                 "log_count": len(transfer["logs"])
             }
             formatted_transfers.append(formatted_transfer)

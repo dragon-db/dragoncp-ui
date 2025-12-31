@@ -678,7 +678,7 @@ def api_webhook_mark_notification_complete(notification_id):
         from datetime import datetime
         success = transfer_coordinator.webhook_model.update(notification_id, {
             'status': 'completed',
-            'synced_at': datetime.now().isoformat()
+            'completed_at': datetime.now().isoformat()
         })
         
         if success:
@@ -718,7 +718,7 @@ def api_series_webhook_mark_notification_complete(notification_id):
         from datetime import datetime
         success = transfer_coordinator.series_webhook_model.update(notification_id, {
             'status': 'completed',
-            'synced_at': datetime.now().isoformat()
+            'completed_at': datetime.now().isoformat()
         })
         
         if success:
@@ -759,7 +759,7 @@ def api_anime_webhook_mark_notification_complete(notification_id):
         from datetime import datetime
         success = transfer_coordinator.series_webhook_model.update(notification_id, {
             'status': 'completed',
-            'synced_at': datetime.now().isoformat()
+            'completed_at': datetime.now().isoformat()
         })
         
         if success:

@@ -192,10 +192,24 @@ You can connect using either:
 - **Resume Capability**: Interrupted transfers can be resumed
 - **Transfer Management**: Cancel, restart, and monitor active transfers
 - **Audit Trail**: Complete history of all transfer operations
+- **v2 Schema**: Improved database structure with better naming conventions (see [Migration Guide](docs/database/MIGRATION_GUIDE.md))
 
 ## License
 
 This project is part of the DragonCP media management system and is specifically designed to work with the DragonDB management system. This application is optimized for DragonDB's custom setup and directory structure, and may not work correctly with other custom media management configurations. The application is intended for use with DragonDB's specific media organization and transfer workflows.
+
+## Database Migration (v1 to v2)
+
+If you're upgrading from v1 to v2, you'll need to migrate your database. See the [Migration Guide](docs/database/MIGRATION_GUIDE.md) for detailed instructions.
+
+**Quick Migration:**
+```bash
+# Basic migration (drops old tables, creates v2 schema)
+python scripts/migrate_v1_to_v2.py
+
+# Migration with backup and data preservation
+python scripts/migrate_v1_to_v2.py --backup --migrate-data
+```
 
 ## Support
 

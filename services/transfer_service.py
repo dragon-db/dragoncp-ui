@@ -256,13 +256,13 @@ class TransferService:
             'raw_output': stdout  # Store full output for complete log display
         }
     
-    def start_rsync_process(self, transfer_id: str, source_path: str, dest_path: str, transfer_type: str, backup_dir: str) -> bool:
+    def start_rsync_process(self, transfer_id: str, source_path: str, dest_path: str, operation_type: str, backup_dir: str) -> bool:
         """Start the rsync process"""
         try:
             print(f"🔄 Starting transfer {transfer_id}")
             print(f"📁 Source: {source_path}")
             print(f"📁 Destination: {dest_path}")
-            print(f"📁 Type: {transfer_type}")
+            print(f"📁 Type: {operation_type}")
             
             # Create destination directory
             try:
@@ -367,7 +367,7 @@ class TransferService:
             
             # IMPORTANT: Always use trailing slash for folder syncs to sync contents, not the folder itself
             # For 'file' type, no trailing slash; for 'folder' type, trailing slash on both source and dest
-            if transfer_type == "file":
+            if operation_type == "file":
                 rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}", f"{dest_path}/"])
             else:
                 rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
@@ -402,7 +402,7 @@ class TransferService:
             # Update transfer with process ID and running status
             self.transfer_model.update(transfer_id, {
                 'status': 'running',
-                'process_id': process.pid,
+                'rsync_process_id': process.pid,
                 'progress': 'Transfer started...'
             })
             
@@ -544,10 +544,10 @@ class TransferService:
             return True
         
         # Handle running transfers
-        if transfer['status'] == 'running' and transfer['process_id']:
+        if transfer['status'] == 'running' and transfer['rsync_process_id']:
             try:
                 import psutil
-                process = psutil.Process(transfer['process_id'])
+                process = psutil.Process(transfer['rsync_process_id'])
                 process.terminate()
                 
                 # Update status
@@ -579,7 +579,7 @@ class TransferService:
             self.transfer_model.update(transfer_id, {
                 'status': 'pending',
                 'progress': 'Restarting transfer...',
-                'process_id': None,
+                'rsync_process_id': None,
                 'start_time': datetime.now().isoformat(),
                 'end_time': None
             })
@@ -589,7 +589,7 @@ class TransferService:
                 transfer_id, 
                 transfer['source_path'], 
                 transfer['dest_path'], 
-                transfer['transfer_type'],
+                transfer['operation_type'],
                 backup_dir
             )
         
@@ -603,8 +603,8 @@ class TransferService:
         for transfer in active_transfers:
             if transfer['status'] == 'running':
                 # Check if process is still running
-                if transfer['process_id'] and self._is_process_running(transfer['process_id']):
-                    print(f"📋 Resuming monitoring for transfer {transfer['transfer_id']} (PID: {transfer['process_id']})")
+                if transfer['rsync_process_id'] and self._is_process_running(transfer['rsync_process_id']):
+                    print(f"📋 Resuming monitoring for transfer {transfer['transfer_id']} (PID: {transfer['rsync_process_id']})")
                     # Resume monitoring in a separate thread
                     threading.Thread(
                         target=self._resume_transfer_monitoring, 
@@ -645,7 +645,7 @@ class TransferService:
         
         try:
             import psutil
-            process = psutil.Process(transfer['process_id'])
+            process = psutil.Process(transfer['rsync_process_id'])
             
             # Monitor the process until completion
             process.wait()

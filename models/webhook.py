@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-DragonCP Webhook Models
+DragonCP Webhook Models (v2)
 Database models for webhook notifications (movies, series, anime, renames)
+
+Schema v2 Changes:
+- Table renames: radarr_webhook, sonarr_webhook, rename_webhook
+- Column renames: synced_at → completed_at, processed_at → completed_at
+- Added: updated_at columns
 """
 
 import json
@@ -22,7 +27,7 @@ class WebhookNotification:
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.execute('''
-                    INSERT INTO webhook_notifications (
+                    INSERT INTO radarr_webhook (
                         notification_id, title, year, folder_path, poster_url, requested_by,
                         file_path, quality, size, languages, subtitles, 
                         release_title, release_indexer, release_size, tmdb_id, imdb_id, status, raw_webhook_data
@@ -67,13 +72,16 @@ class WebhookNotification:
         if 'subtitles' in updates and isinstance(updates['subtitles'], list):
             updates['subtitles'] = json.dumps(updates['subtitles'])
         
+        # Add updated_at timestamp
+        updates['updated_at'] = datetime.now().isoformat()
+        
         # Build dynamic update query
         set_clause = ', '.join([f"{key} = ?" for key in updates.keys()])
         values = list(updates.values()) + [notification_id]
         
         with self.db.get_connection() as conn:
             cursor = conn.execute(f'''
-                UPDATE webhook_notifications SET {set_clause}
+                UPDATE radarr_webhook SET {set_clause}
                 WHERE notification_id = ?
             ''', values)
             conn.commit()
@@ -83,7 +91,7 @@ class WebhookNotification:
         """Get webhook notification by ID"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                SELECT * FROM webhook_notifications WHERE notification_id = ?
+                SELECT * FROM radarr_webhook WHERE notification_id = ?
             ''', (notification_id,))
             row = cursor.fetchone()
             
@@ -105,7 +113,7 @@ class WebhookNotification:
         """Get webhook notification by transfer_id (efficient indexed lookup)"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                SELECT * FROM webhook_notifications WHERE transfer_id = ?
+                SELECT * FROM radarr_webhook WHERE transfer_id = ?
             ''', (transfer_id,))
             row = cursor.fetchone()
             
@@ -125,7 +133,7 @@ class WebhookNotification:
     
     def get_all(self, status_filter: str = None, limit: int = None) -> List[Dict]:
         """Get all webhook notifications with optional filtering"""
-        query = "SELECT * FROM webhook_notifications"
+        query = "SELECT * FROM radarr_webhook"
         params = []
         
         if status_filter:
@@ -161,7 +169,7 @@ class WebhookNotification:
         """Delete webhook notification record"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                DELETE FROM webhook_notifications WHERE notification_id = ?
+                DELETE FROM radarr_webhook WHERE notification_id = ?
             ''', (notification_id,))
             conn.commit()
             return cursor.rowcount > 0
@@ -170,7 +178,7 @@ class WebhookNotification:
         """Clean up old processed notifications"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                DELETE FROM webhook_notifications 
+                DELETE FROM radarr_webhook 
                 WHERE status IN ('completed', 'failed')
                 AND datetime(created_at) < datetime('now', '-{} days')
             '''.format(days))
@@ -266,7 +274,7 @@ class SeriesWebhookNotification:
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.execute('''
-                    INSERT INTO series_webhook_notifications (
+                    INSERT INTO sonarr_webhook (
                         notification_id, media_type, series_title, series_title_slug, series_id,
                         series_path, year, tvdb_id, tv_maze_id, tmdb_id, imdb_id,
                         poster_url, banner_url, tags, original_language, requested_by,
@@ -329,7 +337,7 @@ class SeriesWebhookNotification:
                 values.append(notification_id)
                 
                 cursor = conn.execute(f'''
-                    UPDATE series_webhook_notifications 
+                    UPDATE sonarr_webhook 
                     SET {", ".join(update_fields)}
                     WHERE notification_id = ?
                 ''', values)
@@ -344,7 +352,7 @@ class SeriesWebhookNotification:
         """Get series webhook notification by ID"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                SELECT * FROM series_webhook_notifications WHERE notification_id = ?
+                SELECT * FROM sonarr_webhook WHERE notification_id = ?
             ''', (notification_id,))
             row = cursor.fetchone()
             
@@ -363,7 +371,7 @@ class SeriesWebhookNotification:
         """Get series webhook notification by transfer_id (efficient indexed lookup)"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                SELECT * FROM series_webhook_notifications WHERE transfer_id = ?
+                SELECT * FROM sonarr_webhook WHERE transfer_id = ?
             ''', (transfer_id,))
             row = cursor.fetchone()
             
@@ -380,7 +388,7 @@ class SeriesWebhookNotification:
     
     def get_all(self, media_type_filter: str = None, status_filter: str = None, limit: int = None) -> List[Dict]:
         """Get all series webhook notifications with optional filtering"""
-        query = "SELECT * FROM series_webhook_notifications"
+        query = "SELECT * FROM sonarr_webhook"
         params = []
         conditions = []
         
@@ -426,7 +434,7 @@ class SeriesWebhookNotification:
         """Delete series webhook notification record"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                DELETE FROM series_webhook_notifications WHERE notification_id = ?
+                DELETE FROM sonarr_webhook WHERE notification_id = ?
             ''', (notification_id,))
             conn.commit()
             return cursor.rowcount > 0
@@ -435,7 +443,7 @@ class SeriesWebhookNotification:
         """Clean up old processed notifications"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                DELETE FROM series_webhook_notifications 
+                DELETE FROM sonarr_webhook 
                 WHERE status IN ('completed', 'failed') 
                 AND created_at < datetime('now', '-{} days')
             '''.format(days))
@@ -460,10 +468,11 @@ class SeriesWebhookNotification:
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.execute('''
-                    UPDATE series_webhook_notifications 
+                    UPDATE sonarr_webhook 
                     SET status = 'syncing', 
                         transfer_id = ?,
-                        synced_at = CURRENT_TIMESTAMP
+                        completed_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE status = 'READY_FOR_TRANSFER'
                     AND season_path = ?
                 ''', (transfer_id, season_path))
@@ -498,8 +507,9 @@ class SeriesWebhookNotification:
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.execute('''
-                    UPDATE series_webhook_notifications 
-                    SET status = ?
+                    UPDATE sonarr_webhook 
+                    SET status = ?,
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE status = 'READY_FOR_TRANSFER'
                     AND season_path = ?
                 ''', (queue_type, season_path))
@@ -531,13 +541,13 @@ class SeriesWebhookNotification:
             with self.db.get_connection() as conn:
                 if status_filter:
                     cursor = conn.execute('''
-                        SELECT * FROM series_webhook_notifications
+                        SELECT * FROM sonarr_webhook
                         WHERE season_path = ? AND status = ?
                         ORDER BY created_at ASC
                     ''', (season_path, status_filter))
                 else:
                     cursor = conn.execute('''
-                        SELECT * FROM series_webhook_notifications
+                        SELECT * FROM sonarr_webhook
                         WHERE season_path = ?
                         ORDER BY created_at ASC
                     ''', (season_path,))
@@ -581,8 +591,9 @@ class SeriesWebhookNotification:
                 # Use IN clause to update all notifications at once
                 placeholders = ','.join('?' * len(notification_ids))
                 query = f'''
-                    UPDATE series_webhook_notifications
-                    SET transfer_id = ?
+                    UPDATE sonarr_webhook
+                    SET transfer_id = ?,
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE notification_id IN ({placeholders})
                 '''
                 
@@ -627,8 +638,9 @@ class SeriesWebhookNotification:
                 values = list(updates.values()) + [transfer_id]
                 
                 query = f'''
-                    UPDATE series_webhook_notifications 
-                    SET {set_clause}
+                    UPDATE sonarr_webhook 
+                    SET {set_clause},
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE transfer_id = ?
                 '''
                 
@@ -666,8 +678,10 @@ class SeriesWebhookNotification:
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.execute('''
-                    UPDATE series_webhook_notifications 
-                    SET status = 'completed', synced_at = CURRENT_TIMESTAMP
+                    UPDATE sonarr_webhook 
+                    SET status = 'completed', 
+                        completed_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE transfer_id = ?
                     AND status = 'syncing'
                 ''', (transfer_id,))
@@ -708,8 +722,10 @@ class SeriesWebhookNotification:
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.execute('''
-                    UPDATE series_webhook_notifications 
-                    SET status = 'completed', synced_at = CURRENT_TIMESTAMP
+                    UPDATE sonarr_webhook 
+                    SET status = 'completed', 
+                        completed_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE status = 'syncing'
                     AND media_type = ?
                     AND series_title = ?
@@ -753,7 +769,7 @@ class RenameNotification:
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.execute('''
-                    INSERT INTO rename_notifications (
+                    INSERT INTO rename_webhook (
                         notification_id, media_type, series_title, series_id, series_path,
                         renamed_files, total_files, success_count, failed_count,
                         status, error_message, raw_webhook_data
@@ -790,6 +806,9 @@ class RenameNotification:
         if 'renamed_files' in updates and isinstance(updates['renamed_files'], list):
             updates['renamed_files'] = json.dumps(updates['renamed_files'])
         
+        # Add updated_at timestamp
+        updates['updated_at'] = datetime.now().isoformat()
+        
         try:
             with self.db.get_connection() as conn:
                 # Build dynamic update query
@@ -797,7 +816,7 @@ class RenameNotification:
                 values = list(updates.values()) + [notification_id]
                 
                 cursor = conn.execute(f'''
-                    UPDATE rename_notifications SET {set_clause}
+                    UPDATE rename_webhook SET {set_clause}
                     WHERE notification_id = ?
                 ''', values)
                 conn.commit()
@@ -810,7 +829,7 @@ class RenameNotification:
         """Get rename notification by ID"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                SELECT * FROM rename_notifications WHERE notification_id = ?
+                SELECT * FROM rename_webhook WHERE notification_id = ?
             ''', (notification_id,))
             row = cursor.fetchone()
             
@@ -826,7 +845,7 @@ class RenameNotification:
     
     def get_all(self, status_filter: str = None, media_type_filter: str = None, limit: int = None) -> List[Dict]:
         """Get all rename notifications with optional filtering"""
-        query = "SELECT * FROM rename_notifications"
+        query = "SELECT * FROM rename_webhook"
         params = []
         conditions = []
         
@@ -866,7 +885,7 @@ class RenameNotification:
         """Delete rename notification record"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                DELETE FROM rename_notifications WHERE notification_id = ?
+                DELETE FROM rename_webhook WHERE notification_id = ?
             ''', (notification_id,))
             conn.commit()
             return cursor.rowcount > 0
@@ -875,7 +894,7 @@ class RenameNotification:
         """Clean up old processed notifications"""
         with self.db.get_connection() as conn:
             cursor = conn.execute('''
-                DELETE FROM rename_notifications 
+                DELETE FROM rename_webhook 
                 WHERE status IN ('completed', 'partial', 'failed')
                 AND created_at < datetime('now', '-{} days')
             '''.format(days))
