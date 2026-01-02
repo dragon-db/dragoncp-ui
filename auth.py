@@ -15,14 +15,57 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 # ===== CONFIGURATION =====
 
+# Cache for loaded env config
+_env_config_cache: Optional[Dict[str, str]] = None
+
+
+def _load_env_file() -> Dict[str, str]:
+    """
+    Load configuration from dragoncp_env.env or .env file.
+    This is used for auth config to avoid circular imports with DragonCPConfig.
+    """
+    global _env_config_cache
+    
+    if _env_config_cache is not None:
+        return _env_config_cache
+    
+    config = {}
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Try dragoncp_env.env first, then .env
+    env_files = [
+        os.path.join(script_dir, 'dragoncp_env.env'),
+        os.path.join(script_dir, '.env'),
+    ]
+    
+    for env_file in env_files:
+        if os.path.exists(env_file):
+            try:
+                with open(env_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#') and '=' in line:
+                            key, value = line.split('=', 1)
+                            config[key.strip()] = value.strip().strip('"').strip("'")
+                print(f"🔐 Auth config loaded from: {env_file}")
+                break
+            except Exception as e:
+                print(f"⚠️  Error loading auth config from {env_file}: {e}")
+    
+    _env_config_cache = config
+    return config
+
+
 def get_auth_config() -> Dict[str, Any]:
-    """Get authentication configuration from environment"""
+    """Get authentication configuration from env file"""
+    env_config = _load_env_file()
+    
     return {
-        'username': os.environ.get('DRAGONCP_USERNAME', 'admin'),
-        'password_hash': os.environ.get('DRAGONCP_PASSWORD_HASH', ''),
-        'password_plain': os.environ.get('DRAGONCP_PASSWORD', ''),
-        'jwt_secret': os.environ.get('JWT_SECRET_KEY', os.environ.get('SECRET_KEY', 'dragoncp-jwt-secret-change-me')),
-        'jwt_expiry_hours': int(os.environ.get('JWT_EXPIRY_HOURS', '24')),
+        'username': env_config.get('DRAGONCP_USERNAME', 'admin'),
+        'password_hash': env_config.get('DRAGONCP_PASSWORD_HASH', ''),
+        'password_plain': env_config.get('DRAGONCP_PASSWORD', ''),
+        'jwt_secret': env_config.get('JWT_SECRET_KEY', env_config.get('SECRET_KEY', 'dragoncp-jwt-secret-change-me')),
+        'jwt_expiry_hours': int(env_config.get('JWT_EXPIRY_HOURS', '24')),
         'jwt_algorithm': 'HS256'
     }
 

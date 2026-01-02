@@ -5,6 +5,7 @@ Refactored version with modular architecture
 """
 
 import os
+
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO
 
@@ -31,11 +32,44 @@ from routes import (
 )
 
 
-# ===== CORS CONFIGURATION =====
+# ===== EARLY CONFIG LOADING =====
+
+def _load_env_file_early() -> dict:
+    """
+    Load configuration from dragoncp_env.env or .env file early
+    (before DragonCPConfig is instantiated) for Flask/SocketIO setup.
+    """
+    config = {}
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    env_files = [
+        os.path.join(script_dir, 'dragoncp_env.env'),
+        os.path.join(script_dir, '.env'),
+    ]
+    
+    for env_file in env_files:
+        if os.path.exists(env_file):
+            try:
+                with open(env_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#') and '=' in line:
+                            key, value = line.split('=', 1)
+                            config[key.strip()] = value.strip().strip('"').strip("'")
+                break
+            except Exception as e:
+                print(f"⚠️  Error loading early config from {env_file}: {e}")
+    
+    return config
+
+
+# Load early config for Flask/SocketIO setup
+_early_config = _load_env_file_early()
+
 
 def get_cors_origins():
-    """Get CORS allowed origins from ENV"""
-    cors_origins = os.environ.get('CORS_ORIGINS', '*')
+    """Get CORS allowed origins from config file"""
+    cors_origins = _early_config.get('CORS_ORIGINS', '*')
     if cors_origins == '*':
         return '*'
     # Parse comma-separated origins
@@ -45,7 +79,7 @@ def get_cors_origins():
 
 # Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dragoncp-secret-key-2024')
+app.config['SECRET_KEY'] = _early_config.get('SECRET_KEY', 'dragoncp-secret-key-2024')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Get CORS origins
