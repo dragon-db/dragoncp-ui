@@ -6,6 +6,7 @@ Handles transfer operations: start, status, cancel, restart, delete, cleanup
 
 import time
 from flask import Blueprint, jsonify, request
+from auth import require_auth
 
 transfers_bp = Blueprint('transfers', __name__)
 
@@ -22,6 +23,7 @@ def init_transfer_routes(app_config, app_transfer_coordinator):
 
 
 @transfers_bp.route('/transfer', methods=['POST'])
+@require_auth
 def api_transfer():
     """Start a transfer"""
     try:
@@ -134,6 +136,7 @@ def api_transfer():
 
 
 @transfers_bp.route('/transfer/<transfer_id>/status')
+@require_auth
 def api_transfer_status(transfer_id):
     """Get transfer status"""
     transfer = transfer_coordinator.get_transfer_status(transfer_id)
@@ -163,6 +166,7 @@ def api_transfer_status(transfer_id):
 
 
 @transfers_bp.route('/transfer/<transfer_id>/cancel', methods=['POST'])
+@require_auth
 def api_cancel_transfer(transfer_id):
     """Cancel a transfer"""
     success = transfer_coordinator.cancel_transfer(transfer_id)
@@ -173,6 +177,7 @@ def api_cancel_transfer(transfer_id):
 
 
 @transfers_bp.route('/transfer/<transfer_id>/logs')
+@require_auth
 def api_transfer_logs(transfer_id):
     """Get full logs for a transfer"""
     transfer = transfer_coordinator.get_transfer_status(transfer_id)
@@ -188,6 +193,7 @@ def api_transfer_logs(transfer_id):
 
 
 @transfers_bp.route('/transfers/all')
+@require_auth
 def api_all_transfers():
     """Get all transfers with optional filtering"""
     try:
@@ -234,6 +240,7 @@ def api_all_transfers():
 
 
 @transfers_bp.route('/transfers/active')
+@require_auth
 def api_active_transfers():
     """Get only active (running/pending/queued) transfers"""
     try:
@@ -276,6 +283,7 @@ def api_active_transfers():
 
 
 @transfers_bp.route('/transfers/queue/status')
+@require_auth
 def api_queue_status():
     """Get queue status"""
     try:
@@ -290,6 +298,7 @@ def api_queue_status():
 
 
 @transfers_bp.route('/transfer/<transfer_id>/restart', methods=['POST'])
+@require_auth
 def api_restart_transfer(transfer_id):
     """Restart a failed or cancelled transfer"""
     try:
@@ -304,6 +313,7 @@ def api_restart_transfer(transfer_id):
 
 
 @transfers_bp.route('/transfer/<transfer_id>/delete', methods=['POST'])
+@require_auth
 def api_delete_transfer(transfer_id):
     """Delete a transfer record from the database"""
     try:
@@ -328,6 +338,7 @@ def api_delete_transfer(transfer_id):
 
 
 @transfers_bp.route('/transfers/cleanup', methods=['POST'])
+@require_auth
 def api_cleanup_transfers():
     """Remove duplicate transfers based on destination path, keeping only the latest successful transfer"""
     try:
