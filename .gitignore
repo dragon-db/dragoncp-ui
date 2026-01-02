@@ -144,3 +144,5 @@ backup/
 
 # Database files
 dragoncp.db
+*.db
+dragoncp.db.*
