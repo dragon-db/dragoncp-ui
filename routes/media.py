@@ -5,6 +5,7 @@ Handles media browsing and sync status endpoints
 """
 
 from flask import Blueprint, jsonify, request
+from auth import require_auth
 
 media_bp = Blueprint('media', __name__)
 
@@ -23,6 +24,7 @@ def init_media_routes(app_config, app_ssh_manager, app_transfer_coordinator):
 
 
 @media_bp.route('/media-types')
+@require_auth
 def api_media_types():
     """Get available media types"""
     print("🔍 API: /api/media-types called")
@@ -46,6 +48,7 @@ def api_media_types():
 
 
 @media_bp.route('/folders/<media_type>')
+@require_auth
 def api_folders(media_type):
     """Get folders for media type"""
     print(f"🔍 API: /api/folders/{media_type} called")
@@ -83,6 +86,7 @@ def api_folders(media_type):
 
 
 @media_bp.route('/seasons/<media_type>/<folder_name>')
+@require_auth
 def api_seasons(media_type, folder_name):
     """Get seasons for TV show or anime"""
     if not ssh_manager or not ssh_manager.connected:
@@ -112,6 +116,7 @@ def api_seasons(media_type, folder_name):
 
 
 @media_bp.route('/episodes/<media_type>/<folder_name>/<season_name>')
+@require_auth
 def api_episodes(media_type, folder_name, season_name):
     """Get episodes for a season"""
     if not ssh_manager or not ssh_manager.connected:
@@ -133,6 +138,7 @@ def api_episodes(media_type, folder_name, season_name):
 
 
 @media_bp.route('/sync-status/<media_type>')
+@require_auth
 def api_sync_status(media_type):
     """Get sync status for all folders in a media type"""
     print(f"🔍 API: /api/sync-status/{media_type} called")
@@ -213,6 +219,7 @@ def api_sync_status(media_type):
 
 
 @media_bp.route('/sync-status/<media_type>/<folder_name>')
+@require_auth
 def api_folder_sync_status(media_type, folder_name):
     """Get detailed sync status for a specific folder (useful for series/anime seasons)"""
     print(f"🔍 API: /api/sync-status/{media_type}/{folder_name} called")
@@ -288,6 +295,7 @@ def api_folder_sync_status(media_type, folder_name):
 
 
 @media_bp.route('/sync-status/<media_type>/<folder_name>/enhanced')
+@require_auth
 def api_enhanced_folder_sync_status(media_type, folder_name):
     """Get enhanced sync status with detailed file information"""
     print(f"🔍 API: /api/sync-status/{media_type}/{folder_name}/enhanced called")
@@ -386,6 +394,7 @@ def api_enhanced_folder_sync_status(media_type, folder_name):
 # ===== DRY-RUN ENDPOINT =====
 
 @media_bp.route('/media/dry-run', methods=['POST'])
+@require_auth
 def api_media_dry_run():
     """Perform manual dry-run for a selected media folder"""
     try:

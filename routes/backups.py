@@ -5,6 +5,7 @@ Handles backup operations: list, get, restore, delete, plan, reindex
 """
 
 from flask import Blueprint, jsonify, request
+from auth import require_auth
 
 backups_bp = Blueprint('backups', __name__)
 
@@ -19,6 +20,7 @@ def init_backup_routes(app_transfer_coordinator):
 
 
 @backups_bp.route('/backups')
+@require_auth
 def api_list_backups():
     """List transfer backups."""
     try:
@@ -36,6 +38,7 @@ def api_list_backups():
 
 
 @backups_bp.route('/backups/<backup_id>')
+@require_auth
 def api_get_backup(backup_id):
     """Get backup details."""
     try:
@@ -49,6 +52,7 @@ def api_get_backup(backup_id):
 
 
 @backups_bp.route('/backups/<backup_id>/files')
+@require_auth
 def api_get_backup_files(backup_id):
     """List files inside a backup."""
     try:
@@ -61,6 +65,7 @@ def api_get_backup_files(backup_id):
 
 
 @backups_bp.route('/backups/<backup_id>/restore', methods=['POST'])
+@require_auth
 def api_restore_backup(backup_id):
     """Restore a backup (optionally selected files)."""
     try:
@@ -79,6 +84,7 @@ def api_restore_backup(backup_id):
 
 
 @backups_bp.route('/backups/<backup_id>/delete', methods=['POST'])
+@require_auth
 def api_delete_backup(backup_id):
     """Delete a backup record and optionally remove backup files from disk."""
     try:
@@ -98,6 +104,7 @@ def api_delete_backup(backup_id):
 
 
 @backups_bp.route('/backups/<backup_id>/plan', methods=['POST'])
+@require_auth
 def api_plan_backup_restore(backup_id):
     """Dry-run plan for context-aware restore. Optionally accept 'files' list."""
     try:
@@ -113,6 +120,7 @@ def api_plan_backup_restore(backup_id):
 
 
 @backups_bp.route('/backups/reindex', methods=['POST'])
+@require_auth
 def api_reindex_backups():
     """Scan BACKUP_PATH for existing backup folders and import missing ones."""
     try:

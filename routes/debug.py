@@ -8,6 +8,7 @@ import os
 import subprocess
 from datetime import datetime
 from flask import Blueprint, jsonify, request
+from auth import require_auth
 
 debug_bp = Blueprint('debug', __name__)
 
@@ -30,6 +31,7 @@ def init_debug_routes(app_config, app_ssh_manager, app_db_manager, app_transfer_
 
 
 @debug_bp.route('/debug')
+@require_auth
 def api_debug():
     """Debug endpoint to check configuration and SSH status"""
     from flask import session
@@ -105,6 +107,7 @@ def api_debug():
 
 
 @debug_bp.route('/debug/transfers')
+@require_auth
 def api_debug_transfers():
     """Debug endpoint to check database transfers"""
     try:
@@ -140,6 +143,7 @@ def api_debug_transfers():
 
 
 @debug_bp.route('/websocket/status')
+@require_auth
 def api_websocket_status():
     """Get WebSocket connection status and count"""
     from websocket import WEBSOCKET_TIMEOUT_DEFAULT
@@ -183,6 +187,7 @@ def api_websocket_status():
 
 
 @debug_bp.route('/local-files')
+@require_auth
 def api_local_files():
     """Get local files in a directory"""
     path = request.args.get('path', '/')
@@ -197,6 +202,7 @@ def api_local_files():
 
 
 @debug_bp.route('/disk-usage/local')
+@require_auth
 def api_local_disk_usage():
     """Get local disk usage for configured paths"""
     try:
@@ -295,6 +301,7 @@ def api_local_disk_usage():
 
 
 @debug_bp.route('/disk-usage/remote')
+@require_auth
 def api_remote_disk_usage():
     """Get remote disk usage from configured API"""
     import requests

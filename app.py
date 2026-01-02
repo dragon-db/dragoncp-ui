@@ -13,6 +13,7 @@ from config import DragonCPConfig, APP_VERSION
 from ssh import SSHManager
 from websocket import register_websocket_handlers, start_cleanup_thread, websocket_connections
 from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT
+from auth import require_auth
 
 # Import models
 from models import DatabaseManager
@@ -24,20 +25,37 @@ from services.rename_service import RenameService
 
 # Import routes
 from routes import (
-    media_bp, transfers_bp, backups_bp, webhooks_bp, debug_bp,
+    auth_bp, media_bp, transfers_bp, backups_bp, webhooks_bp, debug_bp,
     init_media_routes, init_transfer_routes, init_backup_routes,
     init_webhook_routes, init_debug_routes
 )
+
+
+# ===== CORS CONFIGURATION =====
+
+def get_cors_origins():
+    """Get CORS allowed origins from ENV"""
+    cors_origins = os.environ.get('CORS_ORIGINS', '*')
+    if cors_origins == '*':
+        return '*'
+    # Parse comma-separated origins
+    origins = [origin.strip() for origin in cors_origins.split(',') if origin.strip()]
+    return origins if origins else '*'
+
 
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dragoncp-secret-key-2024')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-# Initialize SocketIO
+# Get CORS origins
+cors_origins = get_cors_origins()
+print(f"🌐 CORS allowed origins: {cors_origins}")
+
+# Initialize SocketIO with CORS configuration
 socketio = SocketIO(
     app, 
-    cors_allowed_origins="*",
+    cors_allowed_origins=cors_origins,
     ping_timeout=WEBSOCKET_TIMEOUT_MAX,  # Use maximum for SocketIO config
     ping_interval=25 * 60  # Send ping every 25 minutes
 )
@@ -52,7 +70,7 @@ transfer_coordinator = TransferCoordinator(config, db_manager, socketio)
 rename_model = RenameNotification(db_manager)
 rename_service = RenameService(config, rename_model, socketio, transfer_coordinator.notification_service)
 
-# Register WebSocket handlers
+# Register WebSocket handlers (with auth support)
 register_websocket_handlers(socketio)
 start_cleanup_thread(socketio)
 
@@ -64,11 +82,31 @@ init_webhook_routes(config, transfer_coordinator, rename_service)
 init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections)
 
 # Register route blueprints
+app.register_blueprint(auth_bp, url_prefix='/api')
 app.register_blueprint(media_bp, url_prefix='/api')
 app.register_blueprint(transfers_bp, url_prefix='/api')
 app.register_blueprint(backups_bp, url_prefix='/api')
 app.register_blueprint(webhooks_bp, url_prefix='/api')
 app.register_blueprint(debug_bp, url_prefix='/api')
+
+
+# ===== CORS HEADERS FOR PREFLIGHT =====
+
+@app.after_request
+def after_request(response):
+    """Add CORS headers to all responses"""
+    origin = request.headers.get('Origin')
+    
+    if cors_origins == '*':
+        response.headers['Access-Control-Allow-Origin'] = '*'
+    elif origin and (origin in cors_origins):
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+    
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    
+    return response
 
 
 # ===== CONTEXT PROCESSORS =====
@@ -88,8 +126,9 @@ def index():
 
 
 @app.route('/api/config', methods=['GET', 'POST'])
+@require_auth
 def api_config():
-    """Configuration API"""
+    """Configuration API - Protected"""
     if request.method == 'GET':
         return jsonify(config.get_all_config())
     else:
@@ -99,8 +138,9 @@ def api_config():
 
 
 @app.route('/api/connect', methods=['POST'])
+@require_auth
 def api_connect():
-    """Connect to SSH server"""
+    """Connect to SSH server - Protected"""
     global ssh_manager
     
     print("🔌 API: /api/connect called")
@@ -133,8 +173,9 @@ def api_connect():
 
 
 @app.route('/api/disconnect')
+@require_auth
 def api_disconnect():
-    """Disconnect from SSH server"""
+    """Disconnect from SSH server - Protected"""
     global ssh_manager
     
     if ssh_manager:
@@ -151,8 +192,9 @@ def api_disconnect():
 
 
 @app.route('/api/auto-connect')
+@require_auth
 def api_auto_connect():
-    """Auto-connect using environment variables"""
+    """Auto-connect using environment variables - Protected"""
     global ssh_manager
     
     print("🔌 API: /api/auto-connect called")
@@ -185,8 +227,9 @@ def api_auto_connect():
 
 
 @app.route('/api/ssh-config')
+@require_auth
 def api_ssh_config():
-    """Get SSH configuration from environment"""
+    """Get SSH configuration from environment - Protected"""
     ssh_config = {
         "host": config.get("REMOTE_IP", ""),
         "username": config.get("REMOTE_USER", ""),
@@ -197,22 +240,25 @@ def api_ssh_config():
 
 
 @app.route('/api/config/reset', methods=['POST'])
+@require_auth
 def api_reset_config():
-    """Reset session configuration to environment values"""
+    """Reset session configuration to environment values - Protected"""
     if 'ui_config' in session:
         del session['ui_config']
     return jsonify({"status": "success", "message": "Configuration reset to environment values"})
 
 
 @app.route('/api/config/env-only')
+@require_auth
 def api_env_config():
-    """Get only environment configuration (without session overrides)"""
+    """Get only environment configuration (without session overrides) - Protected"""
     return jsonify(config.env_config)
 
 
 # ===== TEST SIMULATION ENDPOINTS =====
 
 @app.route('/api/test/simulate', methods=['POST'])
+@require_auth
 def api_start_simulation():
     """Start simulated transfers for UI testing (no rsync). Controlled by TEST_MODE env."""
     if os.environ.get('TEST_MODE', '0') != '1':
@@ -245,6 +291,7 @@ def api_start_simulation():
 
 
 @app.route('/api/test/simulate/stop', methods=['POST'])
+@require_auth
 def api_stop_simulation():
     """Signal all running simulations to stop."""
     if os.environ.get('TEST_MODE', '0') != '1':
@@ -275,4 +322,3 @@ if __name__ == '__main__':
     print("Access the application at: http://localhost:5000")
     
     socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
-
