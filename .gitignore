@@ -1,124 +1,92 @@
-# Virtual Environment
-venv/
-env/
-ENV/
-.venv/
-.env/
-
-# Environment Configuration Files
-dragoncp_env.env
+# ===================
+# Environment & Secrets
+# ===================
 *.env
 !dragoncp_env_sample.env
 
+# ===================
 # Python
+# ===================
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+ENV/
+env.bak/
+venv.bak/
+
+# Bytecode / Cache
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+
+# Distribution / Packaging
 build/
-develop-eggs/
 dist/
-downloads/
 eggs/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
-
-# PyInstaller
+*.egg-info/
 *.manifest
 *.spec
+wheels/
+sdist/
+develop-eggs/
+.installed.cfg
+MANIFEST
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
+# Testing / Coverage
 .tox/
 .coverage
 .coverage.*
-.cache
+.cache/
+.pytest_cache/
+.hypothesis/
+htmlcov/
 nosetests.xml
 coverage.xml
 *.cover
-.hypothesis/
-.pytest_cache/
 
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-
-# Flask stuff:
-instance/
-.webassets-cache
-
-# Scrapy stuff:
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# celery beat schedule file
-celerybeat-schedule
-
-# SageMath parsed files
-*.sage.py
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
+# Type checking
 .mypy_cache/
 .dmypy.json
 dmypy.json
 
-# IDE
+# pyenv
+.python-version
+
+# ===================
+# Database
+# ===================
+*.db
+!docs/database/*.db.*
+
+# ===================
+# Node.js / Frontend
+# ===================
+node_modules/
+.npm/
+*.local
+
+# ===================
+# IDE & Editors
+# ===================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
 
-# OS
+# ===================
+# OS Generated
+# ===================
 .DS_Store
 .DS_Store?
 ._*
@@ -127,22 +95,18 @@ dmypy.json
 ehthumbs.db
 Thumbs.db
 
-# Logs
+# ===================
+# Logs & Temp Files
+# ===================
 *.log
 logs/
-
-# Temporary files
 *.tmp
 *.temp
 temp/
 tmp/
 
-# Backup files
+# ===================
+# Backup Files
+# ===================
 *.bak
 *.backup
-backup/ 
-
-# Database files
-dragoncp.db
-*.db
-dragoncp.db.*
