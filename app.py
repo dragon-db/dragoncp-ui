@@ -14,7 +14,7 @@ from config import DragonCPConfig, APP_VERSION
 from ssh import SSHManager
 from websocket import register_websocket_handlers, start_cleanup_thread, websocket_connections
 from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT
-from auth import require_auth
+from auth import require_auth, test_mode_or_auth
 
 # Import models
 from models import DatabaseManager
@@ -292,7 +292,7 @@ def api_env_config():
 # ===== TEST SIMULATION ENDPOINTS =====
 
 @app.route('/api/test/simulate', methods=['POST'])
-@require_auth
+@test_mode_or_auth
 def api_start_simulation():
     """Start simulated transfers for UI testing (no rsync). Controlled by TEST_MODE env."""
     if os.environ.get('TEST_MODE', '0') != '1':
@@ -325,7 +325,7 @@ def api_start_simulation():
 
 
 @app.route('/api/test/simulate/stop', methods=['POST'])
-@require_auth
+@test_mode_or_auth
 def api_stop_simulation():
     """Signal all running simulations to stop."""
     if os.environ.get('TEST_MODE', '0') != '1':

@@ -257,6 +257,49 @@ def optional_auth(f):
     return decorated_function
 
 
+def test_mode_or_auth(f):
+    """
+    Decorator that allows access if TEST_MODE=1 is set,
+    otherwise requires authentication.
+    
+    Use this ONLY for test/simulation endpoints that need to be
+    easily accessible during development/testing.
+    """
+    @functools.wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Skip auth in TEST_MODE
+        if os.environ.get('TEST_MODE', '0') == '1':
+            g.current_user = 'test_mode_user'
+            g.token_payload = None
+            return f(*args, **kwargs)
+        
+        # Otherwise, require normal auth
+        token = get_token_from_request()
+        
+        if not token:
+            return jsonify({
+                'status': 'error',
+                'message': 'Authentication required',
+                'code': 'AUTH_REQUIRED'
+            }), 401
+        
+        payload = validate_token(token, token_type='access')
+        
+        if not payload:
+            return jsonify({
+                'status': 'error',
+                'message': 'Invalid or expired token',
+                'code': 'INVALID_TOKEN'
+            }), 401
+        
+        g.current_user = payload.get('sub')
+        g.token_payload = payload
+        
+        return f(*args, **kwargs)
+    
+    return decorated_function
+
+
 # ===== WEBSOCKET AUTHENTICATION =====
 
 def validate_websocket_token(auth_data: Dict[str, Any]) -> Optional[str]:
