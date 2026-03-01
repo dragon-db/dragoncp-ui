@@ -97,7 +97,7 @@ export class BackupManager {
 
     async loadBackups() {
         try {
-            const res = await fetch('/api/backups');
+            const res = await this.app.api.fetch('/api/backups');
             const data = await res.json();
             if (data.status !== 'success') {
                 this.app.ui.showAlert('Failed to load backups', 'danger');
@@ -172,7 +172,7 @@ export class BackupManager {
 
     async showBackupFiles(backupId) {
         try {
-            const res = await fetch(`/api/backups/${backupId}/files`);
+            const res = await this.app.api.fetch(`/api/backups/${backupId}/files`);
             const data = await res.json();
             if (data.status !== 'success') {
                 this.app.ui.showAlert('Failed to load backup files', 'danger');
@@ -223,7 +223,7 @@ export class BackupManager {
             const planPayload = files && files.length ? { files } : {};
             console.log('Sending plan request with payload:', planPayload);
             
-            const planRes = await fetch(`/api/backups/${backupId}/plan`, {
+            const planRes = await this.app.api.fetch(`/api/backups/${backupId}/plan`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(planPayload)
@@ -328,8 +328,8 @@ export class BackupManager {
             
             // Load both files and backup info
             const [filesRes, backupRes] = await Promise.all([
-                fetch(`/api/backups/${backupId}/files`),
-                fetch(`/api/backups/${backupId}`)
+                this.app.api.fetch(`/api/backups/${backupId}/files`),
+                this.app.api.fetch(`/api/backups/${backupId}`)
             ]);
             
             const filesData = await filesRes.json();
@@ -434,7 +434,7 @@ export class BackupManager {
                 confirmBtn.innerHTML = '<i class="bi bi-spinner-border spinner-border-sm"></i> Deleting...';
             }
             
-            const res = await fetch(`/api/backups/${backupId}/delete`, {
+            const res = await this.app.api.fetch(`/api/backups/${backupId}/delete`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ delete_record: deleteRecord, delete_files: deleteFiles })
@@ -468,7 +468,7 @@ export class BackupManager {
             const original = btn.innerHTML;
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Importing...';
-            const res = await fetch('/api/backups/reindex', { method: 'POST' });
+            const res = await this.app.api.fetch('/api/backups/reindex', { method: 'POST' });
             const data = await res.json();
             if (data.status === 'success') {
                 this.app.ui.showAlert(data.message || 'Import completed', 'success');
@@ -595,7 +595,7 @@ export class BackupManager {
     async applyPlannedRestore() {
         try {
             const ctx = this.currentBackupContext || {};
-            const res = await fetch(`/api/backups/${ctx.backupId}/restore`, {
+            const res = await this.app.api.fetch(`/api/backups/${ctx.backupId}/restore`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(ctx.payload || {})

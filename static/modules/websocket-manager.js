@@ -5,6 +5,7 @@
 export class WebSocketManager {
     constructor(app) {
         this.app = app;
+        const initialToken = this.app.auth?.getAccessToken() || null;
         // Note: "Invalid frame header" error during timeout disconnect is expected
         // due to socket.io transport upgrade cleanup (from http to ws). This is harmless.
         this.socket = io({ 
@@ -14,8 +15,12 @@ export class WebSocketManager {
             transports: ['websocket', 'polling'],
             upgrade: true,
             rememberUpgrade: true,
-            forceNew: true
+            forceNew: true,
+            auth: {
+                token: initialToken
+            }
         });
+        this.app.socket = this.socket;
         
         // WebSocket timeout management
         this.websocketTimeout = 30 * 60 * 1000; // 30 minutes in milliseconds
@@ -29,11 +34,10 @@ export class WebSocketManager {
         this.initializeWebSocket();
         this.initializeActivityTracking();
         this.startTimerDisplayUpdates();
-        
-        // Connect after a brief delay to ensure full initialization
-        setTimeout(() => {
-            this.connect();
-        }, 100);
+
+        document.addEventListener('auth:token-refreshed', () => {
+            this.reAuthenticateWithCurrentToken();
+        });
     }
 
     initializeWebSocket() {
@@ -48,7 +52,9 @@ export class WebSocketManager {
             this.updateActivity(); // Start activity tracking
             console.log('Activity tracking enabled');
             
-            this.app.config.updateWebSocketConfigStatus(); // Update config modal status
+            if (this.app.config) {
+                this.app.config.updateWebSocketConfigStatus(); // Update config modal status
+            }
             
             // Show WebSocket dependent UI elements if server connection exists
             if (this.app.currentState.connected) {
@@ -135,7 +141,9 @@ export class WebSocketManager {
             }
             
             // Update config modal status
-            this.app.config.updateWebSocketConfigStatus();
+            if (this.app.config) {
+                this.app.config.updateWebSocketConfigStatus();
+            }
             
             // Only show reconnection message if it wasn't an auto-disconnect
             if (!this.wasAutoDisconnected) {
@@ -144,11 +152,23 @@ export class WebSocketManager {
         });
 
         // Add error handling for socket connection issues
-        this.socket.on('connect_error', (error) => {
+        this.socket.on('connect_error', async (error) => {
             console.error('WebSocket connection error:', error);
             this.isWebSocketConnected = false;
             this.lastConnectionError = error;
-            
+
+            const message = (error?.message || '').toLowerCase();
+            const authError = message.includes('unauthorized') || message.includes('authentication') || message.includes('token');
+            if (authError && this.app.auth?.isAuthenticated()) {
+                const refreshed = await this.app.auth.tryRefreshToken(true);
+                if (refreshed) {
+                    this.connect();
+                    return;
+                }
+                this.app.handleSessionExpired('websocket_auth_failed');
+                return;
+            }
+
             // Always show websocket connection failure prominently
             if (this.app.currentState.connected) {
                 this.app.ui.updateStatus('Connected to server - WebSocket connection failed', 'disconnected');
@@ -306,6 +326,7 @@ export class WebSocketManager {
     startActivityMonitoring() {
         // Check activity every minute
         setInterval(async () => {
+            if (!this.app.auth?.isAuthenticated()) return;
             const timeSinceActivity = Date.now() - this.lastActivity;
             const timeUntilDisconnect = this.websocketTimeout - timeSinceActivity;
             
@@ -352,8 +373,11 @@ export class WebSocketManager {
     }
 
     async hasActiveTransfers() {
+        if (!this.app.auth?.isAuthenticated()) {
+            return false;
+        }
         try {
-            const response = await fetch('/api/transfers/active');
+            const response = await this.app.api.fetch('/api/transfers/active');
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -428,7 +452,7 @@ export class WebSocketManager {
     }
 
     disconnectWebSocket() {
-        if (this.socket && this.isWebSocketConnected) {
+        if (this.socket) {
             console.log('Intentionally disconnecting WebSocket');
             // Prevent automatic reconnection
             this.socket.disconnect();
@@ -534,9 +558,13 @@ export class WebSocketManager {
 
     // Public methods for external access
     connect() {
+        if (!this.app.auth?.isAuthenticated()) {
+            return;
+        }
         if (!this.isWebSocketConnected) {
             // Clear any previous connection errors when manually reconnecting
             this.lastConnectionError = null;
+            this.updateSocketAuthToken();
             this.socket.connect();
         }
     }
@@ -551,5 +579,26 @@ export class WebSocketManager {
     
     clearConnectionError() {
         this.lastConnectionError = null;
+    }
+
+    updateSocketAuthToken() {
+        const token = this.app.auth?.getAccessToken();
+        this.socket.auth = { token };
+    }
+
+    reAuthenticateWithCurrentToken() {
+        this.updateSocketAuthToken();
+        if (!this.socket || !this.app.auth?.isAuthenticated()) return;
+
+        if (this.socket.connected) {
+            this.socket.emit('authenticate', { token: this.app.auth.getAccessToken() }, (response) => {
+                if (!response || response.success !== true) {
+                    this.connect();
+                }
+            });
+            return;
+        }
+
+        this.connect();
     }
 }

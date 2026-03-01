@@ -13,11 +13,11 @@ export class ConfigManager {
             this.app.ui.updateStatus('Loading configuration...', 'connecting');
             
             // Load all configuration (env + session overrides)
-            const response = await fetch('/api/config');
+            const response = await this.app.api.fetch('/api/config');
             const config = await response.json();
             
             // Load environment-only config for comparison
-            const envResponse = await fetch('/api/config/env-only');
+            const envResponse = await this.app.api.fetch('/api/config/env-only');
             const envConfig = await envResponse.json();
             
             // Populate all form fields with current config values
@@ -114,7 +114,7 @@ export class ConfigManager {
         try {
             this.app.ui.updateStatus('Resetting configuration...', 'connecting');
             
-            const response = await fetch('/api/config/reset', {
+            const response = await this.app.api.fetch('/api/config/reset', {
                 method: 'POST'
             });
             
@@ -148,7 +148,7 @@ export class ConfigManager {
                 config[key] = value;
             }
 
-            const response = await fetch('/api/config', {
+            const response = await this.app.api.fetch('/api/config', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -512,7 +512,7 @@ export class ConfigManager {
     
     async loadDiscordSettings() {
         try {
-            const response = await fetch('/api/discord/settings');
+            const response = await this.app.api.fetch('/api/discord/settings');
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -559,7 +559,7 @@ export class ConfigManager {
         };
         
         try {
-            const response = await fetch('/api/discord/settings', {
+            const response = await this.app.api.fetch('/api/discord/settings', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -600,7 +600,7 @@ export class ConfigManager {
             }
             
             // Then test Discord notification
-            const response = await fetch('/api/discord/test', {
+            const response = await this.app.api.fetch('/api/discord/test', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -657,7 +657,7 @@ export class ConfigManager {
         }
         
         try {
-            const response = await fetch('/api/websocket/status');
+            const response = await this.app.api.fetch('/api/websocket/status');
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -730,7 +730,7 @@ export class ConfigManager {
     
     async loadWebhookSettings() {
         try {
-            const response = await fetch('/api/webhook/settings');
+            const response = await this.app.api.fetch('/api/webhook/settings');
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -760,7 +760,7 @@ export class ConfigManager {
         };
         
         try {
-            const response = await fetch('/api/webhook/settings', {
+            const response = await this.app.api.fetch('/api/webhook/settings', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'

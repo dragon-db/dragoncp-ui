@@ -113,6 +113,38 @@ export class UIComponents {
         }, timeout);
     }
 
+    showJsonViewer(title, data) {
+        let modal = document.getElementById('jsonViewerModal');
+        if (!modal) {
+            modal = document.createElement('div');
+            modal.className = 'modal fade';
+            modal.id = 'jsonViewerModal';
+            modal.tabIndex = -1;
+            modal.innerHTML = `
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header gradient-accent">
+                            <h5 class="modal-title" id="jsonViewerTitle"></h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <pre id="jsonViewerBody" class="mb-0" style="max-height: 70vh; overflow: auto;"></pre>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+        }
+
+        const titleEl = document.getElementById('jsonViewerTitle');
+        const bodyEl = document.getElementById('jsonViewerBody');
+        if (titleEl) titleEl.textContent = title || 'JSON Viewer';
+        if (bodyEl) bodyEl.textContent = JSON.stringify(data, null, 2);
+
+        const bsModal = new bootstrap.Modal(modal);
+        bsModal.show();
+    }
+
     // ===== COLLAPSIBLE CARDS FUNCTIONALITY =====
     
     initializeCollapsibleCards() {
@@ -457,7 +489,9 @@ export class UIComponents {
         document.getElementById('browseMediaCard').style.display = 'none';
         document.getElementById('transferCard').style.display = 'none';
         document.getElementById('logCard').style.display = 'none';
-        this.app.media.resetBrowseMediaState();
+        if (this.app.media) {
+            this.app.media.resetBrowseMediaState();
+        }
     }
 
     showMediaInterface() {

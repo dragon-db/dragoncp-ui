@@ -31,7 +31,7 @@ interface AppLayoutProps {
 }
 
 // App version - can be made configurable from env or API later
-const APP_VERSION = 'v1.8.21';
+const APP_VERSION = 'v2.0.4';
 
 // Dragon-CP Logo URL
 const LOGO_URL = 'https://blog.infinitysystems.in/dragondbserver/DragonDB_Trans.png';
