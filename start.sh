@@ -113,7 +113,7 @@ check_rsync() {
         echo "  - macOS:         brew install rsync"
         echo ""
         echo -e "${YELLOW}The application will start, but file transfers will not work.${NC}"
-        return 1
+        return 0
     fi
 }
 

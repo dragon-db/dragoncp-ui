@@ -66,6 +66,12 @@ def _load_env_file_early() -> dict:
 # Load early config for Flask/SocketIO setup
 _early_config = _load_env_file_early()
 
+_early_secret_key = _early_config.get('SECRET_KEY') or os.environ.get('SECRET_KEY')
+if not _early_secret_key:
+    raise RuntimeError(
+        "Missing SECRET_KEY. Set SECRET_KEY in dragoncp_env.env, .env, or environment."
+    )
+
 
 def get_cors_origins():
     """Get CORS allowed origins from config file"""
@@ -79,7 +85,7 @@ def get_cors_origins():
 
 # Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = _early_config.get('SECRET_KEY', 'dragoncp-secret-key-2024')
+app.config['SECRET_KEY'] = _early_secret_key
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Get CORS origins

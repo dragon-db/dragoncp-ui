@@ -9,13 +9,17 @@ export class DiskMonitor {
     }
 
     initializeDiskUsageMonitoring() {
-        if (!this.app.auth?.isAuthenticated()) return;
-        this.loadDiskUsage();
-        
         // Add refresh button event listener
-        document.getElementById('refreshDiskUsageBtn').addEventListener('click', () => {
-            this.refreshDiskUsage();
-        });
+        const refreshBtn = document.getElementById('refreshDiskUsageBtn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => {
+                this.refreshDiskUsage();
+            });
+        }
+
+        if (this.app.auth?.isAuthenticated()) {
+            this.loadDiskUsage();
+        }
     }
 
     async loadDiskUsage() {

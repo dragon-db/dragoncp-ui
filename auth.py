@@ -59,12 +59,23 @@ def _load_env_file() -> Dict[str, str]:
 def get_auth_config() -> Dict[str, Any]:
     """Get authentication configuration from env file"""
     env_config = _load_env_file()
-    
+
+    jwt_secret = (
+        env_config.get('JWT_SECRET_KEY')
+        or env_config.get('SECRET_KEY')
+        or os.environ.get('JWT_SECRET_KEY')
+        or os.environ.get('SECRET_KEY')
+    )
+    if not jwt_secret:
+        raise RuntimeError(
+            "Missing JWT secret. Set JWT_SECRET_KEY (preferred) or SECRET_KEY in config/environment."
+        )
+
     return {
         'username': env_config.get('DRAGONCP_USERNAME', 'admin'),
         'password_hash': env_config.get('DRAGONCP_PASSWORD_HASH', ''),
         'password_plain': env_config.get('DRAGONCP_PASSWORD', ''),
-        'jwt_secret': env_config.get('JWT_SECRET_KEY', env_config.get('SECRET_KEY', 'dragoncp-jwt-secret-change-me')),
+        'jwt_secret': jwt_secret,
         'jwt_expiry_hours': int(env_config.get('JWT_EXPIRY_HOURS', '24')),
         'jwt_algorithm': 'HS256'
     }

@@ -42,7 +42,8 @@ import {
 } from '@tabler/icons-react';
 import type { AppConfig } from '@/lib/api-types';
 
-type ConfigField = { key: keyof AppConfig; label: string; type?: 'password' | 'number' };
+type AppConfigKey = Extract<keyof AppConfig, string>;
+type ConfigField = { key: AppConfigKey; label: string; type?: 'password' | 'number' };
 
 const configFields: ConfigField[] = [
   { key: 'REMOTE_IP', label: 'Server Host/IP' },
@@ -69,7 +70,7 @@ interface ConfigGroup {
   title: string;
   description: string;
   icon: ComponentType<{ className?: string }>;
-  keys: Array<keyof AppConfig>;
+  keys: Array<AppConfigKey>;
 }
 
 const configFieldByKey = configFields.reduce(
@@ -77,7 +78,7 @@ const configFieldByKey = configFields.reduce(
     acc[field.key] = field;
     return acc;
   },
-  {} as Partial<Record<keyof AppConfig, ConfigField>>
+  {} as Partial<Record<AppConfigKey, ConfigField>>
 );
 
 const configGroups: ConfigGroup[] = [
@@ -111,7 +112,7 @@ const configGroups: ConfigGroup[] = [
   },
 ];
 
-const criticalKeys: Array<keyof AppConfig> = [
+const criticalKeys: Array<AppConfigKey> = [
   'REMOTE_IP',
   'REMOTE_USER',
   'REMOTE_PASSWORD',
@@ -129,7 +130,7 @@ function wasCriticalConfigChanged(baseConfig: AppConfig | undefined, draft: Reco
   return criticalKeys.some((key) => normalizeValue(baseConfig[key]) !== normalizeValue(draft[key]));
 }
 
-function fieldValue(draft: Record<string, string>, key: keyof AppConfig) {
+function fieldValue(draft: Record<string, string>, key: AppConfigKey) {
   return draft[key as string] ?? '';
 }
 
