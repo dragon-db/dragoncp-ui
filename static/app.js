@@ -379,7 +379,7 @@ class DragonCPUI {
             this.websocket.disconnectWebSocket();
             
             // Then disconnect from SSH server
-            const response = await this.api.fetch('/api/disconnect');
+            const response = await this.api.post('/api/disconnect');
             const result = await response.json();
             
             if (result.status === 'success') {

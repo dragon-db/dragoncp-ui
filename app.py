@@ -263,7 +263,7 @@ def api_connect():
         return jsonify({"status": "error", "message": "Connection failed"})
 
 
-@app.route('/api/disconnect')
+@app.route('/api/disconnect', methods=['POST'])
 @require_auth
 def api_disconnect():
     """Disconnect from SSH server - Protected"""

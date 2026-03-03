@@ -115,7 +115,7 @@ export function useSSHDisconnect() {
   
   return useMutation({
     mutationFn: async () => {
-      const response = await api.get('/disconnect');
+      const response = await api.post('/disconnect');
       return response.data;
     },
     onSuccess: () => {
