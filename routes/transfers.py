@@ -28,10 +28,11 @@ def api_transfer():
     """Start a transfer"""
     try:
         data = request.json
-        operation_type = data.get('type')  # 'folder' or 'file'
+        operation_type = data.get('type', 'folder')  # 'folder' or 'file'
         media_type = data.get('media_type')
         folder_name = data.get('folder_name')
         season_name = data.get('season_name')
+        episode_name = data.get('episode_name')
         
         print(f"🔄 Transfer request: {data}")
         
@@ -67,15 +68,25 @@ def api_transfer():
             print(f"❌ Destination path not configured for {media_type}")
             return jsonify({"status": "error", "message": f"Destination path not configured for {media_type}"})
         
-        # Construct source path
+        # Construct source path (folder/season)
         source_path = f"{base_source}/{folder_name}"
         if season_name:
             source_path = f"{source_path}/{season_name}"
-        
-        # Construct destination path
+
+        # Construct destination path (folder/season)
         dest_path = f"{base_dest}/{folder_name}"
         if season_name:
             dest_path = f"{dest_path}/{season_name}"
+
+        # True single-episode transfer semantics: type=file + episode_name
+        if operation_type == 'file':
+            if not episode_name:
+                return jsonify({
+                    "status": "error",
+                    "message": "episode_name is required when type=file"
+                }), 400
+            source_path = f"{source_path}/{episode_name}"
+            dest_path = f"{dest_path}/{episode_name}"
         
         print(f"📁 Final source path: {source_path}")
         print(f"📁 Final destination path: {dest_path}")
@@ -89,10 +100,11 @@ def api_transfer():
         print(f"   - media_type: {media_type}")
         print(f"   - folder_name: {folder_name}")
         print(f"   - season_name: {season_name}")
+        print(f"   - episode_name: {episode_name}")
         print(f"   - operation_type: {operation_type}")
-        
+
         try:
-            success = transfer_coordinator.start_transfer(
+            transfer_started, transfer_state = transfer_coordinator.start_transfer(
                 transfer_id, 
                 source_path, 
                 dest_path, 
@@ -102,7 +114,7 @@ def api_transfer():
                 season_name
             )
             
-            if success:
+            if transfer_started:
                 print(f"✅ Transfer {transfer_id} started successfully")
                 # Verify the transfer was created in database
                 db_transfer = transfer_coordinator.get_transfer_status(transfer_id)
@@ -114,13 +126,18 @@ def api_transfer():
                 return jsonify({
                     "status": "success", 
                     "transfer_id": transfer_id,
-                    "message": "Transfer started",
+                    "transfer_state": transfer_state,
+                    "message": "Transfer started" if transfer_state == "running" else "Transfer queued",
                     "source": source_path,
-                    "destination": dest_path
+                    "destination": dest_path,
+                    "episode_name": episode_name
                 })
             else:
                 print(f"❌ Failed to start transfer {transfer_id}")
-                return jsonify({"status": "error", "message": "Failed to start transfer"})
+                return jsonify({
+                    "status": "error",
+                    "message": f"Failed to start transfer: {transfer_state}"
+                })
                 
         except Exception as e:
             print(f"❌ Exception starting transfer {transfer_id}: {e}")
