@@ -83,6 +83,49 @@ def get_cors_origins():
     return origins if origins else '*'
 
 
+REDACTED_VALUE = "<redacted>"
+SENSITIVE_CONFIG_KEY_MARKERS = ("SECRET", "PASSWORD", "API_KEY", "TOKEN", "CLIENT_SECRET")
+
+
+def _is_sensitive_config_key(key: str) -> bool:
+    if not isinstance(key, str):
+        return False
+    key_upper = key.upper()
+    return any(marker in key_upper for marker in SENSITIVE_CONFIG_KEY_MARKERS)
+
+
+def sanitize_config_response(config_map: dict) -> dict:
+    """
+    Return a config map safe for API responses by redacting sensitive keys.
+    """
+    if not isinstance(config_map, dict):
+        return {}
+
+    sanitized = {}
+    for key, value in config_map.items():
+        if _is_sensitive_config_key(key):
+            sanitized[key] = REDACTED_VALUE if value not in ("", None) else ""
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
+def sanitize_config_update_payload(payload: dict, current_config: dict) -> dict:
+    """
+    Prevent redacted placeholders from being persisted back into config/session.
+    """
+    if not isinstance(payload, dict):
+        return {}
+
+    sanitized = {}
+    for key, value in payload.items():
+        if _is_sensitive_config_key(key) and value == REDACTED_VALUE:
+            sanitized[key] = current_config.get(key, "")
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = _early_secret_key
@@ -175,10 +218,13 @@ def index():
 def api_config():
     """Configuration API - Protected"""
     if request.method == 'GET':
-        return jsonify(config.get_all_config())
+        return jsonify(sanitize_config_response(config.get_all_config()))
     else:
-        data = request.json
-        config.update_session_config(data)
+        data = request.json or {}
+        if not isinstance(data, dict):
+            return jsonify({"status": "error", "message": "Invalid configuration payload"}), 400
+        current_config = config.get_all_config()
+        config.update_session_config(sanitize_config_update_payload(data, current_config))
         return jsonify({"status": "success", "message": "Configuration saved"})
 
 
@@ -297,7 +343,7 @@ def api_reset_config():
 @require_auth
 def api_env_config():
     """Get only environment configuration (without session overrides) - Protected"""
-    return jsonify(config.env_config)
+    return jsonify(sanitize_config_response(config.env_config))
 
 
 # ===== TEST SIMULATION ENDPOINTS =====
