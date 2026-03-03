@@ -142,6 +142,11 @@ def after_request(response):
     elif origin and (origin in cors_origins):
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Access-Control-Allow-Credentials'] = 'true'
+        # When echoing a specific origin, make cache behavior origin-aware.
+        vary_values = [v.strip() for v in response.headers.get('Vary', '').split(',') if v.strip()]
+        if 'Origin' not in vary_values:
+            vary_values.append('Origin')
+            response.headers['Vary'] = ', '.join(vary_values)
     
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
