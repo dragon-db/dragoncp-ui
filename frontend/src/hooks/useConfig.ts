@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import type { AppConfig, DiskUsage, RemoteStorageInfo, SSHConfig } from '@/lib/api-types';
-export type { AppConfig, DiskUsage, RemoteStorageInfo, SSHConfig } from '@/lib/api-types';
+import type { AppConfig, DiskUsage, RemoteStorageInfo, SSHConfig, SSHConfigResponse } from '@/lib/api-types';
+export type { AppConfig, DiskUsage, RemoteStorageInfo, SSHConfig, SSHConfigResponse } from '@/lib/api-types';
 
 export function useAppConfig() {
   return useQuery({
@@ -57,7 +57,7 @@ export function useSSHConfig() {
   return useQuery({
     queryKey: ['ssh', 'config'],
     queryFn: async () => {
-      const response = await api.get<SSHConfig>('/ssh-config');
+      const response = await api.get<SSHConfigResponse>('/ssh-config');
       return response.data;
     },
   });

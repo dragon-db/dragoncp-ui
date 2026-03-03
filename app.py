@@ -321,11 +321,12 @@ def api_auto_connect():
 @require_auth
 def api_ssh_config():
     """Get SSH configuration from environment - Protected"""
+    remote_password = config.get("REMOTE_PASSWORD", "")
     ssh_config = {
         "host": config.get("REMOTE_IP", ""),
         "username": config.get("REMOTE_USER", ""),
-        "password": config.get("REMOTE_PASSWORD", ""),
-        "key_path": config.get("SSH_KEY_PATH", "")
+        "key_path": config.get("SSH_KEY_PATH", ""),
+        "has_password": bool(remote_password),
     }
     return jsonify(ssh_config)
 

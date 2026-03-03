@@ -150,6 +150,13 @@ export interface SSHConfig {
   key_path: string
 }
 
+export interface SSHConfigResponse {
+  host: string
+  username: string
+  key_path: string
+  has_password: boolean
+}
+
 export interface DiskUsage {
   path: string
   filesystem?: string
