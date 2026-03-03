@@ -188,21 +188,41 @@ def validate_token(token: str, token_type: str = 'access') -> Optional[Dict[str,
         return None
 
 
+def _is_websocket_upgrade_request() -> bool:
+    """
+    Detect whether this request is a WebSocket upgrade request.
+    """
+    upgrade_header = request.headers.get('Upgrade', '').lower()
+    if upgrade_header == 'websocket':
+        return True
+
+    if str(request.environ.get('HTTP_UPGRADE', '')).lower() == 'websocket':
+        return True
+
+    # Some WSGI servers expose a websocket object in environ.
+    if request.environ.get('wsgi.websocket') is not None:
+        return True
+
+    return False
+
+
 def get_token_from_request() -> Optional[str]:
     """
     Extract JWT token from request.
-    Supports Authorization header (Bearer token) and query parameter.
+    For normal HTTP requests, only Authorization header (Bearer) is accepted.
+    Query parameter token is accepted only for WebSocket upgrade requests.
     """
     # Try Authorization header first
     auth_header = request.headers.get('Authorization', '')
     if auth_header.startswith('Bearer '):
         return auth_header[7:]  # Remove 'Bearer ' prefix
-    
-    # Fall back to query parameter (useful for WebSocket connections)
-    token = request.args.get('token')
-    if token:
-        return token
-    
+
+    # Allow query token only during websocket upgrade requests
+    if _is_websocket_upgrade_request():
+        token = request.args.get('token')
+        if token:
+            return token
+
     return None
 
 
