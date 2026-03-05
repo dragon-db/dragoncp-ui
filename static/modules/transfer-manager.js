@@ -724,7 +724,7 @@ export class TransferManager {
 
     async loadTransferLogs(transferId) {
         try {
-            const response = await fetch(`/api/transfer/${transferId}/logs`);
+            const response = await this.app.api.fetch(`/api/transfer/${transferId}/logs`);
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -742,7 +742,7 @@ export class TransferManager {
 
     async showTransferLogs(transferId) {
         try {
-            const response = await fetch(`/api/transfer/${transferId}/logs`);
+            const response = await this.app.api.fetch(`/api/transfer/${transferId}/logs`);
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -777,7 +777,7 @@ export class TransferManager {
 
     async cancelTransfer(transferId) {
         try {
-            const response = await fetch(`/api/transfer/${transferId}/cancel`, {
+            const response = await this.app.api.fetch(`/api/transfer/${transferId}/cancel`, {
                 method: 'POST'
             });
             
@@ -798,17 +798,20 @@ export class TransferManager {
 
     // Transfer Management Methods
     initializeTransferManagement() {
+        if (!this.app.auth?.isAuthenticated()) return;
         this.loadActiveTransfers();
         
         // Auto-refresh active transfers every 30 seconds
-        setInterval(() => {
+        this.activeTransferInterval = setInterval(() => {
+            if (!this.app.auth?.isAuthenticated()) return;
             this.loadActiveTransfers();
         }, 30000);
     }
 
     async loadActiveTransfers() {
+        if (!this.app.auth?.isAuthenticated()) return;
         try {
-            const response = await fetch('/api/transfers/active');
+            const response = await this.app.api.fetch('/api/transfers/active');
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -1183,6 +1186,7 @@ export class TransferManager {
     }
 
     async loadAllTransfers() {
+        if (!this.app.auth?.isAuthenticated()) return;
         try {
             const statusFilter = document.getElementById('transferStatusFilter').value;
             let url = '/api/transfers/all?limit=100';
@@ -1190,7 +1194,7 @@ export class TransferManager {
                 url += `&status=${statusFilter}`;
             }
             
-            const response = await fetch(url);
+            const response = await this.app.api.fetch(url);
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -1278,7 +1282,7 @@ export class TransferManager {
 
     async showTransferDetails(transferId) {
         try {
-            const response = await fetch(`/api/transfer/${transferId}/status`);
+            const response = await this.app.api.fetch(`/api/transfer/${transferId}/status`);
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -1410,7 +1414,7 @@ export class TransferManager {
 
     async restartTransfer(transferId) {
         try {
-            const response = await fetch(`/api/transfer/${transferId}/restart`, {
+            const response = await this.app.api.fetch(`/api/transfer/${transferId}/restart`, {
                 method: 'POST'
             });
             
@@ -1433,7 +1437,7 @@ export class TransferManager {
             const confirmed = confirm('Are you sure you want to delete this transfer? This action cannot be undone.');
             if (!confirmed) return;
             
-            const response = await fetch(`/api/transfer/${transferId}/delete`, {
+            const response = await this.app.api.fetch(`/api/transfer/${transferId}/delete`, {
                 method: 'POST'
             });
             
@@ -1465,7 +1469,7 @@ export class TransferManager {
             const confirmed = confirm('This will remove all duplicate transfers for the same destination path, keeping only the latest successful transfer. Continue?');
             if (!confirmed) return;
             
-            const response = await fetch('/api/transfers/cleanup', {
+            const response = await this.app.api.fetch('/api/transfers/cleanup', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'

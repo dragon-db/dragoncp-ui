@@ -24,14 +24,49 @@
                 <span class="navbar-text version-badge me-3">
                    v{{ APP_VERSION }}
                 </span>
-                <button class="btn btn-outline-light btn-sm me-2" id="configBtn">
+                <span class="navbar-text me-2" id="authenticatedUser" style="display: none;">
+                    <i class="bi bi-person-circle me-1"></i>
+                    <span id="authenticatedUsername"></span>
+                </span>
+                <button class="btn btn-outline-light btn-sm me-2" id="configBtn" style="display: none;">
                     <i class="bi bi-gear"></i> Config
+                </button>
+                <button class="btn btn-outline-light btn-sm" id="logoutBtn" style="display: none;">
+                    <i class="bi bi-box-arrow-right"></i> Logout
                 </button>
             </div>
         </div>
     </nav>
 
-    <div class="container mt-4">
+    <div class="container mt-4" id="loginGate" style="display: none;">
+        <div class="row justify-content-center">
+            <div class="col-lg-5 col-md-7">
+                <div class="card fade-in">
+                    <div class="card-header gradient-accent">
+                        <h5 class="mb-0"><i class="bi bi-shield-lock me-2"></i>Sign In</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="alert alert-danger" id="loginError" style="display: none;"></div>
+                        <form id="loginForm">
+                            <div class="mb-3">
+                                <label class="form-label" for="loginUsername">Username</label>
+                                <input class="form-control" type="text" id="loginUsername" autocomplete="username" required>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="loginPassword">Password</label>
+                                <input class="form-control" type="password" id="loginPassword" autocomplete="current-password" required>
+                            </div>
+                            <button class="btn btn-primary w-100" type="submit" id="loginSubmitBtn">
+                                <i class="bi bi-box-arrow-in-right"></i> Sign In
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container mt-4" id="appContainer" style="display: none;">
         <!-- Status Bar -->
         <div class="status-bar fade-in" id="statusBar" title="">
             <div class="status-info">
@@ -919,6 +954,7 @@
                                 <option value="">All Statuses</option>
                                 <option value="running">Running</option>
                                 <option value="pending">Pending</option>
+                                <option value="queued">Queued</option>
                                 <option value="completed">Completed</option>
                                 <option value="failed">Failed</option>
                                 <option value="cancelled">Cancelled</option>
@@ -997,6 +1033,8 @@
     <script type="importmap">
     {
         "imports": {
+            "auth-manager": "{{ url_for('static', filename='modules/auth-manager.js') }}?v={{ APP_VERSION }}",
+            "api-client": "{{ url_for('static', filename='modules/api-client.js') }}?v={{ APP_VERSION }}",
             "websocket-manager": "{{ url_for('static', filename='modules/websocket-manager.js') }}?v={{ APP_VERSION }}",
             "config-manager": "{{ url_for('static', filename='modules/config-manager.js') }}?v={{ APP_VERSION }}",
             "ui-components": "{{ url_for('static', filename='modules/ui-components.js') }}?v={{ APP_VERSION }}",

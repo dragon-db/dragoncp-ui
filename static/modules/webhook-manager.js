@@ -39,8 +39,9 @@ export class WebhookManager {
     }
 
     async loadWebhookSettings() {
+        if (!this.app.auth?.isAuthenticated()) return;
         try {
-            const response = await fetch('/api/webhook/settings');
+            const response = await this.app.api.fetch('/api/webhook/settings');
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -64,7 +65,7 @@ export class WebhookManager {
             const payload = {};
             payload[`auto_sync_${mediaType}`] = newState;
             
-            const response = await fetch('/api/webhook/settings', {
+            const response = await this.app.api.fetch('/api/webhook/settings', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -123,6 +124,7 @@ export class WebhookManager {
     }
 
     async loadNotifications() {
+        if (!this.app.auth?.isAuthenticated()) return;
         // Use refresh button spinner instead of in-card loading notice
         const refreshBtn = document.getElementById('refreshSyncBtn');
         const originalHtml = refreshBtn ? refreshBtn.innerHTML : null;
@@ -131,7 +133,7 @@ export class WebhookManager {
             refreshBtn.disabled = true;
         }
         try {
-            const response = await fetch('/api/webhook/notifications?limit=50');
+            const response = await this.app.api.fetch('/api/webhook/notifications?limit=50');
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -585,8 +587,18 @@ export class WebhookManager {
     }
     
     viewWebhookJson(notificationId) {
-        // Open the webhook JSON in a new tab
-        window.open(`/api/webhook/notifications/${notificationId}/json`, '_blank');
+        this.showProtectedJson(`/api/webhook/notifications/${notificationId}/json`, 'Webhook JSON');
+    }
+
+    async showProtectedJson(url, title) {
+        try {
+            const response = await this.app.api.fetch(url);
+            const data = await response.json();
+            this.app.ui.showJsonViewer(title, data);
+        } catch (error) {
+            console.error('Failed to load protected JSON:', error);
+            this.app.ui.showAlert('Failed to load JSON payload', 'danger');
+        }
     }
 
     getStatusClass(status) {
@@ -663,7 +675,7 @@ export class WebhookManager {
                 return;
             }
             
-            const response = await fetch(`/api/webhook/notifications/${notificationId}/sync`, {
+            const response = await this.app.api.fetch(`/api/webhook/notifications/${notificationId}/sync`, {
                 method: 'POST'
             });
             
@@ -705,7 +717,7 @@ export class WebhookManager {
                     break;
             }
             
-            const response = await fetch(endpoint, {
+            const response = await this.app.api.fetch(endpoint, {
                 method: 'POST'
             });
             
@@ -726,7 +738,7 @@ export class WebhookManager {
 
     async showMovieDetails(notificationId) {
         try {
-            const response = await fetch(`/api/webhook/notifications/${notificationId}`);
+            const response = await this.app.api.fetch(`/api/webhook/notifications/${notificationId}`);
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -997,7 +1009,7 @@ export class WebhookManager {
                     break;
             }
             
-            const response = await fetch(endpoint, {
+            const response = await this.app.api.fetch(endpoint, {
                 method: 'POST'
             });
             
@@ -1042,7 +1054,7 @@ export class WebhookManager {
                     break;
             }
             
-            const response = await fetch(endpoint, {
+            const response = await this.app.api.fetch(endpoint, {
                 method: 'POST'
             });
             
@@ -1125,7 +1137,7 @@ export class WebhookManager {
                     break;
             }
             
-            const response = await fetch(endpoint);
+            const response = await this.app.api.fetch(endpoint);
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -1984,7 +1996,7 @@ export class WebhookManager {
                     break;
             }
             
-            const response = await fetch(endpoint, {
+            const response = await this.app.api.fetch(endpoint, {
                 method: 'POST'
             });
             
@@ -2169,13 +2181,14 @@ export class WebhookManager {
     initializeRenameWebSocketListeners() {
         // Listen for rename webhook events to refresh the notifications list
         // Toast notifications are handled in websocket-manager.js
-        if (this.app.socket) {
-            this.app.socket.on('rename_webhook_received', () => {
+        const socket = this.app.websocket?.socket;
+        if (socket) {
+            socket.on('rename_webhook_received', () => {
                 // Refresh rename notifications when a new rename arrives
                 this.loadRenameNotifications();
             });
             
-            this.app.socket.on('rename_completed', () => {
+            socket.on('rename_completed', () => {
                 // Refresh rename notifications when a rename completes
                 this.loadRenameNotifications();
             });
@@ -2183,8 +2196,9 @@ export class WebhookManager {
     }
     
     async loadRenameNotifications() {
+        if (!this.app.auth?.isAuthenticated()) return;
         try {
-            const response = await fetch('/api/webhook/rename/notifications?limit=50');
+            const response = await this.app.api.fetch('/api/webhook/rename/notifications?limit=50');
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -2276,7 +2290,7 @@ export class WebhookManager {
     
     async showRenameDetails(notificationId) {
         try {
-            const response = await fetch(`/api/webhook/rename/notifications/${notificationId}`);
+            const response = await this.app.api.fetch(`/api/webhook/rename/notifications/${notificationId}`);
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -2483,8 +2497,7 @@ export class WebhookManager {
     }
     
     viewRenameWebhookJson(notificationId) {
-        // Open the webhook JSON in a new tab (same behavior as series/movies)
-        window.open(`/api/webhook/rename/notifications/${notificationId}/json`, '_blank');
+        this.showProtectedJson(`/api/webhook/rename/notifications/${notificationId}/json`, 'Rename Webhook JSON');
     }
     
     async deleteRenameNotification(notificationId) {
@@ -2493,7 +2506,7 @@ export class WebhookManager {
         }
         
         try {
-            const response = await fetch(`/api/webhook/rename/notifications/${notificationId}/delete`, {
+            const response = await this.app.api.fetch(`/api/webhook/rename/notifications/${notificationId}/delete`, {
                 method: 'POST'
             });
             const result = await response.json();
@@ -2564,10 +2577,15 @@ export class WebhookManager {
 
     // Initialize the webhook manager
     initialize() {
+        if (!this.app.auth?.isAuthenticated()) return;
         this.loadNotifications();
         
         // Auto-refresh notifications every 30 seconds
-        setInterval(() => {
+        if (this.notificationsRefreshInterval) {
+            clearInterval(this.notificationsRefreshInterval);
+        }
+        this.notificationsRefreshInterval = setInterval(() => {
+            if (!this.app.auth?.isAuthenticated()) return;
             this.loadNotifications();
         }, 30000);
     }

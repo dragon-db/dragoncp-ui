@@ -72,7 +72,7 @@ class TransferCoordinator:
         """
         Start a new transfer with database persistence and queue management
         
-        Returns True if transfer started/queued successfully, False if duplicate
+        Returns tuple of (success, status_code)
         """
         
         log_sync("TransferCoordinator", f"start_transfer() called", 
@@ -128,7 +128,7 @@ class TransferCoordinator:
             
             # Emit WebSocket notification
             if self.socketio:
-                self.socketio.emit('transfer_update', {
+                self.socketio.emit('transfer_queued', {
                     'transfer_id': transfer_id,
                     'status': 'queued',
                     'queue_type': 'path',

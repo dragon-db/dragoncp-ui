@@ -5,6 +5,7 @@ Refactored version with modular architecture
 """
 
 import os
+
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from flask_socketio import SocketIO
 
@@ -13,6 +14,7 @@ from config import DragonCPConfig, APP_VERSION
 from ssh import SSHManager
 from websocket import register_websocket_handlers, start_cleanup_thread, websocket_connections
 from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT
+from auth import require_auth, test_mode_or_auth
 
 # Import models
 from models import DatabaseManager
@@ -24,20 +26,119 @@ from services.rename_service import RenameService
 
 # Import routes
 from routes import (
-    media_bp, transfers_bp, backups_bp, webhooks_bp, debug_bp,
+    auth_bp, media_bp, transfers_bp, backups_bp, webhooks_bp, debug_bp,
     init_media_routes, init_transfer_routes, init_backup_routes,
     init_webhook_routes, init_debug_routes
 )
 
+
+# ===== EARLY CONFIG LOADING =====
+
+def _load_env_file_early() -> dict:
+    """
+    Load configuration from dragoncp_env.env or .env file early
+    (before DragonCPConfig is instantiated) for Flask/SocketIO setup.
+    """
+    config = {}
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    env_files = [
+        os.path.join(script_dir, 'dragoncp_env.env'),
+        os.path.join(script_dir, '.env'),
+    ]
+    
+    for env_file in env_files:
+        if os.path.exists(env_file):
+            try:
+                with open(env_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#') and '=' in line:
+                            key, value = line.split('=', 1)
+                            config[key.strip()] = value.strip().strip('"').strip("'")
+                break
+            except Exception as e:
+                print(f"⚠️  Error loading early config from {env_file}: {e}")
+    
+    return config
+
+
+# Load early config for Flask/SocketIO setup
+_early_config = _load_env_file_early()
+
+_early_secret_key = _early_config.get('SECRET_KEY') or os.environ.get('SECRET_KEY')
+if not _early_secret_key:
+    raise RuntimeError(
+        "Missing SECRET_KEY. Set SECRET_KEY in dragoncp_env.env, .env, or environment."
+    )
+
+
+def get_cors_origins():
+    """Get CORS allowed origins from config file"""
+    cors_origins = _early_config.get('CORS_ORIGINS', '*')
+    if cors_origins == '*':
+        return '*'
+    # Parse comma-separated origins
+    origins = [origin.strip() for origin in cors_origins.split(',') if origin.strip()]
+    return origins if origins else '*'
+
+
+REDACTED_VALUE = "<redacted>"
+SENSITIVE_CONFIG_KEY_MARKERS = ("SECRET", "PASSWORD", "API_KEY", "TOKEN", "CLIENT_SECRET")
+
+
+def _is_sensitive_config_key(key: str) -> bool:
+    if not isinstance(key, str):
+        return False
+    key_upper = key.upper()
+    return any(marker in key_upper for marker in SENSITIVE_CONFIG_KEY_MARKERS)
+
+
+def sanitize_config_response(config_map: dict) -> dict:
+    """
+    Return a config map safe for API responses by redacting sensitive keys.
+    """
+    if not isinstance(config_map, dict):
+        return {}
+
+    sanitized = {}
+    for key, value in config_map.items():
+        if _is_sensitive_config_key(key):
+            sanitized[key] = REDACTED_VALUE if value not in ("", None) else ""
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
+def sanitize_config_update_payload(payload: dict, current_config: dict) -> dict:
+    """
+    Prevent redacted placeholders from being persisted back into config/session.
+    """
+    if not isinstance(payload, dict):
+        return {}
+
+    sanitized = {}
+    for key, value in payload.items():
+        if _is_sensitive_config_key(key) and value == REDACTED_VALUE:
+            sanitized[key] = current_config.get(key, "")
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
 # Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dragoncp-secret-key-2024')
+app.config['SECRET_KEY'] = _early_secret_key
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
-# Initialize SocketIO
+# Get CORS origins
+cors_origins = get_cors_origins()
+print(f"🌐 CORS allowed origins: {cors_origins}")
+
+# Initialize SocketIO with CORS configuration
 socketio = SocketIO(
     app, 
-    cors_allowed_origins="*",
+    cors_allowed_origins=cors_origins,
     ping_timeout=WEBSOCKET_TIMEOUT_MAX,  # Use maximum for SocketIO config
     ping_interval=25 * 60  # Send ping every 25 minutes
 )
@@ -52,7 +153,7 @@ transfer_coordinator = TransferCoordinator(config, db_manager, socketio)
 rename_model = RenameNotification(db_manager)
 rename_service = RenameService(config, rename_model, socketio, transfer_coordinator.notification_service)
 
-# Register WebSocket handlers
+# Register WebSocket handlers (with auth support)
 register_websocket_handlers(socketio)
 start_cleanup_thread(socketio)
 
@@ -64,11 +165,36 @@ init_webhook_routes(config, transfer_coordinator, rename_service)
 init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections)
 
 # Register route blueprints
+app.register_blueprint(auth_bp, url_prefix='/api')
 app.register_blueprint(media_bp, url_prefix='/api')
 app.register_blueprint(transfers_bp, url_prefix='/api')
 app.register_blueprint(backups_bp, url_prefix='/api')
 app.register_blueprint(webhooks_bp, url_prefix='/api')
 app.register_blueprint(debug_bp, url_prefix='/api')
+
+
+# ===== CORS HEADERS FOR PREFLIGHT =====
+
+@app.after_request
+def after_request(response):
+    """Add CORS headers to all responses"""
+    origin = request.headers.get('Origin')
+    
+    if cors_origins == '*':
+        response.headers['Access-Control-Allow-Origin'] = '*'
+    elif origin and (origin in cors_origins):
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        # When echoing a specific origin, make cache behavior origin-aware.
+        vary_values = [v.strip() for v in response.headers.get('Vary', '').split(',') if v.strip()]
+        if 'Origin' not in vary_values:
+            vary_values.append('Origin')
+            response.headers['Vary'] = ', '.join(vary_values)
+    
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    
+    return response
 
 
 # ===== CONTEXT PROCESSORS =====
@@ -88,19 +214,24 @@ def index():
 
 
 @app.route('/api/config', methods=['GET', 'POST'])
+@require_auth
 def api_config():
-    """Configuration API"""
+    """Configuration API - Protected"""
     if request.method == 'GET':
-        return jsonify(config.get_all_config())
+        return jsonify(sanitize_config_response(config.get_all_config()))
     else:
-        data = request.json
-        config.update_session_config(data)
+        data = request.json or {}
+        if not isinstance(data, dict):
+            return jsonify({"status": "error", "message": "Invalid configuration payload"}), 400
+        current_config = config.get_all_config()
+        config.update_session_config(sanitize_config_update_payload(data, current_config))
         return jsonify({"status": "success", "message": "Configuration saved"})
 
 
 @app.route('/api/connect', methods=['POST'])
+@require_auth
 def api_connect():
-    """Connect to SSH server"""
+    """Connect to SSH server - Protected"""
     global ssh_manager
     
     print("🔌 API: /api/connect called")
@@ -132,9 +263,10 @@ def api_connect():
         return jsonify({"status": "error", "message": "Connection failed"})
 
 
-@app.route('/api/disconnect')
+@app.route('/api/disconnect', methods=['POST'])
+@require_auth
 def api_disconnect():
-    """Disconnect from SSH server"""
+    """Disconnect from SSH server - Protected"""
     global ssh_manager
     
     if ssh_manager:
@@ -151,8 +283,9 @@ def api_disconnect():
 
 
 @app.route('/api/auto-connect')
+@require_auth
 def api_auto_connect():
-    """Auto-connect using environment variables"""
+    """Auto-connect using environment variables - Protected"""
     global ssh_manager
     
     print("🔌 API: /api/auto-connect called")
@@ -185,34 +318,39 @@ def api_auto_connect():
 
 
 @app.route('/api/ssh-config')
+@require_auth
 def api_ssh_config():
-    """Get SSH configuration from environment"""
+    """Get SSH configuration from environment - Protected"""
+    remote_password = config.get("REMOTE_PASSWORD", "")
     ssh_config = {
         "host": config.get("REMOTE_IP", ""),
         "username": config.get("REMOTE_USER", ""),
-        "password": config.get("REMOTE_PASSWORD", ""),
-        "key_path": config.get("SSH_KEY_PATH", "")
+        "key_path": config.get("SSH_KEY_PATH", ""),
+        "has_password": bool(remote_password),
     }
     return jsonify(ssh_config)
 
 
 @app.route('/api/config/reset', methods=['POST'])
+@require_auth
 def api_reset_config():
-    """Reset session configuration to environment values"""
+    """Reset session configuration to environment values - Protected"""
     if 'ui_config' in session:
         del session['ui_config']
     return jsonify({"status": "success", "message": "Configuration reset to environment values"})
 
 
 @app.route('/api/config/env-only')
+@require_auth
 def api_env_config():
-    """Get only environment configuration (without session overrides)"""
-    return jsonify(config.env_config)
+    """Get only environment configuration (without session overrides) - Protected"""
+    return jsonify(sanitize_config_response(config.env_config))
 
 
 # ===== TEST SIMULATION ENDPOINTS =====
 
 @app.route('/api/test/simulate', methods=['POST'])
+@test_mode_or_auth
 def api_start_simulation():
     """Start simulated transfers for UI testing (no rsync). Controlled by TEST_MODE env."""
     if os.environ.get('TEST_MODE', '0') != '1':
@@ -245,6 +383,7 @@ def api_start_simulation():
 
 
 @app.route('/api/test/simulate/stop', methods=['POST'])
+@test_mode_or_auth
 def api_stop_simulation():
     """Signal all running simulations to stop."""
     if os.environ.get('TEST_MODE', '0') != '1':
@@ -275,4 +414,3 @@ if __name__ == '__main__':
     print("Access the application at: http://localhost:5000")
     
     socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
-

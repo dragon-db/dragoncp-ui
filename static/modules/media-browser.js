@@ -134,7 +134,7 @@ export class MediaBrowser {
 
     async loadMediaTypes() {
         try {
-            const response = await fetch('/api/media-types');
+            const response = await this.app.api.fetch('/api/media-types');
             const mediaTypes = await response.json();
             
             // Handle both direct array response and status-wrapped response
@@ -220,7 +220,7 @@ export class MediaBrowser {
             }
             
             // Load folders immediately without waiting for sync status
-            const foldersResponse = await fetch(url);
+            const foldersResponse = await this.app.api.fetch(url);
             const foldersResult = await foldersResponse.json();
             
             if (foldersResult.status === 'success') {
@@ -412,7 +412,7 @@ export class MediaBrowser {
             this.app.ui.showFolderLoading(true);
             
             // Load seasons immediately without waiting for sync status
-            const seasonsResponse = await fetch(`/api/seasons/${mediaType}/${encodeURIComponent(folderName)}`);
+            const seasonsResponse = await this.app.api.fetch(`/api/seasons/${mediaType}/${encodeURIComponent(folderName)}`);
             const seasonsResult = await seasonsResponse.json();
             
             if (seasonsResult.status === 'success') {
@@ -627,7 +627,7 @@ export class MediaBrowser {
                 season_name: seasonName
             };
 
-            const response = await fetch('/api/transfer', {
+            const response = await this.app.api.fetch('/api/transfer', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -662,7 +662,7 @@ export class MediaBrowser {
                 season_name: seasonName
             };
             
-            const response = await fetch('/api/media/dry-run', {
+            const response = await this.app.api.fetch('/api/media/dry-run', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -686,7 +686,7 @@ export class MediaBrowser {
 
     async showEpisodeSync(mediaType, folderName, seasonName) {
         try {
-            const response = await fetch(`/api/episodes/${mediaType}/${encodeURIComponent(folderName)}/${encodeURIComponent(seasonName)}`);
+            const response = await this.app.api.fetch(`/api/episodes/${mediaType}/${encodeURIComponent(folderName)}/${encodeURIComponent(seasonName)}`);
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -739,7 +739,7 @@ export class MediaBrowser {
                 episode_name: episodeName
             };
 
-            const response = await fetch('/api/transfer', {
+            const response = await this.app.api.fetch('/api/transfer', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -964,7 +964,7 @@ export class MediaBrowser {
     // Load sync status asynchronously for all folders in a media type
     async loadSyncStatusAsync(mediaType) {
         try {
-            const response = await fetch(`/api/sync-status/${mediaType}`);
+            const response = await this.app.api.fetch(`/api/sync-status/${mediaType}`);
             const result = await response.json();
             
             if (result.status === 'success' && this.allFolders) {
@@ -998,7 +998,7 @@ export class MediaBrowser {
     // Load sync status asynchronously for seasons of a specific folder
     async loadSeasonSyncStatusAsync(mediaType, folderName) {
         try {
-            const response = await fetch(`/api/sync-status/${mediaType}/${encodeURIComponent(folderName)}`);
+            const response = await this.app.api.fetch(`/api/sync-status/${mediaType}/${encodeURIComponent(folderName)}`);
             const result = await response.json();
             
             if (result.status === 'success' && this.allFolders) {

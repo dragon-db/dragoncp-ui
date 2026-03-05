@@ -3,6 +3,8 @@
  * Coordinates between feature modules and manages application state
  */
 
+import { AuthManager } from 'auth-manager';
+import { ApiClient } from 'api-client';
 import { WebSocketManager } from 'websocket-manager';
 import { ConfigManager } from 'config-manager';
 import { UIComponents } from 'ui-components';
@@ -25,23 +27,37 @@ class DragonCPUI {
             seasonsFolder: null,
             viewingTransferOptions: false
         };
-        
-        // Initialize modules
+
+        this.modulesInitialized = false;
+        this.isBootstrapping = false;
+        this.handlingSessionExpiry = false;
+
+        // Core modules
         this.ui = new UIComponents(this);
+        this.auth = new AuthManager(this);
+        this.api = new ApiClient(this, this.auth);
+
+        this.initializeAuthEventListeners();
+        this.initializeLoginFormListeners();
+        this.updateAuthUI(false);
+        this.bootstrap();
+    }
+
+    initializeModules() {
+        if (this.modulesInitialized) return;
+
         this.websocket = new WebSocketManager(this);
+        this.socket = this.websocket.socket;
         this.config = new ConfigManager(this);
         this.disk = new DiskMonitor(this);
         this.media = new MediaBrowser(this);
         this.transfers = new TransferManager(this);
         this.backups = new BackupManager(this);
         this.webhook = new WebhookManager(this);
-        
-        // Initialize the application
+
         this.initializeEventListeners();
-        this.initializeConnection();
-        
-        // Initialize webhook functionality
         this.webhook.initialize();
+        this.modulesInitialized = true;
     }
 
     initializeEventListeners() {
@@ -60,8 +76,8 @@ class DragonCPUI {
             if (event.target.closest('.status-actions')) {
                 return; // Don't interfere with button clicks
             }
-            
-            if (this.websocket.isWebSocketConnected) {
+
+            if (this.websocket?.isWebSocketConnected) {
                 this.websocket.extendSession();
             }
         });
@@ -94,23 +110,188 @@ class DragonCPUI {
             // ESC key to close fullscreen log
             if (e.key === 'Escape') {
                 const fullscreenModal = document.getElementById('fullscreenLogModal');
-                if (fullscreenModal.classList.contains('show')) {
+                if (fullscreenModal && fullscreenModal.classList.contains('show') && this.transfers) {
                     this.transfers.hideFullscreenLog();
                 }
             }
             
             // Ctrl/Cmd + L to toggle auto-scroll
-            if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'l' && this.transfers) {
                 e.preventDefault();
                 this.transfers.toggleAutoScroll();
             }
             
             // Ctrl/Cmd + K to clear logs
-            if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'k' && this.transfers) {
                 e.preventDefault();
                 this.transfers.clearTransferLog();
             }
         });
+    }
+
+    initializeAuthEventListeners() {
+        document.addEventListener('auth:logout', (event) => {
+            this.handleAuthLogout(event.detail?.reason || 'logout');
+        });
+    }
+
+    initializeLoginFormListeners() {
+        const form = document.getElementById('loginForm');
+        const logoutBtn = document.getElementById('logoutBtn');
+
+        if (form) {
+            form.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                await this.submitLogin();
+            });
+        }
+
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', async () => {
+                await this.auth.logout({ notifyServer: true, reason: 'manual_logout' });
+            });
+        }
+    }
+
+    async bootstrap() {
+        if (this.isBootstrapping) return;
+        this.isBootstrapping = true;
+        try {
+            this.ui.updateStatus('Checking authentication...', 'connecting');
+            const initResult = await this.auth.init();
+
+            if (!initResult.authConfigured) {
+                this.showLoginGate('Authentication is not configured on server.');
+                this.ui.updateStatus('Authentication not configured', 'disconnected');
+                return;
+            }
+
+            if (!initResult.authenticated) {
+                this.showLoginGate();
+                this.ui.updateStatus('Please sign in to continue', 'disconnected');
+                return;
+            }
+
+            await this.handleAuthenticatedSession();
+        } catch (error) {
+            console.error('Bootstrap failed:', error);
+            this.showLoginGate('Failed to initialize authentication.');
+            this.ui.updateStatus('Initialization failed', 'disconnected');
+        } finally {
+            this.isBootstrapping = false;
+        }
+    }
+
+    async submitLogin() {
+        const usernameInput = document.getElementById('loginUsername');
+        const passwordInput = document.getElementById('loginPassword');
+        const submitBtn = document.getElementById('loginSubmitBtn');
+        const loginError = document.getElementById('loginError');
+
+        const username = (usernameInput?.value || '').trim();
+        const password = passwordInput?.value || '';
+
+        if (!username || !password) {
+            this.setLoginError('Username and password are required');
+            return;
+        }
+
+        if (loginError) loginError.style.display = 'none';
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Signing in...';
+        }
+
+        try {
+            await this.auth.login(username, password);
+            if (passwordInput) passwordInput.value = '';
+            await this.handleAuthenticatedSession();
+        } catch (error) {
+            this.setLoginError(error.message || 'Login failed');
+        } finally {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '<i class="bi bi-box-arrow-in-right"></i> Sign In';
+            }
+        }
+    }
+
+    setLoginError(message) {
+        const loginError = document.getElementById('loginError');
+        if (!loginError) return;
+        loginError.textContent = message;
+        loginError.style.display = 'block';
+    }
+
+    showLoginGate(message = '') {
+        this.updateAuthUI(false);
+        const appContainer = document.getElementById('appContainer');
+        if (appContainer) appContainer.style.display = 'none';
+        const loginGate = document.getElementById('loginGate');
+        if (loginGate) loginGate.style.display = 'block';
+        const loginError = document.getElementById('loginError');
+        if (loginError) {
+            if (message) {
+                loginError.textContent = message;
+                loginError.style.display = 'block';
+            } else {
+                loginError.style.display = 'none';
+            }
+        }
+    }
+
+    hideLoginGate() {
+        const loginGate = document.getElementById('loginGate');
+        if (loginGate) loginGate.style.display = 'none';
+        const appContainer = document.getElementById('appContainer');
+        if (appContainer) appContainer.style.display = 'block';
+    }
+
+    updateAuthUI(isAuthenticated) {
+        const configBtn = document.getElementById('configBtn');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const userBadge = document.getElementById('authenticatedUser');
+        const userLabel = document.getElementById('authenticatedUsername');
+
+        if (configBtn) configBtn.style.display = isAuthenticated ? 'inline-block' : 'none';
+        if (logoutBtn) logoutBtn.style.display = isAuthenticated ? 'inline-block' : 'none';
+        if (userBadge) userBadge.style.display = isAuthenticated ? 'inline-block' : 'none';
+        if (userLabel) userLabel.textContent = this.auth.getUser() || 'Unknown';
+    }
+
+    async handleAuthenticatedSession() {
+        this.updateAuthUI(true);
+        this.hideLoginGate();
+        this.initializeModules();
+        this.websocket.connect();
+        await this.initializeConnection();
+    }
+
+    handleAuthLogout(reason) {
+        this.currentState.connected = false;
+        this.updateAuthUI(false);
+
+        if (this.websocket) {
+            this.websocket.disconnectWebSocket();
+            this.websocket.wasAutoDisconnected = false;
+        }
+        if (this.ui && this.modulesInitialized) {
+            this.ui.hideMediaInterface();
+        }
+
+        this.showLoginGate(reason === 'manual_logout' ? '' : 'Session expired. Please sign in again.');
+        this.ui.updateStatus('Disconnected', 'disconnected');
+    }
+
+    async handleSessionExpired(reason = 'session_expired') {
+        if (this.handlingSessionExpiry) return;
+        this.handlingSessionExpiry = true;
+        try {
+            await this.auth.logout({ notifyServer: false, reason });
+            this.ui.showAlert('Session expired. Please sign in again.', 'warning');
+        } finally {
+            this.handlingSessionExpiry = false;
+        }
     }
 
     async initializeConnection() {
@@ -125,7 +306,7 @@ class DragonCPUI {
                 if (!this.websocket.isWebSocketConnected) {
                     this.websocket.connect();
                 }
-                const autoConnectResponse = await fetch('/api/auto-connect');
+                const autoConnectResponse = await this.api.fetch('/api/auto-connect');
                 const autoConnectResult = await autoConnectResponse.json();
                 
                 if (autoConnectResult.status === 'success') {
@@ -159,7 +340,7 @@ class DragonCPUI {
                 this.websocket.connect();
             }
             
-            const response = await fetch('/api/auto-connect');
+            const response = await this.api.fetch('/api/auto-connect');
             const result = await response.json();
             
             if (result.status === 'success') {
@@ -198,7 +379,7 @@ class DragonCPUI {
             this.websocket.disconnectWebSocket();
             
             // Then disconnect from SSH server
-            const response = await fetch('/api/disconnect');
+            const response = await this.api.post('/api/disconnect');
             const result = await response.json();
             
             if (result.status === 'success') {

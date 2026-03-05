@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 DragonCP WebSocket Manager
-WebSocket event handlers for real-time communication
+WebSocket event handlers for real-time communication with authentication
 """
 
 import time
 import threading
 from datetime import datetime, timedelta
 from flask import request
+from flask_socketio import disconnect as socketio_disconnect
+from auth import validate_websocket_token
 
 
 # WebSocket timeout configuration
@@ -20,9 +22,12 @@ WEBSOCKET_TIMEOUT_DEFAULT = 35 * 60  # 35 minutes default
 websocket_connections = {}
 
 
-def get_websocket_timeout_for_session(session):
+def get_websocket_timeout_for_session(session=None):
     """Get WebSocket timeout for current session, respecting user configuration"""
     try:
+        if session is None:
+            return WEBSOCKET_TIMEOUT_DEFAULT
+            
         # Get user's configured timeout from session
         session_config = session.get('ui_config', {})
         user_timeout_minutes = session_config.get('WEBSOCKET_TIMEOUT_MINUTES')
@@ -39,27 +44,44 @@ def get_websocket_timeout_for_session(session):
 
 
 def register_websocket_handlers(socketio):
-    """Register WebSocket event handlers"""
+    """Register WebSocket event handlers with authentication"""
     
     @socketio.on('connect')
-    def handle_connect():
-        """Handle WebSocket connection"""
+    def handle_connect(auth=None):
+        """Handle WebSocket connection with authentication"""
         session_id = request.sid
+        
+        # Validate authentication token
+        auth_data = auth or request.args.to_dict()
+        username = validate_websocket_token(auth_data)
+        
+        if not username:
+            print(f"🔒 WebSocket connection rejected - invalid or missing token: {session_id[:8]}...")
+            # Reject the connection
+            return False
+        
+        # Store connection with authenticated user info
         websocket_connections[session_id] = {
             'connected_at': datetime.now(),
             'last_activity': datetime.now(),
-            'timeout_seconds': get_websocket_timeout_for_session(request.environ.get('flask.session', {}))  # Store timeout for this session
+            'timeout_seconds': get_websocket_timeout_for_session(request.environ.get('flask.session', {})),
+            'username': username
         }
-        print(f"🔌 WebSocket connected: {session_id}")
+        print(f"🔌 WebSocket connected: {session_id[:8]}... (user: {username})")
         print(f"🔌 Active WebSocket connections: {len(websocket_connections)}")
+        
+        return True
 
     @socketio.on('disconnect')
     def handle_disconnect():
         """Handle WebSocket disconnection"""
         session_id = request.sid
+        connection_info = websocket_connections.get(session_id, {})
+        username = connection_info.get('username', 'unknown')
+        
         if session_id in websocket_connections:
             del websocket_connections[session_id]
-        print(f"🔌 WebSocket disconnected: {session_id}")
+        print(f"🔌 WebSocket disconnected: {session_id[:8]}... (user: {username})")
         print(f"🔌 Active WebSocket connections: {len(websocket_connections)}")
 
     @socketio.on('activity')
@@ -68,6 +90,26 @@ def register_websocket_handlers(socketio):
         session_id = request.sid
         if session_id in websocket_connections:
             websocket_connections[session_id]['last_activity'] = datetime.now()
+
+    @socketio.on('authenticate')
+    def handle_authenticate(data):
+        """Handle re-authentication after token refresh"""
+        session_id = request.sid
+        
+        if not data or not isinstance(data, dict):
+            return {'success': False, 'message': 'Invalid auth data'}
+        
+        username = validate_websocket_token(data)
+        
+        if username:
+            if session_id in websocket_connections:
+                websocket_connections[session_id]['username'] = username
+                websocket_connections[session_id]['last_activity'] = datetime.now()
+            print(f"🔄 WebSocket re-authenticated: {session_id[:8]}... (user: {username})")
+            return {'success': True, 'user': username}
+        else:
+            print(f"🔒 WebSocket re-authentication failed: {session_id[:8]}...")
+            return {'success': False, 'message': 'Invalid token'}
 
 
 def cleanup_stale_connections(socketio):
@@ -86,7 +128,8 @@ def cleanup_stale_connections(socketio):
                     stale_connections.append(session_id)
             
             for session_id in stale_connections:
-                print(f"🧹 Cleaning up stale WebSocket connection: {session_id}")
+                username = websocket_connections.get(session_id, {}).get('username', 'unknown')
+                print(f"🧹 Cleaning up stale WebSocket connection: {session_id[:8]}... (user: {username})")
                 if session_id in websocket_connections:
                     del websocket_connections[session_id]
                 # Disconnect the client
@@ -109,3 +152,14 @@ def start_cleanup_thread(socketio):
     cleanup_thread.start()
     return cleanup_thread
 
+
+def get_authenticated_connections():
+    """Get list of authenticated WebSocket connections"""
+    return {
+        sid: {
+            'username': info.get('username'),
+            'connected_at': info.get('connected_at').isoformat() if info.get('connected_at') else None,
+            'last_activity': info.get('last_activity').isoformat() if info.get('last_activity') else None
+        }
+        for sid, info in websocket_connections.items()
+    }

@@ -105,10 +105,9 @@ class TransferSimulator:
             "media_type": media_type,
             "folder_name": folder_name,
             "season_name": season_name,
-            "episode_name": None,
             "source_path": source_path,
             "dest_path": dest_path,
-            "transfer_type": "folder",
+            "operation_type": "folder",
             "status": "pending",
         })
 

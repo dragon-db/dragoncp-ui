@@ -9,20 +9,26 @@ export class DiskMonitor {
     }
 
     initializeDiskUsageMonitoring() {
-        this.loadDiskUsage();
-        
         // Add refresh button event listener
-        document.getElementById('refreshDiskUsageBtn').addEventListener('click', () => {
-            this.refreshDiskUsage();
-        });
+        const refreshBtn = document.getElementById('refreshDiskUsageBtn');
+        if (refreshBtn) {
+            refreshBtn.addEventListener('click', () => {
+                this.refreshDiskUsage();
+            });
+        }
+
+        if (this.app.auth?.isAuthenticated()) {
+            this.loadDiskUsage();
+        }
     }
 
     async loadDiskUsage() {
+        if (!this.app.auth?.isAuthenticated()) return;
         try {
             // Load both local and remote disk usage in parallel
             const [localResponse, remoteResponse] = await Promise.all([
-                fetch('/api/disk-usage/local'),
-                fetch('/api/disk-usage/remote')
+                this.app.api.fetch('/api/disk-usage/local'),
+                this.app.api.fetch('/api/disk-usage/remote')
             ]);
 
             const localData = await localResponse.json();
@@ -38,6 +44,7 @@ export class DiskMonitor {
     }
 
     async refreshDiskUsage() {
+        if (!this.app.auth?.isAuthenticated()) return;
         try {
             // Show loading state
             const refreshBtn = document.getElementById('refreshDiskUsageBtn');
@@ -49,8 +56,8 @@ export class DiskMonitor {
 
             // Load both local and remote disk usage in parallel
             const [localResponse, remoteResponse] = await Promise.all([
-                fetch('/api/disk-usage/local'),
-                fetch('/api/disk-usage/remote')
+                this.app.api.fetch('/api/disk-usage/local'),
+                this.app.api.fetch('/api/disk-usage/remote')
             ]);
 
             const localData = await localResponse.json();

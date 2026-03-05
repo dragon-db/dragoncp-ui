@@ -9,6 +9,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request, Response
 import requests
 import json
+from auth import require_auth
 
 webhooks_bp = Blueprint('webhooks', __name__)
 
@@ -327,6 +328,7 @@ def api_webhook_anime_receiver():
 # ===== WEBHOOK NOTIFICATION MANAGEMENT =====
 
 @webhooks_bp.route('/webhook/notifications')
+@require_auth
 def api_webhook_notifications():
     """Get all webhook notifications (movies, series, and anime)"""
     try:
@@ -376,6 +378,7 @@ def api_webhook_notifications():
 
 
 @webhooks_bp.route('/webhook/series/notifications')
+@require_auth
 def api_series_webhook_notifications():
     """Get series webhook notifications only"""
     try:
@@ -403,6 +406,7 @@ def api_series_webhook_notifications():
 
 
 @webhooks_bp.route('/webhook/anime/notifications')
+@require_auth
 def api_anime_webhook_notifications():
     """Get anime webhook notifications only"""
     try:
@@ -430,6 +434,7 @@ def api_anime_webhook_notifications():
 
 
 @webhooks_bp.route('/webhook/notifications/<notification_id>')
+@require_auth
 def api_webhook_notification_details(notification_id):
     """Get specific webhook notification details (handles both movies and series/anime)"""
     try:
@@ -461,6 +466,7 @@ def api_webhook_notification_details(notification_id):
 
 
 @webhooks_bp.route('/webhook/notifications/<notification_id>/json')
+@require_auth
 def api_webhook_notification_json(notification_id):
     """Get raw webhook JSON for a notification (movies, series, or anime)"""
     try:
@@ -508,6 +514,7 @@ def api_webhook_notification_json(notification_id):
 # ===== WEBHOOK SYNC OPERATIONS =====
 
 @webhooks_bp.route('/webhook/notifications/<notification_id>/sync', methods=['POST'])
+@require_auth
 def api_webhook_sync(notification_id):
     """Manually trigger sync for a webhook notification (movies)"""
     try:
@@ -533,6 +540,7 @@ def api_webhook_sync(notification_id):
 
 
 @webhooks_bp.route('/webhook/series/notifications/<notification_id>/sync', methods=['POST'])
+@require_auth
 def api_series_webhook_sync(notification_id):
     """Manually trigger sync for a series webhook notification"""
     try:
@@ -558,6 +566,7 @@ def api_series_webhook_sync(notification_id):
 
 
 @webhooks_bp.route('/webhook/anime/notifications/<notification_id>/sync', methods=['POST'])
+@require_auth
 def api_anime_webhook_sync(notification_id):
     """Manually trigger sync for an anime webhook notification"""
     try:
@@ -585,6 +594,7 @@ def api_anime_webhook_sync(notification_id):
 # ===== WEBHOOK DELETION =====
 
 @webhooks_bp.route('/webhook/series/notifications/<notification_id>/delete', methods=['POST'])
+@require_auth
 def api_series_webhook_delete_notification(notification_id):
     """Delete a series webhook notification"""
     try:
@@ -610,6 +620,7 @@ def api_series_webhook_delete_notification(notification_id):
 
 
 @webhooks_bp.route('/webhook/anime/notifications/<notification_id>/delete', methods=['POST'])
+@require_auth
 def api_anime_webhook_delete_notification(notification_id):
     """Delete an anime webhook notification"""
     try:
@@ -635,6 +646,7 @@ def api_anime_webhook_delete_notification(notification_id):
 
 
 @webhooks_bp.route('/webhook/notifications/<notification_id>/delete', methods=['POST'])
+@require_auth
 def api_webhook_delete_notification(notification_id):
     """Delete a webhook notification"""
     try:
@@ -662,6 +674,7 @@ def api_webhook_delete_notification(notification_id):
 # ===== WEBHOOK MARK AS COMPLETE =====
 
 @webhooks_bp.route('/webhook/notifications/<notification_id>/complete', methods=['POST'])
+@require_auth
 def api_webhook_mark_notification_complete(notification_id):
     """Mark a movie webhook notification as complete"""
     try:
@@ -702,6 +715,7 @@ def api_webhook_mark_notification_complete(notification_id):
 
 
 @webhooks_bp.route('/webhook/series/notifications/<notification_id>/complete', methods=['POST'])
+@require_auth
 def api_series_webhook_mark_notification_complete(notification_id):
     """Mark a series webhook notification as complete"""
     try:
@@ -743,6 +757,7 @@ def api_series_webhook_mark_notification_complete(notification_id):
 
 
 @webhooks_bp.route('/webhook/anime/notifications/<notification_id>/complete', methods=['POST'])
+@require_auth
 def api_anime_webhook_mark_notification_complete(notification_id):
     """Mark an anime webhook notification as complete"""
     try:
@@ -786,6 +801,7 @@ def api_anime_webhook_mark_notification_complete(notification_id):
 # ===== WEBHOOK SETTINGS =====
 
 @webhooks_bp.route('/webhook/settings', methods=['GET', 'POST'])
+@require_auth
 def api_webhook_settings():
     """Get or update webhook settings"""
     if request.method == 'GET':
@@ -856,6 +872,7 @@ def api_webhook_settings():
 # ===== DISCORD SETTINGS =====
 
 @webhooks_bp.route('/discord/settings', methods=['GET', 'POST'])
+@require_auth
 def api_discord_settings():
     """Get or update Discord notification settings"""
     if request.method == 'GET':
@@ -918,6 +935,7 @@ def api_discord_settings():
 
 
 @webhooks_bp.route('/discord/test', methods=['POST'])
+@require_auth
 def api_discord_test():
     """Test Discord webhook with a sample notification"""
     try:
@@ -1035,6 +1053,7 @@ def _is_valid_discord_url(url: str) -> bool:
 # ===== DRY-RUN ENDPOINTS =====
 
 @webhooks_bp.route('/webhook/notifications/<notification_id>/dry-run', methods=['POST'])
+@require_auth
 def api_webhook_dry_run(notification_id):
     """Perform manual dry-run for a movie webhook notification"""
     try:
@@ -1093,6 +1112,7 @@ def api_webhook_dry_run(notification_id):
 
 
 @webhooks_bp.route('/webhook/series/notifications/<notification_id>/dry-run', methods=['POST'])
+@require_auth
 def api_series_webhook_dry_run(notification_id):
     """Perform manual dry-run for a series webhook notification"""
     try:
@@ -1171,6 +1191,7 @@ def api_series_webhook_dry_run(notification_id):
 
 
 @webhooks_bp.route('/webhook/anime/notifications/<notification_id>/dry-run', methods=['POST'])
+@require_auth
 def api_anime_webhook_dry_run(notification_id):
     """Perform manual dry-run for an anime webhook notification (same as series)"""
     return api_series_webhook_dry_run(notification_id)
@@ -1179,6 +1200,7 @@ def api_anime_webhook_dry_run(notification_id):
 # ===== RENAME NOTIFICATION ENDPOINTS =====
 
 @webhooks_bp.route('/webhook/rename/notifications')
+@require_auth
 def api_rename_notifications():
     """Get all rename notifications"""
     try:
@@ -1213,6 +1235,7 @@ def api_rename_notifications():
 
 
 @webhooks_bp.route('/webhook/rename/notifications/<notification_id>')
+@require_auth
 def api_rename_notification_details(notification_id):
     """Get specific rename notification details"""
     try:
@@ -1244,6 +1267,7 @@ def api_rename_notification_details(notification_id):
 
 
 @webhooks_bp.route('/webhook/rename/notifications/<notification_id>/json')
+@require_auth
 def api_rename_notification_json(notification_id):
     """Get raw webhook JSON for a rename notification"""
     try:
@@ -1290,6 +1314,7 @@ def api_rename_notification_json(notification_id):
 
 
 @webhooks_bp.route('/webhook/rename/notifications/<notification_id>/delete', methods=['POST'])
+@require_auth
 def api_rename_notification_delete(notification_id):
     """Delete a rename notification"""
     try:
