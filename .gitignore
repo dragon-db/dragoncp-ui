@@ -99,7 +99,7 @@ Thumbs.db
 # Logs & Temp Files
 # ===================
 *.log
-logs/
+/logs/
 *.tmp
 *.temp
 temp/

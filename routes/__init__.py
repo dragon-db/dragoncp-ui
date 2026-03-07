@@ -9,6 +9,7 @@ from .transfers import transfers_bp, init_transfer_routes
 from .backups import backups_bp, init_backup_routes
 from .webhooks import webhooks_bp, init_webhook_routes
 from .debug import debug_bp, init_debug_routes
+from .logs import logs_bp
 
 __all__ = [
     'auth_bp',
@@ -17,6 +18,7 @@ __all__ = [
     'backups_bp',
     'webhooks_bp',
     'debug_bp',
+    'logs_bp',
     'init_media_routes',
     'init_transfer_routes',
     'init_backup_routes',

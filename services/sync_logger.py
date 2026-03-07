@@ -4,10 +4,16 @@ DragonCP Sync Logger
 Provides enhanced logging with service/notification/transfer tracking for series/anime sync
 """
 
+import logging
+from typing import Optional
 
-def log_sync(service: str, message: str, icon: str = "📋", 
-             notification_id: str = None, transfer_id: str = None, 
-             indent: int = 0):
+
+logger = logging.getLogger("dragoncp.services.sync_logger")
+
+
+def log_sync(service: str, message: str, icon: Optional[str] = "📋", 
+             notification_id: Optional[str] = None, transfer_id: Optional[str] = None, 
+             indent: int = 0, level: int = logging.INFO):
     """
     Enhanced logging for series/anime sync with ID tracking
     
@@ -24,6 +30,9 @@ def log_sync(service: str, message: str, icon: str = "📋",
                  notification_id="tvshows_267_s1_ef76577")
         Output: 📅 [AutoSyncScheduler] [notification_id:tvshows_267_s1_ef76577] > Scheduled auto-sync
     """
+    if icon is None:
+        icon = "📋"
+
     # Build ID string with FULL IDs for database queries
     ids = []
     if notification_id:
@@ -38,11 +47,11 @@ def log_sync(service: str, message: str, icon: str = "📋",
     service_str = f"[{service}]"
     separator = " >" if id_str else ">"
     
-    print(f"{icon} {service_str} {id_str}{separator} {indent_str}{message}")
+    logger.log(level, f"{icon} {service_str} {id_str}{separator} {indent_str}{message}")
 
 
 def log_batch(service: str, message: str, batch_size: int, icon: str = "📦",
-              notification_ids: list = None, transfer_id: str = None):
+              notification_ids: Optional[list[str]] = None, transfer_id: Optional[str] = None):
     """
     Log batch operations with count
     
@@ -59,11 +68,11 @@ def log_batch(service: str, message: str, batch_size: int, icon: str = "📦",
     if notification_ids and len(notification_ids) <= 5:
         # Show full IDs for database queries
         for notif_id in notification_ids:
-            print(f"   - notification_id: {notif_id}")
+            logger.info("   - notification_id: %s", notif_id)
 
 
-def log_validation(service: str, result: bool, message: str, icon: str = None,
-                   notification_id: str = None, transfer_id: str = None):
+def log_validation(service: str, result: bool, message: str, icon: Optional[str] = None,
+                   notification_id: Optional[str] = None, transfer_id: Optional[str] = None):
     """
     Log validation results with appropriate icon
     
@@ -83,7 +92,7 @@ def log_validation(service: str, result: bool, message: str, icon: str = None,
 
 
 def log_state_change(service: str, old_state: str, new_state: str, 
-                     notification_id: str = None, transfer_id: str = None):
+                     notification_id: Optional[str] = None, transfer_id: Optional[str] = None):
     """
     Log state transitions
     
@@ -96,4 +105,3 @@ def log_state_change(service: str, old_state: str, new_state: str,
     """
     log_sync(service, f"State change: {old_state} → {new_state}", icon="🔄",
              notification_id=notification_id, transfer_id=transfer_id)
-

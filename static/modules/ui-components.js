@@ -2,6 +2,8 @@
  * UI Components Module
  * Handles common UI components, alerts, status updates, and utility functions
  */
+const DEFAULT_COLLAPSED_CARD_IDS = ['backendLogViewerCard'];
+
 export class UIComponents {
     constructor(app) {
         this.app = app;
@@ -182,10 +184,12 @@ export class UIComponents {
             if (saved) {
                 const collapsedIds = JSON.parse(saved);
                 this.collapsedCards = new Set(collapsedIds);
+            } else {
+                this.collapsedCards = new Set(DEFAULT_COLLAPSED_CARD_IDS);
             }
         } catch (error) {
             console.warn('Failed to load collapsed card state:', error);
-            this.collapsedCards = new Set();
+            this.collapsedCards = new Set(DEFAULT_COLLAPSED_CARD_IDS);
         }
     }
     

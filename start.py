@@ -32,7 +32,7 @@ VENV_NAMES = ["venv", "env", ".venv", ".env"]
 REQUIREMENTS_FILE = "requirements.txt"
 ENV_FILE = "dragoncp_env.env"
 SAMPLE_ENV_FILE = "dragoncp_env_sample.env"
-REQUIRED_DIRS = ["templates", "static"]
+REQUIRED_DIRS = ["templates", "static", "logs"]
 
 # Colors for terminal output
 class Colors:
@@ -486,12 +486,14 @@ def build_frontend() -> bool:
 def start_application(python_exe: Path) -> int:
     """Start the DragonCP backend application"""
     print_header("[6/6] Starting DragonCP Web UI...")
+
+    port = get_runtime_port()
     
     print()
     print("=" * 50)
     print(f"{Colors.GREEN}🚀 DragonCP Web UI{Colors.NC}")
     print("=" * 50)
-    print(f"📱 Access the interface at: {Colors.CYAN}http://localhost:5000{Colors.NC}")
+    print(f"📱 Access the interface at: {Colors.CYAN}http://localhost:{port}{Colors.NC}")
     print(f"🔄 Press {Colors.YELLOW}Ctrl+C{Colors.NC} to stop the server")
     print("=" * 50)
     print()
@@ -512,6 +514,23 @@ def start_application(python_exe: Path) -> int:
     except Exception as e:
         print_error(f"Error starting application: {e}")
         return 1
+
+
+def get_runtime_port() -> int:
+    """Get backend runtime port from PORT env with validation."""
+    raw_port = os.environ.get("PORT", "5000").strip()
+
+    try:
+        port = int(raw_port)
+    except ValueError:
+        print_warning(f"Invalid PORT value '{raw_port}', defaulting to 5000")
+        return 5000
+
+    if not 1 <= port <= 65535:
+        print_warning(f"PORT out of range ({port}), defaulting to 5000")
+        return 5000
+
+    return port
 
 
 # ============================================================================
