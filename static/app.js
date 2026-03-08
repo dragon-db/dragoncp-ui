@@ -59,7 +59,7 @@ class DragonCPUI {
 
         this.initializeEventListeners();
         this.webhook.initialize();
-        this.logs.initialize();
+        this.logs.setup();
         this.modulesInitialized = true;
     }
 
@@ -267,7 +267,7 @@ class DragonCPUI {
         this.hideLoginGate();
         this.initializeModules();
         if (this.logs) {
-            this.logs.activate();
+            this.logs.syncPanelState();
         }
         this.websocket.connect();
         await this.initializeConnection();

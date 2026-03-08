@@ -24,8 +24,13 @@ DEFAULT_LOG_DIR = PROJECT_ROOT / "logs"
 
 _LOGGING_CONFIGURED = False
 _LOG_QUEUE_LISTENER: Optional[QueueListener] = None
+_LOG_QUEUE_HANDLER: Optional[QueueHandler] = None
 _ORIGINAL_EXCEPTHOOK = sys.excepthook
 _ORIGINAL_THREAD_EXCEPTHOOK = threading.excepthook
+_ORIGINAL_STDOUT = sys.stdout
+_ORIGINAL_STDERR = sys.stderr
+_STD_STREAMS_REDIRECTED = False
+_ATEXIT_REGISTERED = False
 
 _SENSITIVE_MARKERS = ("SECRET", "PASSWORD", "TOKEN", "API_KEY", "WEBHOOK")
 _AUTH_HEADER_PATTERN = re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+")
@@ -149,6 +154,21 @@ class SanitizeLogRecordFilter(logging.Filter):
         message = _ANSI_ESCAPE_PATTERN.sub("", message)
         message = _sanitize_message(message)
         record.msg = message
+
+        if record.exc_text:
+            exc_text = _ANSI_ESCAPE_PATTERN.sub("", record.exc_text)
+            record.exc_text = _sanitize_message(exc_text)
+            record.exc_info = None
+        elif record.exc_info:
+            exc_text = logging.Formatter().formatException(record.exc_info)
+            exc_text = _ANSI_ESCAPE_PATTERN.sub("", exc_text)
+            record.exc_text = _sanitize_message(exc_text)
+            record.exc_info = None
+
+        if record.stack_info:
+            stack_info = _ANSI_ESCAPE_PATTERN.sub("", record.stack_info)
+            record.stack_info = _sanitize_message(stack_info)
+
         record.args = ()
         return True
 
@@ -217,23 +237,62 @@ def _install_exception_hooks() -> None:
 
 
 def _redirect_std_streams() -> None:
+    global _STD_STREAMS_REDIRECTED
+
     if _parse_bool(os.environ.get("DRAGONCP_REDIRECT_STD_STREAMS", "1"), default=True):
         sys.stdout = StreamToLogger("dragoncp.stdout", logging.INFO)
         sys.stderr = StreamToLogger("dragoncp.stderr", logging.ERROR)
+        _STD_STREAMS_REDIRECTED = True
 
 
 def shutdown_logging() -> None:
     """Flush and stop async logging listener."""
-    global _LOG_QUEUE_LISTENER
+    global _LOGGING_CONFIGURED, _LOG_QUEUE_LISTENER, _LOG_QUEUE_HANDLER, _STD_STREAMS_REDIRECTED
+
+    root_logger = logging.getLogger()
 
     if _LOG_QUEUE_LISTENER is not None:
-        _LOG_QUEUE_LISTENER.stop()
+        listener = _LOG_QUEUE_LISTENER
         _LOG_QUEUE_LISTENER = None
+
+        listener.stop()
+        listener_thread = getattr(listener, "_thread", None)
+        if listener_thread is not None and listener_thread.is_alive():
+            listener_thread.join(timeout=1.0)
+
+    if _LOG_QUEUE_HANDLER is not None:
+        if _LOG_QUEUE_HANDLER in root_logger.handlers:
+            root_logger.removeHandler(_LOG_QUEUE_HANDLER)
+        _LOG_QUEUE_HANDLER.close()
+        _LOG_QUEUE_HANDLER = None
+
+    if _STD_STREAMS_REDIRECTED:
+        if isinstance(sys.stdout, StreamToLogger):
+            sys.stdout.flush()
+            sys.stdout = _ORIGINAL_STDOUT
+        if isinstance(sys.stderr, StreamToLogger):
+            sys.stderr.flush()
+            sys.stderr = _ORIGINAL_STDERR
+        _STD_STREAMS_REDIRECTED = False
+
+    sys.excepthook = _ORIGINAL_EXCEPTHOOK
+    threading.excepthook = _ORIGINAL_THREAD_EXCEPTHOOK
+    _LOGGING_CONFIGURED = False
+
+
+def _register_atexit_once() -> None:
+    global _ATEXIT_REGISTERED
+
+    if _ATEXIT_REGISTERED:
+        return
+
+    atexit.register(shutdown_logging)
+    _ATEXIT_REGISTERED = True
 
 
 def configure_logging() -> Path:
     """Configure global backend logging once for the process."""
-    global _LOGGING_CONFIGURED, _LOG_QUEUE_LISTENER
+    global _LOGGING_CONFIGURED, _LOG_QUEUE_LISTENER, _LOG_QUEUE_HANDLER
 
     if _LOGGING_CONFIGURED:
         return get_log_file_path()
@@ -280,6 +339,7 @@ def configure_logging() -> Path:
     root_logger.addHandler(queue_handler)
     root_logger.propagate = False
     queue_handler.addFilter(SanitizeLogRecordFilter())
+    _LOG_QUEUE_HANDLER = queue_handler
 
     _LOG_QUEUE_LISTENER = QueueListener(log_queue, *handlers, respect_handler_level=True)
     _LOG_QUEUE_LISTENER.start()
@@ -289,7 +349,7 @@ def configure_logging() -> Path:
     _redirect_std_streams()
 
     _LOGGING_CONFIGURED = True
-    atexit.register(shutdown_logging)
+    _register_atexit_once()
 
     logging.getLogger("dragoncp.logging").info(
         "Logging configured at %s (level=%s)",

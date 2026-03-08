@@ -24,6 +24,7 @@ MAX_LIMIT = 1000
 MAX_SCAN_LINES = 20000
 MIN_SCAN_LINES = 1000
 LEVEL_PATTERN = re.compile(r"\|\s*(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s*\|")
+RECORD_START_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+\|")
 
 
 def _normalize_level(value: str) -> str:
@@ -47,11 +48,44 @@ def _parse_limit(value: str) -> int:
     return min(limit, MAX_LIMIT)
 
 
-def _extract_level(log_line: str) -> str:
-    match = LEVEL_PATTERN.search(log_line)
-    if not match:
+def _extract_level(log_record: str) -> str:
+    if not log_record:
         return "INFO"
-    return match.group(1)
+
+    lines = [line for line in log_record.splitlines() if line.strip()]
+    if not lines:
+        return "INFO"
+
+    first_line_match = LEVEL_PATTERN.search(lines[0])
+    if first_line_match:
+        return first_line_match.group(1)
+
+    for line in lines[1:]:
+        match = LEVEL_PATTERN.search(line)
+        if match:
+            return match.group(1)
+
+    return "INFO"
+
+
+def _group_records(lines: list[str]) -> list[str]:
+    records: list[str] = []
+    current_record_lines: list[str] = []
+
+    for line in lines:
+        if RECORD_START_PATTERN.match(line):
+            if current_record_lines:
+                records.append("\n".join(current_record_lines))
+            current_record_lines = [line]
+            continue
+
+        if current_record_lines:
+            current_record_lines.append(line)
+
+    if current_record_lines:
+        records.append("\n".join(current_record_lines))
+
+    return records
 
 
 def _level_matches(entry_level: str, requested_level: str) -> bool:
@@ -120,17 +154,18 @@ def api_logs():
 
     scan_limit = max(MIN_SCAN_LINES, min(limit * 25, MAX_SCAN_LINES))
     recent_lines = _tail_lines(log_path, scan_limit)
+    recent_records = _group_records(recent_lines)
 
     filtered_entries = []
-    for raw_line in reversed(recent_lines):
-        if search_term and search_term not in raw_line.lower():
+    for raw_record in reversed(recent_records):
+        if search_term and search_term not in raw_record.lower():
             continue
 
-        level = _extract_level(raw_line)
+        level = _extract_level(raw_record)
         if not _level_matches(level, requested_level):
             continue
 
-        filtered_entries.append({"level": level, "text": raw_line})
+        filtered_entries.append({"level": level, "text": raw_record})
         if len(filtered_entries) >= limit:
             break
 

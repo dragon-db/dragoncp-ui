@@ -13,10 +13,6 @@ from flask_socketio import SocketIO
 
 from logging_setup import configure_logging, get_log_file_path
 
-
-LOG_FILE_PATH = configure_logging()
-logger = logging.getLogger("dragoncp.app")
-
 # Import configuration and managers
 from config import DragonCPConfig, APP_VERSION
 from ssh import SSHManager
@@ -73,6 +69,14 @@ def _load_env_file_early() -> dict:
 
 # Load early config for Flask/SocketIO setup
 _early_config = _load_env_file_early()
+
+# Expose early env-file values to process env before logging setup
+for _config_key, _config_value in _early_config.items():
+    os.environ.setdefault(_config_key, _config_value)
+
+configure_logging()
+LOG_FILE_PATH = get_log_file_path()
+logger = logging.getLogger("dragoncp.app")
 
 _early_secret_key = _early_config.get('SECRET_KEY') or os.environ.get('SECRET_KEY')
 if not _early_secret_key:
@@ -220,13 +224,14 @@ def after_request(response):
         elapsed_ms = -1
         if request_started_at is not None:
             elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
-        logging.getLogger('dragoncp.http').info(
-            '%s %s -> %s (%sms)',
-            request.method,
-            request.path,
-            response.status_code,
-            elapsed_ms,
-        )
+        if not request.path.startswith('/api/logs'):
+            logging.getLogger('dragoncp.http').info(
+                '%s %s -> %s (%sms)',
+                request.method,
+                request.path,
+                response.status_code,
+                elapsed_ms,
+            )
     
     return response
 

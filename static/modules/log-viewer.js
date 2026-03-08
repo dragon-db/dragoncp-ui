@@ -9,8 +9,12 @@ export class LogViewer {
         this.autoRefreshMs = 10000;
         this.autoRefreshTimer = null;
         this.isLoading = false;
+        this.initialized = false;
+        this.pollingStarted = false;
 
         this.card = null;
+        this.header = null;
+        this.content = null;
         this.container = null;
         this.levelFilter = null;
         this.limitFilter = null;
@@ -22,10 +26,18 @@ export class LogViewer {
         this.logFilePath = null;
         this.lastUpdated = null;
         this.statusBadge = null;
+        this.collapseObserver = null;
     }
 
-    initialize() {
+    setup() {
+        if (this.initialized) {
+            this.handleVisibilityChange();
+            return;
+        }
+
         this.card = document.getElementById('backendLogViewerCard');
+        this.header = this.card?.querySelector('.collapsible-header') || null;
+        this.content = this.card?.querySelector('.collapsible-content') || null;
         this.container = document.getElementById('backendLogContainer');
         this.levelFilter = document.getElementById('backendLogLevelFilter');
         this.limitFilter = document.getElementById('backendLogLimit');
@@ -38,12 +50,25 @@ export class LogViewer {
         this.lastUpdated = document.getElementById('backendLogLastUpdated');
         this.statusBadge = document.getElementById('backendLogStatusBadge');
 
-        if (!this.card || !this.container) {
+        if (!this.card || !this.container || !this.content) {
             return;
         }
 
+        this.card.style.display = 'block';
         this.bindEvents();
-        this.activate();
+        this.observeCollapseState();
+        this.updateStatusBadge();
+        this.updateAutoRefreshButton();
+        this.handleVisibilityChange();
+        this.initialized = true;
+    }
+
+    initialize() {
+        this.setup();
+    }
+
+    syncPanelState() {
+        this.handleVisibilityChange();
     }
 
     bindEvents() {
@@ -70,15 +95,48 @@ export class LogViewer {
         this.downloadButton?.addEventListener('click', () => this.downloadLogs());
     }
 
-    activate() {
-        if (!this.card) return;
-        this.card.style.display = 'block';
+    observeCollapseState() {
+        if (!this.content) return;
+
+        if (this.collapseObserver) {
+            this.collapseObserver.disconnect();
+        }
+
+        this.collapseObserver = new MutationObserver(() => this.handleVisibilityChange());
+        this.collapseObserver.observe(this.content, {
+            attributes: true,
+            attributeFilter: ['class']
+        });
+    }
+
+    handleVisibilityChange() {
+        if (!this.content) return;
+
+        if (this.content.classList.contains('collapsed')) {
+            this.deactivate();
+            return;
+        }
+
+        this.start();
+    }
+
+    start() {
+        if (this.pollingStarted) {
+            return;
+        }
+
+        this.pollingStarted = true;
         this.updateStatusBadge();
         this.refreshLogs();
-        this.startAutoRefresh();
+        if (this.autoRefreshEnabled) {
+            this.startAutoRefresh();
+        } else {
+            this.updateAutoRefreshButton();
+        }
     }
 
     deactivate() {
+        this.pollingStarted = false;
         this.stopAutoRefresh();
     }
 
@@ -119,9 +177,11 @@ export class LogViewer {
         if (this.autoRefreshEnabled && this.autoRefreshTimer) {
             this.autoRefreshButton.innerHTML = '<i class="bi bi-pause-fill"></i>';
             this.autoRefreshButton.title = 'Pause auto-refresh';
+            this.autoRefreshButton.setAttribute('aria-pressed', 'true');
         } else {
             this.autoRefreshButton.innerHTML = '<i class="bi bi-play-fill"></i>';
             this.autoRefreshButton.title = 'Resume auto-refresh';
+            this.autoRefreshButton.setAttribute('aria-pressed', 'false');
         }
     }
 
