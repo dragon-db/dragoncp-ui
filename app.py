@@ -4,10 +4,14 @@ DragonCP Web UI - Flask application initialization
 Refactored version with modular architecture
 """
 
+import logging
 import os
+import time
 
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, g
 from flask_socketio import SocketIO
+
+from logging_setup import configure_logging, get_log_file_path
 
 # Import configuration and managers
 from config import DragonCPConfig, APP_VERSION
@@ -26,7 +30,7 @@ from services.rename_service import RenameService
 
 # Import routes
 from routes import (
-    auth_bp, media_bp, transfers_bp, backups_bp, webhooks_bp, debug_bp,
+    auth_bp, media_bp, transfers_bp, backups_bp, webhooks_bp, debug_bp, logs_bp,
     init_media_routes, init_transfer_routes, init_backup_routes,
     init_webhook_routes, init_debug_routes
 )
@@ -65,6 +69,14 @@ def _load_env_file_early() -> dict:
 
 # Load early config for Flask/SocketIO setup
 _early_config = _load_env_file_early()
+
+# Expose early env-file values to process env before logging setup
+for _config_key, _config_value in _early_config.items():
+    os.environ.setdefault(_config_key, _config_value)
+
+configure_logging()
+LOG_FILE_PATH = get_log_file_path()
+logger = logging.getLogger("dragoncp.app")
 
 _early_secret_key = _early_config.get('SECRET_KEY') or os.environ.get('SECRET_KEY')
 if not _early_secret_key:
@@ -130,17 +142,22 @@ def sanitize_config_update_payload(payload: dict, current_config: dict) -> dict:
 app = Flask(__name__)
 app.config['SECRET_KEY'] = _early_secret_key
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['LOG_FILE_PATH'] = str(get_log_file_path())
+app.logger.handlers.clear()
+app.logger.propagate = True
 
 # Get CORS origins
 cors_origins = get_cors_origins()
-print(f"🌐 CORS allowed origins: {cors_origins}")
+logger.info("CORS allowed origins: %s", cors_origins)
 
 # Initialize SocketIO with CORS configuration
 socketio = SocketIO(
     app, 
     cors_allowed_origins=cors_origins,
     ping_timeout=WEBSOCKET_TIMEOUT_MAX,  # Use maximum for SocketIO config
-    ping_interval=25 * 60  # Send ping every 25 minutes
+    ping_interval=25 * 60,  # Send ping every 25 minutes
+    logger=True,
+    engineio_logger=True,
 )
 
 # Initialize global objects
@@ -171,9 +188,17 @@ app.register_blueprint(transfers_bp, url_prefix='/api')
 app.register_blueprint(backups_bp, url_prefix='/api')
 app.register_blueprint(webhooks_bp, url_prefix='/api')
 app.register_blueprint(debug_bp, url_prefix='/api')
+app.register_blueprint(logs_bp, url_prefix='/api')
+
+logger.info('Backend logging file: %s', LOG_FILE_PATH)
 
 
 # ===== CORS HEADERS FOR PREFLIGHT =====
+
+@app.before_request
+def start_request_timer():
+    """Track request latency for backend request logging."""
+    g.request_started_at = time.perf_counter()
 
 @app.after_request
 def after_request(response):
@@ -193,6 +218,20 @@ def after_request(response):
     
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+
+    if not request.path.startswith('/static/'):
+        request_started_at = getattr(g, 'request_started_at', None)
+        elapsed_ms = -1
+        if request_started_at is not None:
+            elapsed_ms = int((time.perf_counter() - request_started_at) * 1000)
+        if not request.path.startswith('/api/logs'):
+            logging.getLogger('dragoncp.http').info(
+                '%s %s -> %s (%sms)',
+                request.method,
+                request.path,
+                response.status_code,
+                elapsed_ms,
+            )
     
     return response
 
@@ -401,16 +440,40 @@ def api_stop_simulation():
 
 # ===== MAIN ENTRY POINT =====
 
+def _get_runtime_port() -> int:
+    port_value = os.environ.get('PORT', '5000').strip()
+    try:
+        parsed_port = int(port_value)
+    except ValueError:
+        logger.warning('Invalid PORT value %r, defaulting to 5000', port_value)
+        return 5000
+
+    if not 1 <= parsed_port <= 65535:
+        logger.warning('PORT %s is outside valid range, defaulting to 5000', parsed_port)
+        return 5000
+
+    return parsed_port
+
 if __name__ == '__main__':
     # Create templates and static directories if they don't exist
     # Check TEST_MODE before creating app directories
     if os.environ.get('TEST_MODE', '0') == '1':
-        print("🧪 TEST_MODE: Would create templates and static directories")
+        logger.info('TEST_MODE enabled: skipping template/static directory creation')
     else:
         os.makedirs('templates', exist_ok=True)
         os.makedirs('static', exist_ok=True)
     
-    print("DragonCP Web UI starting...")
-    print("Access the application at: http://localhost:5000")
+    runtime_port = _get_runtime_port()
+    debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
+
+    logger.info('DragonCP Web UI starting on port %s (debug=%s)', runtime_port, debug_mode)
+    logger.info('Access the application at: http://localhost:%s', runtime_port)
     
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
+    socketio.run(
+        app,
+        host='0.0.0.0',
+        port=runtime_port,
+        debug=debug_mode,
+        use_reloader=False,
+        allow_unsafe_werkzeug=True,
+    )

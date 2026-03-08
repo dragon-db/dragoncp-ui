@@ -536,6 +536,73 @@
                 </div>
             </div>
         </div>
+
+        <!-- Backend Log Viewer -->
+        <div class="card mb-4 fade-in" id="backendLogViewerCard" style="display: none;">
+            <div class="card-header gradient-accent collapsible-header" data-card-id="backendLogViewerCard">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center">
+                        <i class="bi bi-bug"></i>
+                        <span class="fw-semibold">Backend Logs</span>
+                        <span class="badge bg-secondary" id="backendLogStatusBadge">errors</span>
+                        <i class="bi bi-chevron-down collapse-icon"></i>
+                    </div>
+                    <div class="d-flex align-items-center btn-group">
+                        <button class="btn btn-outline-light btn-sm" id="downloadBackendLogsBtn" title="Download full backend log file" type="button" aria-label="Download backend logs">
+                            <i class="bi bi-download"></i>
+                        </button>
+                        <button class="btn btn-outline-light btn-sm" id="refreshBackendLogsBtn" title="Refresh backend logs" aria-label="Refresh backend logs">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                        <button class="btn btn-outline-light btn-sm" id="toggleBackendLogAutoRefreshBtn" title="Toggle auto-refresh" aria-label="Toggle auto-refresh" aria-pressed="true">
+                            <i class="bi bi-pause-fill"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body collapsible-content p-0">
+                <div class="backend-log-toolbar">
+                    <div class="row g-2 align-items-end">
+                        <div class="col-12 col-md-3">
+                            <label for="backendLogLevelFilter" class="form-label mb-1">Level</label>
+                            <select class="form-select form-select-sm" id="backendLogLevelFilter">
+                                <option value="ERROR" selected>Error + Critical</option>
+                                <option value="WARNING">Warning + Error</option>
+                                <option value="INFO">Info</option>
+                                <option value="DEBUG">Debug</option>
+                                <option value="ALL">All</option>
+                            </select>
+                        </div>
+                        <div class="col-12 col-md-2">
+                            <label for="backendLogLimit" class="form-label mb-1">Lines</label>
+                            <select class="form-select form-select-sm" id="backendLogLimit">
+                                <option value="100">100</option>
+                                <option value="200" selected>200</option>
+                                <option value="500">500</option>
+                                <option value="1000">1000</option>
+                            </select>
+                        </div>
+                        <div class="col-12 col-md-7">
+                            <label for="backendLogSearch" class="form-label mb-1">Search</label>
+                            <div class="input-group input-group-sm">
+                                <input type="text" class="form-control" id="backendLogSearch" placeholder="Filter logs (e.g. exception, webhook, transfer_id)">
+                                <button class="btn btn-outline-light" id="searchBackendLogsBtn" type="button">
+                                    <i class="bi bi-search"></i>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="backend-log-meta">
+                    <span id="backendLogFilePath">logs/dragoncp_backend.log</span>
+                    <span class="mx-2">|</span>
+                    <span id="backendLogLastUpdated">Not loaded yet</span>
+                </div>
+                <div class="backend-log-container" id="backendLogContainer">
+                    <div class="backend-log-empty">No backend log entries loaded yet.</div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Fullscreen Log Modal -->
@@ -1042,7 +1109,8 @@
             "media-browser": "{{ url_for('static', filename='modules/media-browser.js') }}?v={{ APP_VERSION }}",
             "transfer-manager": "{{ url_for('static', filename='modules/transfer-manager.js') }}?v={{ APP_VERSION }}",
             "backup-manager": "{{ url_for('static', filename='modules/backup-manager.js') }}?v={{ APP_VERSION }}",
-            "webhook-manager": "{{ url_for('static', filename='modules/webhook-manager.js') }}?v={{ APP_VERSION }}"
+            "webhook-manager": "{{ url_for('static', filename='modules/webhook-manager.js') }}?v={{ APP_VERSION }}",
+            "log-viewer": "{{ url_for('static', filename='modules/log-viewer.js') }}?v={{ APP_VERSION }}"
         }
     }
     </script>

@@ -2,6 +2,10 @@
  * UI Components Module
  * Handles common UI components, alerts, status updates, and utility functions
  */
+const DEFAULT_COLLAPSED_CARD_IDS = ['backendLogViewerCard'];
+const COLLAPSED_CARDS_STORAGE_KEY = 'dragoncp_collapsed_cards';
+const COLLAPSED_CARDS_MIGRATION_KEY = 'dragoncp_collapsed_cards_default_merge_v208';
+
 export class UIComponents {
     constructor(app) {
         this.app = app;
@@ -178,21 +182,38 @@ export class UIComponents {
     
     loadCollapsedState() {
         try {
-            const saved = localStorage.getItem('dragoncp_collapsed_cards');
-            if (saved) {
-                const collapsedIds = JSON.parse(saved);
-                this.collapsedCards = new Set(collapsedIds);
+            const saved = localStorage.getItem(COLLAPSED_CARDS_STORAGE_KEY);
+            if (!saved) {
+                this.collapsedCards = new Set(DEFAULT_COLLAPSED_CARD_IDS);
+                return;
             }
+
+            const parsed = JSON.parse(saved);
+            const parsedIds = Array.isArray(parsed)
+                ? parsed.filter((id) => typeof id === 'string' && id.length > 0)
+                : [];
+
+            let collapsedSet = new Set(parsedIds);
+            const migrationApplied = localStorage.getItem(COLLAPSED_CARDS_MIGRATION_KEY) === '1';
+            const hasMissingDefaults = DEFAULT_COLLAPSED_CARD_IDS.some((id) => !collapsedSet.has(id));
+
+            if (!migrationApplied && (collapsedSet.size === 0 || hasMissingDefaults)) {
+                collapsedSet = new Set([...DEFAULT_COLLAPSED_CARD_IDS, ...collapsedSet]);
+                localStorage.setItem(COLLAPSED_CARDS_MIGRATION_KEY, '1');
+                localStorage.setItem(COLLAPSED_CARDS_STORAGE_KEY, JSON.stringify(Array.from(collapsedSet)));
+            }
+
+            this.collapsedCards = collapsedSet;
         } catch (error) {
             console.warn('Failed to load collapsed card state:', error);
-            this.collapsedCards = new Set();
+            this.collapsedCards = new Set(DEFAULT_COLLAPSED_CARD_IDS);
         }
     }
     
     saveCollapsedState() {
         try {
             const collapsedIds = Array.from(this.collapsedCards);
-            localStorage.setItem('dragoncp_collapsed_cards', JSON.stringify(collapsedIds));
+            localStorage.setItem(COLLAPSED_CARDS_STORAGE_KEY, JSON.stringify(collapsedIds));
         } catch (error) {
             console.warn('Failed to save collapsed card state:', error);
         }
@@ -371,7 +392,7 @@ export class UIComponents {
     // Method to reset collapsible state to default
     resetCollapsibleState() {
         this.collapsedCards.clear();
-        localStorage.removeItem('dragoncp_collapsed_cards');
+        localStorage.removeItem(COLLAPSED_CARDS_STORAGE_KEY);
         this.refreshCollapsibleState();
     }
 

@@ -887,6 +887,72 @@ body {
     background: rgba(52, 152, 219, 0.1);
 }
 
+/* Backend log viewer */
+.backend-log-toolbar {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border-color);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.backend-log-meta {
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--border-color);
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.backend-log-container {
+    max-height: 420px;
+    overflow-y: auto;
+    overflow-x: auto;
+    background: #11161f;
+    font-family: 'Courier New', monospace;
+    font-size: 0.82rem;
+    line-height: 1.35;
+}
+
+.backend-log-line {
+    padding: 6px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    color: #d6dde8;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+
+.backend-log-line.level-debug {
+    color: #9aa3b2;
+}
+
+.backend-log-line.level-info {
+    color: #b8d5ff;
+}
+
+.backend-log-line.level-warning {
+    color: #ffd484;
+    background: rgba(255, 193, 7, 0.08);
+}
+
+.backend-log-line.level-error,
+.backend-log-line.level-critical {
+    color: #ff8f8f;
+    background: rgba(220, 53, 69, 0.1);
+}
+
+.backend-log-empty {
+    padding: 16px 14px;
+    color: var(--text-muted);
+}
+
+.backend-log-error {
+    color: #ff8f8f;
+}
+
+#backendLogViewerCard .badge {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
 /* Responsive design for transfer log */
 @media (max-width: 768px) {
     .transfer-log-container {
@@ -955,6 +1021,11 @@ body {
     .log-fullscreen-log {
         font-size: 0.9rem;
         padding: 15px;
+    }
+
+    .backend-log-container {
+        max-height: 320px;
+        font-size: 0.76rem;
     }
 }
 

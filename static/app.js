@@ -13,6 +13,7 @@ import { MediaBrowser } from 'media-browser';
 import { TransferManager } from 'transfer-manager';
 import { BackupManager } from 'backup-manager';
 import { WebhookManager } from 'webhook-manager';
+import { LogViewer } from 'log-viewer';
 
 class DragonCPUI {
     constructor() {
@@ -54,9 +55,11 @@ class DragonCPUI {
         this.transfers = new TransferManager(this);
         this.backups = new BackupManager(this);
         this.webhook = new WebhookManager(this);
+        this.logs = new LogViewer(this);
 
         this.initializeEventListeners();
         this.webhook.initialize();
+        this.logs.setup();
         this.modulesInitialized = true;
     }
 
@@ -263,6 +266,9 @@ class DragonCPUI {
         this.updateAuthUI(true);
         this.hideLoginGate();
         this.initializeModules();
+        if (this.logs) {
+            this.logs.syncPanelState();
+        }
         this.websocket.connect();
         await this.initializeConnection();
     }
@@ -277,6 +283,9 @@ class DragonCPUI {
         }
         if (this.ui && this.modulesInitialized) {
             this.ui.hideMediaInterface();
+        }
+        if (this.logs) {
+            this.logs.deactivate();
         }
 
         this.showLoginGate(reason === 'manual_logout' ? '' : 'Session expired. Please sign in again.');

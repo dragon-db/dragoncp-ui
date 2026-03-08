@@ -11,7 +11,7 @@ from flask import session, has_request_context
 
 
 # Application version for cache busting
-APP_VERSION = "2.0.7"
+APP_VERSION = "2.0.8"
 
 
 class DragonCPConfig:
@@ -98,4 +98,3 @@ class DragonCPConfig:
             print(f"✅ Configuration saved to .env file: {self.env_file}")
         except Exception as e:
             print(f"❌ Error saving configuration to .env file: {e}")
-
