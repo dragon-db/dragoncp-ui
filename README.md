@@ -2,6 +2,27 @@
 
 A modern, mobile-friendly web interface for the DragonCP media transfer script. This web UI provides the same functionality as the dragoncp.sh bash script but with an intuitive graphical interface that works on desktop and mobile devices.
 
+## Project Scope (Current)
+
+DragonCP is currently an **admin operations dashboard**, not an end-user product.
+
+- Intended operators: small trusted admin team (typically 1-3 admins)
+- No end-user account model
+- No multi-tenant permission model
+- No user-facing self-service workflows
+
+As of March 3, 2026, scope remains admin-only.
+
+## Network Exposure Model (Current)
+
+- Preferred: keep backend (`/api` + Socket.IO) on trusted network only (localhost/LAN/Tailscale/VPN).
+- If React UI is internet-reachable, admin actions still require secure access to backend API and socket endpoints.
+- Intended public ingress endpoints are webhook receivers only:
+  - `POST /api/webhook/movies`
+  - `POST /api/webhook/series`
+  - `POST /api/webhook/anime`
+- Do not expose full admin API surface publicly without additional network controls and strict auth hardening.
+
 ## Features
 
 - 🎨 **Modern Dark Theme UI** - Beautiful, responsive design with dark theme
@@ -62,6 +83,14 @@ For detailed setup instructions, manual installation, troubleshooting, and devel
 
 ## Configuration
 
+### Authentication Transport Rules
+
+- HTTP API authentication uses `Authorization: Bearer <access-token>`.
+- URL query token authentication (`?token=...`) is not supported for normal HTTP endpoints.
+- WebSocket authentication remains token-based through Socket.IO auth payload (`auth: { token }`).
+
+These rules apply regardless of whether you access the app via localhost, LAN IP, or Tailscale IP.
+
 ### Environment Variables
 
 Create a `dragoncp_env.env` file in the project root directory (same location as `app.py`) with the following variables:
@@ -111,6 +140,26 @@ DISK_API_TOKEN="your_bearer_token_here"
 2. Edit `dragoncp_env.env` with your actual configuration values
 
 3. The application will automatically load the configuration when started
+
+### Legacy UI Authentication
+
+The legacy static UI now requires JWT authentication before any protected API feature is available.
+
+Required environment variables:
+```env
+DRAGONCP_USERNAME="admin"
+DRAGONCP_PASSWORD="your-secure-password"
+JWT_SECRET_KEY="change-this-secret"
+JWT_EXPIRY_HOURS=24
+```
+
+Behavior:
+- A login screen is shown on first load when no valid token exists.
+- Tokens are stored in browser `localStorage` under `dragoncp_auth_v1`.
+- Access tokens auto-refresh before expiry using `/api/auth/refresh`.
+- If refresh fails or token is invalid, the UI logs out and returns to login.
+- HTTP requests must send bearer token in `Authorization` header.
+- WebSocket connections are authenticated and re-authenticated after token refresh.
 
 ### SSH Authentication
 
@@ -174,6 +223,7 @@ You can connect using either:
 - Input validation and sanitization
 - Session management with automatic timeout protection
 - Isolated Python environment
+- Admin-only operational scope (trusted operators, no end-user workflows)
 - Database-based transfer tracking and audit logs
 
 ### Performance Optimizations
@@ -225,3 +275,17 @@ If you encounter any issues while using this script, please raise a GitHub issue
 - **Browser Information**: Browser type and version if UI-related
 
 For detailed setup instructions, manual installation, troubleshooting, and development information, see [SETUP.md](SETUP.md). 
+
+## Troubleshooting (Auth / Session)
+
+- `Session expired. Please sign in again.`:
+  - Refresh token is expired/invalid, or JWT secret changed.
+  - Sign in again and verify `JWT_SECRET_KEY` consistency across restarts.
+- `WebSocket connection failed` immediately after login:
+  - Access token might be invalid or stale.
+  - Sign out/sign in again and confirm backend `/api/auth/verify` returns `valid: true`.
+- Repeated 401/API failures:
+  - Confirm `DRAGONCP_PASSWORD`/`DRAGONCP_PASSWORD_HASH` is configured.
+  - Confirm server clock is correct (JWT expiry depends on time).
+- Login endpoint returns auth not configured:
+  - Set `DRAGONCP_PASSWORD` (or `DRAGONCP_PASSWORD_HASH`) in `dragoncp_env.env` and restart.

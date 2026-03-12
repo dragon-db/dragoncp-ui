@@ -62,7 +62,9 @@ dmypy.json
 # Database
 # ===================
 *.db
-!docs/database/*.db.*
+*.db.*
+*.sqlite
+*.sqlite3
 
 # ===================
 # Node.js / Frontend

@@ -1,0 +1,2114 @@
+openapi: 3.0.3
+info:
+  title: DragonCP API
+  description: |
+    DragonCP is a media sync management system that handles file transfers between 
+    remote servers (Radarr/Sonarr) and local storage. This API provides endpoints for:
+    
+    - **Authentication**: JWT-based auth with token refresh
+    - **Media Browsing**: Browse movies, TV shows, and anime on remote server
+    - **Transfers**: Start, monitor, and manage rsync file transfers
+    - **Webhooks**: Receive and process notifications from Radarr/Sonarr
+    - **Backups**: Manage backup of files before sync operations
+    - **Debug**: System diagnostics and monitoring
+    
+    ## Authentication
+    Most endpoints require JWT authentication. Include the token in the `Authorization` header:
+    ```
+    Authorization: Bearer <your-jwt-token>
+    ```
+    
+    ## Base URL
+    Default: `http://localhost:5000/api`
+  version: "1.0.0"
+  contact:
+    name: DragonCP
+
+servers:
+  - url: http://localhost:5000/api
+    description: Local development server
+
+tags:
+  - name: Authentication
+    description: Login, logout, token verification and refresh
+  - name: Configuration
+    description: Application configuration management
+  - name: SSH Connection
+    description: Remote server SSH connection management
+  - name: Media Browsing
+    description: Browse media folders on remote server
+  - name: Transfers
+    description: File transfer operations (rsync)
+  - name: Webhooks - Receivers
+    description: Webhook endpoints for Radarr/Sonarr notifications (no auth required)
+  - name: Webhooks - Management
+    description: Manage webhook notifications
+  - name: Webhooks - Settings
+    description: Configure webhook behavior
+  - name: Backups
+    description: Backup management
+  - name: Debug
+    description: System diagnostics and debugging
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from /api/auth/login
+
+  schemas:
+    # Common response schemas
+    SuccessResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [success]
+        message:
+          type: string
+      required: [status]
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+        code:
+          type: string
+          description: Error code for programmatic handling
+      required: [status, message]
+
+    # Authentication schemas
+    LoginRequest:
+      type: object
+      properties:
+        username:
+          type: string
+          example: admin
+        password:
+          type: string
+          example: your-password
+      required: [username, password]
+
+    LoginResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+          example: Login successful
+        token:
+          type: string
+          description: JWT access token
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        refresh_token:
+          type: string
+          description: JWT refresh token (longer-lived)
+          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        expires_at:
+          type: string
+          format: date-time
+          description: Access token expiry time
+        refresh_expires_at:
+          type: string
+          format: date-time
+          description: Refresh token expiry time
+        user:
+          type: string
+          example: admin
+
+    TokenRefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          description: Valid refresh token
+      required: [refresh_token]
+
+    TokenVerifyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        valid:
+          type: boolean
+        user:
+          type: string
+        remaining_seconds:
+          type: integer
+          description: Seconds until token expires
+
+    # SSH Connection schemas
+    SSHConnectRequest:
+      type: object
+      properties:
+        host:
+          type: string
+          description: Remote server hostname or IP
+          example: 192.168.1.100
+        username:
+          type: string
+          example: root
+        password:
+          type: string
+          description: SSH password (optional if using key)
+        key_path:
+          type: string
+          description: Path to SSH private key (optional)
+      required: [host, username]
+
+    # Configuration schemas
+    ConfigResponse:
+      type: object
+      properties:
+        REMOTE_IP:
+          type: string
+        REMOTE_USER:
+          type: string
+        MOVIE_PATH:
+          type: string
+          description: Remote path for movies
+        TVSHOW_PATH:
+          type: string
+          description: Remote path for TV shows
+        ANIME_PATH:
+          type: string
+          description: Remote path for anime
+        MOVIE_DEST_PATH:
+          type: string
+        TVSHOW_DEST_PATH:
+          type: string
+        ANIME_DEST_PATH:
+          type: string
+        BACKUP_PATH:
+          type: string
+
+    # Media schemas
+    MediaType:
+      type: object
+      properties:
+        id:
+          type: string
+          enum: [movies, tvshows, anime]
+        name:
+          type: string
+        path:
+          type: string
+
+    FolderMetadata:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Folder name
+        modification_time:
+          type: integer
+          description: Unix timestamp of last modification
+
+    SyncStatus:
+      type: string
+      enum: [SYNCED, OUT_OF_SYNC, NO_INFO]
+      description: |
+        - SYNCED: All files are synchronized
+        - OUT_OF_SYNC: Source has newer files than destination
+        - NO_INFO: No sync history available
+
+    # Transfer schemas
+    TransferRequest:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [folder, file]
+          description: Type of transfer operation
+        media_type:
+          type: string
+          enum: [movies, tvshows, anime]
+        folder_name:
+          type: string
+          description: Name of the folder to transfer
+        season_name:
+          type: string
+          description: Season folder name (for TV shows/anime, optional)
+        episode_name:
+          type: string
+          nullable: true
+          description: Required when `type=file`; ignored for `type=folder`
+      required: [media_type, folder_name]
+
+    TransferResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        transfer_id:
+          type: string
+          example: transfer_1704672000
+        transfer_state:
+          type: string
+          description: Runtime transfer state returned by coordinator
+          enum: [running, QUEUED_SLOT, QUEUED_PATH, failed]
+        message:
+          type: string
+        source:
+          type: string
+        destination:
+          type: string
+        episode_name:
+          type: string
+          nullable: true
+
+    TransferStatus:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [pending, queued, running, completed, failed, cancelled]
+        progress:
+          type: string
+          description: Latest rsync/log line or completion/error message
+        logs:
+          type: array
+          items:
+            type: string
+        log_count:
+          type: integer
+        start_time:
+          type: string
+          format: date-time
+        end_time:
+          type: string
+          format: date-time
+          nullable: true
+        media_type:
+          type: string
+        folder_name:
+          type: string
+        season_name:
+          type: string
+          nullable: true
+        parsed_title:
+          type: string
+          nullable: true
+        parsed_season:
+          type: string
+          nullable: true
+        operation_type:
+          type: string
+        source_path:
+          type: string
+        dest_path:
+          type: string
+
+    # Webhook schemas
+    MovieWebhookPayload:
+      type: object
+      description: Radarr webhook payload for movie import events
+      properties:
+        eventType:
+          type: string
+          example: Download
+        movie:
+          type: object
+          properties:
+            title:
+              type: string
+            folderPath:
+              type: string
+            year:
+              type: integer
+            tmdbId:
+              type: integer
+
+    SeriesWebhookPayload:
+      type: object
+      description: Sonarr webhook payload for series/anime import events
+      properties:
+        eventType:
+          type: string
+          example: Download
+        series:
+          type: object
+          properties:
+            title:
+              type: string
+            path:
+              type: string
+            tvdbId:
+              type: integer
+        episodes:
+          type: array
+          items:
+            type: object
+            properties:
+              episodeNumber:
+                type: integer
+              seasonNumber:
+                type: integer
+              title:
+                type: string
+
+    WebhookNotification:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        display_title:
+          type: string
+        media_type:
+          type: string
+          enum: [movie, tvshows, anime]
+        status:
+          type: string
+          enum: [pending, READY_FOR_TRANSFER, QUEUED_SLOT, QUEUED_PATH, syncing, completed, failed, MANUAL_SYNC_REQUIRED, cancelled]
+        folder_path:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    SeriesWebhookNotification:
+      type: object
+      properties:
+        id:
+          type: string
+        series_title:
+          type: string
+        season_number:
+          type: integer
+        media_type:
+          type: string
+          enum: [tvshows, anime]
+        status:
+          type: string
+          enum: [pending, READY_FOR_TRANSFER, QUEUED_SLOT, QUEUED_PATH, syncing, completed, failed, MANUAL_SYNC_REQUIRED]
+        series_path:
+          type: string
+        season_path:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        transfer_id:
+          type: string
+          nullable: true
+        episode_count:
+          type: integer
+        display_title:
+          type: string
+
+    WebhookSettings:
+      type: object
+      properties:
+        auto_sync_movies:
+          type: boolean
+          description: Auto-sync movies when webhook received
+        auto_sync_series:
+          type: boolean
+          description: Auto-sync TV shows when webhook received
+        auto_sync_anime:
+          type: boolean
+          description: Auto-sync anime when webhook received
+        series_anime_sync_wait_time:
+          type: integer
+          description: Wait time (seconds) before auto-syncing series/anime (allows batch downloads)
+          minimum: 30
+          maximum: 900
+
+    DiscordSettings:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        webhook_url:
+          type: string
+          description: Discord webhook URL
+        app_url:
+          type: string
+          description: DragonCP app URL for embed links
+        manual_sync_thumbnail_url:
+          type: string
+        icon_url:
+          type: string
+
+    # Backup schemas
+    Backup:
+      type: object
+      properties:
+        id:
+          type: string
+        transfer_id:
+          type: string
+        backup_path:
+          type: string
+        original_dest_path:
+          type: string
+        file_count:
+          type: integer
+        total_size:
+          type: integer
+          description: Size in bytes
+        created_at:
+          type: string
+          format: date-time
+        is_deleted:
+          type: boolean
+
+    BackupFile:
+      type: object
+      properties:
+        relative_path:
+          type: string
+        size:
+          type: integer
+        modification_time:
+          type: string
+          format: date-time
+
+    RestorePlan:
+      type: object
+      properties:
+        backup_id:
+          type: string
+        source_path:
+          type: string
+        dest_path:
+          type: string
+        file_count:
+          type: integer
+        files:
+          type: array
+          items:
+            type: string
+
+    # Dry-run schemas
+    DryRunResult:
+      type: object
+      properties:
+        safe_to_sync:
+          type: boolean
+          description: Whether sync can proceed safely
+        files_to_transfer:
+          type: integer
+        files_to_delete:
+          type: integer
+        total_size:
+          type: string
+          description: Human-readable size (e.g., "4.2 GB")
+        deletions:
+          type: array
+          items:
+            type: string
+          description: List of files that would be deleted
+        warnings:
+          type: array
+          items:
+            type: string
+
+    # Debug schemas
+    DebugInfo:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        working_directory:
+          type: string
+        ssh_connected:
+          type: boolean
+        active_transfers:
+          type: integer
+        websocket_info:
+          type: object
+          properties:
+            active_connections:
+              type: integer
+            default_timeout_minutes:
+              type: integer
+            max_timeout_minutes:
+              type: integer
+        configuration:
+          type: object
+          additionalProperties:
+            type: string
+
+    DiskUsage:
+      type: object
+      properties:
+        path:
+          type: string
+        total_size:
+          type: string
+        used_size:
+          type: string
+        available_size:
+          type: string
+        usage_percent:
+          type: integer
+        available:
+          type: boolean
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ==================== AUTHENTICATION ====================
+  /auth/login:
+    post:
+      tags: [Authentication]
+      summary: Login and obtain JWT tokens
+      description: |
+        Authenticate with username and password to receive JWT access and refresh tokens.
+        The access token expires in ~1 hour, the refresh token in ~7 days.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Authentication not configured
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Logout (client-side token invalidation)
+      description: Logs out user. JWT tokens are stateless, so this endpoint exists for consistency.
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /auth/verify:
+    get:
+      tags: [Authentication]
+      summary: Verify if current token is valid
+      security: []
+      responses:
+        '200':
+          description: Token verification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenVerifyResponse'
+
+  /auth/refresh:
+    post:
+      tags: [Authentication]
+      summary: Refresh access token using refresh token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenRefreshRequest'
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  token:
+                    type: string
+                  expires_at:
+                    type: string
+                    format: date-time
+                  user:
+                    type: string
+        '401':
+          description: Invalid or expired refresh token
+
+  /auth/status:
+    get:
+      tags: [Authentication]
+      summary: Get authentication system status
+      description: Check if authentication is configured (useful for determining whether to show login form)
+      security: []
+      responses:
+        '200':
+          description: Auth status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  auth_configured:
+                    type: boolean
+                  message:
+                    type: string
+
+  # ==================== CONFIGURATION ====================
+  /config:
+    get:
+      tags: [Configuration]
+      summary: Get all configuration values
+      responses:
+        '200':
+          description: Configuration data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigResponse'
+    post:
+      tags: [Configuration]
+      summary: Update session configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Configuration saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /config/reset:
+    post:
+      tags: [Configuration]
+      summary: Reset session configuration to environment values
+      responses:
+        '200':
+          description: Configuration reset successful
+
+  /config/env-only:
+    get:
+      tags: [Configuration]
+      summary: Get only environment configuration (without session overrides)
+      responses:
+        '200':
+          description: Environment configuration
+
+  # ==================== SSH CONNECTION ====================
+  /connect:
+    post:
+      tags: [SSH Connection]
+      summary: Connect to SSH server
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SSHConnectRequest'
+      responses:
+        '200':
+          description: Connection result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success, error]
+                  message:
+                    type: string
+
+  /disconnect:
+    post:
+      tags: [SSH Connection]
+      summary: Disconnect from SSH server
+      responses:
+        '200':
+          description: Disconnected successfully
+
+  /auto-connect:
+    get:
+      tags: [SSH Connection]
+      summary: Auto-connect using environment variables
+      description: Connects using REMOTE_IP, REMOTE_USER, REMOTE_PASSWORD, and SSH_KEY_PATH from config
+      responses:
+        '200':
+          description: Auto-connection result
+
+  /ssh-config:
+    get:
+      tags: [SSH Connection]
+      summary: Get SSH configuration from environment
+      responses:
+        '200':
+          description: SSH config values
+
+  # ==================== MEDIA BROWSING ====================
+  /media-types:
+    get:
+      tags: [Media Browsing]
+      summary: Get available media types
+      description: Returns list of media types (movies, tvshows, anime) with their configured paths
+      responses:
+        '200':
+          description: List of media types
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MediaType'
+
+  /folders/{media_type}:
+    get:
+      tags: [Media Browsing]
+      summary: Get folders for a media type
+      description: Lists all folders in the remote path for the specified media type
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [movies, tvshows, anime]
+      responses:
+        '200':
+          description: List of folders
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  folders:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FolderMetadata'
+
+  /seasons/{media_type}/{folder_name}:
+    get:
+      tags: [Media Browsing]
+      summary: Get seasons for a TV show or anime
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [tvshows, anime]
+        - name: folder_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of seasons
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  seasons:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FolderMetadata'
+
+  /episodes/{media_type}/{folder_name}/{season_name}:
+    get:
+      tags: [Media Browsing]
+      summary: Get episodes for a season
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [tvshows, anime]
+        - name: folder_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: season_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of episode files
+
+  /sync-status/{media_type}:
+    get:
+      tags: [Media Browsing]
+      summary: Get sync status for all folders in a media type
+      description: |
+        Returns sync status for each folder, indicating whether files are 
+        synchronized, outdated, or have no sync history.
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [movies, tvshows, anime]
+      responses:
+        '200':
+          description: Sync status for all folders
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  sync_statuses:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        status:
+                          $ref: '#/components/schemas/SyncStatus'
+                        type:
+                          type: string
+                        modification_time:
+                          type: integer
+
+  /sync-status/{media_type}/{folder_name}:
+    get:
+      tags: [Media Browsing]
+      summary: Get detailed sync status for a specific folder
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: folder_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Folder sync status
+
+  /sync-status/{media_type}/{folder_name}/enhanced:
+    get:
+      tags: [Media Browsing]
+      summary: Get enhanced sync status with detailed file information
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: folder_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Enhanced sync status with file details
+
+  /media/dry-run:
+    post:
+      tags: [Media Browsing]
+      summary: Perform dry-run for a media folder
+      description: Preview what would happen during sync without making changes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                media_type:
+                  type: string
+                  enum: [movies, tvshows, anime]
+                folder_name:
+                  type: string
+                season_name:
+                  type: string
+                  description: Optional, for series/anime
+              required: [media_type, folder_name]
+      responses:
+        '200':
+          description: Dry-run result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  dry_run_result:
+                    $ref: '#/components/schemas/DryRunResult'
+
+  # ==================== TRANSFERS ====================
+  /transfer:
+    post:
+      tags: [Transfers]
+      summary: Start a new transfer
+      description: |
+        Initiates an rsync transfer from remote server to local storage.
+        The transfer runs in the background and progress can be monitored via WebSocket or polling.
+        When `type=file`, `episode_name` must be provided and only that episode file is transferred.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferRequest'
+      responses:
+        '200':
+          description: Transfer started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferResponse'
+
+  /transfer/{transfer_id}/status:
+    get:
+      tags: [Transfers]
+      summary: Get transfer status
+      parameters:
+        - name: transfer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transfer status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  transfer:
+                    $ref: '#/components/schemas/TransferStatus'
+
+  /transfer/{transfer_id}/logs:
+    get:
+      tags: [Transfers]
+      summary: Get full logs for a transfer
+      parameters:
+        - name: transfer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transfer logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  logs:
+                    type: array
+                    items:
+                      type: string
+                  log_count:
+                    type: integer
+                  transfer_status:
+                    type: string
+
+  /transfer/{transfer_id}/cancel:
+    post:
+      tags: [Transfers]
+      summary: Cancel a running transfer
+      parameters:
+        - name: transfer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transfer cancelled
+
+  /transfer/{transfer_id}/restart:
+    post:
+      tags: [Transfers]
+      summary: Restart a failed or cancelled transfer
+      parameters:
+        - name: transfer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transfer restarted
+
+  /transfer/{transfer_id}/delete:
+    post:
+      tags: [Transfers]
+      summary: Delete a transfer record
+      description: Removes transfer from database. Cannot delete running transfers.
+      parameters:
+        - name: transfer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transfer deleted
+
+  /transfers/all:
+    get:
+      tags: [Transfers]
+      summary: Get all transfers with optional filtering
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, queued, running, completed, failed, cancelled]
+      responses:
+        '200':
+          description: List of transfers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  transfers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TransferStatus'
+                  total:
+                    type: integer
+
+  /transfers/active:
+    get:
+      tags: [Transfers]
+      summary: Get only active (running/pending/queued) transfers
+      responses:
+        '200':
+          description: Active transfers list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  transfers:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TransferStatus'
+                  total:
+                    type: integer
+                  queue_status:
+                    type: object
+                    properties:
+                      max_concurrent:
+                        type: integer
+                      running_count:
+                        type: integer
+                      queued_count:
+                        type: integer
+                      available_slots:
+                        type: integer
+                      running_transfer_ids:
+                        type: array
+                        items:
+                          type: string
+                      queued_transfer_ids:
+                        type: array
+                        items:
+                          type: string
+                      active_destinations:
+                        type: array
+                        items:
+                          type: string
+
+  /transfers/queue/status:
+    get:
+      tags: [Transfers]
+      summary: Get transfer queue status
+      responses:
+        '200':
+          description: Queue status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  queue:
+                    type: object
+                    properties:
+                      max_concurrent:
+                        type: integer
+                      running_count:
+                        type: integer
+                      queued_count:
+                        type: integer
+                      available_slots:
+                        type: integer
+                      running_transfer_ids:
+                        type: array
+                        items:
+                          type: string
+                      queued_transfer_ids:
+                        type: array
+                        items:
+                          type: string
+                      active_destinations:
+                        type: array
+                        items:
+                          type: string
+
+  /transfers/cleanup:
+    post:
+      tags: [Transfers]
+      summary: Remove duplicate transfers
+      description: Cleans up duplicate transfer records, keeping only the latest successful transfer per destination
+      responses:
+        '200':
+          description: Cleanup result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  cleaned_count:
+                    type: integer
+
+  # ==================== WEBHOOK RECEIVERS ====================
+  /webhook/movies:
+    post:
+      tags: [Webhooks - Receivers]
+      summary: Receive movie webhook from Radarr
+      description: |
+        Endpoint for Radarr to send webhook notifications when movies are imported.
+        No authentication required. Configure this URL in Radarr's webhook settings.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MovieWebhookPayload'
+      responses:
+        '200':
+          description: Webhook received
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  notification_id:
+                    type: string
+                  auto_sync:
+                    type: boolean
+                  is_test:
+                    type: boolean
+
+  /webhook/series:
+    post:
+      tags: [Webhooks - Receivers]
+      summary: Receive series webhook from Sonarr
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeriesWebhookPayload'
+      responses:
+        '200':
+          description: Webhook received
+
+  /webhook/anime:
+    post:
+      tags: [Webhooks - Receivers]
+      summary: Receive anime webhook from Sonarr
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeriesWebhookPayload'
+      responses:
+        '200':
+          description: Webhook received
+
+  # ==================== WEBHOOK MANAGEMENT ====================
+  /webhook/notifications:
+    get:
+      tags: [Webhooks - Management]
+      summary: Get all webhook notifications (movies, series, and anime combined)
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, READY_FOR_TRANSFER, QUEUED_SLOT, QUEUED_PATH, syncing, completed, failed, MANUAL_SYNC_REQUIRED, cancelled]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of all webhook notifications
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  notifications:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookNotification'
+                  total:
+                    type: integer
+
+  /webhook/series/notifications:
+    get:
+      tags: [Webhooks - Management]
+      summary: Get series (TV shows) webhook notifications only
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Series notifications
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  notifications:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SeriesWebhookNotification'
+                  total:
+                    type: integer
+
+  /webhook/anime/notifications:
+    get:
+      tags: [Webhooks - Management]
+      summary: Get anime webhook notifications only
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Anime notifications
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  notifications:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SeriesWebhookNotification'
+                  total:
+                    type: integer
+
+  /webhook/notifications/{notification_id}:
+    get:
+      tags: [Webhooks - Management]
+      summary: Get specific webhook notification details
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Notification details
+        '404':
+          description: Notification not found
+
+  /webhook/notifications/{notification_id}/json:
+    get:
+      tags: [Webhooks - Management]
+      summary: Get raw webhook JSON for a notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Raw webhook JSON
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /webhook/notifications/{notification_id}/sync:
+    post:
+      tags: [Webhooks - Management]
+      summary: Manually trigger sync for a movie webhook notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sync triggered
+        '400':
+          description: Sync failed
+
+  /webhook/series/notifications/{notification_id}/sync:
+    post:
+      tags: [Webhooks - Management]
+      summary: Manually trigger sync for a series notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sync triggered
+
+  /webhook/anime/notifications/{notification_id}/sync:
+    post:
+      tags: [Webhooks - Management]
+      summary: Manually trigger sync for an anime notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sync triggered
+
+  /webhook/notifications/{notification_id}/complete:
+    post:
+      tags: [Webhooks - Management]
+      summary: Mark a movie notification as complete
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Marked as complete
+        '404':
+          description: Notification not found
+
+  /webhook/series/notifications/{notification_id}/complete:
+    post:
+      tags: [Webhooks - Management]
+      summary: Mark a series notification as complete
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Marked as complete
+
+  /webhook/anime/notifications/{notification_id}/complete:
+    post:
+      tags: [Webhooks - Management]
+      summary: Mark an anime notification as complete
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Marked as complete
+
+  /webhook/notifications/{notification_id}/delete:
+    post:
+      tags: [Webhooks - Management]
+      summary: Delete a movie webhook notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Notification deleted
+
+  /webhook/series/notifications/{notification_id}/delete:
+    post:
+      tags: [Webhooks - Management]
+      summary: Delete a series notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Notification deleted
+
+  /webhook/anime/notifications/{notification_id}/delete:
+    post:
+      tags: [Webhooks - Management]
+      summary: Delete an anime notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Notification deleted
+
+  /webhook/notifications/{notification_id}/dry-run:
+    post:
+      tags: [Webhooks - Management]
+      summary: Perform dry-run for a movie webhook notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dry-run result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  dry_run_result:
+                    $ref: '#/components/schemas/DryRunResult'
+
+  /webhook/series/notifications/{notification_id}/dry-run:
+    post:
+      tags: [Webhooks - Management]
+      summary: Perform dry-run for a series notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dry-run result
+
+  /webhook/anime/notifications/{notification_id}/dry-run:
+    post:
+      tags: [Webhooks - Management]
+      summary: Perform dry-run for an anime notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dry-run result
+
+  # ==================== RENAME NOTIFICATIONS ====================
+  /webhook/rename/notifications:
+    get:
+      tags: [Webhooks - Management]
+      summary: Get all rename notifications
+      description: Rename events occur when Sonarr renames files (not imports)
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: media_type
+          in: query
+          schema:
+            type: string
+            enum: [tvshows, anime]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Rename notifications
+
+  /webhook/rename/notifications/{notification_id}:
+    get:
+      tags: [Webhooks - Management]
+      summary: Get specific rename notification details
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rename notification details
+
+  /webhook/rename/notifications/{notification_id}/json:
+    get:
+      tags: [Webhooks - Management]
+      summary: Get raw webhook JSON for a rename notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Raw webhook JSON
+
+  /webhook/rename/notifications/{notification_id}/delete:
+    post:
+      tags: [Webhooks - Management]
+      summary: Delete a rename notification
+      parameters:
+        - name: notification_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Notification deleted
+
+  # ==================== WEBHOOK SETTINGS ====================
+  /webhook/settings:
+    get:
+      tags: [Webhooks - Settings]
+      summary: Get webhook settings
+      responses:
+        '200':
+          description: Webhook settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  settings:
+                    $ref: '#/components/schemas/WebhookSettings'
+    post:
+      tags: [Webhooks - Settings]
+      summary: Update webhook settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookSettings'
+      responses:
+        '200':
+          description: Settings updated
+
+  /discord/settings:
+    get:
+      tags: [Webhooks - Settings]
+      summary: Get Discord notification settings
+      responses:
+        '200':
+          description: Discord settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  settings:
+                    $ref: '#/components/schemas/DiscordSettings'
+    post:
+      tags: [Webhooks - Settings]
+      summary: Update Discord notification settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscordSettings'
+      responses:
+        '200':
+          description: Settings updated
+
+  /discord/test:
+    post:
+      tags: [Webhooks - Settings]
+      summary: Test Discord webhook with sample notification
+      responses:
+        '200':
+          description: Test notification sent
+        '400':
+          description: Discord not configured or test failed
+
+  # ==================== BACKUPS ====================
+  /backups:
+    get:
+      tags: [Backups]
+      summary: List all transfer backups
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: include_deleted
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Include backups that have been deleted from disk
+      responses:
+        '200':
+          description: List of backups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  backups:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Backup'
+                  total:
+                    type: integer
+
+  /backups/{backup_id}:
+    get:
+      tags: [Backups]
+      summary: Get backup details
+      parameters:
+        - name: backup_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Backup details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  backup:
+                    $ref: '#/components/schemas/Backup'
+        '404':
+          description: Backup not found
+
+  /backups/{backup_id}/files:
+    get:
+      tags: [Backups]
+      summary: List files inside a backup
+      parameters:
+        - name: backup_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of backup files
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BackupFile'
+                  total:
+                    type: integer
+
+  /backups/{backup_id}/restore:
+    post:
+      tags: [Backups]
+      summary: Restore a backup
+      description: Restore all or selected files from a backup to their original location
+      parameters:
+        - name: backup_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                  description: Optional list of specific files to restore
+      responses:
+        '200':
+          description: Restore successful
+        '400':
+          description: Restore failed
+
+  /backups/{backup_id}/delete:
+    post:
+      tags: [Backups]
+      summary: Delete a backup record and optionally files
+      parameters:
+        - name: backup_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                delete_record:
+                  type: boolean
+                  default: true
+                  description: Remove backup from database
+                delete_files:
+                  type: boolean
+                  default: false
+                  description: Also delete backup files from disk
+      responses:
+        '200':
+          description: Backup deleted
+
+  /backups/{backup_id}/plan:
+    post:
+      tags: [Backups]
+      summary: Dry-run plan for context-aware restore
+      description: Preview restore operation without making changes
+      parameters:
+        - name: backup_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Restore plan
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  plan:
+                    $ref: '#/components/schemas/RestorePlan'
+
+  /backups/reindex:
+    post:
+      tags: [Backups]
+      summary: Scan and import existing backup folders
+      description: Scans BACKUP_PATH for existing backup folders and imports any that are missing from the database
+      responses:
+        '200':
+          description: Reindex result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  imported:
+                    type: integer
+                  skipped:
+                    type: integer
+
+  # ==================== DEBUG ====================
+  /debug:
+    get:
+      tags: [Debug]
+      summary: Get debug information
+      description: Returns comprehensive system status including SSH, WebSocket, config, and rsync info
+      responses:
+        '200':
+          description: Debug information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  debug_info:
+                    $ref: '#/components/schemas/DebugInfo'
+
+  /debug/transfers:
+    get:
+      tags: [Debug]
+      summary: Debug endpoint to check database transfers
+      responses:
+        '200':
+          description: Transfer debug info
+
+  /websocket/status:
+    get:
+      tags: [Debug]
+      summary: Get WebSocket connection status
+      responses:
+        '200':
+          description: WebSocket status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  websocket_status:
+                    type: object
+                    properties:
+                      active_connections:
+                        type: integer
+                      default_timeout_minutes:
+                        type: integer
+                      max_timeout_minutes:
+                        type: integer
+                      connection_details:
+                        type: array
+                        items:
+                          type: object
+
+  /local-files:
+    get:
+      tags: [Debug]
+      summary: Get local files in a directory
+      parameters:
+        - name: path
+          in: query
+          schema:
+            type: string
+            default: /
+      responses:
+        '200':
+          description: List of files
+
+  /disk-usage/local:
+    get:
+      tags: [Debug]
+      summary: Get local disk usage for configured paths
+      responses:
+        '200':
+          description: Local disk usage
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  disk_info:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DiskUsage'
+
+  /disk-usage/remote:
+    get:
+      tags: [Debug]
+      summary: Get remote disk usage from configured API
+      description: Calls DISK_API_ENDPOINT to get remote storage statistics
+      responses:
+        '200':
+          description: Remote disk usage
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  storage_info:
+                    type: object
+                    properties:
+                      free_storage_gb:
+                        type: number
+                      total_storage_value:
+                        type: number
+                      used_storage_value:
+                        type: number
+                      usage_percent:
+                        type: number
+                      available:
+                        type: boolean
+
+  # ==================== TEST SIMULATION ====================
+  /test/simulate:
+    post:
+      tags: [Debug]
+      summary: Start simulated transfers for UI testing
+      description: |
+        Only available when TEST_MODE=1 environment variable is set.
+        Creates fake transfer progress for testing the UI without actual rsync operations.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                count:
+                  type: integer
+                  default: 3
+                  description: Number of simulated transfers
+                steps:
+                  type: integer
+                  default: 40
+                  description: Number of progress steps
+                interval:
+                  type: number
+                  default: 0.5
+                  description: Seconds between progress updates
+                failure_rate:
+                  type: number
+                  default: 0.0
+                  description: Probability of simulated failure (0-1)
+      responses:
+        '200':
+          description: Simulation started
+        '403':
+          description: TEST_MODE not enabled
+
+  /test/simulate/stop:
+    post:
+      tags: [Debug]
+      summary: Stop all running simulations
+      security: []
+      responses:
+        '200':
+          description: Stop signal sent
+        '403':
+          description: TEST_MODE not enabled
