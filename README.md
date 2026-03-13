@@ -16,6 +16,7 @@ As of March 3, 2026, scope remains admin-only.
 ## Network Exposure Model (Current)
 
 - Preferred: keep backend (`/api` + Socket.IO) on trusted network only (localhost/LAN/Tailscale/VPN).
+- No reverse proxy is required for the normal deployment model.
 - If React UI is internet-reachable, admin actions still require secure access to backend API and socket endpoints.
 - Intended public ingress endpoints are webhook receivers only:
   - `POST /api/webhook/movies`
@@ -66,7 +67,7 @@ The startup script will automatically handle virtual environment setup:
 
 3. **Run the startup script**:
    ```bash
-   ./start.sh
+   TEST_MODE=1 ./start.sh
    ```
 
 4. **Follow the prompts**:
@@ -80,6 +81,30 @@ The startup script will automatically handle virtual environment setup:
    - The interface will be available on all network interfaces
 
 For detailed setup instructions, manual installation, troubleshooting, and development information, see [SETUP.md](SETUP.md).
+
+## Development and Production Paths
+
+### Development / Test
+
+- Recommended path: `TEST_MODE=1 ./start.sh`
+- Direct `python app.py` is acceptable for local debug/test only.
+- Test/debug runs can still use Werkzeug when `TEST_MODE=1` or `FLASK_DEBUG=1`.
+
+### Production
+
+- Recommended runtime: `systemd + venv + gunicorn + gthread + 1 worker`
+- Recommended command:
+  ```bash
+  venv/bin/gunicorn --config deploy/gunicorn.conf.py app:app
+  ```
+- Use the example service file at `deploy/dragoncp-ui.service.example`.
+- Keep Gunicorn worker count at `1`. This app currently has process-local Socket.IO state and background coordination threads.
+- Keep dependencies inside the project virtual environment.
+
+### Current UI Status
+
+- The currently served production UI is the legacy Flask/static UI from `templates/index.html` and `static/`.
+- The React frontend in `frontend/` should stay aligned, but it is not the active production UI yet.
 
 ## Configuration
 
@@ -216,6 +241,13 @@ You can connect using either:
 - **Environment**: Python virtual environment support
 - **Transfer Management**: Enhanced transfer manager with database persistence
 - **WebSocket Timeout**: Configurable session management with activity tracking
+
+### Future Reverse Proxy / Tunnel Notes
+
+- If you later expose the app through Traefik, Cloudflared, or another reverse proxy, keep it same-origin when possible.
+- Proxy `/`, `/api`, and `/socket.io` together.
+- Exposing only the React UI is not sufficient by itself; the browser still needs backend HTTP and Socket.IO access.
+- If UI and backend move to different origins, update `CORS_ORIGINS` and explicit frontend API/socket URLs.
 
 ### Security Features
 - SSH key and password authentication support

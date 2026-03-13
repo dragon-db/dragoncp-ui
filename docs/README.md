@@ -1,69 +1,98 @@
-# DragonCP Documentation
+# DragonCP Documentation Index
 
-This directory contains all feature-specific documentation for the DragonCP project, organized by feature area.
+Use this file as the primary index for documentation under `docs/`. If you need feature context, implementation history, API details, or deployment notes, start here and then open the most relevant doc.
 
-## 📁 Documentation Structure
+## How To Use This Index
 
-### `/auto-sync/`
-Auto-sync functionality for series and anime transfers
-- **SERIES_ANIME_AUTO_SYNC_IMPLEMENTATION.md** - Complete auto-sync implementation guide covering webhook reception, batching, dry-run validation, and Discord notifications
-- **v3_autosync_implementation.md** - V3 redesign with intelligent queue management, explicit state tracking, and dynamic queue type conversion
+- Start with the topic table in the next section.
+- If the work is runtime, deployment, websocket, or service related, read `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md` first.
+- If the work is transfer, queue, rsync, or webhook related, read `docs/SYNC_APPLICATION_ANALYSIS.md` and `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md` first.
+- If the work is React/frontend specific, read `docs/frontend/FRONTEND_REFERENCE.md` first.
+- If you are unsure, scan the feature sections below for the closest match.
 
-### `/notifications/`
-Discord notification system
-- **DISCORD_NOTIFICATION_IMPLEMENTATION.md** - Discord webhook notification functionality for completed transfers
+## Quick Topic Map
 
-### `/path-service/`
-Centralized path handling service
-- **PATHSERVICE_IMPLEMENTATION_SUMMARY.md** - PathService implementation ensuring consistent destination path construction across all transfer operations
+| Topic | Start Here |
+|---|---|
+| Runtime, deployment, systemd, websocket stability | `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md` |
+| Sync architecture, webhooks, rsync flow | `docs/SYNC_APPLICATION_ANALYSIS.md` |
+| Queueing and transfer promotion | `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md` |
+| Path handling and destination rules | `docs/path-service/PATHSERVICE_IMPLEMENTATION_SUMMARY.md` |
+| React frontend structure and usage | `docs/frontend/FRONTEND_REFERENCE.md` |
+| HTTP/API endpoints | `docs/api/API_REFERENCE.md` |
+| Architecture and refactoring history | `docs/refactoring/REFACTORING_GUIDE.md` |
+| Database schema | `docs/database/v2_schema.md` |
+| Auto-sync redesign notes | `docs/auto-sync/v3_autosync_implementation.md` |
+| Future/planned rsync log streaming work | `docs/plans/RSYNC_LOG_STREAMING_REDESIGN.md` |
+| Agent/frontend-design skill notes | `docs/SKILLS/frontend-design/SKILL.md` |
+
+## Documentation By Feature Area
+
+### Root-Level Docs
+
+- `docs/SYNC_APPLICATION_ANALYSIS.md`
+  - End-to-end backend sync architecture, webhook flow, queueing behavior, rsync execution model, and QoS recommendations.
+- `docs/README.md`
+  - This index file.
+
+### `/runtime-stability/`
+
+- `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md`
+  - Runtime hardening for issues `#38` and `#39`, including Socket.IO stability, Gunicorn/systemd deployment, touched files, and verification notes.
 
 ### `/queue-management/`
-Transfer queue management system
-- **QUEUE_MANAGEMENT_IMPLEMENTATION.md** - Advanced queue management with duplicate detection, max 3 concurrent transfers, and automatic promotion
 
-- **SYNC_APPLICATION_ANALYSIS.md** - End-to-end backend sync architecture analysis with performance and QoS improvement recommendations
+- `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md`
+  - Queue behavior, duplicate detection, concurrent transfer limits, and promotion behavior.
 
-### `/refactoring/`
-Code refactoring documentation
-- **REFACTORING_GUIDE.md** - Complete refactoring guide showing the transformation from monolithic files to modular architecture (Models/Services/Routes)
+### `/path-service/`
+
+- `docs/path-service/PATHSERVICE_IMPLEMENTATION_SUMMARY.md`
+  - Path normalization and destination-path construction behavior used by transfer logic.
+
+### `/frontend/`
+
+- `docs/frontend/FRONTEND_REFERENCE.md`
+  - React frontend architecture, route structure, state usage, and current frontend implementation notes.
+
+### `/api/`
+
+- `docs/api/API_REFERENCE.md`
+  - API endpoint reference and request/response details.
+
+### `/auto-sync/`
+
+- `docs/auto-sync/v3_autosync_implementation.md`
+  - Auto-sync redesign details, queue conversion behavior, and webhook-driven sync decisions.
 
 ### `/database/`
-Database schema and migration documentation
-- **V2_REDESIGN_PLAN.md** - Database v2 redesign plan
-- **v2_schema.md** - Database v2 schema documentation
 
-## 🔍 Quick Reference
+- `docs/database/v2_schema.md`
+  - Current database schema documentation.
 
-### Finding Documentation by Topic
+### `/refactoring/`
 
-| Topic | Location |
-|-------|----------|
-| **Auto-sync for series/anime** | `/auto-sync/` |
-| **Discord notifications** | `/notifications/` |
-| **Path handling & destination paths** | `/path-service/` |
-| **Queue system & concurrent transfers** | `/queue-management/` |
-| **Code architecture & refactoring** | `/refactoring/` |
-| **Database schema & migrations** | `/database/` |
+- `docs/refactoring/REFACTORING_GUIDE.md`
+  - Refactoring history and architectural decomposition from monolith to services/routes/models.
 
-## 📝 Documentation Standards
+### `/plans/`
 
-All documentation files follow these conventions:
-- **Markdown format** (.md extension)
-- **Clear headings** with table of contents for longer docs
-- **Code examples** with syntax highlighting
-- **Flow diagrams** using ASCII art or mermaid
-- **Implementation details** including file paths and function names
-- **Testing scenarios** and edge cases
+- `docs/plans/RSYNC_LOG_STREAMING_REDESIGN.md`
+  - Planned work related to rsync log streaming redesign.
 
-## 🚀 Getting Started
+### `/SKILLS/frontend-design/`
 
-1. **New to DragonCP?** Start with `/refactoring/REFACTORING_GUIDE.md` to understand the architecture
-2. **Setting up auto-sync?** Check `/auto-sync/` for complete implementation guides
-3. **Working with transfers?** Review `/queue-management/` and `/path-service/`
-4. **Database changes?** See `/database/` for schema documentation
+- `docs/SKILLS/frontend-design/SKILL.md`
+  - Skill-specific notes for frontend design work.
 
-## 📅 Last Updated
+## Recommended Starting Points
 
-Documentation structure reorganized: December 31, 2025
+1. New to the project: read `docs/refactoring/REFACTORING_GUIDE.md`
+2. Investigating sync/webhook/rsync behavior: read `docs/SYNC_APPLICATION_ANALYSIS.md`
+3. Investigating runtime/socket/service issues: read `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md`
+4. Working on React UI: read `docs/frontend/FRONTEND_REFERENCE.md`
+5. Working on queue behavior: read `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md`
 
+## Last Updated
 
+- Documentation index refreshed for runtime stability and current docs structure: March 13, 2026
