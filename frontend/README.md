@@ -13,6 +13,11 @@ This UI is intended for trusted administrators only.
 
 As of March 3, 2026, the product scope is admin-only.
 
+## Production Reality (Current)
+
+- The active production UI is still the legacy Flask/static interface from `templates/index.html` and `static/`.
+- This React app should stay aligned with backend and realtime behavior, but it is not the served production UI yet.
+
 ## Network and Exposure Model
 
 - Backend API and Socket.IO endpoints are expected to be reachable only by admins (localhost/LAN/Tailscale/VPN or controlled reverse proxy).

@@ -1,0 +1,47 @@
+[Unit]
+Description=DragonCP Web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<username>
+Group=<username>
+WorkingDirectory=/home/<username>/dev/dragoncp-ui
+
+# Keep all Python dependencies inside the project virtual environment.
+Environment=PATH=/home/<username>/dev/dragoncp-ui/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONPATH=/home/<username>/dev/dragoncp-ui
+Environment=HOME=/home/<username>
+Environment=PORT=5000
+Environment=LOG_LEVEL=INFO
+
+# Production runtime: single-worker Gunicorn with threaded worker class.
+# Do not increase workers above 1 without redesigning process-local Socket.IO
+# and background coordination state.
+ExecStart=/home/<username>/dev/dragoncp-ui/venv/bin/gunicorn --config deploy/gunicorn.conf.py app:app
+
+Restart=always
+RestartSec=10
+TimeoutStopSec=90
+
+PrivateTmp=true
+ProtectSystem=full
+NoNewPrivileges=true
+
+# Adjust these paths for your environment. Project root stays writable because
+# the app uses local SQLite state and rotating log files.
+ReadWritePaths=/home/<username>/dev/dragoncp-ui
+ReadWritePaths=/home/<username>/media
+ReadWritePaths=/home/<username>/ssd/media/sync_backup
+ReadOnlyPaths=/home/<username>/.ssh
+ReadWritePaths=/tmp
+ReadWritePaths=/var/tmp
+ReadWritePaths=/run
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dragoncp-ui
+
+[Install]
+WantedBy=multi-user.target

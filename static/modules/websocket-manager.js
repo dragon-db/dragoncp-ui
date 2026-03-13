@@ -6,16 +6,18 @@ export class WebSocketManager {
     constructor(app) {
         this.app = app;
         const initialToken = this.app.auth?.getAccessToken() || null;
-        // Note: "Invalid frame header" error during timeout disconnect is expected
-        // due to socket.io transport upgrade cleanup (from http to ws). This is harmless.
         this.socket = io({ 
             autoConnect: false, 
-            reconnection: false,
+            reconnection: true,
+            reconnectionAttempts: Infinity,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 15000,
+            randomizationFactor: 0.5,
             timeout: 20000,
-            transports: ['websocket', 'polling'],
+            transports: ['polling', 'websocket'],
             upgrade: true,
-            rememberUpgrade: true,
-            forceNew: true,
+            rememberUpgrade: false,
+            forceNew: false,
             auth: {
                 token: initialToken
             }
@@ -30,6 +32,9 @@ export class WebSocketManager {
         this.wasAutoDisconnected = false;
         this.hasEverConnected = false;
         this.lastConnectionError = null;
+        this.isIntentionalDisconnect = false;
+        this.reconnectAttemptCount = 0;
+        this.lastTransport = 'unknown';
         
         this.initializeWebSocket();
         this.initializeActivityTracking();
@@ -42,11 +47,15 @@ export class WebSocketManager {
 
     initializeWebSocket() {
         this.socket.on('connect', () => {
-            console.log('WebSocket connected');
+            this.bindTransportListeners();
+            this.lastTransport = this.getCurrentTransport();
+            console.log(`WebSocket connected via ${this.lastTransport}`);
             this.isWebSocketConnected = true;
             this.wasAutoDisconnected = false;
             this.hasEverConnected = true;
-            this.lastConnectionError = null; // Clear any previous errors
+            this.lastConnectionError = null;
+            this.isIntentionalDisconnect = false;
+            this.reconnectAttemptCount = 0;
             
             // Start activity tracking now that WebSocket is connected
             this.updateActivity(); // Start activity tracking
@@ -118,22 +127,36 @@ export class WebSocketManager {
                 clearTimeout(this.activityTimer);
                 this.activityTimer = null;
             }
+
+            if (reason === 'io server disconnect' && !this.wasAutoDisconnected && !this.isIntentionalDisconnect && this.app.auth?.isAuthenticated()) {
+                console.log('WebSocket server disconnected the client - reconnecting');
+                if (this.app.currentState.connected) {
+                    this.app.ui.updateStatus('Connected to server - Realtime reconnecting...', 'connecting');
+                }
+                setTimeout(() => {
+                    this.connect();
+                }, 1000);
+                return;
+            }
             
             // Handle status based on type of disconnect and SSH connection state
             if (!this.wasAutoDisconnected && reason !== 'io client disconnect') {
                 this.hideWebSocketDependentUI();
                 
                 // Check if there was a recent connection error
-                if (this.lastConnectionError) {
+                if (this.lastConnectionError && !this.socket.active) {
                     // Don't override connection error status
                     return;
                 }
                 
                 // Update status based on SSH connection state
                 if (this.app.currentState.connected) {
-                    this.app.ui.updateStatus('Connected to server - Real-time updates unavailable', 'disconnected');
+                    const statusMessage = this.socket.active
+                        ? 'Connected to server - Realtime reconnecting...'
+                        : 'Connected to server - Real-time updates unavailable';
+                    this.app.ui.updateStatus(statusMessage, this.socket.active ? 'connecting' : 'disconnected');
                 } else {
-                    this.app.ui.updateStatus('Connection lost unexpectedly', 'disconnected');
+                    this.app.ui.updateStatus(this.socket.active ? 'Realtime connection retrying...' : 'Connection lost unexpectedly', this.socket.active ? 'connecting' : 'disconnected');
                 }
             } else if (this.wasAutoDisconnected && this.app.currentState.connected) {
                 // Auto-disconnected but SSH still connected
@@ -146,7 +169,7 @@ export class WebSocketManager {
             }
             
             // Only show reconnection message if it wasn't an auto-disconnect
-            if (!this.wasAutoDisconnected) {
+            if (!this.wasAutoDisconnected && !this.isIntentionalDisconnect) {
                 console.log('WebSocket disconnected unexpectedly');
             }
         });
@@ -162,16 +185,53 @@ export class WebSocketManager {
             if (authError && this.app.auth?.isAuthenticated()) {
                 const refreshed = await this.app.auth.tryRefreshToken(true);
                 if (refreshed) {
-                    this.connect();
+                    this.isIntentionalDisconnect = false;
+                    this.updateSocketAuthToken();
+                    if (!this.socket.connected) {
+                        this.socket.connect();
+                    }
                     return;
                 }
                 this.app.handleSessionExpired('websocket_auth_failed');
                 return;
             }
 
-            // Always show websocket connection failure prominently
+            const retrying = Boolean(this.socket.active);
             if (this.app.currentState.connected) {
-                this.app.ui.updateStatus('Connected to server - WebSocket connection failed', 'disconnected');
+                this.app.ui.updateStatus(
+                    retrying ? 'Connected to server - Realtime reconnecting...' : 'Connected to server - WebSocket connection failed',
+                    retrying ? 'connecting' : 'disconnected'
+                );
+            } else {
+                this.app.ui.updateStatus(
+                    retrying ? 'Realtime connection retrying...' : 'WebSocket connection failed',
+                    retrying ? 'connecting' : 'disconnected'
+                );
+            }
+        });
+
+        this.socket.io.on('reconnect_attempt', (attempt) => {
+            this.reconnectAttemptCount = attempt;
+            console.log(`WebSocket reconnect attempt ${attempt}`);
+            if (this.app.currentState.connected) {
+                this.app.ui.updateStatus(`Connected to server - Realtime reconnecting (attempt ${attempt})...`, 'connecting');
+            }
+        });
+
+        this.socket.io.on('reconnect', (attempt) => {
+            this.reconnectAttemptCount = attempt;
+            this.lastConnectionError = null;
+            console.log(`WebSocket reconnected after ${attempt} attempt(s)`);
+        });
+
+        this.socket.io.on('reconnect_error', (error) => {
+            console.warn('WebSocket reconnect error:', error);
+        });
+
+        this.socket.io.on('reconnect_failed', () => {
+            console.error('WebSocket reconnection failed after exhausting retries');
+            if (this.app.currentState.connected) {
+                this.app.ui.updateStatus('Connected to server - Real-time updates unavailable', 'disconnected');
             } else {
                 this.app.ui.updateStatus('WebSocket connection failed', 'disconnected');
             }
@@ -454,7 +514,7 @@ export class WebSocketManager {
     disconnectWebSocket() {
         if (this.socket) {
             console.log('Intentionally disconnecting WebSocket');
-            // Prevent automatic reconnection
+            this.isIntentionalDisconnect = true;
             this.socket.disconnect();
             this.isWebSocketConnected = false;
             
@@ -523,13 +583,14 @@ export class WebSocketManager {
     async updateStatusWithTimer() {
         // Check if SSH server connection exists
         const isServerConnected = this.app.currentState.connected;
+        const reconnecting = Boolean(this.socket.active) && !this.isWebSocketConnected;
         
         // Prioritize showing websocket connection errors
         if (this.lastConnectionError && !this.isWebSocketConnected) {
             if (isServerConnected) {
-                this.app.ui.updateStatus('Connected to server - WebSocket connection failed', 'disconnected');
+                this.app.ui.updateStatus(reconnecting ? 'Connected to server - Realtime reconnecting...' : 'Connected to server - WebSocket connection failed', reconnecting ? 'connecting' : 'disconnected');
             } else {
-                this.app.ui.updateStatus('WebSocket connection failed', 'disconnected');
+                this.app.ui.updateStatus(reconnecting ? 'Realtime connection retrying...' : 'WebSocket connection failed', reconnecting ? 'connecting' : 'disconnected');
             }
             return;
         }
@@ -551,7 +612,7 @@ export class WebSocketManager {
             if (this.wasAutoDisconnected) {
                 this.app.ui.updateStatus('Connected to server - Background monitoring active', 'auto-disconnected');
             } else {
-                this.app.ui.updateStatus('Connected to server - Real-time updates unavailable', 'disconnected');
+                this.app.ui.updateStatus(reconnecting ? 'Connected to server - Realtime reconnecting...' : 'Connected to server - Real-time updates unavailable', reconnecting ? 'connecting' : 'disconnected');
             }
         }
     }
@@ -561,12 +622,14 @@ export class WebSocketManager {
         if (!this.app.auth?.isAuthenticated()) {
             return;
         }
-        if (!this.isWebSocketConnected) {
-            // Clear any previous connection errors when manually reconnecting
-            this.lastConnectionError = null;
-            this.updateSocketAuthToken();
-            this.socket.connect();
+        if (this.isWebSocketConnected || this.socket.active) {
+            return;
         }
+        // Clear any previous connection errors when manually reconnecting
+        this.isIntentionalDisconnect = false;
+        this.lastConnectionError = null;
+        this.updateSocketAuthToken();
+        this.socket.connect();
     }
 
     disconnect() {
@@ -586,6 +649,30 @@ export class WebSocketManager {
         this.socket.auth = { token };
     }
 
+    bindTransportListeners() {
+        const engine = this.socket?.io?.engine;
+        if (!engine || engine.__dragoncpTransportBound) {
+            return;
+        }
+
+        engine.__dragoncpTransportBound = true;
+        this.lastTransport = engine.transport?.name || 'unknown';
+        console.log(`Socket transport active: ${this.lastTransport}`);
+
+        engine.on('upgrade', (transport) => {
+            this.lastTransport = transport?.name || 'unknown';
+            console.log(`Socket transport upgraded to ${this.lastTransport}`);
+        });
+
+        engine.on('upgradeError', (error) => {
+            console.warn('Socket transport upgrade failed, continuing with fallback transport:', error?.message || error);
+        });
+    }
+
+    getCurrentTransport() {
+        return this.socket?.io?.engine?.transport?.name || this.lastTransport || 'unknown';
+    }
+
     reAuthenticateWithCurrentToken() {
         this.updateSocketAuthToken();
         if (!this.socket || !this.app.auth?.isAuthenticated()) return;
@@ -593,7 +680,9 @@ export class WebSocketManager {
         if (this.socket.connected) {
             this.socket.emit('authenticate', { token: this.app.auth.getAccessToken() }, (response) => {
                 if (!response || response.success !== true) {
-                    this.connect();
+                    this.isIntentionalDisconnect = false;
+                    this.socket.disconnect();
+                    this.socket.connect();
                 }
             });
             return;

@@ -4,11 +4,13 @@ DragonCP WebSocket Manager
 WebSocket event handlers for real-time communication with authentication
 """
 
+import logging
+import os
 import time
 import threading
 from datetime import datetime, timedelta
-from flask import request
-from flask_socketio import disconnect as socketio_disconnect
+from typing import Any
+from flask import request, session
 from auth import validate_websocket_token
 
 
@@ -20,6 +22,42 @@ WEBSOCKET_TIMEOUT_DEFAULT = 35 * 60  # 35 minutes default
 
 # WebSocket connection tracking
 websocket_connections = {}
+websocket_connections_lock = threading.RLock()
+cleanup_thread = None
+cleanup_thread_lock = threading.Lock()
+
+logger = logging.getLogger('dragoncp.websocket')
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    return str(raw_value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+ALLOW_QUERY_TOKEN_AUTH = _env_flag('ALLOW_QUERY_TOKEN_AUTH', default=False)
+
+
+def get_websocket_connection_count():
+    """Return current websocket connection count."""
+    with websocket_connections_lock:
+        return len(websocket_connections)
+
+
+def get_websocket_connection_snapshot():
+    """Return a shallow copy of websocket connection state."""
+    with websocket_connections_lock:
+        return {
+            sid: info.copy()
+            for sid, info in websocket_connections.items()
+        }
+
+
+def get_cleanup_thread_status():
+    """Return whether the websocket cleanup thread is currently running."""
+    with cleanup_thread_lock:
+        return cleanup_thread is not None and cleanup_thread.is_alive()
 
 
 def get_websocket_timeout_for_session(session=None):
@@ -39,7 +77,7 @@ def get_websocket_timeout_for_session(session=None):
             return server_timeout
         else:
             return WEBSOCKET_TIMEOUT_DEFAULT
-    except:
+    except (TypeError, ValueError, AttributeError):
         return WEBSOCKET_TIMEOUT_DEFAULT
 
 
@@ -49,52 +87,83 @@ def register_websocket_handlers(socketio):
     @socketio.on('connect')
     def handle_connect(auth=None):
         """Handle WebSocket connection with authentication"""
-        session_id = request.sid
+        session_id = str(getattr(request, 'sid', ''))
+        transport = request.args.get('transport', 'unknown')
         
         # Validate authentication token
-        auth_data = auth or request.args.to_dict()
+        auth_data: dict[str, Any] | None = auth if isinstance(auth, dict) else None
+        if not auth_data and ALLOW_QUERY_TOKEN_AUTH:
+            query_token = request.args.get('token')
+            if query_token:
+                auth_data = {'token': query_token}
+        if not auth_data:
+            logger.warning(
+                'WebSocket connection rejected: sid=%s transport=%s reason=missing-auth-payload',
+                session_id[:8],
+                transport,
+            )
+            return False
         username = validate_websocket_token(auth_data)
         
         if not username:
-            print(f"🔒 WebSocket connection rejected - invalid or missing token: {session_id[:8]}...")
+            logger.warning(
+                'WebSocket connection rejected: sid=%s transport=%s reason=invalid-or-missing-token',
+                session_id[:8],
+                transport,
+            )
             # Reject the connection
             return False
         
         # Store connection with authenticated user info
-        websocket_connections[session_id] = {
-            'connected_at': datetime.now(),
-            'last_activity': datetime.now(),
-            'timeout_seconds': get_websocket_timeout_for_session(request.environ.get('flask.session', {})),
-            'username': username
-        }
-        print(f"🔌 WebSocket connected: {session_id[:8]}... (user: {username})")
-        print(f"🔌 Active WebSocket connections: {len(websocket_connections)}")
+        with websocket_connections_lock:
+            websocket_connections[session_id] = {
+                'connected_at': datetime.now(),
+                'last_activity': datetime.now(),
+                'timeout_seconds': get_websocket_timeout_for_session(session),
+                'username': username,
+                'transport': transport,
+                'origin': request.headers.get('Origin', ''),
+            }
+            active_connections = len(websocket_connections)
+        logger.info(
+            'WebSocket connected: sid=%s user=%s transport=%s active_connections=%s',
+            session_id[:8],
+            username,
+            transport,
+            active_connections,
+        )
         
         return True
 
     @socketio.on('disconnect')
     def handle_disconnect():
         """Handle WebSocket disconnection"""
-        session_id = request.sid
-        connection_info = websocket_connections.get(session_id, {})
+        session_id = str(getattr(request, 'sid', ''))
+        with websocket_connections_lock:
+            connection_info = websocket_connections.pop(session_id, {})
+            active_connections = len(websocket_connections)
         username = connection_info.get('username', 'unknown')
-        
-        if session_id in websocket_connections:
-            del websocket_connections[session_id]
-        print(f"🔌 WebSocket disconnected: {session_id[:8]}... (user: {username})")
-        print(f"🔌 Active WebSocket connections: {len(websocket_connections)}")
+        transport = connection_info.get('transport', 'unknown')
+        logger.info(
+            'WebSocket disconnected: sid=%s user=%s transport=%s active_connections=%s',
+            session_id[:8],
+            username,
+            transport,
+            active_connections,
+        )
 
     @socketio.on('activity')
     def handle_activity():
         """Handle client activity ping"""
-        session_id = request.sid
-        if session_id in websocket_connections:
-            websocket_connections[session_id]['last_activity'] = datetime.now()
+        session_id = str(getattr(request, 'sid', ''))
+        with websocket_connections_lock:
+            if session_id in websocket_connections:
+                websocket_connections[session_id]['last_activity'] = datetime.now()
 
     @socketio.on('authenticate')
     def handle_authenticate(data):
         """Handle re-authentication after token refresh"""
-        session_id = request.sid
+        session_id = str(getattr(request, 'sid', ''))
         
         if not data or not isinstance(data, dict):
             return {'success': False, 'message': 'Invalid auth data'}
@@ -102,13 +171,14 @@ def register_websocket_handlers(socketio):
         username = validate_websocket_token(data)
         
         if username:
-            if session_id in websocket_connections:
-                websocket_connections[session_id]['username'] = username
-                websocket_connections[session_id]['last_activity'] = datetime.now()
-            print(f"🔄 WebSocket re-authenticated: {session_id[:8]}... (user: {username})")
+            with websocket_connections_lock:
+                if session_id in websocket_connections:
+                    websocket_connections[session_id]['username'] = username
+                    websocket_connections[session_id]['last_activity'] = datetime.now()
+            logger.info('WebSocket re-authenticated: sid=%s user=%s', session_id[:8], username)
             return {'success': True, 'user': username}
         else:
-            print(f"🔒 WebSocket re-authentication failed: {session_id[:8]}...")
+            logger.warning('WebSocket re-authentication failed: sid=%s', session_id[:8])
             return {'success': False, 'message': 'Invalid token'}
 
 
@@ -119,7 +189,7 @@ def cleanup_stale_connections(socketio):
             current_time = datetime.now()
             
             stale_connections = []
-            for session_id, connection_info in websocket_connections.items():
+            for session_id, connection_info in get_websocket_connection_snapshot().items():
                 # Get timeout for this specific session (stored when connection was made)
                 session_timeout = connection_info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT)
                 timeout_threshold = current_time - timedelta(seconds=session_timeout)
@@ -128,19 +198,33 @@ def cleanup_stale_connections(socketio):
                     stale_connections.append(session_id)
             
             for session_id in stale_connections:
-                username = websocket_connections.get(session_id, {}).get('username', 'unknown')
-                print(f"🧹 Cleaning up stale WebSocket connection: {session_id[:8]}... (user: {username})")
-                if session_id in websocket_connections:
-                    del websocket_connections[session_id]
-                # Disconnect the client
-                socketio.disconnect(session_id)
+                connection_info = get_websocket_connection_snapshot().get(session_id, {})
+                username = connection_info.get('username', 'unknown')
+                try:
+                    socketio.server.disconnect(sid=session_id, namespace='/')
+                except Exception:
+                    logger.exception(
+                        'Failed to disconnect stale WebSocket connection: sid=%s user=%s',
+                        session_id[:8],
+                        username,
+                    )
+                    continue
+
+                with websocket_connections_lock:
+                    connection_info = websocket_connections.pop(session_id, connection_info)
+                    active_connections = len(websocket_connections)
+                logger.info(
+                    'Cleaning stale WebSocket connection: sid=%s user=%s active_connections=%s',
+                    session_id[:8],
+                    connection_info.get('username', username),
+                    active_connections,
+                )
             
             if stale_connections:
-                print(f"🧹 Cleaned up {len(stale_connections)} stale connections")
-                print(f"🔌 Active WebSocket connections: {len(websocket_connections)}")
+                logger.info('Cleaned up %s stale WebSocket connection(s)', len(stale_connections))
                 
         except Exception as e:
-            print(f"❌ Error in cleanup_stale_connections: {e}")
+            logger.exception('Error in cleanup_stale_connections: %s', e)
         
         # Sleep for 5 minutes before next cleanup
         time.sleep(5 * 60)
@@ -148,8 +232,21 @@ def cleanup_stale_connections(socketio):
 
 def start_cleanup_thread(socketio):
     """Start the WebSocket cleanup thread"""
-    cleanup_thread = threading.Thread(target=cleanup_stale_connections, args=(socketio,), daemon=True)
-    cleanup_thread.start()
+    global cleanup_thread
+
+    with cleanup_thread_lock:
+        if cleanup_thread is not None and cleanup_thread.is_alive():
+            return cleanup_thread
+
+        cleanup_thread = threading.Thread(
+            target=cleanup_stale_connections,
+            args=(socketio,),
+            daemon=True,
+            name='dragoncp-websocket-cleanup',
+        )
+        cleanup_thread.start()
+
+    logger.info('Started WebSocket cleanup thread')
     return cleanup_thread
 
 
@@ -159,7 +256,8 @@ def get_authenticated_connections():
         sid: {
             'username': info.get('username'),
             'connected_at': info.get('connected_at').isoformat() if info.get('connected_at') else None,
-            'last_activity': info.get('last_activity').isoformat() if info.get('last_activity') else None
+            'last_activity': info.get('last_activity').isoformat() if info.get('last_activity') else None,
+            'transport': info.get('transport'),
         }
-        for sid, info in websocket_connections.items()
+        for sid, info in get_websocket_connection_snapshot().items()
     }

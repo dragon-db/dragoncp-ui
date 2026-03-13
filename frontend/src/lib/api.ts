@@ -1,5 +1,6 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore, shouldRefreshToken } from '@/stores/auth';
+import { disconnectSocket, reAuthenticateSocket } from '@/services/socket';
 
 // Create axios instance
 export const api = axios.create({
@@ -27,6 +28,7 @@ api.interceptors.request.use(
             response.data.token,
             response.data.expires_at
           );
+          reAuthenticateSocket();
         }
       } catch (error) {
         // If refresh fails, continue with current token
@@ -53,6 +55,7 @@ api.interceptors.response.use(
   (error: AxiosError) => {
     if (error.response?.status === 401) {
       // Token is invalid or expired, logout user
+      disconnectSocket();
       useAuthStore.getState().logout();
       
       // Redirect to login page if not already there

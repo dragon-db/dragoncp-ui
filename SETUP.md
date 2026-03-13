@@ -23,8 +23,55 @@ pip install -r requirements.txt
 
 ### 4. Run the Application
 ```bash
-python app.py
+TEST_MODE=1 python app.py
 ```
+
+For the preferred local setup path, use:
+
+```bash
+TEST_MODE=1 ./start.sh
+```
+
+## Production Service Setup
+
+Production should use the project virtual environment plus Gunicorn under systemd.
+
+### Recommended Runtime
+
+```bash
+venv/bin/gunicorn --config deploy/gunicorn.conf.py app:app
+```
+
+### Why this is the supported production path
+
+- avoids relying on unsafe Werkzeug bypasses
+- keeps Socket.IO on a stable single-process runtime
+- preserves the project-local virtual environment
+- matches the committed service example in `deploy/dragoncp-ui.service.example`
+
+### systemd Example
+
+1. Create/update the project virtual environment and install dependencies:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+2. Copy the example unit and adjust `<username>` plus any writable paths:
+   ```bash
+   sudo cp deploy/dragoncp-ui.service.example /etc/systemd/system/dragoncp-ui.service
+   sudo nano /etc/systemd/system/dragoncp-ui.service
+   ```
+
+3. Reload systemd and start the service:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now dragoncp-ui.service
+   sudo systemctl status dragoncp-ui.service
+   ```
+
+Keep Gunicorn worker count at `1` unless the application is redesigned for multi-process Socket.IO and background task coordination.
 
 ## Virtual Environment Management
 
@@ -120,25 +167,17 @@ By default, the application runs on port 5000. To change this:
 #### Method 1: Environment Variable
 Add to your `dragoncp_env.env` file:
 ```env
-FLASK_PORT=8080
+PORT=8080
 ```
 
 #### Method 2: Command Line
 Run the application with a custom port:
 ```bash
-# Activate virtual environment first
-source venv/bin/activate
-
-# Run with custom port
-python app.py --port 8080
+PORT=8080 TEST_MODE=1 ./start.sh
 ```
 
-#### Method 3: Modify app.py
-Edit the `app.py` file and change the port in the `if __name__ == '__main__':` section:
-```python
-if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=8080, debug=True)
-```
+#### Method 3: Production service override
+If you use systemd, set `Environment=PORT=8080` in your service unit and restart the service.
 
 ### Environment File Setup
 
@@ -171,9 +210,9 @@ if __name__ == '__main__':
    # Backup path for rsync
    BACKUP_PATH="/path/to/backup"
 
-   # Optional: Custom port (default is 5000)
-   FLASK_PORT=5000
-   ```
+    # Optional: Custom port (default is 5000)
+    PORT=5000
+    ```
 
 ## Troubleshooting
 
@@ -197,6 +236,8 @@ if __name__ == '__main__':
 - **Verify firewall settings**: `sudo ufw status`
 - **Try accessing via localhost first**: `http://localhost:5000`
 - **Check browser console for WebSocket errors**
+- **For production, verify the service is running via Gunicorn**: `systemctl status dragoncp-ui`
+- **If you changed dependencies, reinstall them inside the venv**: `venv/bin/pip install -r requirements.txt`
 
 #### 4. Virtual Environment Issues
 - **Ensure Python 3.12+ is installed**: `python3 --version`

@@ -7,27 +7,34 @@ Handles debug and diagnostic endpoints
 import os
 import subprocess
 from datetime import datetime
+from typing import Any
 from flask import Blueprint, jsonify, request
 from auth import require_auth
 
 debug_bp = Blueprint('debug', __name__)
 
 # Global references to be set by app.py
-config = None
-ssh_manager = None
-db_manager = None
-transfer_coordinator = None
-websocket_connections = None
+config: Any = None
+ssh_manager: Any = None
+db_manager: Any = None
+transfer_coordinator: Any = None
+websocket_connections: Any = None
+socketio_runtime_info: dict[str, Any] = {}
 
 
-def init_debug_routes(app_config, app_ssh_manager, app_db_manager, app_transfer_coordinator, app_ws_connections):
+def _service_not_initialized_response(service_name: str):
+    return jsonify({"status": "error", "message": f"{service_name} is not initialized"}), 503
+
+
+def init_debug_routes(app_config, app_ssh_manager, app_db_manager, app_transfer_coordinator, app_ws_connections, app_socketio_runtime_info=None):
     """Initialize route dependencies"""
-    global config, ssh_manager, db_manager, transfer_coordinator, websocket_connections
+    global config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info
     config = app_config
     ssh_manager = app_ssh_manager
     db_manager = app_db_manager
     transfer_coordinator = app_transfer_coordinator
     websocket_connections = app_ws_connections
+    socketio_runtime_info = app_socketio_runtime_info or {}
 
 
 @debug_bp.route('/debug')
@@ -35,7 +42,20 @@ def init_debug_routes(app_config, app_ssh_manager, app_db_manager, app_transfer_
 def api_debug():
     """Debug endpoint to check configuration and SSH status"""
     from flask import session
-    from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT, get_websocket_timeout_for_session
+    from websocket import (
+        WEBSOCKET_TIMEOUT_MAX,
+        WEBSOCKET_TIMEOUT_DEFAULT,
+        get_cleanup_thread_status,
+        get_websocket_connection_count,
+        get_websocket_connection_snapshot,
+        get_websocket_timeout_for_session,
+    )
+    if config is None:
+        return _service_not_initialized_response("Config service")
+    if db_manager is None:
+        return _service_not_initialized_response("Database manager")
+    if transfer_coordinator is None:
+        return _service_not_initialized_response("Transfer coordinator")
     
     try:
         debug_info = {
@@ -45,20 +65,23 @@ def api_debug():
             "environment_file_exists": os.path.exists(config.env_file),
             "ssh_connected": ssh_manager.connected if ssh_manager else False,
             "websocket_info": {
-                "active_connections": len(websocket_connections),
+                "active_connections": get_websocket_connection_count(),
                 "default_timeout_minutes": WEBSOCKET_TIMEOUT_DEFAULT // 60,
                 "max_timeout_minutes": WEBSOCKET_TIMEOUT_MAX // 60,
-                "current_session_timeout_minutes": get_websocket_timeout_for_session() // 60,
+                "current_session_timeout_minutes": get_websocket_timeout_for_session(session) // 60,
                 "session_config_timeout": session.get('ui_config', {}).get('WEBSOCKET_TIMEOUT_MINUTES', 'Not set'),
-                "connections_details": [
+                "cleanup_thread_running": get_cleanup_thread_status(),
+                "runtime": socketio_runtime_info,
+                "connection_details": [
                     {
                         "session_id": sid[:8] + "...",  # Only show first 8 chars for privacy
                         "connected_minutes_ago": int((datetime.now() - info['connected_at']).total_seconds() // 60),
                         "last_activity_minutes_ago": int((datetime.now() - info['last_activity']).total_seconds() // 60),
-                        "timeout_minutes": info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT) // 60
+                        "timeout_minutes": info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT) // 60,
+                        "transport": info.get('transport', 'unknown'),
                     }
-                    for sid, info in websocket_connections.items()
-                ]
+                    for sid, info in get_websocket_connection_snapshot().items()
+                ],
             },
             "configuration": {
                 "REMOTE_IP": config.get("REMOTE_IP"),
@@ -110,6 +133,11 @@ def api_debug():
 @require_auth
 def api_debug_transfers():
     """Debug endpoint to check database transfers"""
+    if db_manager is None:
+        return _service_not_initialized_response("Database manager")
+    if transfer_coordinator is None:
+        return _service_not_initialized_response("Transfer coordinator")
+
     try:
         # Get all transfers from database
         all_transfers = transfer_coordinator.get_all_transfers(limit=10)
@@ -146,13 +174,15 @@ def api_debug_transfers():
 @require_auth
 def api_websocket_status():
     """Get WebSocket connection status and count"""
-    from websocket import WEBSOCKET_TIMEOUT_DEFAULT
+    from websocket import WEBSOCKET_TIMEOUT_DEFAULT, get_cleanup_thread_status, get_websocket_connection_count, get_websocket_connection_snapshot
+    if config is None:
+        return _service_not_initialized_response("Config service")
     
     try:
         current_time = datetime.now()
         connection_details = []
         
-        for session_id, connection_info in websocket_connections.items():
+        for session_id, connection_info in get_websocket_connection_snapshot().items():
             connected_minutes_ago = int((current_time - connection_info['connected_at']).total_seconds() // 60)
             last_activity_minutes_ago = int((current_time - connection_info['last_activity']).total_seconds() // 60)
             timeout_minutes = connection_info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT) // 60
@@ -161,15 +191,18 @@ def api_websocket_status():
                 "session_id": session_id[:8] + "...",  # Only show first 8 chars for privacy
                 "connected_minutes_ago": connected_minutes_ago,
                 "last_activity_minutes_ago": last_activity_minutes_ago,
-                "timeout_minutes": timeout_minutes
+                "timeout_minutes": timeout_minutes,
+                "transport": connection_info.get('transport', 'unknown'),
             })
         
         from websocket import WEBSOCKET_TIMEOUT_MAX
         status_info = {
-            "active_connections": len(websocket_connections),
+            "active_connections": get_websocket_connection_count(),
             "default_timeout_minutes": WEBSOCKET_TIMEOUT_DEFAULT // 60,
             "max_timeout_minutes": WEBSOCKET_TIMEOUT_MAX // 60,
             "connection_details": connection_details,
+            "runtime": socketio_runtime_info,
+            "cleanup_thread_running": get_cleanup_thread_status(),
             "timestamp": current_time.isoformat()
         }
         
@@ -205,6 +238,9 @@ def api_local_files():
 @require_auth
 def api_local_disk_usage():
     """Get local disk usage for configured paths"""
+    if config is None:
+        return _service_not_initialized_response("Config service")
+
     try:
         disk_paths = [
             config.get("DISK_PATH_1", "/home"),
@@ -305,6 +341,8 @@ def api_local_disk_usage():
 def api_remote_disk_usage():
     """Get remote disk usage from configured API"""
     import requests
+    if config is None:
+        return _service_not_initialized_response("Config service")
     
     try:
         api_endpoint = config.get("DISK_API_ENDPOINT")
@@ -393,4 +431,3 @@ def api_remote_disk_usage():
             "status": "error",
             "message": f"Failed to get remote disk usage: {str(e)}"
         })
-

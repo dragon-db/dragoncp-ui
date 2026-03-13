@@ -4,9 +4,11 @@ DragonCP Web UI - Flask application initialization
 Refactored version with modular architecture
 """
 
+import importlib.util
 import logging
 import os
 import time
+from typing import Any, cast
 
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, g
 from flask_socketio import SocketIO
@@ -95,6 +97,23 @@ def get_cors_origins():
     return origins if origins else '*'
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        raw_value = _early_config.get(name)
+    if raw_value is None:
+        return default
+    return str(raw_value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _socketio_verbose_logging_enabled() -> bool:
+    return _env_flag('SOCKETIO_VERBOSE_LOGGING', default=False) or _env_flag('TEST_MODE', default=False) or _env_flag('FLASK_DEBUG', default=False)
+
+
+def _is_simple_websocket_available() -> bool:
+    return importlib.util.find_spec('simple_websocket') is not None
+
+
 REDACTED_VALUE = "<redacted>"
 SENSITIVE_CONFIG_KEY_MARKERS = ("SECRET", "PASSWORD", "API_KEY", "TOKEN", "CLIENT_SECRET")
 
@@ -150,15 +169,45 @@ app.logger.propagate = True
 cors_origins = get_cors_origins()
 logger.info("CORS allowed origins: %s", cors_origins)
 
+SOCKETIO_ASYNC_MODE = 'threading'
+SOCKETIO_PING_INTERVAL_SECONDS = 25
+SOCKETIO_PING_TIMEOUT_SECONDS = 60
+SOCKETIO_VERBOSE_LOGGING = _socketio_verbose_logging_enabled()
+SOCKETIO_WEBSOCKET_TRANSPORT_READY = _is_simple_websocket_available()
+
 # Initialize SocketIO with CORS configuration
 socketio = SocketIO(
     app, 
+    async_mode=SOCKETIO_ASYNC_MODE,
     cors_allowed_origins=cors_origins,
-    ping_timeout=WEBSOCKET_TIMEOUT_MAX,  # Use maximum for SocketIO config
-    ping_interval=25 * 60,  # Send ping every 25 minutes
-    logger=True,
-    engineio_logger=True,
+    ping_timeout=SOCKETIO_PING_TIMEOUT_SECONDS,
+    ping_interval=SOCKETIO_PING_INTERVAL_SECONDS,
+    logger=SOCKETIO_VERBOSE_LOGGING,
+    engineio_logger=SOCKETIO_VERBOSE_LOGGING,
 )
+
+socketio_runtime_info = {
+    'async_mode': SOCKETIO_ASYNC_MODE,
+    'ping_interval_seconds': SOCKETIO_PING_INTERVAL_SECONDS,
+    'ping_timeout_seconds': SOCKETIO_PING_TIMEOUT_SECONDS,
+    'verbose_logging': SOCKETIO_VERBOSE_LOGGING,
+    'websocket_transport_ready': SOCKETIO_WEBSOCKET_TRANSPORT_READY,
+    'recommended_prod_server': 'gunicorn --config deploy/gunicorn.conf.py app:app',
+}
+
+logger.info(
+    'Socket.IO runtime initialized: async_mode=%s, websocket_transport_ready=%s, ping_interval=%ss, ping_timeout=%ss, verbose_logging=%s',
+    socketio_runtime_info['async_mode'],
+    socketio_runtime_info['websocket_transport_ready'],
+    socketio_runtime_info['ping_interval_seconds'],
+    socketio_runtime_info['ping_timeout_seconds'],
+    socketio_runtime_info['verbose_logging'],
+)
+
+if SOCKETIO_ASYNC_MODE == 'threading' and not SOCKETIO_WEBSOCKET_TRANSPORT_READY:
+    logger.warning(
+        'simple-websocket is not installed. Socket.IO will fall back to polling and websocket upgrades may fail until the dependency is installed.'
+    )
 
 # Initialize global objects
 config = DragonCPConfig()
@@ -179,7 +228,7 @@ init_media_routes(config, ssh_manager, transfer_coordinator)
 init_transfer_routes(config, transfer_coordinator)
 init_backup_routes(transfer_coordinator)
 init_webhook_routes(config, transfer_coordinator, rename_service)
-init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections)
+init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
 
 # Register route blueprints
 app.register_blueprint(auth_bp, url_prefix='/api')
@@ -275,11 +324,17 @@ def api_connect():
     
     print("🔌 API: /api/connect called")
     
-    data = request.json
-    host = data.get('host')
-    username = data.get('username')
-    password = data.get('password')
-    key_path = data.get('key_path')
+    raw_data = request.get_json(silent=True)
+    if raw_data is None:
+        data: dict[str, Any] = {}
+    elif not isinstance(raw_data, dict):
+        return jsonify({"status": "error", "message": "Invalid JSON payload; expected an object"}), 400
+    else:
+        data = cast(dict[str, Any], raw_data)
+    host = str(data.get('host') or '')
+    username = str(data.get('username') or '')
+    password = str(data.get('password') or '')
+    key_path = str(data.get('key_path') or '')
     
     print(f"🔗 Connection attempt to {username}@{host}")
     
@@ -294,7 +349,7 @@ def api_connect():
         
         # Update route dependencies with new ssh_manager
         init_media_routes(config, ssh_manager, transfer_coordinator)
-        init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections)
+        init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
         
         return jsonify({"status": "success", "message": "Connected successfully"})
     else:
@@ -316,7 +371,7 @@ def api_disconnect():
     
     # Update route dependencies
     init_media_routes(config, ssh_manager, transfer_coordinator)
-    init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections)
+    init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
     
     return jsonify({"status": "success", "message": "Disconnected"})
 
@@ -341,14 +396,14 @@ def api_auto_connect():
         print("❌ Missing REMOTE_IP or REMOTE_USER in config")
         return jsonify({"status": "error", "message": "SSH credentials not configured"})
     
-    ssh_manager = SSHManager(host, username, password if password else None, key_path if key_path else None)
+    ssh_manager = SSHManager(host, username, password or '', key_path or '')
     if ssh_manager.connect():
         print("✅ Auto-connection successful")
         session['ssh_connected'] = True
         
         # Update route dependencies with new ssh_manager
         init_media_routes(config, ssh_manager, transfer_coordinator)
-        init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections)
+        init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
         
         return jsonify({"status": "success", "message": "Auto-connected successfully"})
     else:
@@ -465,9 +520,19 @@ if __name__ == '__main__':
     
     runtime_port = _get_runtime_port()
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
+    test_mode = os.environ.get('TEST_MODE', '0') == '1'
+    allow_unsafe_werkzeug = debug_mode or test_mode
 
     logger.info('DragonCP Web UI starting on port %s (debug=%s)', runtime_port, debug_mode)
     logger.info('Access the application at: http://localhost:%s', runtime_port)
+    logger.info('Socket.IO runtime mode for direct startup: %s', SOCKETIO_ASYNC_MODE)
+
+    if allow_unsafe_werkzeug:
+        logger.info('allow_unsafe_werkzeug is enabled for local debug/test startup')
+    else:
+        logger.warning(
+            'Direct python app.py startup is not the supported production path. Use the systemd + gunicorn service configuration for long-term production stability.'
+        )
     
     socketio.run(
         app,
@@ -475,5 +540,5 @@ if __name__ == '__main__':
         port=runtime_port,
         debug=debug_mode,
         use_reloader=False,
-        allow_unsafe_werkzeug=True,
+        allow_unsafe_werkzeug=allow_unsafe_werkzeug,
     )
