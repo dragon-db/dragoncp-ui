@@ -146,11 +146,12 @@ export function reAuthenticateSocket(): void {
   
   if (socket && token) {
     socket.auth = { token };
-    socket.emit('authenticate', { token }, (response: { success: boolean; message?: string }) => {
-      if (response.success) {
+    socket.emit('authenticate', { token }, (response?: { success: boolean; message?: string }) => {
+      if (response?.success) {
         console.log('🔄 Socket re-authenticated');
       } else {
-        console.error('🔒 Socket re-authentication failed:', response.message);
+        const message = response?.message ?? 'No response from server';
+        console.error('🔒 Socket re-authentication failed:', message);
         socket?.disconnect();
         connectSocket();
       }

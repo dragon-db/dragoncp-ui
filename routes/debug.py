@@ -22,6 +22,10 @@ websocket_connections: Any = None
 socketio_runtime_info: dict[str, Any] = {}
 
 
+def _service_not_initialized_response(service_name: str):
+    return jsonify({"status": "error", "message": f"{service_name} is not initialized"}), 503
+
+
 def init_debug_routes(app_config, app_ssh_manager, app_db_manager, app_transfer_coordinator, app_ws_connections, app_socketio_runtime_info=None):
     """Initialize route dependencies"""
     global config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info
@@ -46,9 +50,12 @@ def api_debug():
         get_websocket_connection_snapshot,
         get_websocket_timeout_for_session,
     )
-    assert config is not None
-    assert db_manager is not None
-    assert transfer_coordinator is not None
+    if config is None:
+        return _service_not_initialized_response("Config service")
+    if db_manager is None:
+        return _service_not_initialized_response("Database manager")
+    if transfer_coordinator is None:
+        return _service_not_initialized_response("Transfer coordinator")
     
     try:
         debug_info = {
@@ -61,7 +68,7 @@ def api_debug():
                 "active_connections": get_websocket_connection_count(),
                 "default_timeout_minutes": WEBSOCKET_TIMEOUT_DEFAULT // 60,
                 "max_timeout_minutes": WEBSOCKET_TIMEOUT_MAX // 60,
-                "current_session_timeout_minutes": get_websocket_timeout_for_session() // 60,
+                "current_session_timeout_minutes": get_websocket_timeout_for_session(session) // 60,
                 "session_config_timeout": session.get('ui_config', {}).get('WEBSOCKET_TIMEOUT_MINUTES', 'Not set'),
                 "cleanup_thread_running": get_cleanup_thread_status(),
                 "runtime": socketio_runtime_info,
@@ -126,8 +133,10 @@ def api_debug():
 @require_auth
 def api_debug_transfers():
     """Debug endpoint to check database transfers"""
-    assert db_manager is not None
-    assert transfer_coordinator is not None
+    if db_manager is None:
+        return _service_not_initialized_response("Database manager")
+    if transfer_coordinator is None:
+        return _service_not_initialized_response("Transfer coordinator")
 
     try:
         # Get all transfers from database
@@ -166,7 +175,8 @@ def api_debug_transfers():
 def api_websocket_status():
     """Get WebSocket connection status and count"""
     from websocket import WEBSOCKET_TIMEOUT_DEFAULT, get_cleanup_thread_status, get_websocket_connection_count, get_websocket_connection_snapshot
-    assert config is not None
+    if config is None:
+        return _service_not_initialized_response("Config service")
     
     try:
         current_time = datetime.now()
@@ -228,7 +238,8 @@ def api_local_files():
 @require_auth
 def api_local_disk_usage():
     """Get local disk usage for configured paths"""
-    assert config is not None
+    if config is None:
+        return _service_not_initialized_response("Config service")
 
     try:
         disk_paths = [
@@ -330,7 +341,8 @@ def api_local_disk_usage():
 def api_remote_disk_usage():
     """Get remote disk usage from configured API"""
     import requests
-    assert config is not None
+    if config is None:
+        return _service_not_initialized_response("Config service")
     
     try:
         api_endpoint = config.get("DISK_API_ENDPOINT")

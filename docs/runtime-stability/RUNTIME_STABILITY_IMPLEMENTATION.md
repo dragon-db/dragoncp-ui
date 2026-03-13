@@ -1,6 +1,6 @@
 # Runtime Stability Implementation
 
-Last updated: 2026-03-12
+Last updated: 2026-03-14
 Related issues: `#38`, `#39`
 Branch context: `feature/runtime-stability`
 
@@ -32,7 +32,7 @@ This document records the production-runtime and Socket.IO stability work comple
 
 - Added guarded/shared-state handling around the websocket connection registry.
 - Added cleanup-thread single-start protection.
-- Tightened websocket auth handling to prefer auth payloads and only fall back when a token is actually present.
+- Tightened websocket auth handling to prefer Socket.IO auth payloads and disable query-string token fallback unless explicitly enabled.
 - Improved connection, disconnect, re-authentication, and stale-cleanup logging.
 - Extended debug endpoints to expose runtime metadata, cleanup-thread status, transport type, and connection details.
 
@@ -65,6 +65,16 @@ This document records the production-runtime and Socket.IO stability work comple
   - current production UI reality
   - future same-origin reverse-proxy guidance
 
+### 6. Follow-up review fixes
+
+- Hardened `/api/connect` JSON parsing so malformed non-object payloads now fail with a controlled `400` response instead of risking attribute errors.
+- Changed the example systemd service to mount `~/.ssh` as read-only rather than writable.
+- Updated debug routes to use controlled `503` responses when dependent services are not initialized.
+- Fixed debug timeout reporting to use the actual Flask session when computing websocket timeout.
+- Updated websocket connection setup to use Flask's session proxy instead of unsupported `request.environ['flask.session']` access.
+- Switched stale websocket cleanup to disconnect through the Socket.IO server API before removing local registry state.
+- Added a defensive React socket re-authentication ack guard for missing/undefined callback responses.
+
 ## Files Touched For This Feature
 
 ### Backend runtime and websocket
@@ -91,6 +101,7 @@ This document records the production-runtime and Socket.IO stability work comple
 - `README.md`
 - `SETUP.md`
 - `frontend/README.md`
+- `frontend/package.json`
 - `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md`
 
 ## Verification Performed
@@ -105,7 +116,7 @@ This document records the production-runtime and Socket.IO stability work comple
 ## Frontend Verification Fixes
 
 - `frontend/package.json`
-  - Changed the build order to `vite build && tsc -b` so route generation happens before TypeScript checks.
+  - Kept the build order as `vite build && tsc -b` because TanStack Router generates `src/routeTree.gen.ts` during the Vite step; reversing the order breaks clean builds when the generated route tree is absent.
 - `frontend/src/services/socket.ts`
   - Changed the `transports` option typing from a readonly tuple to a mutable `string[]` so the Socket.IO client options satisfy TypeScript.
 

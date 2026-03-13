@@ -324,7 +324,13 @@ def api_connect():
     
     print("🔌 API: /api/connect called")
     
-    data = cast(dict[str, Any], request.get_json(silent=True) or {})
+    raw_data = request.get_json(silent=True)
+    if raw_data is None:
+        data: dict[str, Any] = {}
+    elif not isinstance(raw_data, dict):
+        return jsonify({"status": "error", "message": "Invalid JSON payload; expected an object"}), 400
+    else:
+        data = cast(dict[str, Any], raw_data)
     host = str(data.get('host') or '')
     username = str(data.get('username') or '')
     password = str(data.get('password') or '')

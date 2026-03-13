@@ -5,12 +5,12 @@ WebSocket event handlers for real-time communication with authentication
 """
 
 import logging
+import os
 import time
 import threading
 from datetime import datetime, timedelta
 from typing import Any
-from flask import request
-from flask_socketio import disconnect as socketio_disconnect
+from flask import request, session
 from auth import validate_websocket_token
 
 
@@ -27,6 +27,16 @@ cleanup_thread = None
 cleanup_thread_lock = threading.Lock()
 
 logger = logging.getLogger('dragoncp.websocket')
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    return str(raw_value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+ALLOW_QUERY_TOKEN_AUTH = _env_flag('ALLOW_QUERY_TOKEN_AUTH', default=False)
 
 
 def get_websocket_connection_count():
@@ -82,7 +92,7 @@ def register_websocket_handlers(socketio):
         
         # Validate authentication token
         auth_data: dict[str, Any] | None = auth if isinstance(auth, dict) else None
-        if not auth_data:
+        if not auth_data and ALLOW_QUERY_TOKEN_AUTH:
             query_token = request.args.get('token')
             if query_token:
                 auth_data = {'token': query_token}
@@ -109,7 +119,7 @@ def register_websocket_handlers(socketio):
             websocket_connections[session_id] = {
                 'connected_at': datetime.now(),
                 'last_activity': datetime.now(),
-                'timeout_seconds': get_websocket_timeout_for_session(request.environ.get('flask.session', {})),
+                'timeout_seconds': get_websocket_timeout_for_session(session),
                 'username': username,
                 'transport': transport,
                 'origin': request.headers.get('Origin', ''),
@@ -188,18 +198,27 @@ def cleanup_stale_connections(socketio):
                     stale_connections.append(session_id)
             
             for session_id in stale_connections:
-                with websocket_connections_lock:
-                    connection_info = websocket_connections.pop(session_id, {})
-                    active_connections = len(websocket_connections)
+                connection_info = get_websocket_connection_snapshot().get(session_id, {})
                 username = connection_info.get('username', 'unknown')
+                try:
+                    socketio.server.disconnect(sid=session_id, namespace='/')
+                except Exception:
+                    logger.exception(
+                        'Failed to disconnect stale WebSocket connection: sid=%s user=%s',
+                        session_id[:8],
+                        username,
+                    )
+                    continue
+
+                with websocket_connections_lock:
+                    connection_info = websocket_connections.pop(session_id, connection_info)
+                    active_connections = len(websocket_connections)
                 logger.info(
                     'Cleaning stale WebSocket connection: sid=%s user=%s active_connections=%s',
                     session_id[:8],
-                    username,
+                    connection_info.get('username', username),
                     active_connections,
                 )
-                # Disconnect the client
-                socketio_disconnect(session_id)
             
             if stale_connections:
                 logger.info('Cleaned up %s stale WebSocket connection(s)', len(stale_connections))
