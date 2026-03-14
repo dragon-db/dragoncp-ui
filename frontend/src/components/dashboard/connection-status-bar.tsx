@@ -10,10 +10,13 @@ import {
 import type { ConnectionState } from '@/stores/runtime';
 
 interface ConnectionStatusBarProps {
+    backendReachable: boolean;
     connectionState: ConnectionState;
+    realtimeRequested: boolean;
     statusMessage: string;
     timeRemainingMinutes?: number;
     activeSocketConnections?: number;
+    onEnableRealtime: () => void;
     onReconnect: () => void;
     onDisconnect?: () => void;
     onExtendSession?: () => void;
@@ -23,10 +26,13 @@ interface ConnectionStatusBarProps {
 }
 
 export function ConnectionStatusBar({
+    backendReachable,
     connectionState,
+    realtimeRequested,
     statusMessage,
     timeRemainingMinutes = 0,
     activeSocketConnections,
+    onEnableRealtime,
     onReconnect,
     onDisconnect,
     onExtendSession,
@@ -34,10 +40,12 @@ export function ConnectionStatusBar({
     isReconnecting = false,
     onCollapseAll,
 }: ConnectionStatusBarProps) {
+    const idle = connectionState === 'idle';
     const connected = connectionState === 'connected';
     const connecting = connectionState === 'connecting';
     const autoDisconnected = connectionState === 'auto-disconnected';
     const configChanged = connectionState === 'config-changed';
+    const disconnected = connectionState === 'disconnected';
 
     return (
         <div className="rounded-xl border border-fuchsia-500/20 bg-gradient-to-r from-neutral-900 via-neutral-900 to-neutral-900/70 p-4 shadow-[0_14px_35px_-30px_rgba(217,70,239,0.85)] flex items-center justify-between">
@@ -50,7 +58,9 @@ export function ConnectionStatusBar({
                         connecting && "bg-blue-500 animate-pulse",
                         autoDisconnected && "bg-amber-500",
                         configChanged && "bg-yellow-500",
-                        !connected && !connecting && !autoDisconnected && !configChanged && "bg-red-500"
+                        disconnected && "bg-red-500",
+                        idle && backendReachable && "bg-neutral-500",
+                        !backendReachable && "bg-red-500"
                     )}
                 />
                 <div className="text-sm text-neutral-300 space-y-0.5">
@@ -58,7 +68,7 @@ export function ConnectionStatusBar({
                     <div className="text-xs text-neutral-500 flex items-center gap-3">
                         <span className="inline-flex items-center gap-1">
                             <IconClock className="h-3.5 w-3.5" />
-                            {connected ? `${timeRemainingMinutes} min left` : 'Realtime offline'}
+                            {connected ? `${timeRemainingMinutes} min left` : realtimeRequested ? 'Realtime paused' : 'Polling only'}
                         </span>
                         {typeof activeSocketConnections === 'number' && (
                             <button
@@ -97,16 +107,28 @@ export function ConnectionStatusBar({
                         Extend
                     </Button>
                 )}
-                <Button
-                    variant="default"
-                    size="sm"
-                    className="h-8 gap-1.5 shadow-sm shadow-fuchsia-950/40"
-                    onClick={onReconnect}
-                    disabled={isReconnecting}
-                >
-                    <IconRefresh className={cn("h-4 w-4", isReconnecting && "animate-spin")} />
-                    {configChanged ? 'Apply Settings' : 'Reconnect'}
-                </Button>
+                {!realtimeRequested ? (
+                    <Button
+                        variant="default"
+                        size="sm"
+                        className="h-8 gap-1.5 shadow-sm shadow-fuchsia-950/40"
+                        onClick={onEnableRealtime}
+                    >
+                        <IconBolt className="h-4 w-4" />
+                        Enable Realtime
+                    </Button>
+                ) : (
+                    <Button
+                        variant="default"
+                        size="sm"
+                        className="h-8 gap-1.5 shadow-sm shadow-fuchsia-950/40"
+                        onClick={onReconnect}
+                        disabled={isReconnecting}
+                    >
+                        <IconRefresh className={cn("h-4 w-4", isReconnecting && "animate-spin")} />
+                        {configChanged ? 'Apply Settings' : connected ? 'Refresh' : 'Reconnect'}
+                    </Button>
+                )}
                 {onDisconnect && connected && (
                     <Button
                         variant="outline"
@@ -115,7 +137,7 @@ export function ConnectionStatusBar({
                         onClick={onDisconnect}
                     >
                         <IconPlugConnectedX className="h-4 w-4" />
-                        Disconnect
+                        Disable Realtime
                     </Button>
                 )}
             </div>

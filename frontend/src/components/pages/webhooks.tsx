@@ -14,7 +14,7 @@ import {
   type RenameNotification,
   type WebhookNotification,
 } from '@/hooks/useWebhooks';
-import { onRenameCompleted, onRenameWebhookReceived, onWebhookReceived } from '@/services/socket';
+import { onRenameCompleted, onRenameWebhookReceived, onWebhookCaptured, onWebhookReceived } from '@/services/socket';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -197,6 +197,9 @@ export function WebhooksPage() {
   const deleteRenameMutation = useDeleteRenameNotification();
 
   useEffect(() => {
+    const offWebhookCaptured = onWebhookCaptured(() => {
+      notificationsQuery.refetch();
+    });
     const offRenameReceived = onRenameWebhookReceived(() => {
       renameQuery.refetch();
     });
@@ -205,16 +208,17 @@ export function WebhooksPage() {
     });
     const offTestWebhook = onWebhookReceived((payload) => {
       if (payload?.message) {
-        toast.info(payload.message);
+        notificationsQuery.refetch();
       }
     });
 
     return () => {
+      offWebhookCaptured();
       offRenameReceived();
       offRenameCompleted();
       offTestWebhook();
     };
-  }, [renameQuery]);
+  }, [notificationsQuery, renameQuery]);
 
   const notifications = notificationsQuery.data?.notifications ?? [];
   const items = useMemo(() => buildItems(notifications), [notifications]);

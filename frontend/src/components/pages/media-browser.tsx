@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link } from '@tanstack/react-router';
 import { toast } from 'sonner';
 import {
   useEpisodes,
@@ -8,6 +9,7 @@ import {
   useSeasons,
   useSyncStatus,
 } from '@/hooks/useMedia';
+import { useSSHConfig, useSSHAutoConnect, useSSHStatus } from '@/hooks/useConfig';
 import { useStartTransfer } from '@/hooks/useTransfers';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -28,6 +30,8 @@ import {
   IconPlayerPlay,
   IconRefresh,
   IconSearch,
+  IconSettings,
+  IconPlugConnected,
 } from '@tabler/icons-react';
 import type { DryRunResult, FolderMetadata, FolderSyncStatus, SyncStatusType } from '@/lib/api-types';
 
@@ -104,12 +108,19 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
   const [sortMode, setSortMode] = useState<SortMode>('recent');
   const [manualSyncRefresh, setManualSyncRefresh] = useState(false);
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
+  const [autoConnectAttempted, setAutoConnectAttempted] = useState(false);
 
-  const foldersQuery = useFolders(mediaType);
-  const syncStatusQuery = useSyncStatus(mediaType);
-  const seasonsQuery = useSeasons(mediaType, selectedFolder ?? '');
-  const seasonSyncQuery = useFolderSyncStatus(mediaType, selectedFolder ?? '');
-  const episodesQuery = useEpisodes(mediaType, selectedFolder ?? '', selectedSeason ?? '');
+  const sshStatusQuery = useSSHStatus();
+  const sshConfigQuery = useSSHConfig();
+  const autoConnect = useSSHAutoConnect();
+  const sshConnected = Boolean(sshStatusQuery.data);
+  const hasStoredSshCredentials = Boolean(sshConfigQuery.data?.host && sshConfigQuery.data?.username);
+
+  const foldersQuery = useFolders(sshConnected ? mediaType : '');
+  const syncStatusQuery = useSyncStatus(sshConnected ? mediaType : '');
+  const seasonsQuery = useSeasons(sshConnected ? mediaType : '', selectedFolder ?? '');
+  const seasonSyncQuery = useFolderSyncStatus(sshConnected ? mediaType : '', selectedFolder ?? '');
+  const episodesQuery = useEpisodes(sshConnected ? mediaType : '', selectedFolder ?? '', selectedSeason ?? '');
 
   const startTransfer = useStartTransfer();
   const dryRun = useMediaDryRun();
@@ -120,7 +131,34 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
     setSelectedSeason(null);
     setSearchTerm('');
     setSortMode('recent');
+    setAutoConnectAttempted(false);
   }, [mediaType]);
+
+  useEffect(() => {
+    if (sshConnected || autoConnectAttempted || autoConnect.isPending) return;
+    if (sshStatusQuery.isLoading || sshConfigQuery.isLoading) return;
+    if (!hasStoredSshCredentials) return;
+
+    setAutoConnectAttempted(true);
+
+    autoConnect.mutate(undefined, {
+      onSuccess: () => {
+        sshStatusQuery.refetch();
+        toast.success('Remote browse session connected.');
+      },
+      onError: () => {
+        toast.error('Failed to auto-connect remote browse session. Check Settings.');
+      },
+    });
+  }, [
+    autoConnect,
+    autoConnectAttempted,
+    hasStoredSshCredentials,
+    sshConfigQuery.isLoading,
+    sshConnected,
+    sshStatusQuery,
+    sshStatusQuery.isLoading,
+  ]);
 
   const folders = foldersQuery.data?.folders ?? [];
   const seasons = seasonsQuery.data?.seasons ?? [];
@@ -267,16 +305,58 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
           <p className="text-neutral-400 mt-1">Static-parity media browse and transfer workflow</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => foldersQuery.refetch()} disabled={foldersQuery.isFetching}>
+          <Button variant="outline" onClick={() => foldersQuery.refetch()} disabled={!sshConnected || foldersQuery.isFetching}>
             <IconRefresh className={`h-4 w-4 mr-2 ${foldersQuery.isFetching ? 'animate-spin' : ''}`} />
             Refresh Folders
           </Button>
-          <Button variant="outline" onClick={refreshSyncStatus} disabled={isAnySyncLoading}>
+          <Button variant="outline" onClick={refreshSyncStatus} disabled={!sshConnected || isAnySyncLoading}>
             <IconRefresh className={`h-4 w-4 mr-2 ${isAnySyncLoading ? 'animate-spin' : ''}`} />
             Refresh Sync Status
           </Button>
         </div>
       </div>
+
+      {!sshConnected && !sshStatusQuery.isLoading && (
+        <Card className="border-amber-500/30 bg-amber-500/8">
+          <CardContent className="flex flex-wrap items-center justify-between gap-3 pt-6">
+            <div>
+              <p className="text-sm font-medium text-amber-100">Remote browse session required</p>
+              <p className="mt-1 text-sm text-amber-50/80">
+                {hasStoredSshCredentials
+                  ? 'Media browsing uses the dedicated SSH browse connection. DragonCP can auto-connect with your saved SSH credentials, or you can review them in Settings.'
+                  : 'Media browsing uses the dedicated SSH browse connection. Add SSH host and username in Settings before exploring remote folders.'}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {hasStoredSshCredentials && (
+                <Button
+                  variant="outline"
+                  className="border-amber-400/40 bg-background/40 text-amber-100 hover:bg-background/60"
+                  disabled={autoConnect.isPending}
+                  onClick={async () => {
+                    try {
+                      await autoConnect.mutateAsync();
+                      await sshStatusQuery.refetch();
+                      toast.success('Remote browse session connected.');
+                    } catch {
+                      toast.error('Failed to connect remote browse session.');
+                    }
+                  }}
+                >
+                  <IconPlugConnected className={`mr-2 h-4 w-4 ${autoConnect.isPending ? 'animate-pulse' : ''}`} />
+                  {autoConnect.isPending ? 'Connecting...' : 'Connect Browse Session'}
+                </Button>
+              )}
+              <Link to="/settings">
+                <Button variant="outline" className="border-amber-400/40 bg-background/40 text-amber-100 hover:bg-background/60">
+                  <IconSettings className="mr-2 h-4 w-4" />
+                  Open Settings
+                </Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="flex items-center flex-wrap gap-2 text-sm">
         {breadcrumb.map((entry, index) => {
