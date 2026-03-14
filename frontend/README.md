@@ -44,3 +44,48 @@ npm run dev
 ```bash
 npm run build
 ```
+
+## Docker
+
+This repo includes a production-style Docker setup for the React frontend.
+
+- The frontend builds into static assets and runs behind nginx in a container.
+- nginx serves the React app and reverse-proxies `/api` plus `/socket.io` to the existing backend on the host at `http://host.docker.internal:5000`.
+- This keeps the browser same-origin, so the default frontend API and Socket.IO behavior works without baking custom `VITE_API_URL` or `VITE_WS_URL` values into the build.
+
+### Start the frontend container
+
+From the project root:
+
+```bash
+docker compose up -d --build frontend
+```
+
+### Redeploy after frontend changes
+
+From the project root:
+
+```bash
+./deploy-frontend.sh
+```
+
+The deploy script validates Docker availability, stops the running frontend container if present, rebuilds the image from the latest checked-out frontend source, and starts the container again.
+
+Default access URL:
+
+```text
+http://localhost:5002
+```
+
+### Requirements
+
+- The backend must already be running on the host at port `5000`.
+- This compose setup is intended for Linux hosts and uses Docker's `host-gateway` mapping for `host.docker.internal`.
+
+### Optional port override
+
+You can change the exposed frontend port without editing `docker-compose.yml`:
+
+```bash
+DRAGONCP_FRONTEND_PORT=3000 docker compose up -d --build frontend
+```
