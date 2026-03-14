@@ -27,6 +27,7 @@ This document records the production-runtime and Socket.IO stability work comple
 - Replaced the previous long ping interval/timeout values with more production-friendly keepalive settings.
 - Changed direct `python app.py` startup so unsafe Werkzeug mode is no longer enabled unconditionally.
 - Added startup/runtime diagnostics that expose Socket.IO mode, keepalive settings, and websocket transport readiness.
+- Added a startup runtime-profile log entry so operators can confirm from the in-app log viewer whether production is running with `TEST_MODE`/`FLASK_DEBUG` disabled.
 
 ### 2. Backend websocket reliability
 
