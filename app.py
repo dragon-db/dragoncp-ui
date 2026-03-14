@@ -7,6 +7,7 @@ Refactored version with modular architecture
 import importlib.util
 import logging
 import os
+import sys
 import time
 from typing import Any, cast
 
@@ -174,6 +175,8 @@ SOCKETIO_PING_INTERVAL_SECONDS = 25
 SOCKETIO_PING_TIMEOUT_SECONDS = 60
 SOCKETIO_VERBOSE_LOGGING = _socketio_verbose_logging_enabled()
 SOCKETIO_WEBSOCKET_TRANSPORT_READY = _is_simple_websocket_available()
+TEST_MODE_ENABLED = _env_flag('TEST_MODE', default=False)
+FLASK_DEBUG_ENABLED = _env_flag('FLASK_DEBUG', default=False)
 
 # Initialize SocketIO with CORS configuration
 socketio = SocketIO(
@@ -192,6 +195,9 @@ socketio_runtime_info = {
     'ping_timeout_seconds': SOCKETIO_PING_TIMEOUT_SECONDS,
     'verbose_logging': SOCKETIO_VERBOSE_LOGGING,
     'websocket_transport_ready': SOCKETIO_WEBSOCKET_TRANSPORT_READY,
+    'test_mode': TEST_MODE_ENABLED,
+    'flask_debug': FLASK_DEBUG_ENABLED,
+    'entrypoint': os.path.basename(sys.argv[0]) if sys.argv else 'unknown',
     'recommended_prod_server': 'gunicorn --config deploy/gunicorn.conf.py app:app',
 }
 
@@ -203,6 +209,23 @@ logger.info(
     socketio_runtime_info['ping_timeout_seconds'],
     socketio_runtime_info['verbose_logging'],
 )
+
+logger.info(
+    'Runtime profile initialized: entrypoint=%s, test_mode=%s, flask_debug=%s, socketio_verbose_logging=%s',
+    socketio_runtime_info['entrypoint'],
+    socketio_runtime_info['test_mode'],
+    socketio_runtime_info['flask_debug'],
+    socketio_runtime_info['verbose_logging'],
+)
+
+if TEST_MODE_ENABLED or FLASK_DEBUG_ENABLED:
+    logger.warning(
+        'Runtime is using development/test flags: test_mode=%s, flask_debug=%s',
+        TEST_MODE_ENABLED,
+        FLASK_DEBUG_ENABLED,
+    )
+else:
+    logger.info('Runtime is using production-safe flags: test_mode=False, flask_debug=False')
 
 if SOCKETIO_ASYNC_MODE == 'threading' and not SOCKETIO_WEBSOCKET_TRANSPORT_READY:
     logger.warning(
