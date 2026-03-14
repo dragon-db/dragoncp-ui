@@ -1,0 +1,11 @@
+name: dragoncp-ui
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "${DRAGONCP_FRONTEND_PORT:-5002}:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
