@@ -4,6 +4,11 @@ import api from '@/lib/api';
 import type { AppConfig, DiskUsage, RemoteStorageInfo, SSHConfig, SSHConfigResponse } from '@/lib/api-types';
 export type { AppConfig, DiskUsage, RemoteStorageInfo, SSHConfig, SSHConfigResponse } from '@/lib/api-types';
 
+const RUNTIME_STATUS_REFETCH_MS = 5000;
+const LEGACY_DEBUG_REFETCH_MS = 30000;
+
+let runtimeStatusEndpointUnsupported = false;
+
 export interface RuntimeStatusResponse {
   status: string;
   runtime_status: {
@@ -51,18 +56,24 @@ function runtimeStatusQueryOptions() {
   return {
     queryKey: ['runtime', 'status'],
     queryFn: async () => {
+      if (runtimeStatusEndpointUnsupported) {
+        const fallback = await api.get<LegacyDebugResponse>('/debug');
+        return normalizeLegacyRuntimeStatus(fallback.data);
+      }
+
       try {
         const response = await api.get<RuntimeStatusResponse>('/runtime/status');
         return response.data;
       } catch (error) {
         if (axios.isAxiosError(error) && error.response?.status === 404) {
+          runtimeStatusEndpointUnsupported = true;
           const fallback = await api.get<LegacyDebugResponse>('/debug');
           return normalizeLegacyRuntimeStatus(fallback.data);
         }
         throw error;
       }
     },
-    refetchInterval: 5000,
+    refetchInterval: () => (runtimeStatusEndpointUnsupported ? LEGACY_DEBUG_REFETCH_MS : RUNTIME_STATUS_REFETCH_MS),
   };
 }
 

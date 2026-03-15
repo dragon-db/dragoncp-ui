@@ -203,6 +203,10 @@ export function useRuntimeConnection() {
     socket.on('disconnect', onDisconnect);
     socket.on('connect_error', onConnectError);
 
+    if (socket.connected) {
+      onConnect();
+    }
+
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
@@ -343,6 +347,7 @@ export function useRuntimeConnection() {
               hasCheckedTransferRef.current = true;
             }
             markActivity();
+            sendActivityPing();
             return;
           }
         } catch {
