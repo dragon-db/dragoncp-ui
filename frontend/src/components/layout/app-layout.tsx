@@ -2,15 +2,16 @@ import { useState, type ComponentType, type ReactNode } from 'react';
 import { Link, useLocation } from '@tanstack/react-router';
 import { useAuthStore } from '@/stores/auth';
 import { useLogout } from '@/hooks/useAuth';
-import { useSSHStatus } from '@/hooks/useConfig';
+import { useRuntimeStatus } from '@/hooks/useConfig';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import { useRuntimeStore } from '@/stores/runtime';
-import { connectSocket } from '@/services/socket';
 import { BackendUnavailableOverlay } from '@/components/layout/backend-unavailable-overlay';
 import {
+  IconBolt,
+  IconPlugConnected,
   IconLayoutDashboard,
   IconMovie,
   IconDeviceTv,
@@ -66,14 +67,32 @@ export function AppLayout({ children }: AppLayoutProps) {
   const location = useLocation();
   const [mediaExpandedManual, setMediaExpandedManual] = useState(true);
   const { user } = useAuthStore();
-  const socketError = useRuntimeStore((state) => state.socketError);
-  const sshStatusQuery = useSSHStatus();
+  const backendReachable = useRuntimeStore((state) => state.backendReachable);
+  const backendError = useRuntimeStore((state) => state.backendError);
+  const realtimeRequested = useRuntimeStore((state) => state.realtimeRequested);
+  const socketConnected = useRuntimeStore((state) => state.socketConnected);
+  const liveActivityMessage = useRuntimeStore((state) => state.liveActivityMessage);
+  const liveActivityType = useRuntimeStore((state) => state.liveActivityType);
+  const liveActivityAt = useRuntimeStore((state) => state.liveActivityAt);
+  const runtimeStatusQuery = useRuntimeStatus();
   const logoutMutation = useLogout();
   const mediaExpanded = location.pathname.startsWith('/media/') || mediaExpandedManual;
-  const backendUnavailable = sshStatusQuery.isError;
+  const backendUnavailable = runtimeStatusQuery.isError || !backendReachable;
   const backendErrorMessage =
-    (sshStatusQuery.error instanceof Error ? sshStatusQuery.error.message : null) ??
-    socketError;
+    (runtimeStatusQuery.error instanceof Error ? runtimeStatusQuery.error.message : null) ??
+    backendError;
+
+  const realtimeTitle = (() => {
+    if (socketConnected) {
+      return liveActivityMessage ? `Realtime active: ${liveActivityMessage}` : 'Realtime active across all pages';
+    }
+    if (realtimeRequested) return 'Realtime is connecting';
+    return 'Realtime is off. Enable it from the dashboard.';
+  })();
+
+  const liveActivityAgeLabel = liveActivityAt
+    ? new Date(liveActivityAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : null;
 
   const handleLogout = () => {
     logoutMutation.mutate();
@@ -82,8 +101,7 @@ export function AppLayout({ children }: AppLayoutProps) {
   const retryBackendConnection = async () => {
     try {
       setRetryingBackend(true);
-      connectSocket();
-      await sshStatusQuery.refetch();
+      await runtimeStatusQuery.refetch();
     } finally {
       setRetryingBackend(false);
     }
@@ -136,18 +154,18 @@ export function AppLayout({ children }: AppLayoutProps) {
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(217,70,239,0.2),transparent_52%)]" />
         <div className="relative flex flex-col h-full">
           {/* Logo Section */}
-          <div className="p-3 border-b border-sidebar-border/70">
-            <div className="flex items-center justify-between gap-2">
+          <div className="flex h-14 items-center border-b border-sidebar-border/70 px-3">
+            <div className="flex w-full items-center justify-between gap-2">
               <Link
                 to="/dashboard"
-                className="flex min-w-0 items-center gap-3 rounded-xl px-2 py-2 transition-colors hover:bg-sidebar-accent/45"
+                className="flex min-w-0 items-center gap-3 rounded-xl py-1.5 transition-colors hover:bg-sidebar-accent/45"
               >
                 <img
                   src={LOGO_URL}
                   alt="DragonCP Logo"
-                  className="h-10 w-10 object-contain shrink-0"
+                  className="h-9 w-9 object-contain shrink-0"
                 />
-                <span className="truncate text-lg font-bold tracking-[0.16em] text-transparent bg-clip-text bg-gradient-to-r from-[#6a00fd] via-[#b200ff] to-[#fe00fc]">
+                <span className="truncate text-[1.05rem] font-bold tracking-[0.16em] text-transparent bg-clip-text bg-gradient-to-r from-[#6a00fd] via-[#b200ff] to-[#fe00fc]">
                   DRAGON-CP
                 </span>
               </Link>
@@ -246,6 +264,27 @@ export function AppLayout({ children }: AppLayoutProps) {
             {/* Breadcrumb or page title can go here */}
           </div>
           <div className="flex items-center gap-3">
+            <div
+              className={cn(
+                'flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition-colors',
+                socketConnected
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                  : realtimeRequested
+                    ? 'border-blue-500/35 bg-blue-500/10 text-blue-200'
+                    : 'border-border/70 bg-card/80 text-muted-foreground'
+              )}
+              title={realtimeTitle}
+            >
+              {socketConnected ? <IconPlugConnected className="h-3.5 w-3.5" /> : <IconBolt className="h-3.5 w-3.5" />}
+              <span>{socketConnected ? 'Realtime On' : realtimeRequested ? 'Realtime Starting' : 'Polling Mode'}</span>
+              {socketConnected && liveActivityMessage && (
+                <span className="max-w-56 truncate text-[11px] text-emerald-100/80">
+                  {liveActivityType ? `${liveActivityType}: ` : ''}
+                  {liveActivityMessage}
+                  {liveActivityAgeLabel ? ` - ${liveActivityAgeLabel}` : ''}
+                </span>
+              )}
+            </div>
             <Badge variant="outline" className="text-xs text-muted-foreground border-border/70">
               {APP_VERSION}
             </Badge>
@@ -287,6 +326,19 @@ export function AppLayout({ children }: AppLayoutProps) {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <div
+              className={cn(
+                'rounded-full border px-2.5 py-1 text-[11px]',
+                socketConnected
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                  : realtimeRequested
+                    ? 'border-blue-500/35 bg-blue-500/10 text-blue-200'
+                    : 'border-sidebar-border/70 bg-sidebar/70 text-sidebar-foreground/60'
+              )}
+              title={realtimeTitle}
+            >
+              {socketConnected ? 'Live' : realtimeRequested ? 'Starting' : 'Polling'}
+            </div>
             <Badge variant="outline" className="text-xs text-sidebar-foreground/60 border-sidebar-border/70">
               {APP_VERSION}
             </Badge>
@@ -314,7 +366,7 @@ export function AppLayout({ children }: AppLayoutProps) {
       <BackendUnavailableOverlay
         isVisible={backendUnavailable}
         errorMessage={backendErrorMessage}
-        isRetrying={retryingBackend || sshStatusQuery.isFetching}
+        isRetrying={retryingBackend || runtimeStatusQuery.isFetching}
         onRetry={retryBackendConnection}
       />
     </div>

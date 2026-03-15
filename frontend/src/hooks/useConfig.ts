@@ -1,7 +1,81 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import axios from 'axios';
 import api from '@/lib/api';
 import type { AppConfig, DiskUsage, RemoteStorageInfo, SSHConfig, SSHConfigResponse } from '@/lib/api-types';
 export type { AppConfig, DiskUsage, RemoteStorageInfo, SSHConfig, SSHConfigResponse } from '@/lib/api-types';
+
+const RUNTIME_STATUS_REFETCH_MS = 5000;
+const LEGACY_DEBUG_REFETCH_MS = 30000;
+
+let runtimeStatusEndpointUnsupported = false;
+
+export interface RuntimeStatusResponse {
+  status: string;
+  runtime_status: {
+    backend_reachable: boolean;
+    ssh_connected: boolean;
+    websocket: {
+      active_connections: number;
+      cleanup_thread_running: boolean;
+      runtime: Record<string, unknown>;
+    };
+    timestamp: string;
+  };
+}
+
+interface LegacyDebugResponse {
+  status: string;
+  debug_info: {
+    ssh_connected: boolean;
+    websocket_info?: {
+      active_connections?: number;
+      cleanup_thread_running?: boolean;
+      runtime?: Record<string, unknown>;
+    };
+    timestamp?: string;
+  };
+}
+
+function normalizeLegacyRuntimeStatus(data: LegacyDebugResponse): RuntimeStatusResponse {
+  return {
+    status: data.status,
+    runtime_status: {
+      backend_reachable: true,
+      ssh_connected: Boolean(data.debug_info?.ssh_connected),
+      websocket: {
+        active_connections: data.debug_info?.websocket_info?.active_connections ?? 0,
+        cleanup_thread_running: Boolean(data.debug_info?.websocket_info?.cleanup_thread_running),
+        runtime: data.debug_info?.websocket_info?.runtime ?? {},
+      },
+      timestamp: data.debug_info?.timestamp ?? new Date().toISOString(),
+    },
+  };
+}
+
+function runtimeStatusQueryOptions() {
+  return {
+    queryKey: ['runtime', 'status'],
+    queryFn: async () => {
+      if (runtimeStatusEndpointUnsupported) {
+        const fallback = await api.get<LegacyDebugResponse>('/debug');
+        return normalizeLegacyRuntimeStatus(fallback.data);
+      }
+
+      try {
+        const response = await api.get<RuntimeStatusResponse>('/runtime/status');
+        return response.data;
+      } catch (error) {
+        if (axios.isAxiosError(error) && error.response?.status === 404) {
+          runtimeStatusEndpointUnsupported = true;
+          const fallback = await api.get<LegacyDebugResponse>('/debug');
+          return normalizeLegacyRuntimeStatus(fallback.data);
+        }
+        throw error;
+      }
+    },
+    refetchInterval: () => (runtimeStatusEndpointUnsupported ? LEGACY_DEBUG_REFETCH_MS : RUNTIME_STATUS_REFETCH_MS),
+  };
+}
 
 export function useAppConfig() {
   return useQuery({
@@ -23,7 +97,7 @@ export function useUpdateConfig() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['config'] });
-      queryClient.invalidateQueries({ queryKey: ['ssh', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ['runtime', 'status'] });
     },
   });
 }
@@ -38,7 +112,7 @@ export function useResetConfig() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['config'] });
-      queryClient.invalidateQueries({ queryKey: ['ssh', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ['runtime', 'status'] });
     },
   });
 }
@@ -65,18 +139,13 @@ export function useSSHConfig() {
 
 export function useSSHStatus() {
   return useQuery({
-    queryKey: ['ssh', 'status'],
-    queryFn: async () => {
-      const response = await api.get<{
-        status: string;
-        debug_info: {
-          ssh_connected: boolean;
-        };
-      }>('/debug');
-      return response.data.debug_info.ssh_connected;
-    },
-    refetchInterval: 5000,
+    ...runtimeStatusQueryOptions(),
+    select: (data) => data.runtime_status.ssh_connected,
   });
+}
+
+export function useRuntimeStatus() {
+  return useQuery(runtimeStatusQueryOptions());
 }
 
 export function useSSHConnect() {
@@ -90,6 +159,7 @@ export function useSSHConnect() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ssh'] });
       queryClient.invalidateQueries({ queryKey: ['media'] });
+      queryClient.invalidateQueries({ queryKey: ['runtime', 'status'] });
     },
   });
 }
@@ -105,7 +175,7 @@ export function useSSHAutoConnect() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ssh'] });
       queryClient.invalidateQueries({ queryKey: ['media'] });
-      queryClient.invalidateQueries({ queryKey: ['ssh', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ['runtime', 'status'] });
     },
   });
 }
@@ -121,7 +191,7 @@ export function useSSHDisconnect() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ssh'] });
       queryClient.invalidateQueries({ queryKey: ['media'] });
-      queryClient.invalidateQueries({ queryKey: ['ssh', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ['runtime', 'status'] });
     },
   });
 }

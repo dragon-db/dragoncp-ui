@@ -1333,6 +1333,28 @@ Output JSON:
 }
 ```
 
+### GET `/runtime/status`
+What it does: returns lightweight runtime connectivity state for the frontend shell.
+
+Auth: required.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "runtime_status": {
+    "backend_reachable": true,
+    "ssh_connected": false,
+    "websocket": {
+      "active_connections": 1,
+      "cleanup_thread_running": true,
+      "runtime": {}
+    },
+    "timestamp": "2026-03-14T12:00:00"
+  }
+}
+```
+
 ### GET `/websocket/status`
 What it does: reports websocket connection count and per-connection timing info.
 
@@ -1466,7 +1488,7 @@ This document covers all `/api/*` routes currently implemented in backend Python
 - 10 transfer endpoints
 - 29 webhook-related endpoints (receivers, management, rename, settings, Discord)
 - 7 backup endpoints
-- 6 debug endpoints
+- 7 debug endpoints
 - 2 simulation endpoints
 
-Total covered: 75 method+path API endpoints.
+Total covered: 76 method+path API endpoints.

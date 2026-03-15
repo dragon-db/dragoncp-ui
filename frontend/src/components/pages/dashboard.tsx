@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router';
 import { toast } from 'sonner';
-import { useRuntimeConnection } from '@/hooks/useRuntime';
-import { useSSHAutoConnect, useSSHDisconnect, useWebSocketStatus } from '@/hooks/useConfig';
+import { useRuntimeController } from '@/hooks/useRuntime';
+import { useWebSocketStatus } from '@/hooks/useConfig';
 import { useActiveTransfers, useCancelTransfer, useCleanupTransfers, type Transfer } from '@/hooks/useTransfers';
 import { useWebhookNotifications, type WebhookNotification, useRenameNotifications } from '@/hooks/useWebhooks';
 import { ConnectionStatusBar } from '@/components/dashboard/connection-status-bar';
@@ -79,36 +79,14 @@ const dashboardPanelHeaderClass =
   'flex items-center justify-between border-b border-border/70 bg-muted/35 px-4 py-3';
 
 export function DashboardPage() {
-  const runtime = useRuntimeConnection();
+  const runtime = useRuntimeController();
   const wsStatus = useWebSocketStatus();
-
-  const autoConnect = useSSHAutoConnect();
-  const disconnect = useSSHDisconnect();
   const cleanupTransfers = useCleanupTransfers();
   const cancelTransfer = useCancelTransfer();
 
   const { data: activeTransfers, isLoading: transfersLoading, refetch: refetchTransfers } = useActiveTransfers();
   const { data: webhooks, isLoading: webhooksLoading, refetch: refetchWebhooks } = useWebhookNotifications(undefined, 10);
   const { data: renames, refetch: refetchRenames } = useRenameNotifications(10);
-
-  const handleReconnect = async () => {
-    try {
-      await autoConnect.mutateAsync();
-      runtime.reconnectSocket();
-      toast.success('Connected to server');
-    } catch {
-      toast.error('Connection failed');
-    }
-  };
-
-  const handleDisconnect = async () => {
-    try {
-      await disconnect.mutateAsync();
-      toast.success('Disconnected from server');
-    } catch {
-      toast.error('Failed to disconnect');
-    }
-  };
 
   const handleCleanup = async () => {
     try {
@@ -131,11 +109,13 @@ export function DashboardPage() {
   };
 
   const statusMessage = (() => {
-    if (runtime.connectionState === 'config-changed') return 'Configuration updated - reconnection required';
-    if (runtime.connectionState === 'auto-disconnected') return 'Connected to server - background monitoring active';
-    if (runtime.connectionState === 'connected') return `Connected to server - session ${runtime.minutesRemaining} min remaining`;
-    if (runtime.sshConnected && !runtime.socketConnected) return 'Connected to server - realtime updates unavailable';
-    return runtime.socketError ? `WebSocket error: ${runtime.socketError}` : 'Disconnected from server';
+    if (!runtime.backendReachable) return runtime.backendError || 'Backend unavailable';
+    if (runtime.connectionState === 'config-changed') return 'Realtime settings changed - reconnect to apply them';
+    if (runtime.connectionState === 'auto-disconnected') return 'Realtime paused after inactivity - dashboard polling remains active';
+    if (runtime.connectionState === 'connected') return `Realtime active - session ${runtime.minutesRemaining} min remaining`;
+    if (runtime.connectionState === 'connecting') return 'Connecting realtime session...';
+    if (runtime.connectionState === 'disconnected') return runtime.socketError ? `Realtime error: ${runtime.socketError}` : 'Realtime disconnected';
+    return 'Dashboard is using API polling. Enable realtime for cross-page live updates.';
   })();
 
   return (
@@ -146,12 +126,15 @@ export function DashboardPage() {
       </div>
 
       <ConnectionStatusBar
+        backendReachable={runtime.backendReachable}
         connectionState={runtime.connectionState}
         statusMessage={statusMessage}
         timeRemainingMinutes={runtime.minutesRemaining}
         activeSocketConnections={wsStatus.data?.websocket_status.active_connections}
-        onReconnect={handleReconnect}
-        onDisconnect={handleDisconnect}
+        realtimeRequested={runtime.realtimeRequested}
+        onEnableRealtime={runtime.enableRealtime}
+        onReconnect={runtime.reconnectRealtime}
+        onDisconnect={runtime.disableRealtime}
         onExtendSession={runtime.extendSession}
         onRefreshWsStatus={() => {
           wsStatus.refetch();
@@ -159,7 +142,7 @@ export function DashboardPage() {
           refetchWebhooks();
           refetchRenames();
         }}
-        isReconnecting={autoConnect.isPending}
+        isReconnecting={wsStatus.isFetching && runtime.realtimeRequested && !runtime.socketConnected}
       />
 
       <DiskUsageMonitor />

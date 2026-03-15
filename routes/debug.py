@@ -37,6 +37,30 @@ def init_debug_routes(app_config, app_ssh_manager, app_db_manager, app_transfer_
     socketio_runtime_info = app_socketio_runtime_info or {}
 
 
+@debug_bp.route('/runtime/status')
+@require_auth
+def api_runtime_status():
+    """Lightweight runtime status for normal frontend connection state."""
+    from websocket import get_cleanup_thread_status, get_websocket_connection_count
+
+    if config is None:
+        return _service_not_initialized_response("Config service")
+
+    return jsonify({
+        "status": "success",
+        "runtime_status": {
+            "backend_reachable": True,
+            "ssh_connected": ssh_manager.connected if ssh_manager else False,
+            "websocket": {
+                "active_connections": get_websocket_connection_count(),
+                "cleanup_thread_running": get_cleanup_thread_status(),
+                "runtime": socketio_runtime_info,
+            },
+            "timestamp": datetime.now().isoformat(),
+        },
+    })
+
+
 @debug_bp.route('/debug')
 @require_auth
 def api_debug():
