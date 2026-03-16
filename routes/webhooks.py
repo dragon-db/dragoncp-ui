@@ -24,11 +24,12 @@ logger = logging.getLogger(__name__)
 
 def emit_socketio_event(event_name, payload, **context):
     """Emit websocket notifications best-effort without breaking webhook success."""
-    if not transfer_coordinator or not transfer_coordinator.socketio:
+    socketio_instance = getattr(transfer_coordinator, 'socketio', None) if transfer_coordinator else None
+    if not socketio_instance:
         return
 
     try:
-        transfer_coordinator.socketio.emit(event_name, payload)
+        socketio_instance.emit(event_name, payload)
     except Exception:
         logger.exception(
             "Socket.IO emit failed for %s (notification_id=%s, title=%s, media_type=%s, is_test=%s)",
