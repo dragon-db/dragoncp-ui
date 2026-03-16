@@ -37,6 +37,15 @@ export interface WebhookNotification {
   timestamp: string;
 }
 
+export interface WebhookCapturedEvent {
+  notification_id?: string;
+  title?: string;
+  media_type?: string;
+  auto_sync?: boolean;
+  message?: string;
+  timestamp?: string;
+}
+
 export interface RenameWebhookEvent {
   series_title?: string;
   total_files?: number;
@@ -133,6 +142,12 @@ export function connectSocket(): Socket | null {
 export function disconnectSocket(): void {
   if (socket) {
     socket.disconnect();
+  }
+}
+
+export function destroySocket(): void {
+  if (socket) {
+    socket.disconnect();
     socket = null;
   }
 }
@@ -202,6 +217,13 @@ export function onWebhookReceived(callback: (data: WebhookNotification) => void)
   
   socket.on('test_webhook_received', callback);
   return () => socket?.off('test_webhook_received', callback);
+}
+
+export function onWebhookCaptured(callback: (data: WebhookCapturedEvent) => void): () => void {
+  if (!socket) return () => {};
+
+  socket.on('webhook_received', callback);
+  return () => socket?.off('webhook_received', callback);
 }
 
 export function onRenameWebhookReceived(callback: (data: RenameWebhookEvent) => void): () => void {

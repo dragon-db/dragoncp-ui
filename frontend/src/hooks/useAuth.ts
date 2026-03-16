@@ -2,7 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { authApi } from '@/lib/api';
 import { useAuthStore } from '@/stores/auth';
-import { connectSocket, disconnectSocket } from '@/services/socket';
+import { destroySocket } from '@/services/socket';
 
 export function useLogin() {
   const login = useAuthStore((state) => state.login);
@@ -19,8 +19,6 @@ export function useLogin() {
     onSuccess: (data) => {
       if (data.token && data.refresh_token && data.user && data.expires_at) {
         login(data.token, data.refresh_token, data.user, data.expires_at);
-        // Connect WebSocket after login
-        connectSocket();
         navigate({ to: '/dashboard' });
       }
     },
@@ -41,7 +39,7 @@ export function useLogout() {
       }
     },
     onSettled: () => {
-      disconnectSocket();
+      destroySocket();
       logout();
       navigate({ to: '/login' });
     },

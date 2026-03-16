@@ -5,6 +5,7 @@ Handles webhook receivers for Radarr/Sonarr and webhook management
 """
 
 import os
+import logging
 from datetime import datetime
 from flask import Blueprint, jsonify, request, Response
 import requests
@@ -17,6 +18,27 @@ webhooks_bp = Blueprint('webhooks', __name__)
 config = None
 transfer_coordinator = None
 rename_service = None
+
+logger = logging.getLogger(__name__)
+
+
+def emit_socketio_event(event_name, payload, **context):
+    """Emit websocket notifications best-effort without breaking webhook success."""
+    socketio_instance = getattr(transfer_coordinator, 'socketio', None) if transfer_coordinator else None
+    if not socketio_instance:
+        return
+
+    try:
+        socketio_instance.emit(event_name, payload)
+    except Exception:
+        logger.exception(
+            "Socket.IO emit failed for %s (notification_id=%s, title=%s, media_type=%s, is_test=%s)",
+            event_name,
+            context.get('notification_id'),
+            context.get('title'),
+            context.get('media_type'),
+            context.get('is_test', False),
+        )
 
 
 def init_webhook_routes(app_config, app_transfer_coordinator, app_rename_service=None):
@@ -60,11 +82,17 @@ def api_webhook_movies_receiver():
         if is_test:
             print(f"🧪 TEST webhook received - webhook connectivity verified")
             # Emit toast notification via WebSocket
-            if transfer_coordinator.socketio:
-                transfer_coordinator.socketio.emit('test_webhook_received', {
+            emit_socketio_event(
+                'test_webhook_received',
+                {
                     'message': 'TEST webhook received - webhook connectivity verified',
                     'timestamp': datetime.now().isoformat()
-                })
+                },
+                notification_id=None,
+                title=title,
+                media_type='movies',
+                is_test=True,
+            )
             return jsonify({
                 "status": "success",
                 "message": "TEST webhook received - webhook connectivity verified",
@@ -83,6 +111,22 @@ def api_webhook_movies_receiver():
             auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_MOVIES', default=(config.get("AUTO_SYNC_MOVIES", "false").lower() == "true"))
         except Exception:
             auto_sync_enabled = config.get("AUTO_SYNC_MOVIES", "false").lower() == "true"
+
+        emit_socketio_event(
+            'webhook_received',
+            {
+                'notification_id': notification_id,
+                'title': parsed_data.get('title'),
+                'media_type': 'movies',
+                'auto_sync': auto_sync_enabled,
+                'message': f"Webhook captured for {parsed_data.get('title', 'movie')}",
+                'timestamp': datetime.now().isoformat(),
+            },
+            notification_id=notification_id,
+            title=parsed_data.get('title'),
+            media_type='movies',
+            auto_sync=auto_sync_enabled,
+        )
         
         if auto_sync_enabled:
             print(f"🎬 Auto-sync enabled, triggering sync for {parsed_data['title']}")
@@ -151,11 +195,17 @@ def api_webhook_series_receiver():
         
         if is_test:
             print(f"🧪 TEST series webhook received - webhook connectivity verified")
-            if transfer_coordinator.socketio:
-                transfer_coordinator.socketio.emit('test_webhook_received', {
+            emit_socketio_event(
+                'test_webhook_received',
+                {
                     'message': 'TEST series webhook received - webhook connectivity verified',
                     'timestamp': datetime.now().isoformat()
-                })
+                },
+                notification_id=None,
+                title=title,
+                media_type='tvshows',
+                is_test=True,
+            )
             return jsonify({
                 "status": "success",
                 "message": "TEST series webhook received - webhook connectivity verified",
@@ -188,6 +238,22 @@ def api_webhook_series_receiver():
         
         # Check if auto-sync is enabled for series
         auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_SERIES', False)
+
+        emit_socketio_event(
+            'webhook_received',
+            {
+                'notification_id': notification_id,
+                'title': parsed_data.get('series_title'),
+                'media_type': 'tvshows',
+                'auto_sync': auto_sync_enabled,
+                'message': f"Webhook captured for {parsed_data.get('series_title', 'series')}",
+                'timestamp': datetime.now().isoformat(),
+            },
+            notification_id=notification_id,
+            title=parsed_data.get('series_title'),
+            media_type='tvshows',
+            auto_sync=auto_sync_enabled,
+        )
         
         if auto_sync_enabled:
             print(f"📺 Series auto-sync enabled, scheduling auto-sync for {parsed_data['series_title']}")
@@ -253,11 +319,17 @@ def api_webhook_anime_receiver():
         
         if is_test:
             print(f"🧪 TEST anime webhook received - webhook connectivity verified")
-            if transfer_coordinator.socketio:
-                transfer_coordinator.socketio.emit('test_webhook_received', {
+            emit_socketio_event(
+                'test_webhook_received',
+                {
                     'message': 'TEST anime webhook received - webhook connectivity verified',
                     'timestamp': datetime.now().isoformat()
-                })
+                },
+                notification_id=None,
+                title=title,
+                media_type='anime',
+                is_test=True,
+            )
             return jsonify({
                 "status": "success",
                 "message": "TEST anime webhook received - webhook connectivity verified",
@@ -290,6 +362,22 @@ def api_webhook_anime_receiver():
         
         # Check if auto-sync is enabled for anime
         auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_ANIME', False)
+
+        emit_socketio_event(
+            'webhook_received',
+            {
+                'notification_id': notification_id,
+                'title': parsed_data.get('series_title'),
+                'media_type': 'anime',
+                'auto_sync': auto_sync_enabled,
+                'message': f"Webhook captured for {parsed_data.get('series_title', 'anime')}",
+                'timestamp': datetime.now().isoformat(),
+            },
+            notification_id=notification_id,
+            title=parsed_data.get('series_title'),
+            media_type='anime',
+            auto_sync=auto_sync_enabled,
+        )
         
         if auto_sync_enabled:
             print(f"🍙 Anime auto-sync enabled, scheduling auto-sync for {parsed_data['series_title']}")
