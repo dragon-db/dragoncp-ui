@@ -374,6 +374,13 @@ class QueueManager:
             transfer_id = queued_transfer['transfer_id']
             dest_path = queued_transfer['dest_path']
             is_path_queue = self._is_path_queue_transfer(queued_transfer)
+
+            # A transfer may still be DB-queued for a brief window after a prior
+            # promotion already reserved it in memory and handed it off.
+            # Skip it here so we do not start the same queued transfer twice.
+            if transfer_id in self.running_transfers:
+                print(f"⏭️  Skipping already-promoted transfer {transfer_id} during queue scan")
+                continue
             
             # Re-check for duplicate destination (using internal method since we hold the lock)
             is_duplicate, existing_transfer_id = self._check_duplicate_destination_internal(dest_path, transfer_id)
