@@ -56,6 +56,7 @@ class DatabaseManager:
                     operation_type TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
                     progress TEXT DEFAULT '',
+                    queue_reason TEXT,
                     rsync_process_id INTEGER,
                     logs TEXT DEFAULT '[]',
                     parsed_title TEXT,

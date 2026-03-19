@@ -653,9 +653,16 @@ class TransferService:
             process = psutil.Process(transfer['rsync_process_id'])
             
             # Monitor the process until completion
-            process.wait()
-            return_code = process.returncode
-            
+            return_code = process.wait()
+
+            if return_code is None:
+                self.transfer_model.update(transfer_id, {
+                    'status': 'completed',
+                    'progress': 'Transfer finished after restart (exit status unavailable)',
+                    'end_time': datetime.now().isoformat()
+                })
+                return
+
             if return_code == 0:
                 self.transfer_model.update(transfer_id, {
                     'status': 'completed',
@@ -668,11 +675,18 @@ class TransferService:
                     'progress': f'Transfer failed with exit code: {return_code}',
                     'end_time': datetime.now().isoformat()
                 })
-                
-        except Exception as e:
-            print(f"❌ Error resuming monitoring for {transfer_id}: {e}")
+        except psutil.NoSuchProcess:
             self.transfer_model.update(transfer_id, {
-                'status': 'failed',
-                'progress': f'Monitoring failed: {e}',
+                'status': 'completed',
+                'progress': 'Transfer process ended before restart monitoring attached',
                 'end_time': datetime.now().isoformat()
             })
+        except Exception as e:
+            print(f"❌ Error resuming monitoring for {transfer_id}: {e}")
+            refreshed_transfer = self.transfer_model.get(transfer_id)
+            if refreshed_transfer and refreshed_transfer['status'] == 'running':
+                self.transfer_model.update(transfer_id, {
+                    'status': 'failed',
+                    'progress': f'Monitoring failed: {e}',
+                    'end_time': datetime.now().isoformat()
+                })

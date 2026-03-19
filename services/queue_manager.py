@@ -157,6 +157,27 @@ class QueueManager:
                 dest_path,
                 enforce_capacity=enforce_capacity
             )
+
+    def _restore_queued_reservations_internal(self, queued_records: List[Dict]) -> int:
+        """Restore one queued reservation per destination path (lock must be held)."""
+        restored_count = 0
+
+        queued_records.sort(key=lambda t: t.get('created_at', t.get('start_time', '')))
+
+        for transfer in queued_records:
+            transfer_id = transfer['transfer_id']
+            dest_path = transfer.get('dest_path')
+            if not dest_path:
+                continue
+
+            normalized_dest = self._normalize_path(dest_path)
+            if normalized_dest in self.active_destinations:
+                continue
+
+            self.active_destinations[normalized_dest] = transfer_id
+            restored_count += 1
+
+        return restored_count
     
     def register_transfer(self, transfer_id: str, dest_path: str) -> Tuple[bool, str]:
         """
@@ -246,13 +267,14 @@ class QueueManager:
         Internal method to promote QUEUED_PATH transfers for a specific destination path
         
         This is called when a transfer for a specific path completes. It looks for
-        webhook notifications in QUEUED_PATH state waiting for this exact path,
-        and promotes ONE of them (oldest first) back to READY_FOR_TRANSFER for re-validation.
+        queued transfers waiting for this exact path, and promotes ONE of them
+        (oldest first) directly into the normal queued-transfer start flow.
         
         Args:
             dest_path: The destination path that just became available
         """
         if not self.coordinator:
+            print(f"⏸️  Cannot promote same-path queued transfers for {dest_path} without coordinator")
             return
         
         # Check if we have capacity for another transfer
@@ -302,22 +324,6 @@ class QueueManager:
 
         print(f"🎉 PROMOTING QUEUED_PATH: Transfer {transfer_id} for path {dest_path}")
         
-        # Update transfer status from 'queued' to 'pending'
-        self.transfer_model.update(transfer_id, {
-            'status': 'pending',
-            'progress': 'Promoted from path queue, validating...'
-        })
-        
-        # Update associated webhook notification status from QUEUED_PATH to READY_FOR_TRANSFER
-        if self.coordinator and self.coordinator.series_webhook_model:
-            # Update ALL webhook notifications linked to this transfer_id
-            updated = self.coordinator.series_webhook_model.update_notifications_by_transfer_id(
-                transfer_id,
-                {'status': 'READY_FOR_TRANSFER'}
-            )
-            if updated:
-                print(f"📋 Updated {updated} webhook notification(s) to READY_FOR_TRANSFER")
-        
         # Emit WebSocket event if available
         if self.socketio:
             self.socketio.emit('transfer_promoted', {
@@ -342,6 +348,10 @@ class QueueManager:
         This promotes transfers in QUEUED_SLOT state (waiting for any slot to free up).
         It's called after path-specific promotion to fill remaining capacity.
         """
+        if not self.coordinator:
+            print("⏸️  Cannot promote queued transfers without coordinator")
+            return
+
         # Check if we have capacity
         if len(self.running_transfers) >= self.MAX_CONCURRENT_TRANSFERS:
             return
@@ -472,7 +482,7 @@ class QueueManager:
     
     def force_unregister_stale_transfers(self):
         """
-        Cleanup method to remove stale entries from tracking and rebuild running state.
+        Cleanup method to remove stale entries from tracking and rebuild queue state.
         Should be called on app startup or periodically.
         """
         with self.lock:
@@ -480,6 +490,10 @@ class QueueManager:
             running_records = [
                 t for t in all_transfers
                 if t['status'] == 'running'
+            ]
+            queued_records = [
+                t for t in all_transfers
+                if t['status'] == 'queued'
             ]
 
             # Build set of actually running transfer IDs
@@ -495,13 +509,12 @@ class QueueManager:
             
             for transfer_id in stale_transfers:
                 dest_path = self.running_transfers[transfer_id]
-                del self.running_transfers[transfer_id]
-                
-                if dest_path in self.active_destinations:
-                    if self.active_destinations[dest_path] == transfer_id:
-                        del self.active_destinations[dest_path]
-                
                 print(f"🧹 Cleaned up stale transfer tracking: {transfer_id}")
+
+            # Rebuild queue state from database so restart recovery preserves
+            # running reservations and queued destination ownership.
+            self.running_transfers = {}
+            self.active_destinations = {}
 
             restored_count = 0
             for transfer in running_records:
@@ -520,10 +533,19 @@ class QueueManager:
                 else:
                     print(f"⚠️  Could not restore running transfer {transfer_id}: {status}")
 
+            restored_queued_count = self._restore_queued_reservations_internal(queued_records)
+
             if stale_transfers:
                 print(f"✅ Removed {len(stale_transfers)} stale transfer entries")
-                # Try to promote queued transfers after cleanup
-                self._promote_next_queued_transfer()
 
             if restored_count:
                 print(f"🔄 Restored {restored_count} running transfer reservation(s) from database")
+
+            if restored_queued_count:
+                print(f"🧾 Restored {restored_queued_count} queued destination reservation(s) from database")
+
+            while self.coordinator and len(self.running_transfers) < self.MAX_CONCURRENT_TRANSFERS:
+                running_before = len(self.running_transfers)
+                self._promote_next_queued_transfer()
+                if len(self.running_transfers) == running_before:
+                    break

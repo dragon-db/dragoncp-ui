@@ -98,9 +98,9 @@ Promotion order is always:
 - prefers transfers that are explicitly or implicitly path-queued
 - re-checks the path lock for safety
 - re-registers the promoted transfer in `active_destinations` and `running_transfers`
-- updates the transfer to `pending`
-- updates linked series/anime webhook rows to `READY_FOR_TRANSFER`
-- starts it through `TransferCoordinator.start_queued_transfer()`
+- hands it off to `TransferCoordinator.start_queued_transfer()`
+
+`start_queued_transfer()` then performs the visible state transitions (`queued` -> `pending` and `QUEUED_*` -> `syncing`) only after queue ownership has been confirmed.
 
 This re-registration step is the fix for issue `#40`: a same-path promoted transfer must reclaim in-memory queue ownership before rsync starts, otherwise a later transfer can incorrectly see the path as free.
 

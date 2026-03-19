@@ -8,7 +8,7 @@ This document describes the current SQLite schema used by DragonCP.
 **Database File:** `dragoncp.db` (stored in project root)  
 **Connection Manager:** `DatabaseManager` in `models/database.py`
 
-## Schema Changes Summary
+## Current Schema Conventions
 
 ### Table Names In Current Code
 - `transfers`
@@ -487,34 +487,18 @@ All indexes are created with `CREATE INDEX IF NOT EXISTS` to allow safe re-execu
 
 ---
 
-## Migration Notes
+## Legacy/Migration Notes
 
-### Breaking Changes
-1. **Table Renames:** All webhook and backup tables have been renamed. Code must be updated to use new table names.
-2. **Column Renames:** 
-   - `transfer_type` → `operation_type`
-   - `process_id` → `rsync_process_id`
-   - `backup_dir` → `backup_path`
-3. **Index Renames:** Index names updated to match new table names.
+Older v1-to-v2 migration guidance, including destructive migration assumptions, has been moved out of this live schema reference.
 
-### Data Migration
-Since data loss is acceptable for v2, the migration script will:
-- Optionally backup the old database
-- Drop all old tables
-- Create new schema with v2 structure
-- Optionally migrate critical data (settings, active transfers) if needed
-
-### Code Updates Required
-- Update all SQL queries in model classes
-- Update table names in all queries
-- Update column names in affected queries
-- Remove old migration methods (`_ensure_*` methods)
+See `docs/database/LEGACY_V2_MIGRATION_NOTES.md` for legacy migration context.
 
 ---
 
 ## Related Documentation
 
 - **v1 Schema:** `docs/database/v1_schema.md`
+- **Legacy migration notes:** `docs/database/LEGACY_V2_MIGRATION_NOTES.md`
 - **Database Manager:** `models/database.py`
 - **Transfer Model:** `models/transfer.py`
 - **Backup Model:** `models/backup.py`

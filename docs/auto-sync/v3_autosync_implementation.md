@@ -121,9 +121,9 @@ Promotion order:
 - prefers transfers that are explicitly or implicitly path-queued
 - re-checks path ownership
 - re-registers the promoted transfer in queue-manager running state before start
-- updates transfer status to `pending`
-- updates linked series/anime webhook rows to `READY_FOR_TRANSFER`
-- starts the transfer through `TransferCoordinator.start_queued_transfer()`
+- hands the transfer to `TransferCoordinator.start_queued_transfer()`
+
+`start_queued_transfer()` then performs the actual state transition to `pending` / `syncing` after queue ownership has been confirmed.
 
 The re-registration step above is the production fix for issue `#40`.
 
