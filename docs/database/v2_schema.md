@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document defines the v2 database schema for DragonCP with improved naming conventions and cleaner structure. This schema will replace v1 in the next release.
+This document describes the current SQLite schema used by DragonCP.
 
 **Database System:** SQLite  
 **Database File:** `dragoncp.db` (stored in project root)  
@@ -10,23 +10,24 @@ This document defines the v2 database schema for DragonCP with improved naming c
 
 ## Schema Changes Summary
 
-### Table Renames
-- `transfers` → `transfers` (keeping plural for consistency with codebase)
-- `webhook_notifications` → `movie_webhook`
-- `series_webhook_notifications` → `series_webhook`
-- `rename_notifications` → `rename_webhook`
-- `transfer_backups` → `backup`
-- `transfer_backup_files` → `backup_file`
-- `app_settings` → `app_settings` (no change)
+### Table Names In Current Code
+- `transfers`
+- `radarr_webhook`
+- `sonarr_webhook`
+- `rename_webhook`
+- `backup`
+- `backup_file`
+- `app_settings`
 
 ### Column Renames
 - `transfer_type` → `operation_type` (more descriptive)
 - `process_id` → `rsync_process_id` (clearer purpose)
 - `backup_dir` → `backup_path` (consistent with other path fields)
 
-### Column Additions/Changes
-- All timestamp fields standardized: `created_at`, `updated_at`, `completed_at`
-- Context fields in `backup_file` kept but better documented
+### Queue-Related Additions/Changes
+- `transfers.queue_reason` stores whether a queued transfer is blocked by `path` or `slot`
+- series/anime manual-sync-required rows currently use `requires_manual_sync` + `manual_sync_reason`
+- timestamp usage is standardized around `created_at`, `updated_at`, and `completed_at`
 
 ---
 
@@ -42,17 +43,16 @@ CREATE TABLE transfers (
     media_type TEXT NOT NULL,
     folder_name TEXT NOT NULL,
     season_name TEXT,
-    episode_name TEXT,
     source_path TEXT NOT NULL,
     dest_path TEXT NOT NULL,
     operation_type TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     progress TEXT DEFAULT '',
+    queue_reason TEXT,
     rsync_process_id INTEGER,
     logs TEXT DEFAULT '[]',
     parsed_title TEXT,
     parsed_season TEXT,
-    parsed_episode TEXT,
     start_time DATETIME,
     end_time DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -66,17 +66,16 @@ CREATE TABLE transfers (
 - `media_type` - Type of media: 'movies', 'tvshows', 'anime'
 - `folder_name` - Name of the media folder
 - `season_name` - Name of the season folder (for series/anime)
-- `episode_name` - Name of the episode file (for series/anime)
 - `source_path` - Source path on remote server
 - `dest_path` - Destination path on local machine
 - `operation_type` - Type of operation: 'folder', 'file', etc. (renamed from `transfer_type`)
-- `status` - Transfer status: 'pending', 'running', 'completed', 'failed', 'cancelled'
+- `status` - Transfer status: 'pending', 'queued', 'running', 'completed', 'failed', 'cancelled'
 - `progress` - Current progress information (text)
+- `queue_reason` - Queue reason for queued transfers: `path`, `slot`, or `NULL`
 - `rsync_process_id` - Process ID of the rsync process (renamed from `process_id`)
 - `logs` - JSON array of log entries
 - `parsed_title` - Parsed title from folder name
 - `parsed_season` - Parsed season number
-- `parsed_episode` - Parsed episode number
 - `start_time` - Transfer start timestamp
 - `end_time` - Transfer end timestamp
 - `created_at` - Record creation timestamp
@@ -92,13 +91,13 @@ CREATE TABLE transfers (
 
 ---
 
-## Table: `movie_webhook`
+## Table: `radarr_webhook`
 
 **Purpose:** Movie webhook notifications from Radarr
 
 **Schema:**
 ```sql
-CREATE TABLE movie_webhook (
+CREATE TABLE radarr_webhook (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     notification_id TEXT UNIQUE NOT NULL,
     title TEXT NOT NULL,
@@ -119,7 +118,7 @@ CREATE TABLE movie_webhook (
     status TEXT NOT NULL DEFAULT 'pending',
     error_message TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    synced_at DATETIME,
+    completed_at DATETIME,
     transfer_id TEXT,
     raw_webhook_data TEXT
 )
@@ -143,30 +142,30 @@ CREATE TABLE movie_webhook (
 - `release_size` - Release size in bytes
 - `tmdb_id` - The Movie Database ID
 - `imdb_id` - Internet Movie Database ID
-- `status` - Notification status: 'pending', 'syncing', 'completed', 'failed'
+- `status` - Notification status: 'pending', 'syncing', 'completed', 'failed', 'cancelled'
 - `error_message` - Error details if failed
 - `created_at` - Record creation timestamp
-- `synced_at` - Timestamp when synced
+- `completed_at` - Timestamp when the notification completed
 - `transfer_id` - Associated transfer ID
 - `raw_webhook_data` - Full webhook JSON payload
 
 **Indexes:**
-- `idx_movie_webhook_notification_id` on `notification_id` - Fast lookup by notification ID
-- `idx_movie_webhook_status` on `status` - Filtering by status
-- `idx_movie_webhook_created_at` on `created_at` - Sorting by creation time
-- `idx_movie_webhook_transfer_id` on `transfer_id` - Lookup by transfer ID
+- `idx_radarr_webhook_notification_id` on `notification_id` - Fast lookup by notification ID
+- `idx_radarr_webhook_status` on `status` - Filtering by status
+- `idx_radarr_webhook_created_at` on `created_at` - Sorting by creation time
+- `idx_radarr_webhook_transfer_id` on `transfer_id` - Lookup by transfer ID
 
 **Model:** `WebhookNotification` in `models/webhook.py`
 
 ---
 
-## Table: `series_webhook`
+## Table: `sonarr_webhook`
 
 **Purpose:** Series/anime webhook notifications from Sonarr
 
 **Schema:**
 ```sql
-CREATE TABLE series_webhook (
+CREATE TABLE sonarr_webhook (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     notification_id TEXT UNIQUE NOT NULL,
     media_type TEXT NOT NULL,  -- 'tvshows' or 'anime'
@@ -196,7 +195,7 @@ CREATE TABLE series_webhook (
     status TEXT NOT NULL DEFAULT 'pending',
     error_message TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    synced_at DATETIME,
+    completed_at DATETIME,
     transfer_id TEXT,
     -- Auto-sync related fields
     requires_manual_sync INTEGER DEFAULT 0,  -- 0=false, 1=true
@@ -230,7 +229,7 @@ CREATE TABLE series_webhook (
 - `episode_count` - Number of episodes in this notification
 - `episodes` - JSON array of episode details
 - `episode_files` - JSON array of episode file details
-- `season_path` - Season-level destination path
+- `season_path` - Season-level source path from Sonarr event; also used to derive destination path
 - `release_title` - Release title from indexer
 - `release_indexer` - Indexer name
 - `release_size` - Release size in bytes
@@ -238,7 +237,7 @@ CREATE TABLE series_webhook (
 - `status` - Notification status (see State Lifecycle below)
 - `error_message` - Error details if failed
 - `created_at` - Record creation timestamp
-- `synced_at` - Timestamp when synced
+- `completed_at` - Timestamp when the notification completed or was marked syncing/completed by current flow
 - `transfer_id` - Associated transfer ID
 - `requires_manual_sync` - Boolean flag (0=false, 1=true)
 - `manual_sync_reason` - Reason why manual sync is required
@@ -247,21 +246,25 @@ CREATE TABLE series_webhook (
 - `dry_run_performed_at` - Timestamp when dry-run was performed
 - `raw_webhook_data` - Full webhook JSON payload
 
-**Status Values (State Lifecycle):**
-- `pending` - Initial state when webhook is received
+**Status Values In Current Code:**
+- `pending` - Initial state and also currently reused for manual-sync-required rows
 - `READY_FOR_TRANSFER` - Dry-run validation passed, ready for transfer
 - `QUEUED_SLOT` - Blocked by max concurrent transfer limit
 - `QUEUED_PATH` - Blocked by same destination path conflict
 - `syncing` - Transfer actively in progress
 - `completed` - Transfer finished successfully
 - `failed` - Transfer failed or error occurred
-- `MANUAL_SYNC_REQUIRED` - Dry-run validation failed, requires manual intervention
 - `cancelled` - User cancelled the transfer
 
+**Manual-sync-required behavior today:**
+- the code does not currently persist `MANUAL_SYNC_REQUIRED` as a status
+- instead it keeps `status='pending'` and sets `requires_manual_sync=1`
+- `manual_sync_reason`, `dry_run_result`, and `dry_run_performed_at` hold the safety decision details
+
 **Indexes:**
-- `idx_series_webhook_notification_id` on `notification_id` - Fast lookup by notification ID
-- `idx_series_webhook_status` on `status` - Filtering by status
-- `idx_series_webhook_transfer_id` on `transfer_id` - Lookup by transfer ID
+- `idx_sonarr_webhook_notification_id` on `notification_id` - Fast lookup by notification ID
+- `idx_sonarr_webhook_status` on `status` - Filtering by status
+- `idx_sonarr_webhook_transfer_id` on `transfer_id` - Lookup by transfer ID
 
 **Model:** `SeriesWebhookNotification` in `models/webhook.py`
 
@@ -355,7 +358,6 @@ CREATE TABLE backup (
     media_type TEXT,
     folder_name TEXT,
     season_name TEXT,
-    episode_name TEXT,
     source_path TEXT NOT NULL,
     dest_path TEXT NOT NULL,
     backup_path TEXT NOT NULL,
@@ -363,7 +365,8 @@ CREATE TABLE backup (
     total_size INTEGER DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'ready',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    restored_at DATETIME
+    restored_at DATETIME,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )
 ```
 
@@ -374,7 +377,6 @@ CREATE TABLE backup (
 - `media_type` - Type of media: 'movies', 'tvshows', 'anime'
 - `folder_name` - Name of the media folder
 - `season_name` - Name of the season folder (for series/anime)
-- `episode_name` - Name of the episode file (for series/anime)
 - `source_path` - Source path on remote server
 - `dest_path` - Destination path on local machine
 - `backup_path` - Directory where backup files are stored (renamed from `backup_dir`)
@@ -383,6 +385,7 @@ CREATE TABLE backup (
 - `status` - Backup status: 'ready', 'deleted', etc.
 - `created_at` - Record creation timestamp
 - `restored_at` - Timestamp when backup was restored
+- `updated_at` - Last update timestamp
 
 **Indexes:**
 - `idx_backup_transfer_id` on `transfer_id` - Lookup by transfer ID
@@ -461,16 +464,16 @@ All indexes are created with `CREATE INDEX IF NOT EXISTS` to allow safe re-execu
 - `idx_created_at` on `transfers(created_at)` - Time-based queries
 - `idx_dest_status` on `transfers(dest_path, status)` - Duplicate detection
 
-**Movie Webhook Indexes:**
-- `idx_movie_webhook_notification_id` on `movie_webhook(notification_id)` - Primary lookup
-- `idx_movie_webhook_status` on `movie_webhook(status)` - Status filtering
-- `idx_movie_webhook_created_at` on `movie_webhook(created_at)` - Time-based queries
-- `idx_movie_webhook_transfer_id` on `movie_webhook(transfer_id)` - Transfer linking
+**Radarr Webhook Indexes:**
+- `idx_radarr_webhook_notification_id` on `radarr_webhook(notification_id)` - Primary lookup
+- `idx_radarr_webhook_status` on `radarr_webhook(status)` - Status filtering
+- `idx_radarr_webhook_created_at` on `radarr_webhook(created_at)` - Time-based queries
+- `idx_radarr_webhook_transfer_id` on `radarr_webhook(transfer_id)` - Transfer linking
 
-**Series Webhook Indexes:**
-- `idx_series_webhook_notification_id` on `series_webhook(notification_id)` - Primary lookup
-- `idx_series_webhook_status` on `series_webhook(status)` - Status filtering
-- `idx_series_webhook_transfer_id` on `series_webhook(transfer_id)` - Transfer linking
+**Sonarr Webhook Indexes:**
+- `idx_sonarr_webhook_notification_id` on `sonarr_webhook(notification_id)` - Primary lookup
+- `idx_sonarr_webhook_status` on `sonarr_webhook(status)` - Status filtering
+- `idx_sonarr_webhook_transfer_id` on `sonarr_webhook(transfer_id)` - Transfer linking
 
 **Rename Webhook Indexes:**
 - `idx_rename_webhook_notification_id` on `rename_webhook(notification_id)` - Primary lookup
@@ -518,5 +521,3 @@ Since data loss is acceptable for v2, the migration script will:
 - **Webhook Models:** `models/webhook.py`
 - **Settings Model:** `models/settings.py`
 - **Migration Script:** `scripts/migrate_v1_to_v2.py`
-
-

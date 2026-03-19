@@ -107,8 +107,56 @@ class QueueManager:
         can_start = running_count < self.MAX_CONCURRENT_TRANSFERS
         
         print(f"📊 Queue status: {running_count}/{self.MAX_CONCURRENT_TRANSFERS} running, can_start={can_start}")
-        
+
         return can_start
+
+    def _is_path_queue_transfer(self, transfer: Dict) -> bool:
+        """Determine whether a queued transfer is waiting on a destination-path conflict."""
+        queue_reason = (transfer.get('queue_reason') or '').lower()
+        if queue_reason:
+            return queue_reason == 'path'
+
+        progress_msg = (transfer.get('progress') or '').lower()
+        return (
+            'same destination' in progress_msg or
+            'same path' in progress_msg or
+            ('waiting for' in progress_msg and 'complete' in progress_msg)
+        )
+
+    def _register_running_transfer_internal(self, transfer_id: str, dest_path: str,
+                                            enforce_capacity: bool = True) -> Tuple[bool, str]:
+        """Reserve a destination and register a transfer as running (lock must be held)."""
+        normalized_dest = self._normalize_path(dest_path)
+        existing_transfer_id = self.active_destinations.get(normalized_dest)
+
+        if existing_transfer_id and existing_transfer_id != transfer_id:
+            return (False, 'duplicate')
+
+        existing_dest = self.running_transfers.get(transfer_id)
+        if existing_dest == normalized_dest:
+            self.active_destinations[normalized_dest] = transfer_id
+            return (True, 'running')
+
+        if enforce_capacity and transfer_id not in self.running_transfers and not self.can_start_transfer():
+            return (False, 'capacity')
+
+        if existing_dest and existing_dest in self.active_destinations:
+            if self.active_destinations[existing_dest] == transfer_id:
+                del self.active_destinations[existing_dest]
+
+        self.active_destinations[normalized_dest] = transfer_id
+        self.running_transfers[transfer_id] = normalized_dest
+        return (True, 'running')
+
+    def ensure_running_transfer_registered(self, transfer_id: str, dest_path: str,
+                                           enforce_capacity: bool = True) -> Tuple[bool, str]:
+        """Ensure a transfer is represented in in-memory running state before rsync starts."""
+        with self.lock:
+            return self._register_running_transfer_internal(
+                transfer_id,
+                dest_path,
+                enforce_capacity=enforce_capacity
+            )
     
     def register_transfer(self, transfer_id: str, dest_path: str) -> Tuple[bool, str]:
         """
@@ -129,11 +177,17 @@ class QueueManager:
             
             # Check if we can start immediately or need to queue
             if self.can_start_transfer():
-                # Register as running
-                self.active_destinations[normalized_dest] = transfer_id
-                self.running_transfers[transfer_id] = normalized_dest
-                print(f"✅ Transfer {transfer_id} registered as RUNNING -> {dest_path}")
-                return (True, 'running')
+                registered, status = self._register_running_transfer_internal(
+                    transfer_id,
+                    dest_path,
+                    enforce_capacity=False
+                )
+                if registered:
+                    print(f"✅ Transfer {transfer_id} registered as RUNNING -> {dest_path}")
+                    return (True, status)
+
+                print(f"⚠️  Failed to register transfer {transfer_id} as running: {status}")
+                return (False, status)
             else:
                 # Transfer should be queued
                 # IMPORTANT: Still reserve the destination to prevent duplicate queued transfers
@@ -215,8 +269,13 @@ class QueueManager:
             if t['status'] == 'queued' and self._normalize_path(t.get('dest_path', '')) == self._normalize_path(dest_path)
         ]
         
-        # Sort by creation time (oldest first)
-        queued_path_transfers.sort(key=lambda t: t.get('created_at', t.get('start_time', '')))
+        # Prefer explicit/fallback path-queue entries first, then oldest first.
+        queued_path_transfers.sort(
+            key=lambda t: (
+                0 if self._is_path_queue_transfer(t) else 1,
+                t.get('created_at', t.get('start_time', ''))
+            )
+        )
         
         if not queued_path_transfers:
             print(f"✅ No QUEUED_PATH transfers found for {dest_path}")
@@ -231,7 +290,16 @@ class QueueManager:
         if is_duplicate:
             print(f"⚠️  Path {dest_path} still has active transfer {existing_transfer_id}, cannot promote yet")
             return
-        
+
+        registered, register_status = self._register_running_transfer_internal(
+            transfer_id,
+            dest_path,
+            enforce_capacity=True
+        )
+        if not registered:
+            print(f"⚠️  Could not reserve queue state for promoted path transfer {transfer_id}: {register_status}")
+            return
+
         print(f"🎉 PROMOTING QUEUED_PATH: Transfer {transfer_id} for path {dest_path}")
         
         # Update transfer status from 'queued' to 'pending'
@@ -295,20 +363,7 @@ class QueueManager:
         for queued_transfer in queued_transfers:
             transfer_id = queued_transfer['transfer_id']
             dest_path = queued_transfer['dest_path']
-            queue_reason = queued_transfer.get('queue_reason', '')
-            progress_msg = queued_transfer.get('progress', '')
-            
-            # Determine if this is a path-specific queue or slot queue
-            # First check explicit queue_reason field (added for reliability)
-            if queue_reason:
-                is_path_queue = (queue_reason == 'path')
-            else:
-                # Fallback to progress message parsing (for legacy transfers)
-                is_path_queue = (
-                    'same destination' in progress_msg.lower() or
-                    'same path' in progress_msg.lower() or
-                    ('waiting for' in progress_msg.lower() and 'complete' in progress_msg.lower())
-                )
+            is_path_queue = self._is_path_queue_transfer(queued_transfer)
             
             # Re-check for duplicate destination (using internal method since we hold the lock)
             is_duplicate, existing_transfer_id = self._check_duplicate_destination_internal(dest_path, transfer_id)
@@ -356,10 +411,15 @@ class QueueManager:
                     continue
             
             # Promote this transfer
-            normalized_dest = self._normalize_path(dest_path)
-            self.active_destinations[normalized_dest] = transfer_id
-            self.running_transfers[transfer_id] = normalized_dest
-            
+            registered, register_status = self._register_running_transfer_internal(
+                transfer_id,
+                dest_path,
+                enforce_capacity=True
+            )
+            if not registered:
+                print(f"⚠️  Could not reserve queue state for promoted transfer {transfer_id}: {register_status}")
+                continue
+
             print(f"🎉 PROMOTED: Transfer {transfer_id} from queue")
             print(f"📊 Queue status: {len(self.running_transfers)}/{self.MAX_CONCURRENT_TRANSFERS} running")
             
@@ -412,16 +472,19 @@ class QueueManager:
     
     def force_unregister_stale_transfers(self):
         """
-        Cleanup method to remove stale entries from tracking
-        Should be called on app startup or periodically
+        Cleanup method to remove stale entries from tracking and rebuild running state.
+        Should be called on app startup or periodically.
         """
         with self.lock:
             all_transfers = self.transfer_model.get_all()
-            
+            running_records = [
+                t for t in all_transfers
+                if t['status'] == 'running'
+            ]
+
             # Build set of actually running transfer IDs
             actually_running = {
-                t['transfer_id'] for t in all_transfers 
-                if t['status'] == 'running'
+                t['transfer_id'] for t in running_records
             }
             
             # Remove any tracked transfers that are not actually running
@@ -439,8 +502,28 @@ class QueueManager:
                         del self.active_destinations[dest_path]
                 
                 print(f"🧹 Cleaned up stale transfer tracking: {transfer_id}")
-            
+
+            restored_count = 0
+            for transfer in running_records:
+                transfer_id = transfer['transfer_id']
+                dest_path = transfer.get('dest_path')
+                if not dest_path:
+                    continue
+
+                registered, status = self._register_running_transfer_internal(
+                    transfer_id,
+                    dest_path,
+                    enforce_capacity=False
+                )
+                if registered:
+                    restored_count += 1
+                else:
+                    print(f"⚠️  Could not restore running transfer {transfer_id}: {status}")
+
             if stale_transfers:
                 print(f"✅ Removed {len(stale_transfers)} stale transfer entries")
                 # Try to promote queued transfers after cleanup
                 self._promote_next_queued_transfer()
+
+            if restored_count:
+                print(f"🔄 Restored {restored_count} running transfer reservation(s) from database")

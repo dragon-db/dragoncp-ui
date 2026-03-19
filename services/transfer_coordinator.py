@@ -63,7 +63,16 @@ class TransferCoordinator:
         self.queue_manager.force_unregister_stale_transfers()
         
         # Resume any transfers that were running when the app was stopped
-        self.transfer_service.resume_active_transfers()
+        resumed_transfer_ids = self.transfer_service.resume_active_transfers()
+
+        if resumed_transfer_ids:
+            import threading
+            for transfer_id in resumed_transfer_ids:
+                threading.Thread(
+                    target=self._post_transfer_completion,
+                    args=(transfer_id,),
+                    daemon=True
+                ).start()
     
     # Transfer Operations
     def start_transfer(self, transfer_id: str, source_path: str, dest_path: str, 
@@ -293,7 +302,15 @@ class TransferCoordinator:
         transfer = self.transfer_model.get(transfer_id)
         if not transfer:
             return False
-        
+
+        registered, register_status = self.queue_manager.ensure_running_transfer_registered(
+            transfer_id,
+            transfer['dest_path']
+        )
+        if not registered:
+            print(f"⚠️  Cannot start queued transfer {transfer_id}: queue state not ready ({register_status})")
+            return False
+
         # Update status from 'queued' to 'pending' before starting
         # (start_rsync_process will update it to 'running')
         self.transfer_model.update(transfer_id, {
@@ -610,4 +627,3 @@ class TransferCoordinator:
             return bool(re.match(url_pattern, url))
         except Exception:
             return False
-

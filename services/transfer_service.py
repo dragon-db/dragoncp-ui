@@ -599,9 +599,12 @@ class TransferService:
         """Resume transfers that were running when app was stopped"""
         active_transfers = self.transfer_model.get_all()
         resumed_count = 0
+        active_running_transfer_ids = []
         
         for transfer in active_transfers:
             if transfer['status'] == 'running':
+                active_running_transfer_ids.append(transfer['transfer_id'])
+
                 # Check if process is still running
                 if transfer['rsync_process_id'] and self._is_process_running(transfer['rsync_process_id']):
                     print(f"📋 Resuming monitoring for transfer {transfer['transfer_id']} (PID: {transfer['rsync_process_id']})")
@@ -623,6 +626,8 @@ class TransferService:
         
         if resumed_count > 0:
             print(f"✅ Resumed monitoring for {resumed_count} active transfers")
+
+        return active_running_transfer_ids
     
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process is still running"""
@@ -671,4 +676,3 @@ class TransferService:
                 'progress': f'Monitoring failed: {e}',
                 'end_time': datetime.now().isoformat()
             })
-

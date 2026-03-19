@@ -1,504 +1,206 @@
-# Queue Management System Implementation
+# Queue Management Implementation
 
-**Version**: v1.9.0  
-**Date**: October 31, 2024  
-**Feature**: Advanced Queue Management with Duplicate Detection
+Last updated: 2026-03-19
+Primary files: `services/queue_manager.py`, `services/transfer_coordinator.py`, `services/transfer_service.py`, `models/transfer.py`, `models/database.py`
 
----
+## Purpose
 
-## Overview
+DragonCP uses one shared queue system for manual syncs, movie webhooks, and series/anime syncs.
 
-This document describes the implementation of the new queue management system with STRICT destination path validation for DragonCP. The system prevents duplicate syncs to the same destination and limits concurrent transfers to 3 at a time.
+The queue system enforces two runtime guarantees:
+- only one transfer may write to a normalized destination path at a time
+- only `MAX_CONCURRENT_TRANSFERS` transfers may run at once (`3` today)
 
----
+## Current Queue Model
 
-## Key Features
+### Transfer-level states
 
-### 1. **STRICT Duplicate Destination Validation**
-- **When**: Before any transfer starts (auto-sync or manual)
-- **How**: Checks if an active/running transfer already has the same destination path
-- **Action**: Marks new transfer as `duplicate` status if destination conflict detected
-- **Normalization**: Paths are normalized (absolute, case-insensitive on Windows, trailing slash removed)
-
-### 2. **Queue System (Max 3 Concurrent Transfers)**
-- **Limit**: Maximum 3 transfers can run simultaneously
-- **Queuing**: Additional transfers are marked as `queued` status
-- **Auto-Promotion**: When a transfer completes, the oldest queued transfer is automatically promoted to `pending` and starts
-- **Applies To**: ALL transfers (movies auto-sync, series/anime auto-sync, manual syncs)
-
-### 3. **New Transfer Statuses**
-- **`queued`**: Transfer is waiting for an available slot (< 3 running transfers)
-- **`duplicate`**: Transfer was rejected due to duplicate destination path
-
----
-
-## Architecture
-
-### New Component: QueueManager
-
-**File**: `services/queue_manager.py`
-
-**Responsibilities**:
-- Track active destinations to prevent duplicates
-- Limit concurrent transfers to 3
-- Manage queue of pending transfers
-- Auto-promote queued transfers when slots become available
-
-**Key Methods**:
-- `check_duplicate_destination(dest_path)`: STRICT validation for duplicate paths
-- `register_transfer(transfer_id, dest_path)`: Register and queue/start transfer
-- `unregister_transfer(transfer_id)`: Unregister completed transfer and promote next
-- `get_queue_status()`: Get current queue statistics
-
-### Updated Components
-
-#### 1. TransferCoordinator
-**File**: `services/transfer_coordinator.py`
-
-**Changes**:
-- Initialize QueueManager before starting transfers
-- STRICT duplicate check BEFORE creating transfer record
-- Queue management integration in `start_transfer()`
-- Unregister transfers on completion in `_post_transfer_completion()`
-- New method: `start_queued_transfer()` for promoting queued transfers
-- New method: `get_queue_status()` for queue statistics
-
-#### 2. TransferService
-**File**: `services/transfer_service.py`
-
-**Changes**:
-- Accept `queue_manager` parameter in constructor
-- Enhanced `cancel_transfer()` to handle queued transfers
-
-#### 3. Transfer Routes
-**File**: `routes/transfers.py`
-
-**Changes**:
-- `/api/transfers/active` now returns `queue_status` object
-- New endpoint: `/api/transfers/queue/status` for queue statistics
-
-#### 4. Frontend (Transfer Manager)
-**File**: `static/modules/transfer-manager.js`
-
-**Changes**:
-- `loadActiveTransfers()` now processes queue status
-- New method: `updateQueueStatusDisplay()` to show queue info in badge
-- Badge shows: `"X/3 running, Y queued"` format
-
-#### 5. Frontend (CSS)
-**File**: `static/style.css`
-
-**Changes**:
-- New CSS class: `.transfer-status-queued` (cyan badge)
-- New CSS class: `.transfer-status-duplicate` (orange badge)
-
----
-
-## Flow Diagrams
-
-### Transfer Start Flow with Queue Management
-
-```
-User/Webhook triggers transfer
-        │
-        ▼
-┌───────────────────────────────────────┐
-│ TransferCoordinator.start_transfer()  │
-└───────────────────────────────────────┘
-        │
-        ▼
-┌───────────────────────────────────────┐
-│ STRICT CHECK:                         │
-│ QueueManager.check_duplicate_dest()   │
-└───────────────────────────────────────┘
-        │
-        ├─── Duplicate Found? ────────────> Mark as 'duplicate', Return False
-        │
-        ▼ No Duplicate
-┌───────────────────────────────────────┐
-│ QueueManager.register_transfer()      │
-│ - Check if < 3 transfers running      │
-└───────────────────────────────────────┘
-        │
-        ├─── Queue Full (3 running) ──────> Mark as 'queued', Return True
-        │
-        ▼ Slot Available
-┌───────────────────────────────────────┐
-│ Start Transfer Immediately            │
-│ - Create DB record with 'running'     │
-│ - Start rsync process                 │
-│ - Start monitoring thread             │
-└───────────────────────────────────────┘
-```
-
-### Transfer Completion and Promotion Flow
-
-```
-Transfer completes/fails/cancelled
-        │
-        ▼
-┌───────────────────────────────────────┐
-│ _post_transfer_completion()           │
-│ - Update webhook status               │
-│ - Send Discord notification           │
-│ - Finalize backup                     │
-└───────────────────────────────────────┘
-        │
-        ▼
-┌───────────────────────────────────────┐
-│ QueueManager.unregister_transfer()    │
-│ - Remove from active destinations     │
-│ - Remove from running transfers       │
-└───────────────────────────────────────┘
-        │
-        ▼
-┌───────────────────────────────────────┐
-│ QueueManager._promote_next_queued()   │
-│ - Get oldest queued transfer          │
-│ - Re-check for duplicate destination  │
-│ - Update status to 'pending'          │
-│ - Call coordinator.start_queued()     │
-└───────────────────────────────────────┘
-```
-
----
-
-## Database Schema
-
-### Transfer Status Values
-
-The `transfers` table `status` column now supports these values:
-
-| Status | Description |
-|--------|-------------|
-| `pending` | Transfer is ready to start (initial state) |
-| `running` | Transfer is currently in progress |
-| `queued` | Transfer is waiting for an available slot |
-| `duplicate` | Transfer was rejected due to duplicate destination |
-| `completed` | Transfer finished successfully |
-| `failed` | Transfer encountered an error |
-| `cancelled` | Transfer was cancelled by user |
-
-**Note**: No schema migration required as `status` is TEXT type.
-
----
-
-## API Changes
-
-### Endpoint: `GET /api/transfers/active`
-
-**Response** (new field added):
-```json
-{
-  "status": "success",
-  "transfers": [...],
-  "total": 5,
-  "queue_status": {
-    "max_concurrent": 3,
-    "running_count": 2,
-    "queued_count": 3,
-    "available_slots": 1,
-    "running_transfer_ids": ["transfer1", "transfer2"],
-    "queued_transfer_ids": ["transfer3", "transfer4", "transfer5"],
-    "active_destinations": ["transfer1", "transfer2"]
-  }
-}
-```
-
-### New Endpoint: `GET /api/transfers/queue/status`
-
-**Response**:
-```json
-{
-  "status": "success",
-  "queue": {
-    "max_concurrent": 3,
-    "running_count": 2,
-    "queued_count": 1,
-    "available_slots": 1,
-    "running_transfer_ids": ["transfer1", "transfer2"],
-    "queued_transfer_ids": ["transfer3"],
-    "active_destinations": ["transfer1", "transfer2"]
-  }
-}
-```
-
----
-
-## WebSocket Events
-
-### New Events Emitted by QueueManager
-
-1. **`transfer_duplicate`**
-   - **When**: Duplicate destination detected
-   - **Payload**:
-     ```json
-     {
-       "transfer_id": "movie_123_456",
-       "existing_transfer_id": "movie_123_455",
-       "dest_path": "/mnt/media/Movies/Example (2024)",
-       "message": "Duplicate destination detected"
-     }
-     ```
-
-2. **`transfer_queued`**
-   - **When**: Transfer added to queue (3 already running)
-   - **Payload**:
-     ```json
-     {
-       "transfer_id": "series_789_012",
-       "message": "Transfer added to queue"
-     }
-     ```
-
-3. **`transfer_promoted`**
-   - **When**: Queued transfer promoted to running
-   - **Payload**:
-     ```json
-     {
-       "transfer_id": "series_789_012",
-       "message": "Transfer promoted from queue"
-     }
-     ```
-
----
-
-## Use Cases
-
-### Use Case 1: Series Episode Batch (Your Original Scenario)
-
-**Scenario**: 10 episode notifications received in 10 seconds for the same season
-
-**Behavior**:
-1. **First episode notification** arrives → Auto-sync triggered after 60s wait time
-   - Destination: `/mnt/media/TV Shows/Series Name (2024)/Season 01`
-   - Status: `running` (slot 1/3)
-
-2. **Second episode notification** (2 seconds later) → Auto-sync triggered after 60s wait
-   - **Same destination**: `/mnt/media/TV Shows/Series Name (2024)/Season 01`
-   - **STRICT CHECK**: Duplicate detected!
-   - Status: `duplicate` (not queued, not started)
-   - User sees in UI: Orange badge "duplicate"
-
-3. **Episodes 3-10**: Same as #2, all marked as `duplicate`
-
-**Result**: Only ONE sync runs for the entire season, preventing conflicts and redundant operations.
-
----
-
-### Use Case 2: Multiple Different Transfers
-
-**Scenario**: User triggers 5 different movie syncs manually
-
-**Behavior**:
-1. **Movies 1-3**: Start immediately
-   - Status: `running` (slots 1/3, 2/3, 3/3)
-
-2. **Movies 4-5**: Queue is full
-   - Status: `queued`
-   - User sees in UI: Badge shows "3/3 running, 2 queued"
-
-3. **Movie 1 completes**: 
-   - Movie 4 auto-promoted to `running`
-   - Badge updates: "3/3 running, 1 queued"
-
-4. **Movie 2 completes**:
-   - Movie 5 auto-promoted to `running`
-   - Badge updates: "3/3 running"
-
----
-
-### Use Case 3: Mixed Auto-Sync and Manual Sync
-
-**Scenario**: 2 auto-syncs running, user starts 3 manual syncs
-
-**Behavior**:
-1. **Auto-syncs 1-2**: Running (slots 1/3, 2/3)
-2. **Manual sync 1**: Starts immediately (slot 3/3)
-3. **Manual syncs 2-3**: Queued
-4. **Queue system treats all equally**: Auto-syncs and manual syncs share the same queue
-
----
-
-## Configuration
-
-### Queue Settings
-
-**File**: `services/queue_manager.py`
-
-```python
-class QueueManager:
-    # Maximum number of concurrent transfers allowed
-    MAX_CONCURRENT_TRANSFERS = 3
-```
-
-**To Change**: Modify `MAX_CONCURRENT_TRANSFERS` constant in `QueueManager` class.
-
----
-
-## UI Display
-
-### Active Transfers Badge
-
-**Before**:
-```
-[2 active]
-```
-
-**After** (with queue):
-```
-[2/3 running, 1 queued]
-```
-
-### Transfer Status Badges
-
-| Status | Badge Color | CSS Class |
-|--------|-------------|-----------|
-| Running | Blue | `.transfer-status-running` |
-| Pending | Yellow | `.transfer-status-pending` |
-| **Queued** | **Cyan** | **`.transfer-status-queued`** |
-| **Duplicate** | **Orange** | **`.transfer-status-duplicate`** |
-| Completed | Green | `.transfer-status-completed` |
-| Failed | Red | `.transfer-status-failed` |
-| Cancelled | Gray | `.transfer-status-cancelled` |
-
----
-
-## Testing Scenarios
-
-### Test 1: Duplicate Detection
-1. Start a manual sync for a movie
-2. Immediately start another sync for the SAME movie
-3. **Expected**: Second sync marked as `duplicate`
-
-### Test 2: Queue System
-1. Start 3 different movie syncs quickly
-2. Start a 4th sync
-3. **Expected**: 
-   - First 3 show `running`
-   - 4th shows `queued`
-   - Badge shows "3/3 running, 1 queued"
-
-### Test 3: Auto-Promotion
-1. Have 3 transfers running and 2 queued
-2. Cancel one running transfer
-3. **Expected**: 
-   - First queued transfer auto-promoted to `running`
-   - Badge updates to "3/3 running, 1 queued"
-
-### Test 4: Series Episode Batching
-1. Trigger 10 episode notifications for same season within 10 seconds
-2. **Expected**:
-   - First one goes through auto-sync
-   - Remaining 9 marked as `duplicate`
-   - Only ONE actual rsync runs
-
----
-
-## Limitations and Edge Cases
-
-### Handled Edge Cases
-
-1. **App Restart During Queue**: 
-   - `force_unregister_stale_transfers()` cleans up stale tracking on startup
-   
-2. **Path Normalization**: 
-   - Windows paths are case-insensitive
-   - Trailing slashes removed
-   - Relative paths converted to absolute
-
-3. **Cancelled Queued Transfers**: 
-   - Can cancel queued transfers before they start
-   - Status updated to `cancelled`
-
-### Known Limitations
-
-1. **Queue Persistence**: Queue is in-memory, not persisted to database
-   - On app restart, queued transfers revert to `pending` status
-   
-2. **Queue Order**: FIFO (First In, First Out) based on `created_at` timestamp
-   - No priority system for transfers
-
-3. **Destination Comparison**: Based on destination path string only
-   - Doesn't check if files are identical (relies on rsync)
-
----
-
-## Troubleshooting
-
-### Issue: Transfers stuck in "queued" status
-
-**Cause**: Running transfers may have crashed without cleanup
-
-**Solution**:
-1. Restart the app (cleanup runs on startup)
-2. Or manually cancel stuck transfers
-
-### Issue: False duplicate detection
-
-**Cause**: Path normalization differences
-
-**Debug**:
-```python
-# Check normalized paths in logs
-print(f"Normalized: {queue_manager._normalize_path(dest_path)}")
-```
-
-### Issue: Too many transfers queued
-
-**Cause**: High incoming webhook rate
-
-**Solution**: Increase `MAX_CONCURRENT_TRANSFERS` in `queue_manager.py`
-
----
-
-## Future Enhancements
-
-1. **Priority Queue**: Add priority levels for transfers
-2. **Configurable Max Concurrent**: Make `MAX_CONCURRENT_TRANSFERS` a UI setting
-3. **Queue Persistence**: Store queue state in database
-4. **Smart Batching**: Auto-merge queued transfers with same source/dest
-5. **Bandwidth Management**: Dynamic queue size based on available bandwidth
-
----
-
-## Summary of Changes
-
-### New Files
-- `services/queue_manager.py` - Queue management service
-
-### Modified Files
-- `services/transfer_coordinator.py` - Queue integration
-- `services/transfer_service.py` - Queue-aware transfer handling
-- `routes/transfers.py` - Queue status API endpoints
-- `static/modules/transfer-manager.js` - Queue UI display
-- `static/style.css` - New status badge styles
-- `templates/index.html` - Version bump to v1.9.0
-
-### Database
-- No schema changes required (status is TEXT type)
-- New status values: `queued`, `duplicate`
-
----
-
-## Rollback Instructions
-
-If issues arise, to rollback:
-
-1. **Remove Queue Manager**:
-   - Delete `services/queue_manager.py`
-   
-2. **Revert TransferCoordinator**:
-   - Remove `QueueManager` import and initialization
-   - Revert `start_transfer()` to directly start transfers
-   
-3. **Revert Version**:
-   - Change `v1.9.0` back to `v1.8.5` in `templates/index.html`
-
----
-
-## Version History
-
-- **v1.9.0** (Oct 31, 2024): Queue management with duplicate detection
-- **v1.8.5** (Previous): Series/anime auto-sync with dry-run validation
+Transfer rows in `transfers` use these statuses:
+- `pending`: admitted and preparing to start
+- `queued`: not allowed to start yet
+- `running`: rsync process active
+- `completed`
+- `failed`
+- `cancelled`
 
+Queued transfer rows use `queue_reason` for the blocking reason:
+- `path`: same destination path already reserved by another transfer
+- `slot`: concurrency cap reached
+
+`queue_reason` is persisted in the `transfers` table and is now added automatically for older databases during startup.
+
+### Webhook-level states
+
+Series/anime webhook rows in `sonarr_webhook` expose the queue reason more explicitly:
+- `READY_FOR_TRANSFER`
+- `QUEUED_SLOT`
+- `QUEUED_PATH`
+- `syncing`
+- `completed`
+- `failed`
+- `cancelled`
+
+Movie webhook rows do not currently expose queue-reason-specific states; they still share the same transfer queue internally.
+
+## In-Memory Queue State
+
+`QueueManager` maintains two process-local maps:
+- `active_destinations`: `{normalized_dest_path: transfer_id}`
+- `running_transfers`: `{transfer_id: normalized_dest_path}`
+
+These maps are the live path-lock and running-slot authority used during admission and promotion.
+
+## Admission Flow
+
+All new transfers converge through `TransferCoordinator.start_transfer()`.
+
+### 1. Path-conflict check
+
+`QueueManager.check_duplicate_destination()` checks whether the normalized destination path is already reserved.
+
+If the path is already owned:
+- the new transfer row is created with `status='queued'`
+- `queue_reason='path'`
+- the transfer returns as `QUEUED_PATH`
+- for series/anime, linked webhook notifications are updated to `QUEUED_PATH`
+
+### 2. Slot-cap check
+
+If the path is free, `QueueManager.register_transfer()` decides whether the transfer can run immediately.
+
+If all slots are full:
+- the new transfer row is created with `status='queued'`
+- `queue_reason='slot'`
+- the destination is still reserved in `active_destinations`
+- the transfer returns as `QUEUED_SLOT`
+
+That destination reservation is intentional: it prevents later transfers for the same path from being admitted ahead of the already-queued owner.
+
+### 3. Immediate start
+
+If both the path and slot checks pass:
+- the transfer is registered in `active_destinations` and `running_transfers`
+- the transfer row is created with `status='pending'`
+- `TransferService.start_rsync_process()` starts rsync and then updates the row to `running`
+
+## Promotion Flow
+
+Promotion happens from `QueueManager.unregister_transfer()` after a running transfer finishes, fails, or is cancelled.
+
+Promotion order is always:
+1. same-path queue first
+2. general slot queue second
+
+### Path-specific promotion
+
+`_promote_same_path_queued(dest_path)`:
+- looks for queued transfer rows whose normalized `dest_path` matches the freed path
+- prefers transfers that are explicitly or implicitly path-queued
+- re-checks the path lock for safety
+- re-registers the promoted transfer in `active_destinations` and `running_transfers`
+- updates the transfer to `pending`
+- updates linked series/anime webhook rows to `READY_FOR_TRANSFER`
+- starts it through `TransferCoordinator.start_queued_transfer()`
+
+This re-registration step is the fix for issue `#40`: a same-path promoted transfer must reclaim in-memory queue ownership before rsync starts, otherwise a later transfer can incorrectly see the path as free.
+
+### General slot promotion
+
+`_promote_next_queued_transfer()`:
+- scans queued transfer rows oldest-first
+- determines queue type from `queue_reason` first, then falls back to `progress` parsing for legacy rows
+- re-checks path ownership before promotion
+
+If a queued slot transfer now conflicts with a running transfer on the same destination:
+- it is converted from `queue_reason='slot'` to `queue_reason='path'`
+- its `progress` text is updated
+- linked series/anime webhooks move from `QUEUED_SLOT` to `QUEUED_PATH`
+- it stays queued until the same path is freed
+
+If a queued transfer is promotable:
+- queue state is reserved before start
+- the transfer is started through `start_queued_transfer()`
+
+## Defensive Start Guard
+
+`TransferCoordinator.start_queued_transfer()` now verifies that the promoted transfer is already represented in queue-manager running state before it starts rsync.
+
+This prevents untracked queued promotions from bypassing path ownership rules.
+
+## Startup and Restart Recovery
+
+Queue state is process-local, so startup now rebuilds it from the database.
+
+Current startup flow:
+1. `QueueManager.force_unregister_stale_transfers()` removes stale in-memory entries
+2. the same method rebuilds running reservations from DB rows with `status='running'`
+3. `TransferService.resume_active_transfers()` resumes monitoring for live rsync PIDs
+4. `TransferCoordinator` restarts post-completion watchers for resumed transfers so queue release, webhook status updates, Discord notifications, and backup finalization still happen
+
+This recovery closes the gap where a restarted app could have running rsync processes but no in-memory path reservations.
+
+## Queue Reason Behavior
+
+### Current behavior
+
+- `queue_reason` is stored on transfer creation for both path and slot queues
+- it is updated when slot-queued work is reclassified as path-queued
+- queue promotion logic uses `queue_reason` as the primary classifier
+- progress-text parsing remains only as backward-compatible fallback for pre-column or legacy rows
+
+### Why this matters
+
+Without a persisted `queue_reason`, queue logic has to infer intent from human-readable `progress` text, which is fragile and can misclassify queued work.
+
+## Current API Notes
+
+Queue status is exposed through:
+- `GET /api/transfers/active`
+- `GET /api/transfers/queue/status`
+
+Returned fields:
+- `max_concurrent`
+- `running_count`
+- `queued_count`
+- `available_slots`
+- `running_transfer_ids`
+- `queued_transfer_ids`
+- `active_destinations`
+
+Implementation note: `active_destinations` currently returns the transfer IDs that own reserved destinations, not the normalized path strings themselves.
+
+## Current Series/Anime Queue Lifecycle
+
+For series/anime auto-sync:
+1. webhook rows batch in `pending`
+2. dry-run success moves them to `READY_FOR_TRANSFER`
+3. transfer admission returns one of:
+   - `running`
+   - `QUEUED_SLOT`
+   - `QUEUED_PATH`
+4. linked webhook rows follow that result
+5. on promotion, queued webhook rows move to `syncing`
+6. on transfer completion, linked webhook rows are finalized
+
+## Known Gaps
+
+These are not queue-breakers, but they still matter operationally:
+- movie webhook rows do not currently expose queue reason or queued status as clearly as series/anime rows
+- auto-sync batch jobs are still in-memory only and do not survive restart
+- manual-sync-required behavior still uses `pending + requires_manual_sync` instead of one explicit terminal status
+- completion marking for series/anime is safer than before, but the broader completion path should still be tightened to guarantee that only truly synced rows move to `completed`
+
+## Files Most Relevant To Queue Behavior
+
+- `services/queue_manager.py`
+- `services/transfer_coordinator.py`
+- `services/transfer_service.py`
+- `services/webhook_service.py`
+- `services/auto_sync_scheduler.py`
+- `models/transfer.py`
+- `models/database.py`
+- `models/webhook.py`
+
+## Summary
+
+The queue system now correctly preserves same-path ownership across promotion, persists queue intent through `queue_reason`, and rebuilds live running reservations after restart. The remaining work is mostly around queue visibility and lifecycle consistency for scheduler persistence, movie webhook queue states, and manual-sync status normalization.
