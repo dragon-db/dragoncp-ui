@@ -50,6 +50,65 @@ Movie webhook rows do not currently expose queue-reason-specific states; they st
 
 These maps are the live path-lock and running-slot authority used during admission and promotion.
 
+## Flow Diagrams
+
+### High-level admission flow
+
+```mermaid
+flowchart TD
+    A[New sync request] --> B[TransferCoordinator.start_transfer]
+    B --> C{Destination path already reserved?}
+    C -->|Yes| D[Create queued transfer]
+    D --> E[queue_reason = path]
+    E --> F[Return QUEUED_PATH]
+    C -->|No| G{Free running slot available?}
+    G -->|No| H[Create queued transfer]
+    H --> I[queue_reason = slot]
+    I --> J[Reserve destination in active_destinations]
+    J --> K[Return QUEUED_SLOT]
+    G -->|Yes| L[Register in running_transfers and active_destinations]
+    L --> M[Create pending transfer]
+    M --> N[Start rsync]
+    N --> O[Transfer becomes running]
+```
+
+### Queue promotion flow
+
+```mermaid
+flowchart TD
+    A[Running transfer finishes] --> B[QueueManager.unregister_transfer]
+    B --> C[Free running_transfers entry]
+    C --> D[Free active_destinations path lock]
+    D --> E[Try same-path promotion first]
+    E --> F{Queued transfer for same normalized path?}
+    F -->|Yes| G[Re-register promoted transfer in memory]
+    G --> H[Hand off to start_queued_transfer]
+    H --> I[queued -> pending]
+    I --> J[Webhook state -> syncing]
+    J --> K[Start rsync]
+    F -->|No| L[Scan general queued transfers]
+    L --> M{Path still free and slot available?}
+    M -->|Yes| N[Reserve queue state in memory]
+    N --> H
+    M -->|No, path conflict| O[Convert slot queue to path queue if needed]
+    O --> P[Keep queued until matching path frees]
+    M -->|No, no slot| Q[Stay queued]
+```
+
+### Restart recovery flow
+
+```mermaid
+flowchart TD
+    A[App start] --> B[force_unregister_stale_transfers]
+    B --> C[Clear stale in-memory reservations]
+    C --> D[Restore running transfers from DB]
+    D --> E[Restore queued destination reservations from DB]
+    E --> F[Promote queued work into free slots]
+    F --> G[resume_active_transfers]
+    G --> H[Resume monitoring live rsync PIDs]
+    H --> I[Restart post-completion watchers]
+```
+
 ## Admission Flow
 
 All new transfers converge through `TransferCoordinator.start_transfer()`.
