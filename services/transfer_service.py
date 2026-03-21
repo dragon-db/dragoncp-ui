@@ -599,9 +599,12 @@ class TransferService:
         """Resume transfers that were running when app was stopped"""
         active_transfers = self.transfer_model.get_all()
         resumed_count = 0
+        active_running_transfer_ids = []
         
         for transfer in active_transfers:
             if transfer['status'] == 'running':
+                active_running_transfer_ids.append(transfer['transfer_id'])
+
                 # Check if process is still running
                 if transfer['rsync_process_id'] and self._is_process_running(transfer['rsync_process_id']):
                     print(f"📋 Resuming monitoring for transfer {transfer['transfer_id']} (PID: {transfer['rsync_process_id']})")
@@ -623,6 +626,8 @@ class TransferService:
         
         if resumed_count > 0:
             print(f"✅ Resumed monitoring for {resumed_count} active transfers")
+
+        return active_running_transfer_ids
     
     def _is_process_running(self, pid: int) -> bool:
         """Check if a process is still running"""
@@ -648,9 +653,16 @@ class TransferService:
             process = psutil.Process(transfer['rsync_process_id'])
             
             # Monitor the process until completion
-            process.wait()
-            return_code = process.returncode
-            
+            return_code = process.wait()
+
+            if return_code is None:
+                self.transfer_model.update(transfer_id, {
+                    'status': 'completed',
+                    'progress': 'Transfer finished after restart (exit status unavailable)',
+                    'end_time': datetime.now().isoformat()
+                })
+                return
+
             if return_code == 0:
                 self.transfer_model.update(transfer_id, {
                     'status': 'completed',
@@ -663,12 +675,18 @@ class TransferService:
                     'progress': f'Transfer failed with exit code: {return_code}',
                     'end_time': datetime.now().isoformat()
                 })
-                
-        except Exception as e:
-            print(f"❌ Error resuming monitoring for {transfer_id}: {e}")
+        except psutil.NoSuchProcess:
             self.transfer_model.update(transfer_id, {
-                'status': 'failed',
-                'progress': f'Monitoring failed: {e}',
+                'status': 'completed',
+                'progress': 'Transfer process ended before restart monitoring attached',
                 'end_time': datetime.now().isoformat()
             })
-
+        except Exception as e:
+            print(f"❌ Error resuming monitoring for {transfer_id}: {e}")
+            refreshed_transfer = self.transfer_model.get(transfer_id)
+            if refreshed_transfer and refreshed_transfer['status'] == 'running':
+                self.transfer_model.update(transfer_id, {
+                    'status': 'failed',
+                    'progress': f'Monitoring failed: {e}',
+                    'end_time': datetime.now().isoformat()
+                })

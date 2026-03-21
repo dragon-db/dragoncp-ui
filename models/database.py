@@ -25,7 +25,19 @@ class DatabaseManager:
         self.db_path = os.path.join(script_dir, db_path)
         print(f"🗄️  Database path: {self.db_path}")
         self.init_database()
-    
+
+    def _ensure_column(self, conn, table_name: str, column_name: str, column_sql: str):
+        """Add a missing column to an existing table."""
+        existing_columns = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+
+        if column_name in existing_columns:
+            return
+
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
+        print(f"🧩 Added missing column {table_name}.{column_name}")
+
     def init_database(self):
         """Initialize database and create tables"""
         with sqlite3.connect(self.db_path) as conn:
@@ -44,6 +56,7 @@ class DatabaseManager:
                     operation_type TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'pending',
                     progress TEXT DEFAULT '',
+                    queue_reason TEXT,
                     rsync_process_id INTEGER,
                     logs TEXT DEFAULT '[]',
                     parsed_title TEXT,
@@ -244,7 +257,10 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_transfer_id ON backup(transfer_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_file_backup_id ON backup_file(backup_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_file_context_key ON backup_file(context_key)')
-            
+
+            # Backward-compatible schema additions
+            self._ensure_column(conn, 'transfers', 'queue_reason', "TEXT")
+
             conn.commit()
         
         print(f"✅ Database initialized: {self.db_path}")

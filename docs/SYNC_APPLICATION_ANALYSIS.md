@@ -1,6 +1,6 @@
 # DragonCP Custom Sync Application: Logic and Implementation Analysis
 
-Last updated: 2026-02-16
+Last updated: 2026-03-19
 Scope: Backend sync application only (`frontend/` excluded)
 
 ## 1. What This System Is Doing
@@ -84,6 +84,11 @@ Queue states represented through transfer + webhook state coupling:
 - `QUEUED_PATH`: waiting on same destination path to be freed.
 - `QUEUED_SLOT`: waiting on global slot availability.
 
+Implementation details now in place:
+- queued transfer rows persist `queue_reason` (`path` or `slot`) in `transfers`
+- same-path promotions re-register queue ownership before rsync starts
+- startup rebuilds running transfer reservations from DB before resuming monitors
+
 Promotion behavior:
 - Path-specific promotion first (`services/queue_manager.py:190`).
 - General slot promotion second (`services/queue_manager.py:270`).
@@ -119,6 +124,9 @@ Primary tables:
 - `app_settings`: runtime toggles and notification configuration.
 
 State transitions for series/anime notifications are documented in model comments (`models/webhook.py:189`).
+
+Important current-state note:
+- manual-sync-required rows are still stored as `pending` plus `requires_manual_sync=1`; the explicit `MANUAL_SYNC_REQUIRED` status is planned but not yet normalized end-to-end.
 
 ## 7. Backup and Restore Logic
 
@@ -194,7 +202,7 @@ This design improves recoverability but adds filesystem walk overhead after each
 
 1. Logging storage redesign (`transfers_log` table or buffered append) and notification lookup optimization.
 2. Event-driven completion callbacks and queue-promotion query optimization.
-3. Scheduler persistence and state normalization (`MANUAL_SYNC_REQUIRED` consistency).
+3. Scheduler persistence, explicit manual-sync status normalization, and tighter completion propagation for series/anime.
 4. API contract cleanup for manual transfer endpoint and improved id generation.
 5. Observability and adaptive QoS policy rollout.
 

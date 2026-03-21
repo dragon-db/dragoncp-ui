@@ -69,6 +69,8 @@ Use this file as the primary index for documentation under `docs/`. If you need 
 
 - `docs/database/v2_schema.md`
   - Current database schema documentation.
+- `docs/database/LEGACY_V2_MIGRATION_NOTES.md`
+  - Legacy v1-to-v2 migration notes, including older destructive migration assumptions.
 
 ### `/refactoring/`
 

@@ -40,9 +40,9 @@ class Transfer:
                 cursor = conn.execute('''
                     INSERT INTO transfers (
                         transfer_id, media_type, folder_name, season_name,
-                        source_path, dest_path, operation_type, status, rsync_process_id,
-                        parsed_title, parsed_season, start_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        source_path, dest_path, operation_type, status, progress,
+                        queue_reason, rsync_process_id, parsed_title, parsed_season, start_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     transfer_data['transfer_id'],
                     transfer_data['media_type'],
@@ -52,10 +52,12 @@ class Transfer:
                     transfer_data['dest_path'],
                     transfer_data['operation_type'],
                     transfer_data.get('status', 'pending'),
+                    transfer_data.get('progress', ''),
+                    transfer_data.get('queue_reason'),
                     transfer_data.get('rsync_process_id'),
                     parsed_data['title'],
                     parsed_data['season'],
-                    datetime.now().isoformat()
+                    transfer_data.get('start_time', datetime.now().isoformat())
                 ))
                 conn.commit()
                 print(f"✅ Transfer record created successfully for {transfer_data['transfer_id']}")
@@ -400,4 +402,3 @@ class Transfer:
                 'type': 'unknown',
                 'seasons': []
             }
-

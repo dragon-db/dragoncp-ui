@@ -84,8 +84,11 @@ Webhook status values (combined):
 - `syncing`
 - `completed`
 - `failed`
-- `MANUAL_SYNC_REQUIRED`
 - `cancelled`
+
+Current implementation note:
+- series/anime manual-sync-required rows are not yet persisted as `MANUAL_SYNC_REQUIRED`
+- they currently remain `pending` with `requires_manual_sync=1` and `manual_sync_reason` populated
 
 ---
 
@@ -662,16 +665,19 @@ Output JSON:
   "transfers": [],
   "total": 0,
   "queue_status": {
-    "max_concurrent": 2,
+    "max_concurrent": 3,
     "running_count": 0,
     "queued_count": 0,
-    "available_slots": 2,
+    "available_slots": 3,
     "running_transfer_ids": [],
     "queued_transfer_ids": [],
     "active_destinations": []
   }
 }
 ```
+
+Implementation note:
+- `queue_status.active_destinations` currently contains the transfer IDs that own reserved destinations, not the normalized path strings themselves.
 
 ### GET `/transfers/queue/status`
 What it does: returns queue state only.
@@ -683,10 +689,10 @@ Output JSON:
 {
   "status": "success",
   "queue": {
-    "max_concurrent": 2,
+    "max_concurrent": 3,
     "running_count": 0,
     "queued_count": 0,
-    "available_slots": 2
+    "available_slots": 3
   }
 }
 ```
