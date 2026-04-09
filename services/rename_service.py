@@ -409,7 +409,11 @@ class RenameService:
         return local_path
 
     def _extract_verification_files(self, notification: Dict) -> List[Dict]:
-        """Prefer stored webhook JSON, then fall back to persisted rename rows."""
+        """Prefer persisted rename results, then fall back to stored webhook JSON."""
+        renamed_files = notification.get('renamed_files')
+        if isinstance(renamed_files, list) and renamed_files:
+            return renamed_files
+
         raw_webhook_data = notification.get('raw_webhook_data')
         if raw_webhook_data:
             try:
@@ -418,7 +422,6 @@ class RenameService:
             except (TypeError, ValueError, json.JSONDecodeError) as e:
                 print(f"⚠️  Failed to parse stored rename webhook JSON for verification: {e}")
 
-        renamed_files = notification.get('renamed_files') or []
         if isinstance(renamed_files, list):
             return renamed_files
         return []

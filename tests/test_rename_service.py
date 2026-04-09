@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +46,7 @@ class RenameServiceTests(unittest.TestCase):
             'S01E09 - 009 - The Assassin Sees The Sights [Anime Dual-Audio WEBDL-1080p][JA+EN][VARYG-Dragon DB].mkv'
         )
         self.previous_local_path = os.path.join(self.anime_dest, self.series_folder, self.previous_relative_path)
+        self.new_local_path = os.path.join(self.anime_dest, self.series_folder, self.new_relative_path)
         os.makedirs(os.path.dirname(self.previous_local_path), exist_ok=True)
         with open(self.previous_local_path, 'w', encoding='utf-8') as handle:
             handle.write('test payload')
@@ -96,6 +98,16 @@ class RenameServiceTests(unittest.TestCase):
         self.assertEqual(verify_result['failed_count'], 0)
         self.assertEqual(verify_result['files'][0]['status'], 'verified')
         self.assertIn('Expected renamed file exists locally', verify_result['files'][0]['message'])
+
+    def test_process_rename_webhook_reports_persistence_failure_after_rename(self):
+        with patch.object(self.rename_model, 'update', return_value=False) as mocked_update:
+            success, result = self.service.process_rename_webhook(self.webhook_data, 'anime')
+
+        self.assertFalse(success)
+        self.assertTrue(result['persistence_error'])
+        self.assertTrue(mocked_update.called)
+        self.assertFalse(os.path.exists(self.previous_local_path))
+        self.assertTrue(os.path.exists(self.new_local_path))
 
 
 if __name__ == '__main__':

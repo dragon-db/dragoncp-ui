@@ -2260,6 +2260,8 @@ export class WebhookManager {
                     <div class="d-flex align-items-center gap-2">
                         ${statusBadge}
                         <button class="btn btn-outline-success btn-sm"
+                                title="Verify Rename"
+                                aria-label="Verify Rename"
                                 onclick="dragonCP.webhook.verifyRenameNotification('${notification.notification_id}', this)">
                             <i class="bi bi-patch-check"></i>
                         </button>

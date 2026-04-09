@@ -174,6 +174,28 @@ function mapMediaType(mediaType: string) {
   return mediaType;
 }
 
+function getApiErrorMessage(error: unknown) {
+  if (typeof error !== 'object' || error === null) return undefined;
+
+  const maybeError = error as {
+    response?: {
+      data?: {
+        result?: { message?: string }
+        message?: string
+      }
+    }
+    result?: { message?: string }
+    message?: string
+  };
+
+  return (
+    maybeError.response?.data?.result?.message ??
+    maybeError.response?.data?.message ??
+    maybeError.result?.message ??
+    maybeError.message
+  );
+}
+
 export function WebhooksPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [activeTab, setActiveTab] = useState('notifications');
@@ -338,8 +360,8 @@ export function WebhooksPage() {
       } else {
         toast.error(response.result.message);
       }
-    } catch {
-      toast.error('Failed to verify rename');
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) || 'Failed to verify rename');
     } finally {
       setVerifyingRenameId(null);
     }
