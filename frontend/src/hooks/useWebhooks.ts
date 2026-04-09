@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/api';
-import type { RenameNotification, WebhookNotification } from '@/lib/api-types';
-export type { RenameNotification, WebhookNotification } from '@/lib/api-types';
+import type { RenameNotification, RenameVerificationResult, WebhookNotification } from '@/lib/api-types';
+export type { RenameNotification, RenameVerificationResult, WebhookNotification } from '@/lib/api-types';
 
 export interface WebhookSettings {
   auto_sync_movies: boolean;
@@ -79,6 +79,18 @@ export function useDeleteRenameNotification() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['webhooks', 'rename'] });
+    },
+  });
+}
+
+export function useVerifyRenameNotification() {
+  return useMutation({
+    mutationFn: async (notificationId: string) => {
+      const response = await api.post<{
+        status: string;
+        result: RenameVerificationResult;
+      }>(`/webhook/rename/notifications/${notificationId}/verify`);
+      return response.data;
     },
   });
 }

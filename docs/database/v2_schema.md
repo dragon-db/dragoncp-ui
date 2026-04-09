@@ -291,7 +291,8 @@ CREATE TABLE rename_webhook (
     error_message TEXT,
     raw_webhook_data TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    processed_at DATETIME
+    completed_at DATETIME,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )
 ```
 
@@ -310,7 +311,8 @@ CREATE TABLE rename_webhook (
 - `error_message` - Error details if failed
 - `raw_webhook_data` - Full webhook JSON payload
 - `created_at` - Record creation timestamp
-- `processed_at` - Timestamp when processing completed
+- `completed_at` - Timestamp when processing completed
+- `updated_at` - Timestamp of the last row update
 
 **Indexes:**
 - `idx_rename_webhook_notification_id` on `notification_id` - Fast lookup by notification ID

@@ -7,11 +7,13 @@ import {
   useRenameNotificationDetails,
   useRenameNotifications,
   useTriggerWebhookSync,
+  useVerifyRenameNotification,
   useWebhookDryRun,
   useWebhookNotificationDetails,
   useWebhookNotificationJson,
   useWebhookNotifications,
   type RenameNotification,
+  type RenameVerificationResult,
   type WebhookNotification,
 } from '@/hooks/useWebhooks';
 import { onRenameCompleted, onRenameWebhookReceived, onWebhookCaptured, onWebhookReceived } from '@/services/socket';
@@ -182,6 +184,8 @@ export function WebhooksPage() {
   const [dryRunPayload, setDryRunPayload] = useState<unknown>(null);
 
   const [renameDetailsId, setRenameDetailsId] = useState<string | null>(null);
+  const [renameVerifyPayload, setRenameVerifyPayload] = useState<RenameVerificationResult | null>(null);
+  const [verifyingRenameId, setVerifyingRenameId] = useState<string | null>(null);
 
   const notificationsQuery = useWebhookNotifications(statusFilter === 'all' ? undefined : statusFilter, 100);
   const renameQuery = useRenameNotifications(100);
@@ -195,6 +199,7 @@ export function WebhooksPage() {
   const deleteMutation = useDeleteWebhookNotification();
   const dryRunMutation = useWebhookDryRun();
   const deleteRenameMutation = useDeleteRenameNotification();
+  const verifyRenameMutation = useVerifyRenameNotification();
 
   useEffect(() => {
     const offWebhookCaptured = onWebhookCaptured(() => {
@@ -317,6 +322,26 @@ export function WebhooksPage() {
       }
     } catch {
       toast.error('Failed to delete rename notification');
+    }
+  };
+
+  const runVerifyRename = async (notification: RenameNotification) => {
+    setVerifyingRenameId(notification.notification_id);
+    try {
+      const response = await verifyRenameMutation.mutateAsync(notification.notification_id);
+      setRenameVerifyPayload(response.result);
+
+      if (response.result.status === 'verified') {
+        toast.success(response.result.message);
+      } else if (response.result.status === 'partial') {
+        toast.warning(response.result.message);
+      } else {
+        toast.error(response.result.message);
+      }
+    } catch {
+      toast.error('Failed to verify rename');
+    } finally {
+      setVerifyingRenameId(null);
     }
   };
 
@@ -515,6 +540,15 @@ export function WebhooksPage() {
                             <Button
                               size="sm"
                               variant="outline"
+                              onClick={() => runVerifyRename(notification)}
+                              disabled={verifyingRenameId === notification.notification_id}
+                            >
+                              <IconCheck className="h-4 w-4 mr-1.5" />
+                              {verifyingRenameId === notification.notification_id ? 'Verifying...' : 'Verify Rename'}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
                               onClick={() => window.open(`/api/webhook/rename/notifications/${notification.notification_id}/json`, '_blank')}
                             >
                               <IconCode className="h-4 w-4 mr-1.5" />
@@ -700,7 +734,7 @@ export function WebhooksPage() {
           </DialogHeader>
           {renameDetailsQuery.data?.notification ? (
             <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-3 text-sm">
+              <div className="grid gap-3 md:grid-cols-4 text-sm">
                 <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
                   <div className="text-neutral-500">Series</div>
                   <div className="text-neutral-200 mt-1">{renameDetailsQuery.data.notification.series_title}</div>
@@ -715,6 +749,34 @@ export function WebhooksPage() {
                     {renameDetailsQuery.data.notification.success_count}/{renameDetailsQuery.data.notification.total_files} successful
                   </div>
                 </div>
+                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
+                  <div className="text-neutral-500">Completed</div>
+                  <div className="text-neutral-200 mt-1">
+                    {renameDetailsQuery.data.notification.completed_at
+                      ? new Date(renameDetailsQuery.data.notification.completed_at).toLocaleString()
+                      : 'Not completed'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => runVerifyRename(renameDetailsQuery.data.notification)}
+                  disabled={verifyingRenameId === renameDetailsQuery.data.notification.notification_id}
+                >
+                  <IconCheck className="h-4 w-4 mr-1.5" />
+                  {verifyingRenameId === renameDetailsQuery.data.notification.notification_id ? 'Verifying...' : 'Verify Rename'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => window.open(`/api/webhook/rename/notifications/${renameDetailsQuery.data.notification.notification_id}/json`, '_blank')}
+                >
+                  <IconCode className="h-4 w-4 mr-1.5" />
+                  JSON
+                </Button>
               </div>
 
               <ScrollArea className="h-[50vh] pr-3">
@@ -733,6 +795,22 @@ export function WebhooksPage() {
           ) : (
             <div className="text-neutral-500">Loading...</div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(renameVerifyPayload)} onOpenChange={(open) => !open && setRenameVerifyPayload(null)}>
+        <DialogContent className="max-w-4xl bg-neutral-900 border-neutral-800">
+          <DialogHeader>
+            <DialogTitle className="text-white">Rename Verification</DialogTitle>
+            <DialogDescription className="text-neutral-400">
+              On-disk check against the expected TO filenames from the stored Sonarr webhook
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            readOnly
+            className="min-h-[60vh] bg-neutral-950 border-neutral-800 font-mono text-xs"
+            value={renameVerifyPayload ? JSON.stringify(renameVerifyPayload, null, 2) : 'No verification output'}
+          />
         </DialogContent>
       </Dialog>
     </div>
