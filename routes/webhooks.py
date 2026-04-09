@@ -1431,3 +1431,35 @@ def api_rename_notification_delete(notification_id):
             "status": "error",
             "message": f"Failed to delete rename notification: {str(e)}"
         }), 500
+
+
+@webhooks_bp.route('/webhook/rename/notifications/<notification_id>/verify', methods=['POST'])
+@require_auth
+def api_rename_notification_verify(notification_id):
+    """Verify renamed files against the expected Sonarr target filenames."""
+    try:
+        if not rename_service:
+            return jsonify({
+                "status": "error",
+                "message": "Rename service not initialized"
+            }), 500
+
+        success, result = rename_service.verify_rename_notification(notification_id)
+
+        if not success and result.get('status') == 'not_found':
+            return jsonify({
+                "status": "error",
+                "message": result.get('message', 'Rename notification not found')
+            }), 404
+
+        return jsonify({
+            "status": "success" if success else "error",
+            "result": result
+        }), 200 if success else 400
+
+    except Exception as e:
+        print(f"❌ Error verifying rename notification: {e}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to verify rename notification: {str(e)}"
+        }), 500

@@ -112,13 +112,39 @@ export interface RenameNotification {
   success_count: number
   failed_count: number
   created_at?: string
-  processed_at?: string
+  completed_at?: string
   renamed_files?: Array<{
     previous_name?: string
     new_name?: string
+    previous_relative_path?: string
+    new_relative_path?: string
     status?: string
     message?: string
     error?: string
+    local_previous_path?: string | null
+    local_new_path?: string | null
+  }>
+}
+
+export interface RenameVerificationResult {
+  notification_id: string
+  series_title: string
+  media_type?: string
+  status: 'verified' | 'partial' | 'failed' | 'not_found' | string
+  total_files: number
+  verified_count: number
+  failed_count: number
+  verified_at?: string
+  message: string
+  files: Array<{
+    previous_name?: string
+    expected_name?: string
+    local_previous_path?: string | null
+    local_expected_path?: string | null
+    actual_name?: string | null
+    actual_path?: string | null
+    status?: 'verified' | 'failed' | string
+    message?: string
   }>
 }
 

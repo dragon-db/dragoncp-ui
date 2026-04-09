@@ -2259,6 +2259,12 @@ export class WebhookManager {
                     </div>
                     <div class="d-flex align-items-center gap-2">
                         ${statusBadge}
+                        <button class="btn btn-outline-success btn-sm"
+                                title="Verify Rename"
+                                aria-label="Verify Rename"
+                                onclick="dragonCP.webhook.verifyRenameNotification('${notification.notification_id}', this)">
+                            <i class="bi bi-patch-check"></i>
+                        </button>
                         <button class="btn btn-outline-secondary btn-sm" 
                                 onclick="dragonCP.webhook.showRenameDetails('${notification.notification_id}')">
                             <i class="bi bi-eye"></i>
@@ -2336,8 +2342,9 @@ export class WebhookManager {
         const statusBadge = this.getRenameStatusBadge(notification.status);
         const createdAt = notification.created_at ? 
             new Date(notification.created_at).toLocaleString() : 'Unknown';
-        const processedAt = notification.processed_at ? 
-            new Date(notification.processed_at).toLocaleString() : 'Not processed';
+        const completedAtValue = notification.completed_at || notification.processed_at;
+        const completedAt = completedAtValue ? 
+            new Date(completedAtValue).toLocaleString() : 'Not completed';
         
         // Calculate progress percentage
         const total = notification.total_files || 0;
@@ -2436,8 +2443,9 @@ export class WebhookManager {
                             ${notification.media_type === 'anime' ? 'Anime' : 'Series'}
                         </span>
                         ${statusBadge}
-                        <small class="text-muted">${processedAt}</small>
+                        <small class="text-muted">Completed: ${completedAt}</small>
                     </div>
+                    <small class="text-muted d-block mt-2">Created: ${createdAt}</small>
                 </div>
                 <div class="text-end mt-2 mt-md-0">
                     <div class="d-flex align-items-center gap-3">
@@ -2485,6 +2493,9 @@ export class WebhookManager {
         const footer = document.getElementById('renameDetailsFooter');
         if (footer) {
             footer.innerHTML = `
+                <button type="button" class="btn btn-outline-success btn-sm" onclick="dragonCP.webhook.verifyRenameNotification('${notification.notification_id}', this)">
+                    <i class="bi bi-patch-check me-1"></i> Verify Rename
+                </button>
                 <button type="button" class="btn btn-outline-info btn-sm" onclick="dragonCP.webhook.viewRenameWebhookJson('${notification.notification_id}')">
                     <i class="bi bi-code-square me-1"></i> View JSON
                 </button>
@@ -2498,6 +2509,38 @@ export class WebhookManager {
     
     viewRenameWebhookJson(notificationId) {
         this.showProtectedJson(`/api/webhook/rename/notifications/${notificationId}/json`, 'Rename Webhook JSON');
+    }
+
+    async verifyRenameNotification(notificationId, button = null) {
+        const originalHtml = button ? button.innerHTML : null;
+        if (button) {
+            button.disabled = true;
+            button.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
+        }
+
+        try {
+            const response = await this.app.api.fetch(`/api/webhook/rename/notifications/${notificationId}/verify`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+
+            if (result.status === 'success') {
+                const alertType = result.result?.status === 'verified' ? 'success' :
+                    result.result?.status === 'partial' ? 'warning' : 'danger';
+                this.app.ui.showAlert(result.result?.message || 'Rename verification completed', alertType);
+            } else {
+                const message = result.result?.message || result.message || 'Failed to verify rename notification';
+                this.app.ui.showAlert(message, 'danger');
+            }
+        } catch (error) {
+            console.error('Failed to verify rename notification:', error);
+            this.app.ui.showAlert('Failed to verify rename notification', 'danger');
+        } finally {
+            if (button) {
+                button.disabled = false;
+                button.innerHTML = originalHtml;
+            }
+        }
     }
     
     async deleteRenameNotification(notificationId) {

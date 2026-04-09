@@ -100,27 +100,39 @@ class RenameService:
             # This is stored in error_message field but contains all logs
             error_message = "\n".join(operation_logs) if operation_logs else None
             
+            completed_at = datetime.now().isoformat()
+
             # Update notification in database
-            self.rename_model.update(notification_id, {
+            update_succeeded = self.rename_model.update(notification_id, {
                 'renamed_files': renamed_files,
                 'success_count': success_count,
                 'failed_count': failed_count,
                 'status': status,
                 'error_message': error_message,
-                'processed_at': datetime.now().isoformat()
+                'completed_at': completed_at
             })
             
             # Build result
             result = {
                 'notification_id': notification_id,
                 'series_title': rename_data['series_title'],
+                'media_type': rename_data['media_type'],
                 'total_files': rename_data['total_files'],
                 'success_count': success_count,
                 'failed_count': failed_count,
                 'status': status,
                 'renamed_files': renamed_files,
+                'completed_at': completed_at,
                 'message': self._build_result_message(rename_data['series_title'], success_count, failed_count)
             }
+
+            if not update_succeeded:
+                result['message'] = (
+                    f"Rename completed on disk for {rename_data['series_title']}, but Rename History could not be updated"
+                )
+                result['persistence_error'] = True
+                print(f"⚠️  {result['message']}")
+                return False, result
             
             # Emit completion WebSocket event
             if self.socketio:
@@ -132,8 +144,6 @@ class RenameService:
             
             # Send Discord notification
             if self.notification_service:
-                # Add media_type to result for notification
-                result['media_type'] = rename_data['media_type']
                 self.notification_service.send_rename_discord_notification(result)
             
             return (status != 'failed', result)
@@ -147,6 +157,65 @@ class RenameService:
                 'message': f"Failed to process rename webhook: {str(e)}",
                 'error': str(e)
             })
+
+    def verify_rename_notification(self, notification_id: str) -> Tuple[bool, Dict]:
+        """Verify that renamed files exist locally at the expected target paths."""
+        notification = self.rename_model.get(notification_id)
+        if not notification:
+            return False, {
+                'status': 'not_found',
+                'message': 'Rename notification not found'
+            }
+
+        files_to_verify = self._extract_verification_files(notification)
+        if not files_to_verify:
+            return False, {
+                'notification_id': notification_id,
+                'series_title': notification.get('series_title', 'Unknown Series'),
+                'status': 'failed',
+                'message': 'No renamed files are available for verification'
+            }
+
+        verified_files = []
+        verified_count = 0
+        failed_count = 0
+
+        for file_info in files_to_verify:
+            verification = self._verify_local_rename(
+                file_info,
+                notification.get('series_path', ''),
+                notification.get('media_type', ''),
+            )
+            verified_files.append(verification)
+            if verification['status'] == 'verified':
+                verified_count += 1
+            else:
+                failed_count += 1
+
+        if failed_count == 0:
+            status = 'verified'
+        elif verified_count == 0:
+            status = 'failed'
+        else:
+            status = 'partial'
+
+        result = {
+            'notification_id': notification_id,
+            'series_title': notification.get('series_title', 'Unknown Series'),
+            'media_type': notification.get('media_type'),
+            'status': status,
+            'total_files': len(verified_files),
+            'verified_count': verified_count,
+            'failed_count': failed_count,
+            'verified_at': datetime.now().isoformat(),
+            'files': verified_files,
+            'message': self._build_verification_message(
+                notification.get('series_title', 'Unknown Series'),
+                verified_count,
+                failed_count,
+            ),
+        }
+        return True, result
     
     def _parse_rename_data(self, webhook_data: Dict, media_type: str) -> Dict:
         """
@@ -338,6 +407,71 @@ class RenameService:
         local_path = os.path.join(dest_base, series_folder_name, relative_path_normalized)
         
         return local_path
+
+    def _extract_verification_files(self, notification: Dict) -> List[Dict]:
+        """Prefer persisted rename results, then fall back to stored webhook JSON."""
+        renamed_files = notification.get('renamed_files')
+        if isinstance(renamed_files, list) and renamed_files:
+            return renamed_files
+
+        raw_webhook_data = notification.get('raw_webhook_data')
+        if raw_webhook_data:
+            try:
+                parsed = self._parse_rename_data(json.loads(raw_webhook_data), notification.get('media_type', ''))
+                return parsed.get('renamed_files', [])
+            except (TypeError, ValueError, json.JSONDecodeError) as e:
+                print(f"⚠️  Failed to parse stored rename webhook JSON for verification: {e}")
+
+        if isinstance(renamed_files, list):
+            return renamed_files
+        return []
+
+    def _verify_local_rename(self, file_info: Dict, server_series_path: str, media_type: str) -> Dict:
+        """Check whether the expected renamed file exists locally."""
+        previous_name = file_info.get('previous_name') or os.path.basename(file_info.get('previous_path', ''))
+        new_name = file_info.get('new_name') or os.path.basename(file_info.get('new_path', ''))
+
+        local_previous_path = file_info.get('local_previous_path')
+        if not local_previous_path and file_info.get('previous_relative_path'):
+            local_previous_path = self._map_to_local_path(
+                file_info['previous_relative_path'],
+                server_series_path,
+                media_type,
+            )
+
+        local_new_path = file_info.get('local_new_path')
+        if not local_new_path and file_info.get('new_relative_path'):
+            local_new_path = self._map_to_local_path(
+                file_info['new_relative_path'],
+                server_series_path,
+                media_type,
+            )
+
+        result = {
+            'previous_name': previous_name,
+            'expected_name': new_name,
+            'local_previous_path': local_previous_path,
+            'local_expected_path': local_new_path,
+            'actual_name': None,
+            'actual_path': None,
+            'status': 'failed',
+            'message': 'Expected renamed file was not found locally',
+        }
+
+        if local_new_path and os.path.exists(local_new_path):
+            result['actual_name'] = os.path.basename(local_new_path)
+            result['actual_path'] = local_new_path
+            result['status'] = 'verified'
+            result['message'] = 'Expected renamed file exists locally'
+            return result
+
+        if local_previous_path and os.path.exists(local_previous_path):
+            result['actual_name'] = os.path.basename(local_previous_path)
+            result['actual_path'] = local_previous_path
+            result['message'] = 'File still exists at the previous path'
+            return result
+
+        return result
     
     def _build_result_message(self, series_title: str, success_count: int, failed_count: int) -> str:
         """
@@ -360,3 +494,12 @@ class RenameService:
         else:
             return f"Renamed {success_count}/{total} file(s) for {series_title} ({failed_count} failed)"
 
+    def _build_verification_message(self, series_title: str, verified_count: int, failed_count: int) -> str:
+        """Build a human-readable verification summary."""
+        total = verified_count + failed_count
+
+        if failed_count == 0:
+            return f"Verified {verified_count}/{total} renamed file(s) for {series_title}"
+        if verified_count == 0:
+            return f"Could not verify any renamed files for {series_title}"
+        return f"Verified {verified_count}/{total} renamed file(s) for {series_title} ({failed_count} missing)"
