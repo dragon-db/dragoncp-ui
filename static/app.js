@@ -32,6 +32,7 @@ class DragonCPUI {
         this.modulesInitialized = false;
         this.isBootstrapping = false;
         this.handlingSessionExpiry = false;
+        this.hasAttemptedAutoConnect = false;
 
         // Core modules
         this.ui = new UIComponents(this);
@@ -275,6 +276,7 @@ class DragonCPUI {
 
     handleAuthLogout(reason) {
         this.currentState.connected = false;
+        this.hasAttemptedAutoConnect = false;
         this.updateAuthUI(false);
 
         if (this.websocket) {
@@ -306,18 +308,23 @@ class DragonCPUI {
     async initializeConnection() {
         try {
             this.ui.updateStatus('Initializing application...', 'connecting');
-            
+
             // Load configuration first
             await this.config.loadConfiguration();
-            
-            // Only auto-connect on first load
-            if (!this.websocket.hasEverConnected) {
+
+            // Attempt SSH auto-connect on first load, independent of WebSocket state.
+            // Previously this was gated on !this.websocket.hasEverConnected, which
+            // caused a race condition: if Socket.IO connected before this point,
+            // hasEverConnected was already true, so auto-connect was skipped entirely
+            // and Browse Media would stay hidden (issue #50).
+            if (!this.hasAttemptedAutoConnect) {
+                this.hasAttemptedAutoConnect = true;
                 if (!this.websocket.isWebSocketConnected) {
                     this.websocket.connect();
                 }
                 const autoConnectResponse = await this.api.fetch('/api/auto-connect');
                 const autoConnectResult = await autoConnectResponse.json();
-                
+
                 if (autoConnectResult.status === 'success') {
                     this.currentState.connected = true;
                     this.ui.updateStatus('Connected to server', 'connected');
