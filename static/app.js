@@ -318,14 +318,25 @@ class DragonCPUI {
             // hasEverConnected was already true, so auto-connect was skipped entirely
             // and Browse Media would stay hidden (issue #50).
             if (!this.hasAttemptedAutoConnect) {
-                this.hasAttemptedAutoConnect = true;
                 if (!this.websocket.isWebSocketConnected) {
                     this.websocket.connect();
                 }
-                const autoConnectResponse = await this.api.fetch('/api/auto-connect');
-                const autoConnectResult = await autoConnectResponse.json();
+                let autoConnectResult = null;
+                try {
+                    const autoConnectResponse = await this.api.fetch('/api/auto-connect');
+                    autoConnectResult = await autoConnectResponse.json();
+                } catch (fetchError) {
+                    console.error('Auto-connect fetch failed:', fetchError);
+                }
 
-                if (autoConnectResult.status === 'success') {
+                console.log('autoConnect:', {
+                    state: { hasAttemptedAutoConnect: this.hasAttemptedAutoConnect, connected: this.currentState.connected },
+                    websocket: { isConnected: this.websocket.isWebSocketConnected, hasEverConnected: this.websocket.hasEverConnected, transport: this.websocket.lastTransport },
+                    result: autoConnectResult
+                });
+
+                if (autoConnectResult?.status === 'success') {
+                    this.hasAttemptedAutoConnect = true;
                     this.currentState.connected = true;
                     this.ui.updateStatus('Connected to server', 'connected');
                     this.ui.showAlert('Auto-connected successfully!', 'success');
@@ -333,6 +344,8 @@ class DragonCPUI {
                     this.media.loadMediaTypes();
                     return;
                 }
+                // Auto-connect failed or fetch errored — don't set hasAttemptedAutoConnect
+                // so subsequent sessions (e.g. re-login) can retry automatically.
             }
             // If auto-connect fails, check if we have credentials
             if (this.config.hasConnectionCredentials()) {
