@@ -59,3 +59,9 @@
   - queue behavior: `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md`
   - frontend React details: `docs/frontend/FRONTEND_REFERENCE.md`
   - API endpoints: `docs/api/API_REFERENCE.md`
+
+## Attribution Policy
+
+- Do not add any AI/Claude attribution to commit messages, PR descriptions, or code comments.
+- No `Co-Authored-By`, no "Generated with Claude Code", no similar attribution lines.
+- This applies across all projects.
