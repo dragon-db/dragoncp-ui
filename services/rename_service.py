@@ -7,6 +7,12 @@ This service is isolated from the sync/transfer logic because:
 - Rename operations are local filesystem operations only (no rsync/SSH)
 - Immediate execution, no queue management needed
 - Simple os.rename() vs complex transfer coordination
+
+SECURITY: This service performs direct filesystem operations (os.rename,
+os.makedirs) using paths derived from webhook payloads. All constructed
+paths are validated through security.assert_path_within_bounds() before
+any filesystem operation to prevent directory traversal attacks.
+See security.py for the validation implementation.
 """
 
 import os
@@ -15,6 +21,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
 from services.path_service import PathService
+from security import assert_path_within_bounds, validate_relative_path, PathTraversalError
 
 
 class RenameService:
@@ -346,6 +353,14 @@ class RenameService:
                         print(f"   {log_msg}")
                         operation_logs.append(log_msg)
                         
+            except PathTraversalError as e:
+                # SECURITY: Path traversal attempt detected in webhook rename data
+                result['status'] = 'failed'
+                result['message'] = 'Path traversal rejected'
+                result['error'] = f"Security: {str(e)}"
+                log_msg = f"SECURITY: Path traversal blocked for {result['previous_name']}: {e}"
+                print(f"   {log_msg}")
+                operation_logs.append(log_msg)
             except PermissionError as e:
                 result['status'] = 'failed'
                 result['message'] = 'Permission denied'
@@ -375,37 +390,51 @@ class RenameService:
     def _map_to_local_path(self, relative_path: str, server_series_path: str, media_type: str) -> str:
         """
         Convert a server relative path to a local filesystem path.
-        
+
         Example:
             relative_path: "Season 01/Show - S01E01 - Title.mkv"
             server_series_path: "/home/dragondb/media/TV Shows/Show Name (2025)"
             media_type: "tvshows"
-            
+
             Result: "{TVSHOW_DEST_PATH}/Show Name (2025)/Season 01/Show - S01E01 - Title.mkv"
-        
+
         Args:
             relative_path: Relative path from Sonarr (e.g., "Season 01/filename.mkv")
             server_series_path: Full server path to series folder
             media_type: 'tvshows' or 'anime'
-        
+
         Returns:
             Full local filesystem path
+
+        Raises:
+            PathTraversalError: If the constructed path escapes the destination directory
         """
+        # SECURITY: Validate the relative path from webhook doesn't contain traversal
+        if not validate_relative_path(relative_path):
+            raise PathTraversalError(
+                f"Invalid relative path from webhook: {relative_path}"
+            )
+
         # Get the series folder name from the server path
         series_folder_name = os.path.basename(server_series_path.rstrip('/'))
-        
+
         # Get the local base destination path for this media type
         dest_base = self.path_service.get_base_destination(media_type)
         if not dest_base:
             raise ValueError(f"Destination path not configured for media type: {media_type}")
-        
+
         # Normalize path separators for the current OS
         # Sonarr sends paths with forward slashes, but we need OS-appropriate separators
         relative_path_normalized = relative_path.replace('/', os.sep).replace('\\', os.sep)
-        
+
         # Construct the full local path
         local_path = os.path.join(dest_base, series_folder_name, relative_path_normalized)
-        
+
+        # SECURITY: Validate the constructed path stays within the destination base.
+        # This is the critical check that prevents directory traversal via crafted
+        # relative paths from webhook payloads (e.g., "../../etc/passwd").
+        assert_path_within_bounds(local_path, [dest_base])
+
         return local_path
 
     def _extract_verification_files(self, notification: Dict) -> List[Dict]:

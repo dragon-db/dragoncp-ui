@@ -11,6 +11,7 @@ from flask import Blueprint, jsonify, request, Response
 import requests
 import json
 from auth import require_auth
+from webhook_auth import require_webhook_auth
 
 webhooks_bp = Blueprint('webhooks', __name__)
 
@@ -52,6 +53,7 @@ def init_webhook_routes(app_config, app_transfer_coordinator, app_rename_service
 # ===== WEBHOOK RECEIVER ENDPOINTS =====
 
 @webhooks_bp.route('/webhook/movies', methods=['POST'])
+@require_webhook_auth
 def api_webhook_movies_receiver():
     """Webhook receiver endpoint for movie notifications from Radarr"""
     try:
@@ -166,6 +168,7 @@ def api_webhook_movies_receiver():
 
 
 @webhooks_bp.route('/webhook/series', methods=['POST'])
+@require_webhook_auth
 def api_webhook_series_receiver():
     """Webhook receiver endpoint for series notifications from Sonarr"""
     try:
@@ -290,6 +293,7 @@ def api_webhook_series_receiver():
 
 
 @webhooks_bp.route('/webhook/anime', methods=['POST'])
+@require_webhook_auth
 def api_webhook_anime_receiver():
     """Webhook receiver endpoint for anime notifications from Sonarr"""
     try:

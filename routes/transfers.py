@@ -2,11 +2,17 @@
 """
 DragonCP Transfer Routes
 Handles transfer operations: start, status, cancel, restart, delete, cleanup
+
+SECURITY: All path components from POST body data (folder_name, season_name,
+episode_name) are validated through security.validate_path_component() before
+being used to construct filesystem paths. This prevents path traversal attacks.
+See security.py for the validation implementation.
 """
 
 import time
 from flask import Blueprint, jsonify, request
 from auth import require_auth
+from security import validate_path_component
 
 transfers_bp = Blueprint('transfers', __name__)
 
@@ -39,7 +45,17 @@ def api_transfer():
         if not media_type or not folder_name:
             print("❌ Missing media_type or folder_name")
             return jsonify({"status": "error", "message": "Media type and folder name are required"})
-        
+
+        # SECURITY: Validate all path components from POST body to prevent
+        # directory traversal. Each component must be a single path segment
+        # without "..", "/", "\", or null bytes. See security.py.
+        if not validate_path_component(folder_name):
+            return jsonify({"status": "error", "message": "Invalid folder name"}), 400
+        if season_name and not validate_path_component(season_name):
+            return jsonify({"status": "error", "message": "Invalid season name"}), 400
+        if episode_name and not validate_path_component(episode_name):
+            return jsonify({"status": "error", "message": "Invalid episode name"}), 400
+
         # Get source path from config
         source_path_map = {
             "movies": config.get("MOVIE_PATH"),

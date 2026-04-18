@@ -6,7 +6,7 @@ Manages environment configuration and session overrides
 
 import os
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List
 from flask import session, has_request_context
 
 
@@ -81,6 +81,41 @@ class DragonCPConfig:
         session['ui_config'] = current_session_config
         print(f"✅ Session configuration updated: {list(config_data.keys())}")
     
+    def get_all_allowed_paths(self) -> List[str]:
+        """
+        Get all configured directory paths that define filesystem security boundaries.
+
+        SECURITY: These paths are the ONLY directories DragonCP is allowed to
+        operate in. All file operations (read, write, rename, delete, rsync,
+        backup/restore) MUST validate that constructed paths resolve within
+        one of these directories. See security.py for enforcement functions.
+
+        Returns:
+            List of configured directory paths (empty strings filtered out)
+        """
+        path_keys = [
+            'MOVIE_PATH', 'TVSHOW_PATH', 'ANIME_PATH',
+            'MOVIE_DEST_PATH', 'TVSHOW_DEST_PATH', 'ANIME_DEST_PATH',
+            'BACKUP_PATH'
+        ]
+        return [self.get(k) for k in path_keys if self.get(k)]
+
+    def get_destination_paths(self) -> List[str]:
+        """
+        Get all configured LOCAL destination paths.
+
+        SECURITY: These are the local filesystem directories where DragonCP
+        writes data. Path traversal protection is most critical for these
+        paths since the Flask process has direct filesystem access.
+
+        Returns:
+            List of configured destination directory paths (empty strings filtered out)
+        """
+        dest_keys = [
+            'MOVIE_DEST_PATH', 'TVSHOW_DEST_PATH', 'ANIME_DEST_PATH'
+        ]
+        return [self.get(k) for k in dest_keys if self.get(k)]
+
     def save_config(self, config_data: Dict[str, str]):
         """Save configuration to .env file (legacy method - use update_session_config instead)"""
         try:
