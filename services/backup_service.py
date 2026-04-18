@@ -124,10 +124,12 @@ class BackupService:
             # None = restore all; [] was already rejected at route level but
             # guard here too for defence-in-depth.
             if files is not None:
+                if not isinstance(files, list):
+                    return False, 'Invalid file selection; expected a list'
                 if len(files) == 0:
                     return False, 'Empty file selection not allowed'
                 for file_path in files:
-                    if not validate_relative_path(file_path):
+                    if not isinstance(file_path, str) or not validate_relative_path(file_path):
                         return False, f'Invalid file path rejected (possible path traversal): {file_path}'
 
             record = self.backup_model.get(backup_id)
@@ -153,6 +155,8 @@ class BackupService:
             allowed_dest_paths = [p for p in allowed_dest_paths if p]
             if not allowed_dest_paths and dest_path:
                 return False, 'No destination paths configured; refusing restore'
+            if allowed_dest_paths and not dest_path:
+                return False, 'Missing destination path for configured destination roots'
             if allowed_dest_paths and dest_path:
                 if not validate_resolved_path(dest_path, allowed_dest_paths):
                     return False, 'Destination path is outside configured directory boundaries'

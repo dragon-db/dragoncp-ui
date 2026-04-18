@@ -251,7 +251,7 @@ class PathService:
         Returns:
             True if valid and within bounds, False otherwise
         """
-        if not dest_path:
+        if not isinstance(dest_path, str) or not dest_path:
             return False
 
         # Check for invalid characters

@@ -56,6 +56,9 @@ def _load_env_file() -> Dict[str, str]:
     config = {}
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
+    # Read both files and merge: dragoncp_env.env is the base, .env overrides.
+    # If a file exists but cannot be read, fail closed by raising so the caller
+    # never silently falls through to the unauthenticated allow-all path.
     env_files = [
         os.path.join(script_dir, 'dragoncp_env.env'),
         os.path.join(script_dir, '.env'),
@@ -70,9 +73,15 @@ def _load_env_file() -> Dict[str, str]:
                         if line and not line.startswith('#') and '=' in line:
                             key, value = line.split('=', 1)
                             config[key.strip()] = value.strip().strip('"').strip("'")
-                break
             except Exception as e:
-                logger.error("Error loading webhook config from %s: %s", env_file, e)
+                logger.error(
+                    "WEBHOOK_AUTH: Failed to load config from %s: %s. "
+                    "Failing closed — webhook auth cannot be determined.",
+                    env_file, e
+                )
+                raise RuntimeError(
+                    f"Webhook auth config load failed for {env_file}: {e}"
+                ) from e
 
     return config
 
@@ -191,7 +200,7 @@ def verify_webhook_signature(payload_bytes: bytes, signature_header: str, secret
     Returns:
         True if signature is valid, False otherwise
     """
-    if not payload_bytes or not signature_header or not secret:
+    if payload_bytes is None or not signature_header or not secret:
         return False
 
     # Parse the signature header - expected format: "sha256=<hex_digest>"
