@@ -271,11 +271,12 @@ class PathService:
             ]
             allowed_bases = [b for b in allowed_bases if b]
 
-        if allowed_bases:
-            return validate_resolved_path(dest_path, allowed_bases)
+        if not allowed_bases:
+            # SECURITY: Fail closed — no configured base paths means we cannot
+            # verify the path stays within bounds. Reject rather than allow.
+            return False
 
-        # No base paths configured - can only do basic validation
-        return True
+        return validate_resolved_path(dest_path, allowed_bases)
     
     def get_source_path_from_notification(
         self, 

@@ -401,8 +401,19 @@ def require_webhook_auth(f):
                     "code": "WEBHOOK_AUTH_FAILED"
                 }), 403
 
-        # Fallback (should not reach here, but safety net)
-        return f(*args, **kwargs)
+        # Fallback — fail closed. This branch should be unreachable given the
+        # four cases above cover all (has_secret, has_ips) combinations. If we
+        # somehow land here, refuse the request rather than allowing it through.
+        logger.error(
+            "WEBHOOK_AUTH: Unexpected auth state reached (secret=%s, ips=%s). "
+            "Failing closed. Endpoint: %s",
+            has_secret, has_ips, request.path
+        )
+        return jsonify({
+            "status": "error",
+            "message": "Internal webhook authentication error",
+            "code": "WEBHOOK_AUTH_ERROR"
+        }), 500
 
     return decorated_function
 

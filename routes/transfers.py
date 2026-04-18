@@ -12,7 +12,7 @@ See security.py for the validation implementation.
 import time
 from flask import Blueprint, jsonify, request
 from auth import require_auth
-from security import validate_path_component
+from security import validate_path_component, assert_path_within_bounds, PathTraversalError
 
 transfers_bp = Blueprint('transfers', __name__)
 
@@ -104,9 +104,17 @@ def api_transfer():
             source_path = f"{source_path}/{episode_name}"
             dest_path = f"{dest_path}/{episode_name}"
         
+        # SECURITY: Resolve dest_path to its real absolute path and verify it
+        # stays within base_dest. Component validation above prevents literal
+        # traversal, but this catches symlink-based escapes.
+        try:
+            assert_path_within_bounds(dest_path, [base_dest])
+        except PathTraversalError:
+            return jsonify({"status": "error", "message": "Destination path escapes configured boundary"}), 400
+
         print(f"📁 Final source path: {source_path}")
         print(f"📁 Final destination path: {dest_path}")
-        
+
         # Generate transfer ID
         transfer_id = f"transfer_{int(time.time())}"
         

@@ -460,21 +460,42 @@ class RenameService:
         previous_name = file_info.get('previous_name') or os.path.basename(file_info.get('previous_path', ''))
         new_name = file_info.get('new_name') or os.path.basename(file_info.get('new_path', ''))
 
+        def _traversal_failure(msg):
+            """Build a failed verification result for path traversal rejections."""
+            return {
+                'previous_name': previous_name,
+                'expected_name': new_name,
+                'local_previous_path': None,
+                'local_expected_path': None,
+                'actual_name': None,
+                'actual_path': None,
+                'status': 'failed',
+                'message': msg,
+            }
+
         local_previous_path = file_info.get('local_previous_path')
         if not local_previous_path and file_info.get('previous_relative_path'):
-            local_previous_path = self._map_to_local_path(
-                file_info['previous_relative_path'],
-                server_series_path,
-                media_type,
-            )
+            try:
+                local_previous_path = self._map_to_local_path(
+                    file_info['previous_relative_path'],
+                    server_series_path,
+                    media_type,
+                )
+            except PathTraversalError as e:
+                # SECURITY: Path traversal in verification — record as failed
+                return _traversal_failure(f'Path traversal rejected: {e}')
 
         local_new_path = file_info.get('local_new_path')
         if not local_new_path and file_info.get('new_relative_path'):
-            local_new_path = self._map_to_local_path(
-                file_info['new_relative_path'],
-                server_series_path,
-                media_type,
-            )
+            try:
+                local_new_path = self._map_to_local_path(
+                    file_info['new_relative_path'],
+                    server_series_path,
+                    media_type,
+                )
+            except PathTraversalError as e:
+                # SECURITY: Path traversal in verification — record as failed
+                return _traversal_failure(f'Path traversal rejected: {e}')
 
         result = {
             'previous_name': previous_name,

@@ -12,7 +12,7 @@ See security.py for the validation implementation.
 
 from flask import Blueprint, jsonify, request
 from auth import require_auth
-from security import validate_path_component
+from security import validate_path_component, assert_path_within_bounds, PathTraversalError
 
 media_bp = Blueprint('media', __name__)
 
@@ -497,10 +497,18 @@ def api_media_dry_run():
         else:
             # For movies or entire series folder
             dest_path = f"{dest_base}/{folder_name}"
-        
+
+        # SECURITY: Resolve dest_path to its real absolute path and verify it
+        # stays within dest_base. Component validation above prevents literal
+        # traversal, but this catches symlink-based escapes.
+        try:
+            assert_path_within_bounds(dest_path, [dest_base])
+        except PathTraversalError:
+            return jsonify({"status": "error", "message": "Destination path escapes configured boundary"}), 400
+
         print(f"📁 Source: {source_path}")
         print(f"📁 Dest: {dest_path}")
-        
+
         # Perform dry-run using transfer service
         dry_run_result = transfer_coordinator.transfer_service.perform_dry_run_rsync(
             source_path=source_path,

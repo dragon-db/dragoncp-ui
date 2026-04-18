@@ -64,6 +64,9 @@ def validate_path_component(component: str) -> bool:
     Returns:
         True if the component is safe, False if it contains traversal patterns
     """
+    if not isinstance(component, str):
+        return False
+
     if not component or not component.strip():
         return False
 
@@ -201,6 +204,9 @@ def validate_relative_path(relative_path: str) -> bool:
     Returns:
         True if the relative path is safe, False otherwise
     """
+    if not isinstance(relative_path, str):
+        return False
+
     if not relative_path or not relative_path.strip():
         return False
 

@@ -121,9 +121,11 @@ class BackupService:
         """
         try:
             # SECURITY: Validate file list entries if provided.
-            # These are relative paths from the API request - must not contain
-            # traversal sequences or absolute paths.
-            if files:
+            # None = restore all; [] was already rejected at route level but
+            # guard here too for defence-in-depth.
+            if files is not None:
+                if len(files) == 0:
+                    return False, 'Empty file selection not allowed'
                 for file_path in files:
                     if not validate_relative_path(file_path):
                         return False, f'Invalid file path rejected (possible path traversal): {file_path}'
@@ -134,11 +136,13 @@ class BackupService:
             backup_path = record['backup_path']
             dest_path = record['dest_path']
 
-            # SECURITY: Validate backup_path is within BACKUP_PATH boundary
+            # SECURITY: Fail closed — refuse restore if security boundaries
+            # cannot be established.
             backup_base = self.config.get("BACKUP_PATH")
-            if backup_base:
-                if not validate_resolved_path(backup_path, [backup_base]):
-                    return False, 'Backup path is outside configured BACKUP_PATH boundary'
+            if not backup_base:
+                return False, 'BACKUP_PATH is not configured; refusing restore'
+            if not validate_resolved_path(backup_path, [backup_base]):
+                return False, 'Backup path is outside configured BACKUP_PATH boundary'
 
             # SECURITY: Validate dest_path is within configured destination boundaries
             allowed_dest_paths = [
@@ -147,6 +151,8 @@ class BackupService:
                 self.config.get('ANIME_DEST_PATH'),
             ]
             allowed_dest_paths = [p for p in allowed_dest_paths if p]
+            if not allowed_dest_paths and dest_path:
+                return False, 'No destination paths configured; refusing restore'
             if allowed_dest_paths and dest_path:
                 if not validate_resolved_path(dest_path, allowed_dest_paths):
                     return False, 'Destination path is outside configured directory boundaries'
