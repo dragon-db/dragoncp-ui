@@ -215,6 +215,11 @@ def validate_relative_path(relative_path: str) -> bool:
         logger.warning("SECURITY: Null byte detected in relative path: %r", relative_path)
         return False
 
+    # Reject embedded CR/LF characters (can split entries in downstream file-list files)
+    if '\n' in relative_path or '\r' in relative_path:
+        logger.warning("SECURITY: Embedded CR/LF detected in relative path: %r", relative_path)
+        return False
+
     # Reject absolute paths
     if relative_path.startswith('/') or relative_path.startswith('\\'):
         logger.warning("SECURITY: Absolute path rejected as relative path: %r", relative_path)

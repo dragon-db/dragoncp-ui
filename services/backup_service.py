@@ -153,13 +153,12 @@ class BackupService:
                 self.config.get('ANIME_DEST_PATH'),
             ]
             allowed_dest_paths = [p for p in allowed_dest_paths if p]
-            if not allowed_dest_paths and dest_path:
+            if not allowed_dest_paths:
                 return False, 'No destination paths configured; refusing restore'
-            if allowed_dest_paths and not dest_path:
+            if not dest_path:
                 return False, 'Missing destination path for configured destination roots'
-            if allowed_dest_paths and dest_path:
-                if not validate_resolved_path(dest_path, allowed_dest_paths):
-                    return False, 'Destination path is outside configured directory boundaries'
+            if not validate_resolved_path(dest_path, allowed_dest_paths):
+                return False, 'Destination path is outside configured directory boundaries'
             if not os.path.exists(backup_path):
                 return False, 'Backup directory not found on disk'
             if not os.path.exists(dest_path):

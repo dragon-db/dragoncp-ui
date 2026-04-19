@@ -235,7 +235,7 @@ class PathService:
 
         return dest_path
     
-    def validate_destination_path(self, dest_path: str, media_type: str = None) -> bool:
+    def validate_destination_path(self, dest_path: str, media_type: Optional[str] = None) -> bool:
         """
         Validate that a destination path is valid and within configured bounds.
 
