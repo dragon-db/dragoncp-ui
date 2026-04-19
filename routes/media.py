@@ -2,10 +2,17 @@
 """
 DragonCP Media Routes
 Handles media browsing and sync status endpoints
+
+SECURITY: All path components from URL parameters and POST body data
+are validated through security.validate_path_component() before being
+used to construct filesystem paths. This prevents path traversal attacks
+via crafted folder_name, season_name, or episode_name values.
+See security.py for the validation implementation.
 """
 
 from flask import Blueprint, jsonify, request
 from auth import require_auth
+from security import validate_path_component, assert_path_within_bounds, PathTraversalError
 
 media_bp = Blueprint('media', __name__)
 
@@ -89,19 +96,23 @@ def api_folders(media_type):
 @require_auth
 def api_seasons(media_type, folder_name):
     """Get seasons for TV show or anime"""
+    # SECURITY: Validate path component to prevent directory traversal
+    if not validate_path_component(folder_name):
+        return jsonify({"status": "error", "message": "Invalid folder name"}), 400
+
     if not ssh_manager or not ssh_manager.connected:
         return jsonify({"status": "error", "message": "Not connected to server"})
-    
+
     path_map = {
         "movies": config.get("MOVIE_PATH"),
         "tvshows": config.get("TVSHOW_PATH"),
         "anime": config.get("ANIME_PATH")
     }
-    
+
     base_path = path_map.get(media_type)
     if not base_path:
         return jsonify({"status": "error", "message": "Invalid media type"})
-    
+
     full_path = f"{base_path}/{folder_name}"
     try:
         seasons_metadata = ssh_manager.list_folders_with_metadata(full_path)
@@ -119,19 +130,25 @@ def api_seasons(media_type, folder_name):
 @require_auth
 def api_episodes(media_type, folder_name, season_name):
     """Get episodes for a season"""
+    # SECURITY: Validate path components to prevent directory traversal
+    if not validate_path_component(folder_name):
+        return jsonify({"status": "error", "message": "Invalid folder name"}), 400
+    if not validate_path_component(season_name):
+        return jsonify({"status": "error", "message": "Invalid season name"}), 400
+
     if not ssh_manager or not ssh_manager.connected:
         return jsonify({"status": "error", "message": "Not connected to server"})
-    
+
     path_map = {
         "movies": config.get("MOVIE_PATH"),
         "tvshows": config.get("TVSHOW_PATH"),
         "anime": config.get("ANIME_PATH")
     }
-    
+
     base_path = path_map.get(media_type)
     if not base_path:
         return jsonify({"status": "error", "message": "Invalid media type"})
-    
+
     full_path = f"{base_path}/{folder_name}/{season_name}"
     episodes = ssh_manager.list_files(full_path)
     return jsonify({"status": "success", "episodes": episodes})
@@ -222,20 +239,24 @@ def api_sync_status(media_type):
 @require_auth
 def api_folder_sync_status(media_type, folder_name):
     """Get detailed sync status for a specific folder (useful for series/anime seasons)"""
+    # SECURITY: Validate path component to prevent directory traversal
+    if not validate_path_component(folder_name):
+        return jsonify({"status": "error", "message": "Invalid folder name"}), 400
+
     print(f"🔍 API: /api/sync-status/{media_type}/{folder_name} called")
-    
+
     if not ssh_manager or not ssh_manager.connected:
         return jsonify({"status": "error", "message": "Not connected to server"})
-    
+
     if not transfer_coordinator:
         return jsonify({"status": "error", "message": "Transfer coordinator not available"})
-    
+
     path_map = {
         "movies": config.get("MOVIE_PATH"),
         "tvshows": config.get("TVSHOW_PATH"),
         "anime": config.get("ANIME_PATH")
     }
-    
+
     path = path_map.get(media_type)
     if not path:
         return jsonify({"status": "error", "message": "Invalid media type"})
@@ -298,24 +319,28 @@ def api_folder_sync_status(media_type, folder_name):
 @require_auth
 def api_enhanced_folder_sync_status(media_type, folder_name):
     """Get enhanced sync status with detailed file information"""
+    # SECURITY: Validate path component to prevent directory traversal
+    if not validate_path_component(folder_name):
+        return jsonify({"status": "error", "message": "Invalid folder name"}), 400
+
     print(f"🔍 API: /api/sync-status/{media_type}/{folder_name}/enhanced called")
-    
+
     if not ssh_manager or not ssh_manager.connected:
         return jsonify({"status": "error", "message": "Not connected to server"})
-    
+
     if not transfer_coordinator:
         return jsonify({"status": "error", "message": "Transfer coordinator not available"})
-    
+
     path_map = {
         "movies": config.get("MOVIE_PATH"),
         "tvshows": config.get("TVSHOW_PATH"),
         "anime": config.get("ANIME_PATH")
     }
-    
+
     path = path_map.get(media_type)
     if not path:
         return jsonify({"status": "error", "message": "Invalid media type"})
-    
+
     try:
         full_path = f"{path}/{folder_name}"
         
@@ -414,7 +439,13 @@ def api_media_dry_run():
                 "status": "error",
                 "message": "media_type and folder_name are required"
             }), 400
-        
+
+        # SECURITY: Validate path components from POST body to prevent traversal
+        if not validate_path_component(folder_name):
+            return jsonify({"status": "error", "message": "Invalid folder name"}), 400
+        if season_name and not validate_path_component(season_name):
+            return jsonify({"status": "error", "message": "Invalid season name"}), 400
+
         print(f"🔍 Manual dry-run requested from media browser")
         print(f"   Media type: {media_type}")
         print(f"   Folder: {folder_name}")
@@ -466,10 +497,18 @@ def api_media_dry_run():
         else:
             # For movies or entire series folder
             dest_path = f"{dest_base}/{folder_name}"
-        
+
+        # SECURITY: Resolve dest_path to its real absolute path and verify it
+        # stays within dest_base. Component validation above prevents literal
+        # traversal, but this catches symlink-based escapes.
+        try:
+            assert_path_within_bounds(dest_path, [dest_base])
+        except PathTraversalError:
+            return jsonify({"status": "error", "message": "Destination path escapes configured boundary"}), 400
+
         print(f"📁 Source: {source_path}")
         print(f"📁 Dest: {dest_path}")
-        
+
         # Perform dry-run using transfer service
         dry_run_result = transfer_coordinator.transfer_service.perform_dry_run_rsync(
             source_path=source_path,

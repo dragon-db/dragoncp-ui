@@ -3,10 +3,22 @@
 DragonCP Path Service
 Centralized service for constructing destination paths from source paths.
 Ensures consistency between dry-run validation and actual sync operations.
+
+SECURITY: All path construction methods in this service validate that the
+resulting paths stay within the configured directory boundaries. See
+security.py for the core validation functions. If you add new path
+construction methods, you MUST integrate bounds checking.
 """
 
 import os
 from typing import Optional, Tuple
+
+from security import (
+    assert_path_within_bounds,
+    validate_path_component,
+    validate_resolved_path,
+    PathTraversalError,
+)
 
 
 class PathService:
@@ -62,7 +74,12 @@ class PathService:
         
         # Combine to create destination path
         dest_path = os.path.join(dest_base, relative_structure)
-        
+
+        # SECURITY: Validate the constructed path stays within the destination base.
+        # This prevents path traversal via crafted source_path values from webhooks
+        # or API requests (e.g., source paths containing ".." sequences).
+        assert_path_within_bounds(dest_path, [dest_base])
+
         return dest_path
     
     def extract_relative_structure(self, source_path: str, media_type: str) -> str:
@@ -197,35 +214,69 @@ class PathService:
         dest_base = self.get_base_destination(media_type)
         if not dest_base:
             raise ValueError(f"Destination path not configured for media type: {media_type}")
-        
+
+        # SECURITY: Validate path components before constructing the full path.
+        # This prevents directory traversal via crafted folder_name or season_name
+        # from webhooks, API requests, or UI input.
+        if not validate_path_component(folder_name):
+            raise PathTraversalError(f"Invalid folder name: {folder_name}")
+        if season_name and not validate_path_component(season_name):
+            raise PathTraversalError(f"Invalid season name: {season_name}")
+
         if season_name:
             # Series/anime with season
             dest_path = os.path.join(dest_base, folder_name, season_name)
         else:
             # Movie or series folder
             dest_path = os.path.join(dest_base, folder_name)
-        
+
+        # SECURITY: Double-check resolved path stays within bounds
+        assert_path_within_bounds(dest_path, [dest_base])
+
         return dest_path
     
-    def validate_destination_path(self, dest_path: str) -> bool:
+    def validate_destination_path(self, dest_path: str, media_type: Optional[str] = None) -> bool:
         """
-        Validate that a destination path is valid.
-        
+        Validate that a destination path is valid and within configured bounds.
+
+        SECURITY: This method checks both basic validity (non-empty, no null bytes)
+        AND path boundary enforcement (the path must resolve within the configured
+        destination directory for the given media type, or within any destination
+        directory if media_type is not specified).
+
         Args:
             dest_path: Destination path to validate
-        
+            media_type: Optional media type for stricter base path checking
+
         Returns:
-            True if valid, False otherwise
+            True if valid and within bounds, False otherwise
         """
-        if not dest_path:
+        if not isinstance(dest_path, str) or not dest_path:
             return False
-        
-        # Check for invalid characters (though os.path.join should handle most)
-        # On Linux, most characters are valid except null byte
+
+        # Check for invalid characters
         if '\0' in dest_path:
             return False
-        
-        return True
+
+        # SECURITY: Validate the path stays within configured destination boundaries
+        if media_type:
+            dest_base = self.get_base_destination(media_type)
+            allowed_bases = [dest_base] if dest_base else []
+        else:
+            # Check against all configured destination paths
+            allowed_bases = [
+                self.config.get("MOVIE_DEST_PATH"),
+                self.config.get("TVSHOW_DEST_PATH"),
+                self.config.get("ANIME_DEST_PATH"),
+            ]
+            allowed_bases = [b for b in allowed_bases if b]
+
+        if not allowed_bases:
+            # SECURITY: Fail closed — no configured base paths means we cannot
+            # verify the path stays within bounds. Reject rather than allow.
+            return False
+
+        return validate_resolved_path(dest_path, allowed_bases)
     
     def get_source_path_from_notification(
         self, 
