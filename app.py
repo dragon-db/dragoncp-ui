@@ -365,7 +365,11 @@ def api_connect():
         print("❌ Missing host or username")
         return jsonify({"status": "error", "message": "Host and username are required"})
     
-    ssh_manager = SSHManager(host, username, password, key_path)
+    ssh_manager = SSHManager(
+        host, username, password, key_path,
+        host_key_policy=config.get("SSH_HOST_KEY_CHECKING", "accept-new"),
+        known_hosts_file=config.get("SSH_KNOWN_HOSTS_FILE", ""),
+    )
     if ssh_manager.connect():
         print("✅ SSH connection successful")
         session['ssh_connected'] = True
@@ -419,7 +423,11 @@ def api_auto_connect():
         print("❌ Missing REMOTE_IP or REMOTE_USER in config")
         return jsonify({"status": "error", "message": "SSH credentials not configured"})
     
-    ssh_manager = SSHManager(host, username, password or '', key_path or '')
+    ssh_manager = SSHManager(
+        host, username, password or '', key_path or '',
+        host_key_policy=config.get("SSH_HOST_KEY_CHECKING", "accept-new"),
+        known_hosts_file=config.get("SSH_KNOWN_HOSTS_FILE", ""),
+    )
     if ssh_manager.connect():
         print("✅ Auto-connection successful")
         session['ssh_connected'] = True

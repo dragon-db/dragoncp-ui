@@ -2,10 +2,16 @@
 """
 DragonCP Backup Routes
 Handles backup operations: list, get, restore, delete, plan, reindex
+
+SECURITY: File paths from restore requests are validated through
+security.validate_relative_path() to prevent directory traversal.
+Service-level validation in backup_service.py provides additional
+bounds checking. See security.py for details.
 """
 
 from flask import Blueprint, jsonify, request
 from auth import require_auth
+from security import validate_relative_path
 
 backups_bp = Blueprint('backups', __name__)
 
@@ -71,8 +77,25 @@ def api_restore_backup(backup_id):
     try:
         payload = request.json or {}
         files = payload.get('files')
-        if files and not isinstance(files, list):
-            return jsonify({"status": "error", "message": "'files' must be a list of relative paths"}), 400
+
+        # If 'files' key was explicitly provided, enforce it must be a non-empty list.
+        # None means "restore all"; [] means "user selected nothing" -> reject.
+        if files is not None:
+            if not isinstance(files, list):
+                return jsonify({"status": "error", "message": "'files' must be a list of relative paths"}), 400
+            if len(files) == 0:
+                return jsonify({"status": "error", "message": "Empty file selection not allowed"}), 400
+
+            # SECURITY: Validate each file path in the restore list to prevent
+            # directory traversal. Reject paths containing "..", absolute paths,
+            # or null bytes. See security.py for details.
+            for file_path in files:
+                if not isinstance(file_path, str) or not validate_relative_path(file_path):
+                    return jsonify({
+                        "status": "error",
+                        "message": f"Invalid file path rejected: {file_path}"
+                    }), 400
+
         ok, msg = transfer_coordinator.restore_backup(backup_id, files)
         if ok:
             return jsonify({"status": "success", "message": msg})

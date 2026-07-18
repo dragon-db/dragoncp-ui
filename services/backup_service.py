@@ -2,6 +2,11 @@
 """
 DragonCP Backup Service
 Handles backup restore, delete, reindex, and context-aware file matching operations
+
+SECURITY: All path operations in this service validate that constructed paths
+stay within the configured BACKUP_PATH and destination directories. Relative
+paths from API requests (restore file lists) are validated to prevent directory
+traversal. See security.py for the validation implementation.
 """
 
 import os
@@ -11,6 +16,13 @@ import subprocess
 import tempfile
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+
+from security import (
+    assert_path_within_bounds,
+    validate_relative_path,
+    validate_resolved_path,
+    PathTraversalError,
+)
 
 
 class BackupService:
@@ -108,11 +120,45 @@ class BackupService:
           - Copy selected backup files into destination (rsync files-from)
         """
         try:
+            # SECURITY: Validate file list entries if provided.
+            # None = restore all; [] was already rejected at route level but
+            # guard here too for defence-in-depth.
+            if files is not None:
+                if not isinstance(files, list):
+                    return False, 'Invalid file selection; expected a list'
+                if len(files) == 0:
+                    return False, 'Empty file selection not allowed'
+                for file_path in files:
+                    if not isinstance(file_path, str) or not validate_relative_path(file_path):
+                        return False, f'Invalid file path rejected (possible path traversal): {file_path}'
+
             record = self.backup_model.get(backup_id)
             if not record:
                 return False, 'Backup not found'
             backup_path = record['backup_path']
             dest_path = record['dest_path']
+
+            # SECURITY: Fail closed — refuse restore if security boundaries
+            # cannot be established.
+            backup_base = self.config.get("BACKUP_PATH")
+            if not backup_base:
+                return False, 'BACKUP_PATH is not configured; refusing restore'
+            if not validate_resolved_path(backup_path, [backup_base]):
+                return False, 'Backup path is outside configured BACKUP_PATH boundary'
+
+            # SECURITY: Validate dest_path is within configured destination boundaries
+            allowed_dest_paths = [
+                self.config.get('MOVIE_DEST_PATH'),
+                self.config.get('TVSHOW_DEST_PATH'),
+                self.config.get('ANIME_DEST_PATH'),
+            ]
+            allowed_dest_paths = [p for p in allowed_dest_paths if p]
+            if not allowed_dest_paths:
+                return False, 'No destination paths configured; refusing restore'
+            if not dest_path:
+                return False, 'Missing destination path for configured destination roots'
+            if not validate_resolved_path(dest_path, allowed_dest_paths):
+                return False, 'Destination path is outside configured directory boundaries'
             if not os.path.exists(backup_path):
                 return False, 'Backup directory not found on disk'
             if not os.path.exists(dest_path):
