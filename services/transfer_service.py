@@ -22,7 +22,34 @@ class TransferService:
         self.socketio = socketio
         self.queue_manager = queue_manager
         self.transfers = {}  # Active transfer processes: {transfer_id: process}
-    
+
+    def _build_ssh_host_key_options(self) -> List[str]:
+        """
+        SECURITY (SEC-07): Build rsync's `ssh -o ...` host-key options from the
+        configured policy, mirroring the paramiko path in ssh.py so both agree.
+
+        - strict     -> StrictHostKeyChecking=yes + managed UserKnownHostsFile
+        - accept-new -> StrictHostKeyChecking=accept-new + managed UserKnownHostsFile
+                        (trust-on-first-use; a changed key is rejected)
+        - no         -> StrictHostKeyChecking=no (legacy insecure)
+        """
+        # Imported here to avoid any import-order coupling at module load.
+        from ssh import normalize_host_key_policy, resolve_known_hosts_file
+
+        policy = normalize_host_key_policy(self.config.get("SSH_HOST_KEY_CHECKING"))
+        if policy == "no":
+            print("⚠️  SSH host-key verification DISABLED for rsync (SSH_HOST_KEY_CHECKING=no) "
+                  "- vulnerable to MITM")
+            return ["-o", "StrictHostKeyChecking=no"]
+
+        known_hosts = resolve_known_hosts_file(self.config.get("SSH_KNOWN_HOSTS_FILE"))
+        strict_val = "yes" if policy == "strict" else "accept-new"
+        # NOTE: the path is embedded in rsync's single -e string (space-split by
+        # rsync), so it must not contain spaces. The default app-dir path is safe.
+        return ["-o", f"StrictHostKeyChecking={strict_val}",
+                "-o", f"UserKnownHostsFile={known_hosts}"]
+
+
     def perform_dry_run_rsync(self, source_path: str, dest_path: str) -> Dict:
         """
         Perform rsync dry-run to validate sync safety
@@ -65,7 +92,8 @@ class TransferService:
                     ssh_key_path = ""
             
             # Build SSH options
-            ssh_options = ["-o", "StrictHostKeyChecking=no", "-o", "Compression=no"]
+            # SECURITY (SEC-07): host-key verification per configured policy
+            ssh_options = self._build_ssh_host_key_options() + ["-o", "Compression=no"]
             if ssh_key_path and os.path.exists(ssh_key_path):
                 ssh_options.extend(["-i", ssh_key_path])
             
@@ -359,7 +387,8 @@ class TransferService:
                 print("🧪 TEST_MODE enabled - rsync will run in dry-run mode (no actual file transfers)")
             
             # Build SSH options for rsync
-            ssh_options = ["-o", "StrictHostKeyChecking=no", "-o", "Compression=no"]
+            # SECURITY (SEC-07): host-key verification per configured policy
+            ssh_options = self._build_ssh_host_key_options() + ["-o", "Compression=no"]
             if ssh_key_path and os.path.exists(ssh_key_path):
                 ssh_options.extend(["-i", ssh_key_path])
             

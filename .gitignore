@@ -4,6 +4,9 @@
 *.env
 !dragoncp_env_sample.env
 
+# SSH managed known_hosts file (SEC-07, generated at runtime)
+dragoncp_known_hosts
+
 # ===================
 # Python
 # ===================
