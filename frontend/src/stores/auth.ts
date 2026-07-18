@@ -1,5 +1,5 @@
-import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
 
 interface AuthState {
   token: string | null;
@@ -20,30 +20,33 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       isAuthenticated: false,
       expiresAt: null,
-      
-      login: (token, refreshToken, user, expiresAt) => set({
-        token,
-        refreshToken,
-        user,
-        isAuthenticated: true,
-        expiresAt,
-      }),
-      
-      logout: () => set({
-        token: null,
-        refreshToken: null,
-        user: null,
-        isAuthenticated: false,
-        expiresAt: null,
-      }),
-      
-      updateToken: (token, expiresAt) => set({
-        token,
-        expiresAt,
-      }),
+
+      login: (token, refreshToken, user, expiresAt) =>
+        set({
+          token,
+          refreshToken,
+          user,
+          isAuthenticated: true,
+          expiresAt,
+        }),
+
+      logout: () =>
+        set({
+          token: null,
+          refreshToken: null,
+          user: null,
+          isAuthenticated: false,
+          expiresAt: null,
+        }),
+
+      updateToken: (token, expiresAt) =>
+        set({
+          token,
+          expiresAt,
+        }),
     }),
     {
-      name: 'dragoncp-auth',
+      name: "dragoncp-auth",
       partialize: (state) => ({
         token: state.token,
         refreshToken: state.refreshToken,
@@ -59,7 +62,7 @@ export const useAuthStore = create<AuthState>()(
 export function isTokenExpired(): boolean {
   const { expiresAt } = useAuthStore.getState();
   if (!expiresAt) return true;
-  
+
   const expiry = new Date(expiresAt);
   const now = new Date();
   // Consider expired if less than 5 minutes remaining
@@ -70,7 +73,7 @@ export function isTokenExpired(): boolean {
 export function shouldRefreshToken(): boolean {
   const { expiresAt } = useAuthStore.getState();
   if (!expiresAt) return false;
-  
+
   const expiry = new Date(expiresAt);
   const now = new Date();
   // Refresh if less than 30 minutes remaining
