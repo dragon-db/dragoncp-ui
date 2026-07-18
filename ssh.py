@@ -107,9 +107,10 @@ class SSHManager:
         """
         SECURITY (SEC-07): Configure host-key verification on self.client.
 
-        Loads known host keys (so a CHANGED key is detected as a possible MITM)
-        and applies the configured missing-host-key policy. In "no" mode we skip
-        loading entirely to preserve the legacy accept-anything behaviour.
+        Loads the app-managed known_hosts file (so a CHANGED key is detected as a
+        possible MITM) and applies the configured missing-host-key policy. In "no"
+        mode we skip loading entirely to preserve the legacy accept-anything
+        behaviour.
         """
         if self.host_key_policy == "no":
             logger.warning(
@@ -121,13 +122,12 @@ class SSHManager:
             self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             return
 
-        # Load system + managed known_hosts so previously-seen keys are trusted
-        # and any key change raises BadHostKeyException.
-        try:
-            self.client.load_system_host_keys()
-        except Exception as e:
-            logger.debug("SSH: load_system_host_keys failed (non-fatal): %s", e)
-
+        # Load ONLY the app-managed known_hosts file — deliberately NOT the
+        # invoking user's ~/.ssh/known_hosts. The rsync transfer path
+        # (transfer_service.py) passes this same file via UserKnownHostsFile, so
+        # trusting an extra system source here would let browsing accept a host
+        # that rsync then rejects (e.g. under strict mode). Recorded keys are
+        # trusted; a changed key raises BadHostKeyException.
         if _ensure_known_hosts_file(self.known_hosts_file):
             try:
                 # load_host_keys() also sets the persistence target so that

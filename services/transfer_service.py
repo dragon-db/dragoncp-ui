@@ -34,7 +34,11 @@ class TransferService:
         - no         -> StrictHostKeyChecking=no (legacy insecure)
         """
         # Imported here to avoid any import-order coupling at module load.
-        from ssh import normalize_host_key_policy, resolve_known_hosts_file
+        from ssh import (
+            normalize_host_key_policy,
+            resolve_known_hosts_file,
+            _ensure_known_hosts_file,
+        )
 
         policy = normalize_host_key_policy(self.config.get("SSH_HOST_KEY_CHECKING"))
         if policy == "no":
@@ -43,6 +47,12 @@ class TransferService:
             return ["-o", "StrictHostKeyChecking=no"]
 
         known_hosts = resolve_known_hosts_file(self.config.get("SSH_KNOWN_HOSTS_FILE"))
+        # Ensure the managed known_hosts file (and its parent) exist so rsync's
+        # ssh can read it (strict) and persist first-seen keys (accept-new). This
+        # is the SAME file the paramiko browse path loads, keeping both consistent.
+        if not _ensure_known_hosts_file(known_hosts):
+            print(f"⚠️  Could not prepare known_hosts file {known_hosts}; "
+                  "rsync host-key verification may be unreliable")
         strict_val = "yes" if policy == "strict" else "accept-new"
         # NOTE: the path is embedded in rsync's single -e string (space-split by
         # rsync), so it must not contain spaces. The default app-dir path is safe.
