@@ -1,3 +1,4 @@
+import { hostname } from "node:os"
 import path from "path"
 import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
@@ -22,8 +23,9 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // Allow opening the dev server via Tailscale MagicDNS hostnames
-    allowedHosts: [".ts.net"],
+    // Allow opening the dev server via Tailscale MagicDNS hostnames:
+    // the machine's short name (e.g. "dragondb") and full .ts.net names
+    allowedHosts: [hostname().toLowerCase(), ".ts.net"],
     proxy: {
       "/api": {
         target: backendUrl,
