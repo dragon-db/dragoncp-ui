@@ -22,6 +22,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // Allow opening the dev server via Tailscale MagicDNS hostnames
+    allowedHosts: [".ts.net"],
     proxy: {
       "/api": {
         target: backendUrl,
