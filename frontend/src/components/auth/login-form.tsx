@@ -23,7 +23,7 @@ export function LoginForm() {
     return (
       <div className="flex items-center justify-center p-12">
         <div className="relative">
-          <div className="h-10 w-10 animate-spin rounded-full border-2 border-transparent border-t-[#6a00fd] border-r-[#fe00fc]" />
+          <div className="h-10 w-10 animate-spin rounded-full border-2 border-transparent border-t-brand-deep border-r-brand-accent" />
         </div>
       </div>
     );
@@ -35,10 +35,10 @@ export function LoginForm() {
         <div className="mb-4 inline-flex h-12 w-12 items-center justify-center rounded-xl bg-amber-500/10">
           <IconAlertTriangle className="h-6 w-6 text-amber-500" />
         </div>
-        <h3 className="mb-2 text-lg font-semibold text-white">Configuration Required</h3>
-        <p className="text-sm leading-relaxed text-neutral-400">
+        <h3 className="mb-2 text-lg font-semibold text-foreground">Configuration Required</h3>
+        <p className="text-sm leading-relaxed text-muted-foreground">
           Set{" "}
-          <code className="rounded bg-neutral-800 px-1.5 py-0.5 font-mono text-xs text-[#fe00fc]">
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-brand-accent">
             DRAGONCP_PASSWORD
           </code>{" "}
           in your environment to enable authentication.
@@ -65,11 +65,11 @@ export function LoginForm() {
         )}
 
         <div className="space-y-2">
-          <Label htmlFor="username" className="text-sm font-medium text-neutral-300">
+          <Label htmlFor="username" className="text-sm font-medium text-foreground/80">
             Username
           </Label>
           <div className="relative">
-            <div className="absolute top-1/2 left-3.5 -translate-y-1/2 text-neutral-500">
+            <div className="absolute top-1/2 left-3.5 -translate-y-1/2 text-muted-foreground">
               <IconUser className="h-4 w-4" />
             </div>
             <Input
@@ -80,17 +80,17 @@ export function LoginForm() {
               onChange={(e) => setUsername(e.target.value)}
               disabled={loginMutation.isPending}
               autoComplete="username"
-              className="h-12 rounded-xl border-neutral-800 bg-black/40 pl-10 text-white transition-all placeholder:text-neutral-600 focus:border-[#6a00fd] focus:ring-2 focus:ring-[#6a00fd]/20"
+              className="h-12 rounded-xl border-border bg-black/40 pl-10 text-foreground transition-all placeholder:text-muted-foreground/60 focus:border-brand focus:ring-2 focus:ring-brand/20"
             />
           </div>
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="password" className="text-sm font-medium text-neutral-300">
+          <Label htmlFor="password" className="text-sm font-medium text-foreground/80">
             Password
           </Label>
           <div className="relative">
-            <div className="absolute top-1/2 left-3.5 -translate-y-1/2 text-neutral-500">
+            <div className="absolute top-1/2 left-3.5 -translate-y-1/2 text-muted-foreground">
               <IconLock className="h-4 w-4" />
             </div>
             <Input
@@ -101,7 +101,7 @@ export function LoginForm() {
               onChange={(e) => setPassword(e.target.value)}
               disabled={loginMutation.isPending}
               autoComplete="current-password"
-              className="h-12 rounded-xl border-neutral-800 bg-black/40 pl-10 text-white transition-all placeholder:text-neutral-600 focus:border-[#6a00fd] focus:ring-2 focus:ring-[#6a00fd]/20"
+              className="h-12 rounded-xl border-border bg-black/40 pl-10 text-foreground transition-all placeholder:text-muted-foreground/60 focus:border-brand focus:ring-2 focus:ring-brand/20"
             />
           </div>
         </div>
@@ -109,7 +109,7 @@ export function LoginForm() {
         <div className="pt-2">
           <Button
             type="submit"
-            className="h-12 w-full rounded-xl border-0 bg-gradient-to-r from-[#6a00fd] to-[#fe00fc] font-semibold text-white shadow-lg shadow-purple-500/20 transition-all duration-200 hover:scale-[1.02] hover:shadow-purple-500/30 active:scale-[0.98]"
+            className="h-12 w-full rounded-xl border-0 bg-gradient-to-r from-brand-deep to-brand-accent font-semibold text-white shadow-lg shadow-brand/20 transition-all duration-200 hover:scale-[1.02] hover:shadow-brand/30 active:scale-[0.98]"
             disabled={loginMutation.isPending || !username || !password}
           >
             {loginMutation.isPending ? (

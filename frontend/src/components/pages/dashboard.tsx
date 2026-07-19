@@ -59,7 +59,7 @@ function getMediaIcon(mediaType: string) {
   switch (mediaType) {
     case "movie":
     case "movies":
-      return <IconMovie className="h-4 w-4 text-fuchsia-400" />;
+      return <IconMovie className="h-4 w-4 text-brand-hover" />;
     case "tvshows":
     case "series":
       return <IconDeviceTv className="h-4 w-4 text-blue-400" />;

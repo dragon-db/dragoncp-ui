@@ -34,8 +34,8 @@ interface AppLayoutProps {
 // App version - can be made configurable from env or API later
 const APP_VERSION = "v2.1.4";
 
-// Dragon-CP Logo URL
-const LOGO_URL = "https://blog.infinitysystems.in/dragondbserver/DragonDB_Trans.png";
+// Dragon-CP logo (served from frontend/public)
+const LOGO_URL = "/dragoncp-logo.png";
 
 interface NavItem {
   to: string;
@@ -142,7 +142,7 @@ export function AppLayout({ children }: AppLayoutProps) {
           "group relative flex items-center gap-3 rounded-xl border text-sm font-medium transition-all duration-200",
           nested ? "px-3 py-2 text-[0.82rem]" : "px-3 py-2.5",
           isActive
-            ? "border-fuchsia-400/35 bg-fuchsia-500/15 text-fuchsia-100 shadow-[0_10px_28px_-18px_rgba(217,70,239,0.9)]"
+            ? "border-brand/35 bg-brand/15 text-brand-foreground shadow-[0_10px_28px_-18px_rgba(213,8,245,0.9)]"
             : "border-transparent text-sidebar-foreground/70 hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-foreground"
         )}
         onClick={() => setSidebarOpen(false)}
@@ -170,7 +170,7 @@ export function AppLayout({ children }: AppLayoutProps) {
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(217,70,239,0.2),transparent_52%)]" />
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(166,14,239,0.2),transparent_52%)]" />
         <div className="relative flex h-full flex-col">
           {/* Logo Section */}
           <div className="flex h-14 items-center border-b border-sidebar-border/70 px-3">
@@ -184,7 +184,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                   alt="DragonCP Logo"
                   className="h-9 w-9 shrink-0 object-contain"
                 />
-                <span className="truncate bg-gradient-to-r from-[#6a00fd] via-[#b200ff] to-[#fe00fc] bg-clip-text text-[1.05rem] font-bold tracking-[0.16em] text-transparent">
+                <span className="truncate text-brand-gradient text-[1.05rem] font-bold tracking-[0.16em]">
                   DRAGON-CP
                 </span>
               </Link>
@@ -220,7 +220,7 @@ export function AppLayout({ children }: AppLayoutProps) {
                   className={cn(
                     "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm font-medium transition-all duration-200",
                     location.pathname.startsWith("/media/")
-                      ? "border-fuchsia-400/35 bg-fuchsia-500/15 text-fuchsia-100"
+                      ? "border-brand/35 bg-brand/15 text-brand-foreground"
                       : "border-transparent text-sidebar-foreground/70 hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-foreground"
                   )}
                   onClick={() => setMediaExpandedManual((value) => !value)}
@@ -255,8 +255,8 @@ export function AppLayout({ children }: AppLayoutProps) {
           <div className="border-t border-sidebar-border/70 p-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <div className="flex h-8 w-8 items-center justify-center rounded-full border border-fuchsia-500/35 bg-fuchsia-500/20">
-                  <span className="text-sm font-medium text-fuchsia-100">
+                <div className="flex h-8 w-8 items-center justify-center rounded-full border border-brand/35 bg-brand/20">
+                  <span className="text-sm font-medium text-brand-foreground">
                     {user?.charAt(0).toUpperCase() || "U"}
                   </span>
                 </div>
@@ -352,9 +352,7 @@ export function AppLayout({ children }: AppLayoutProps) {
             <div className="ml-3 flex items-center gap-2">
               <img src={LOGO_URL} alt="DragonCP Logo" className="h-7 w-7 object-contain" />
               <span className="text-lg font-bold tracking-tight">
-                <span className="bg-gradient-to-r from-[#6a00fd] to-[#fe00fc] bg-clip-text text-transparent">
-                  DRAGON-CP
-                </span>
+                <span className="text-brand-gradient">DRAGON-CP</span>
               </span>
             </div>
           </div>

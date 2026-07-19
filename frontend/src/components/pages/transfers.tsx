@@ -626,7 +626,7 @@ export function TransfersPage() {
                         onClick={() => setActiveLogTab(tab.transferId)}
                         className={`rounded-md border px-3 py-1.5 text-xs whitespace-nowrap ${
                           activeLogTab === tab.transferId
-                            ? "border-fuchsia-500 bg-fuchsia-500/10 text-fuchsia-300"
+                            ? "border-brand bg-brand/10 text-brand-foreground"
                             : "border-neutral-700 text-neutral-300 hover:border-neutral-500"
                         }`}
                       >

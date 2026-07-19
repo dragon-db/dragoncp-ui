@@ -506,7 +506,7 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2 truncate text-sm font-medium text-white">
-                              <IconFolder className="h-4 w-4 shrink-0 text-fuchsia-400" />
+                              <IconFolder className="h-4 w-4 shrink-0 text-brand-hover" />
                               <span className="truncate">{folder.name}</span>
                             </div>
                             <p className="mt-1 text-xs text-neutral-500">
@@ -656,7 +656,7 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
                         Select specific episodes to sync.
                       </p>
                     </div>
-                    <IconDownload className="h-5 w-5 text-fuchsia-300" />
+                    <IconDownload className="h-5 w-5 text-brand-hover" />
                   </div>
                 </button>
 

@@ -48,7 +48,7 @@ export function ConnectionStatusBar({
   const disconnected = connectionState === "disconnected";
 
   return (
-    <div className="flex items-center justify-between rounded-xl border border-fuchsia-500/20 bg-gradient-to-r from-neutral-900 via-neutral-900 to-neutral-900/70 p-4 shadow-[0_14px_35px_-30px_rgba(217,70,239,0.85)]">
+    <div className="flex items-center justify-between rounded-xl border border-brand/20 bg-gradient-to-r from-card via-card to-card/70 p-4 shadow-[0_14px_35px_-30px_rgba(213,8,245,0.85)]">
       {/* Connection Status */}
       <div className="flex items-center gap-3">
         <span
@@ -115,7 +115,7 @@ export function ConnectionStatusBar({
           <Button
             variant="default"
             size="sm"
-            className="h-8 gap-1.5 shadow-sm shadow-fuchsia-950/40"
+            className="h-8 gap-1.5 shadow-sm shadow-brand-deep/40"
             onClick={onEnableRealtime}
           >
             <IconBolt className="h-4 w-4" />
@@ -125,7 +125,7 @@ export function ConnectionStatusBar({
           <Button
             variant="default"
             size="sm"
-            className="h-8 gap-1.5 shadow-sm shadow-fuchsia-950/40"
+            className="h-8 gap-1.5 shadow-sm shadow-brand-deep/40"
             onClick={onReconnect}
             disabled={isReconnecting}
           >

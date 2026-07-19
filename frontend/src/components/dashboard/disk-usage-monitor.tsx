@@ -85,7 +85,7 @@ export function DiskUsageMonitor() {
   return (
     <div className="space-y-4">
       {/* Header */}
-      <div className="overflow-hidden rounded-xl bg-gradient-to-r from-purple-600/90 to-fuchsia-600/90">
+      <div className="overflow-hidden rounded-xl bg-gradient-to-r from-brand-deep/90 to-brand-accent/90">
         <div className="flex items-center justify-between px-4 py-3">
           <button
             onClick={() => setIsCollapsed(!isCollapsed)}

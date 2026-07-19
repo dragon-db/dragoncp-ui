@@ -117,9 +117,7 @@ function getStatusBadge(status: string) {
 function getMediaBadge(mediaType: string) {
   switch (mediaType) {
     case "movie":
-      return (
-        <Badge className="border-fuchsia-500/50 bg-fuchsia-500/20 text-fuchsia-300">Movie</Badge>
-      );
+      return <Badge className="border-brand/50 bg-brand/20 text-brand-foreground">Movie</Badge>;
     case "tvshows":
     case "series":
       return <Badge className="border-blue-500/50 bg-blue-500/20 text-blue-300">TV</Badge>;
