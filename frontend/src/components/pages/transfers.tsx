@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/layout/page-header";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import api from "@/lib/api";
@@ -314,22 +315,16 @@ export function TransfersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-white">Transfers</h1>
-          <p className="mt-1 text-neutral-400">Transfer queue, history, details, and logs</p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => activeQuery.refetch()}>
-            <IconRefresh className="mr-2 h-4 w-4" />
-            Refresh
-          </Button>
-          <Button variant="outline" onClick={runCleanup} disabled={cleanupMutation.isPending}>
-            <IconTrash className="mr-2 h-4 w-4" />
-            Cleanup
-          </Button>
-        </div>
-      </div>
+      <PageHeader title="Transfers" description="Track running, queued, and completed transfers">
+        <Button variant="outline" onClick={() => activeQuery.refetch()}>
+          <IconRefresh className="mr-2 h-4 w-4" />
+          Refresh
+        </Button>
+        <Button variant="outline" onClick={runCleanup} disabled={cleanupMutation.isPending}>
+          <IconTrash className="mr-2 h-4 w-4" />
+          Cleanup
+        </Button>
+      </PageHeader>
 
       <Card className="border-neutral-800 bg-neutral-900/50">
         <CardHeader>
@@ -343,7 +338,7 @@ export function TransfersPage() {
       </Card>
 
       <Tabs defaultValue="active">
-        <TabsList className="border-neutral-700 bg-neutral-800">
+        <TabsList>
           <TabsTrigger value="active">Active ({activeTransfers.length})</TabsTrigger>
           <TabsTrigger value="all">All Transfers ({allQuery.data?.total ?? 0})</TabsTrigger>
           <TabsTrigger value="logs">Logs ({Object.keys(logTabs).length})</TabsTrigger>
@@ -451,11 +446,19 @@ export function TransfersPage() {
                 <Select
                   value={statusFilter}
                   onValueChange={(value) => setStatusFilter(value ?? "all")}
+                  items={{
+                    all: "All statuses",
+                    running: "Running",
+                    queued: "Queued",
+                    completed: "Completed",
+                    failed: "Failed",
+                    cancelled: "Cancelled",
+                  }}
                 >
-                  <SelectTrigger className="w-44 border-neutral-700 bg-neutral-800">
+                  <SelectTrigger className="w-44">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="border-neutral-700 bg-neutral-900">
+                  <SelectContent>
                     <SelectItem value="all">All statuses</SelectItem>
                     <SelectItem value="running">Running</SelectItem>
                     <SelectItem value="queued">Queued</SelectItem>

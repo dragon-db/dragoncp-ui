@@ -284,7 +284,7 @@ export function AppLayout({ children }: AppLayoutProps) {
       </aside>
 
       {/* Main content */}
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Top Header Bar - Desktop */}
         <header className="hidden h-14 items-center justify-between border-b border-sidebar-border/60 bg-background/80 px-6 backdrop-blur lg:flex">
           <div className="flex items-center gap-3">

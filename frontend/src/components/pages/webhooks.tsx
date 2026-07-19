@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/layout/page-header";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -415,13 +416,7 @@ export function WebhooksPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-3xl font-bold text-white">Webhooks</h1>
-          <p className="mt-1 text-neutral-400">
-            Grouped notifications, queue states, dry-run, details, and rename history
-          </p>
-        </div>
+      <PageHeader title="Webhooks" description="Incoming media notifications and rename history">
         <Button
           variant="outline"
           onClick={() => {
@@ -435,10 +430,10 @@ export function WebhooksPage() {
           />
           Refresh
         </Button>
-      </div>
+      </PageHeader>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="border-neutral-700 bg-neutral-800">
+        <TabsList>
           <TabsTrigger value="notifications">Notifications ({notifications.length})</TabsTrigger>
           <TabsTrigger value="rename">Rename History ({renameQuery.data?.total ?? 0})</TabsTrigger>
         </TabsList>
@@ -455,11 +450,22 @@ export function WebhooksPage() {
                 <Select
                   value={statusFilter}
                   onValueChange={(value) => setStatusFilter(value ?? "all")}
+                  items={{
+                    all: "All statuses",
+                    pending: "Pending",
+                    READY_FOR_TRANSFER: "Ready for Transfer",
+                    QUEUED_SLOT: "Queued Slot",
+                    QUEUED_PATH: "Queued Path",
+                    syncing: "Syncing",
+                    MANUAL_SYNC_REQUIRED: "Manual Sync Required",
+                    completed: "Completed",
+                    failed: "Failed",
+                  }}
                 >
-                  <SelectTrigger className="w-56 border-neutral-700 bg-neutral-800">
+                  <SelectTrigger className="w-56">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="border-neutral-700 bg-neutral-900">
+                  <SelectContent>
                     <SelectItem value="all">All statuses</SelectItem>
                     <SelectItem value="pending">Pending</SelectItem>
                     <SelectItem value="READY_FOR_TRANSFER">Ready for Transfer</SelectItem>
@@ -479,7 +485,7 @@ export function WebhooksPage() {
             <CardHeader>
               <CardTitle className="text-white">Webhook Notifications</CardTitle>
               <CardDescription className="text-neutral-400">
-                Series/anime grouped by slug + season for parity with static UI
+                Series and anime are grouped by show and season
               </CardDescription>
             </CardHeader>
             <CardContent>

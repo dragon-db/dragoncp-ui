@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/layout/page-header";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useRuntimeController } from "@/hooks/useRuntime";
@@ -147,10 +148,7 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-white">Dashboard</h1>
-        <p className="mt-1 text-neutral-400">Operational overview and quick actions</p>
-      </div>
+      <PageHeader title="Dashboard" description="Operational overview and quick actions" />
 
       <ConnectionStatusBar
         backendReachable={runtime.backendReachable}

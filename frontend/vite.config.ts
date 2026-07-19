@@ -4,6 +4,10 @@ import react from "@vitejs/plugin-react"
 import { TanStackRouterVite } from "@tanstack/router-vite-plugin"
 import { defineConfig } from "vite"
 
+// Backend origin for the dev proxy; override when :5000 is taken
+// (e.g. DRAGONCP_BACKEND_URL=http://localhost:5050 npx vite)
+const backendUrl = process.env.DRAGONCP_BACKEND_URL ?? "http://localhost:5000"
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -20,11 +24,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://localhost:5000",
+        target: backendUrl,
         changeOrigin: true,
       },
       "/socket.io": {
-        target: "http://localhost:5000",
+        target: backendUrl,
         changeOrigin: true,
         ws: true,
       },

@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/layout/page-header";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -190,32 +191,24 @@ export function BackupsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-3xl font-bold text-white">Backups</h1>
-          <p className="mt-1 text-neutral-400">
-            Static-parity backup management with staged restore and delete flows
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={runReindex} disabled={reindexMutation.isPending}>
-            <IconArchive
-              className={`mr-2 h-4 w-4 ${reindexMutation.isPending ? "animate-spin" : ""}`}
-            />
-            Import/Reindex
-          </Button>
-          <Button
-            variant="outline"
-            onClick={() => backupsQuery.refetch()}
-            disabled={backupsQuery.isFetching}
-          >
-            <IconRefresh
-              className={`mr-2 h-4 w-4 ${backupsQuery.isFetching ? "animate-spin" : ""}`}
-            />
-            Refresh
-          </Button>
-        </div>
-      </div>
+      <PageHeader title="Backups" description="Restore or clean up saved backups">
+        <Button variant="outline" onClick={runReindex} disabled={reindexMutation.isPending}>
+          <IconArchive
+            className={`mr-2 h-4 w-4 ${reindexMutation.isPending ? "animate-spin" : ""}`}
+          />
+          Import/Reindex
+        </Button>
+        <Button
+          variant="outline"
+          onClick={() => backupsQuery.refetch()}
+          disabled={backupsQuery.isFetching}
+        >
+          <IconRefresh
+            className={`mr-2 h-4 w-4 ${backupsQuery.isFetching ? "animate-spin" : ""}`}
+          />
+          Refresh
+        </Button>
+      </PageHeader>
 
       {stageLabel.length > 0 && (
         <div className="flex items-center gap-2 text-sm">

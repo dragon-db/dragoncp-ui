@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/layout/page-header";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -102,7 +103,9 @@ function getSyncBadge(status: SyncStatusType) {
       );
     default:
       return (
-        <Badge className="border-neutral-700 bg-neutral-700/40 text-neutral-300">No Info</Badge>
+        <Badge variant="outline" className="text-muted-foreground">
+          Not checked
+        </Badge>
       );
   }
 }
@@ -114,8 +117,11 @@ function formatRelativeDate(unixSeconds?: number) {
   const diffDays = Math.floor((now - dateMs) / 86400000);
   if (diffDays <= 0) return "Today";
   if (diffDays === 1) return "Yesterday";
-  if (diffDays < 7) return `${diffDays} days ago`;
-  if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+  if (diffDays < 7) return diffDays === 1 ? "1 day ago" : `${diffDays} days ago`;
+  if (diffDays < 30) {
+    const weeks = Math.floor(diffDays / 7);
+    return weeks === 1 ? "1 week ago" : `${weeks} weeks ago`;
+  }
   return new Date(dateMs).toLocaleDateString();
 }
 
@@ -351,32 +357,26 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-3xl font-bold text-white">{title}</h1>
-          <p className="mt-1 text-neutral-400">Static-parity media browse and transfer workflow</p>
-        </div>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={() => foldersQuery.refetch()}
-            disabled={!sshConnected || foldersQuery.isFetching}
-          >
-            <IconRefresh
-              className={`mr-2 h-4 w-4 ${foldersQuery.isFetching ? "animate-spin" : ""}`}
-            />
-            Refresh Folders
-          </Button>
-          <Button
-            variant="outline"
-            onClick={refreshSyncStatus}
-            disabled={!sshConnected || isAnySyncLoading}
-          >
-            <IconRefresh className={`mr-2 h-4 w-4 ${isAnySyncLoading ? "animate-spin" : ""}`} />
-            Refresh Sync Status
-          </Button>
-        </div>
-      </div>
+      <PageHeader title={title} description="Browse your library and start transfers">
+        <Button
+          variant="outline"
+          onClick={() => foldersQuery.refetch()}
+          disabled={!sshConnected || foldersQuery.isFetching}
+        >
+          <IconRefresh
+            className={`mr-2 h-4 w-4 ${foldersQuery.isFetching ? "animate-spin" : ""}`}
+          />
+          Refresh Folders
+        </Button>
+        <Button
+          variant="outline"
+          onClick={refreshSyncStatus}
+          disabled={!sshConnected || isAnySyncLoading}
+        >
+          <IconRefresh className={`mr-2 h-4 w-4 ${isAnySyncLoading ? "animate-spin" : ""}`} />
+          Refresh Sync Status
+        </Button>
+      </PageHeader>
 
       {!sshConnected && !sshStatusQuery.isLoading && (
         <Card className="border-amber-500/30 bg-amber-500/8">
@@ -425,27 +425,29 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
         </Card>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        {breadcrumb.map((entry, index) => {
-          const isLast = index === breadcrumb.length - 1;
-          return (
-            <div key={`${entry.label}-${index}`} className="flex items-center gap-2">
-              {isLast ? (
-                <span className="font-medium text-white">{entry.label}</span>
-              ) : (
-                <button
-                  type="button"
-                  className="text-neutral-400 hover:text-white"
-                  onClick={() => navigateToLevel(index)}
-                >
-                  {entry.label}
-                </button>
-              )}
-              {!isLast && <IconChevronRight className="h-4 w-4 text-neutral-600" />}
-            </div>
-          );
-        })}
-      </div>
+      {breadcrumb.length > 1 && (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          {breadcrumb.map((entry, index) => {
+            const isLast = index === breadcrumb.length - 1;
+            return (
+              <div key={`${entry.label}-${index}`} className="flex items-center gap-2">
+                {isLast ? (
+                  <span className="font-medium text-white">{entry.label}</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="text-neutral-400 hover:text-white"
+                    onClick={() => navigateToLevel(index)}
+                  >
+                    {entry.label}
+                  </button>
+                )}
+                {!isLast && <IconChevronRight className="h-4 w-4 text-neutral-600" />}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {viewMode === "folders" && (
         <Card className="border-neutral-800 bg-neutral-900/50">
@@ -466,17 +468,18 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
                     value={searchTerm}
                     onChange={(event) => setSearchTerm(event.target.value)}
                     placeholder="Search folders"
-                    className="w-56 border-neutral-700 bg-neutral-800 pl-8"
+                    className="w-56 pl-8"
                   />
                 </div>
                 <Select
                   value={sortMode}
                   onValueChange={(value) => setSortMode((value as SortMode) ?? "recent")}
+                  items={{ recent: "Recently Modified", alphabetical: "Alphabetical" }}
                 >
-                  <SelectTrigger className="w-44 border-neutral-700 bg-neutral-800">
+                  <SelectTrigger className="w-44">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent className="border-neutral-700 bg-neutral-900">
+                  <SelectContent>
                     <SelectItem value="recent">Recently Modified</SelectItem>
                     <SelectItem value="alphabetical">Alphabetical</SelectItem>
                   </SelectContent>

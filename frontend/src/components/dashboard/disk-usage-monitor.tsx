@@ -83,37 +83,43 @@ export function DiskUsageMonitor() {
   const isLoading = localLoading || remoteLoading;
 
   return (
-    <div className="space-y-4">
+    <div className="overflow-hidden rounded-xl border border-border/70 bg-card/95 ring-1 ring-black/15">
       {/* Header */}
-      <div className="overflow-hidden rounded-xl bg-gradient-to-r from-brand-deep/90 to-brand-accent/90">
-        <div className="flex items-center justify-between px-4 py-3">
-          <button
-            onClick={() => setIsCollapsed(!isCollapsed)}
-            className="flex items-center gap-2 text-white transition-colors hover:text-white/90"
-          >
-            <IconServer className="h-5 w-5" />
-            <span className="font-semibold">Disk Usage Monitor</span>
-            {isCollapsed ? (
-              <IconChevronDown className="h-4 w-4" />
-            ) : (
-              <IconChevronUp className="h-4 w-4" />
-            )}
-          </button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-white/80 hover:bg-white/10 hover:text-white"
-            onClick={handleRefresh}
-            disabled={isRefreshing}
-          >
-            <IconRefresh className={cn("h-5 w-5", isRefreshing && "animate-spin")} />
-          </Button>
-        </div>
+      <div
+        className={cn(
+          "flex items-center justify-between bg-muted/35 px-4 py-3",
+          !isCollapsed && "border-b border-border/70"
+        )}
+      >
+        <button
+          onClick={() => setIsCollapsed(!isCollapsed)}
+          className="flex items-center gap-3 text-left transition-colors hover:text-foreground"
+        >
+          <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-primary/30 bg-primary/15">
+            <IconServer className="h-4 w-4 text-primary" />
+          </span>
+          <span className="font-semibold text-foreground">Disk Usage</span>
+          {isCollapsed ? (
+            <IconChevronDown className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <IconChevronUp className="h-4 w-4 text-muted-foreground" />
+          )}
+        </button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="text-muted-foreground hover:text-foreground"
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          title="Refresh disk usage"
+        >
+          <IconRefresh className={cn("h-5 w-5", isRefreshing && "animate-spin")} />
+        </Button>
       </div>
 
       {/* Content */}
       {!isCollapsed && (
-        <div className="space-y-4">
+        <div className="space-y-4 p-4">
           {/* Disk Widgets Grid */}
           {isLoading ? (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -133,7 +139,7 @@ export function DiskUsageMonitor() {
 
               {/* Empty state */}
               {localDisks.length === 0 && !remoteStorage && (
-                <div className="col-span-full py-8 text-center text-neutral-500">
+                <div className="col-span-full py-8 text-center text-muted-foreground">
                   No disk information available
                 </div>
               )}
@@ -141,8 +147,8 @@ export function DiskUsageMonitor() {
           )}
 
           {/* Last Updated */}
-          <div className="flex items-center justify-center gap-2 text-center text-xs text-neutral-500">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-neutral-600" />
+          <div className="flex items-center justify-center gap-2 text-center text-xs text-muted-foreground">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
             Last updated: {lastUpdated}
           </div>
         </div>

@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/layout/page-header";
 import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { toast } from "sonner";
 import {
@@ -310,31 +311,23 @@ export function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-3xl font-bold text-white">Settings</h1>
-          <p className="mt-1 text-neutral-400">Full static-equivalent configuration surface</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={resetToEnv} disabled={resetConfig.isPending}>
-            <IconRefresh
-              className={`mr-2 h-4 w-4 ${resetConfig.isPending ? "animate-spin" : ""}`}
-            />
-            Reset to Env
-          </Button>
-          <Button
-            onClick={saveAllSettings}
-            disabled={
-              updateConfig.isPending ||
-              updateWebhookSettings.isPending ||
-              updateDiscordSettings.isPending
-            }
-          >
-            <IconCheck className="mr-2 h-4 w-4" />
-            Save All
-          </Button>
-        </div>
-      </div>
+      <PageHeader title="Settings" description="Connection, media paths, and automation">
+        <Button variant="outline" onClick={resetToEnv} disabled={resetConfig.isPending}>
+          <IconRefresh className={`mr-2 h-4 w-4 ${resetConfig.isPending ? "animate-spin" : ""}`} />
+          Reset to Env
+        </Button>
+        <Button
+          onClick={saveAllSettings}
+          disabled={
+            updateConfig.isPending ||
+            updateWebhookSettings.isPending ||
+            updateDiscordSettings.isPending
+          }
+        >
+          <IconCheck className="mr-2 h-4 w-4" />
+          Save All
+        </Button>
+      </PageHeader>
 
       <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
@@ -374,28 +367,16 @@ export function SettingsPage() {
       </div>
 
       <Tabs defaultValue="config" className="gap-5">
-        <TabsList
-          variant="default"
-          className="grid w-full max-w-3xl grid-cols-3 items-stretch rounded-xl border border-border/65 bg-card/75 p-1 group-data-[orientation=horizontal]/tabs:h-auto"
-        >
-          <TabsTrigger
-            value="config"
-            className="h-8 gap-1.5 self-stretch rounded-lg border border-transparent px-3 text-[13px] font-semibold text-muted-foreground transition-colors hover:text-foreground data-active:border-border/80 data-active:bg-background/90 data-active:text-foreground [&_svg]:h-3.5 [&_svg]:w-3.5"
-          >
+        <TabsList>
+          <TabsTrigger value="config">
             <IconSettings className="h-4 w-4" />
             Core Config
           </TabsTrigger>
-          <TabsTrigger
-            value="automation"
-            className="h-8 gap-1.5 self-stretch rounded-lg border border-transparent px-3 text-[13px] font-semibold text-muted-foreground transition-colors hover:text-foreground data-active:border-border/80 data-active:bg-background/90 data-active:text-foreground [&_svg]:h-3.5 [&_svg]:w-3.5"
-          >
+          <TabsTrigger value="automation">
             <IconWebhook className="h-4 w-4" />
             Automation
           </TabsTrigger>
-          <TabsTrigger
-            value="diagnostics"
-            className="h-8 gap-1.5 self-stretch rounded-lg border border-transparent px-3 text-[13px] font-semibold text-muted-foreground transition-colors hover:text-foreground data-active:border-border/80 data-active:bg-background/90 data-active:text-foreground [&_svg]:h-3.5 [&_svg]:w-3.5"
-          >
+          <TabsTrigger value="diagnostics">
             <IconServer className="h-4 w-4" />
             Diagnostics
           </TabsTrigger>
