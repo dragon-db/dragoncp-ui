@@ -2,6 +2,8 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/nunito-sans";
+@import "@fontsource-variable/space-grotesk";
+@import "@fontsource-variable/jetbrains-mono";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -103,6 +105,8 @@
 
 @theme inline {
   --font-sans: "Nunito Sans Variable", sans-serif;
+  --font-display: "Space Grotesk Variable", "Nunito Sans Variable", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
   --color-brand: var(--brand);
   --color-brand-deep: var(--brand-deep);
   --color-brand-hover: var(--brand-hover);
@@ -160,6 +164,18 @@
   background-clip: text;
   -webkit-background-clip: text;
   color: transparent;
+}
+
+/*
+ * Ambient app canvas for the inset layout: violet glow top-left, hot-pink
+ * bottom-right, over a base darker than --background so the inset content
+ * card floats a shade lighter than its gutter.
+ */
+@utility app-ambient {
+  background-color: #0f0f10;
+  background-image:
+    radial-gradient(42% 42% at 6% 2%, rgba(131, 19, 235, 0.3), transparent 62%),
+    radial-gradient(44% 48% at 102% 104%, rgba(249, 2, 251, 0.2), transparent 55%);
 }
 
 @layer base {
