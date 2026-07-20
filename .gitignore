@@ -125,3 +125,6 @@ tmp/
 .audit/
 # Playwright MCP default output dir
 .playwright-mcp/
+
+# Local-only design demo workspace (HTML mockups, not shipped)
+demo/
