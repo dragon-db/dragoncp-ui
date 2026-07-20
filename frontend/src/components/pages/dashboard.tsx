@@ -1,8 +1,6 @@
 import { PageHeader } from "@/components/layout/page-header";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
-import { useRuntimeController } from "@/hooks/useRuntime";
-import { useWebSocketStatus } from "@/hooks/useConfig";
 import {
   useActiveTransfers,
   useCancelTransfer,
@@ -14,7 +12,6 @@ import {
   type WebhookNotification,
   useRenameNotifications,
 } from "@/hooks/useWebhooks";
-import { ConnectionStatusBar } from "@/components/dashboard/connection-status-bar";
 import { DiskUsageMonitor } from "@/components/dashboard/disk-usage-monitor";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -93,8 +90,6 @@ const dashboardPanelHeaderClass =
   "flex items-center justify-between border-b border-border/70 bg-muted/35 px-4 py-3";
 
 export function DashboardPage() {
-  const runtime = useRuntimeController();
-  const wsStatus = useWebSocketStatus();
   const cleanupTransfers = useCleanupTransfers();
   const cancelTransfer = useCancelTransfer();
 
@@ -130,47 +125,9 @@ export function DashboardPage() {
     }
   };
 
-  const statusMessage = (() => {
-    if (!runtime.backendReachable) return runtime.backendError || "Backend unavailable";
-    if (runtime.connectionState === "config-changed")
-      return "Realtime settings changed - reconnect to apply them";
-    if (runtime.connectionState === "auto-disconnected")
-      return "Realtime paused after inactivity - dashboard polling remains active";
-    if (runtime.connectionState === "connected")
-      return `Realtime active - session ${runtime.minutesRemaining} min remaining`;
-    if (runtime.connectionState === "connecting") return "Connecting realtime session...";
-    if (runtime.connectionState === "disconnected")
-      return runtime.socketError
-        ? `Realtime error: ${runtime.socketError}`
-        : "Realtime disconnected";
-    return "Dashboard is using API polling. Enable realtime for cross-page live updates.";
-  })();
-
   return (
     <div className="space-y-6">
       <PageHeader title="Dashboard" description="Operational overview and quick actions" />
-
-      <ConnectionStatusBar
-        backendReachable={runtime.backendReachable}
-        connectionState={runtime.connectionState}
-        statusMessage={statusMessage}
-        timeRemainingMinutes={runtime.minutesRemaining}
-        activeSocketConnections={wsStatus.data?.websocket_status.active_connections}
-        realtimeRequested={runtime.realtimeRequested}
-        onEnableRealtime={runtime.enableRealtime}
-        onReconnect={runtime.reconnectRealtime}
-        onDisconnect={runtime.disableRealtime}
-        onExtendSession={runtime.extendSession}
-        onRefreshWsStatus={() => {
-          wsStatus.refetch();
-          refetchTransfers();
-          refetchWebhooks();
-          refetchRenames();
-        }}
-        isReconnecting={
-          wsStatus.isFetching && runtime.realtimeRequested && !runtime.socketConnected
-        }
-      />
 
       <DiskUsageMonitor />
 
