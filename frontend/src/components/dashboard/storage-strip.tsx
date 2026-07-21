@@ -14,11 +14,21 @@ function DiskCell({ disk }: { disk: DiskItem }) {
   const Icon = disk.type === "remote" ? IconCloud : IconDatabase;
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="flex items-center gap-2">
-        <Icon className="size-4 shrink-0 text-muted-foreground" />
-        <span className="truncate text-xs font-semibold text-foreground">{disk.name}</span>
-        <span className="flex-1" />
-        <span className={cn("font-mono text-xs font-medium", sevText[sev])}>{disk.pct}%</span>
+      <div className="flex items-start gap-2">
+        <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <span className="truncate text-xs font-semibold text-foreground">{disk.name}</span>
+            <span className="flex-1" />
+            <span className={cn("font-mono text-xs font-medium", sevText[sev])}>{disk.pct}%</span>
+          </div>
+          <div
+            className="truncate font-mono text-[10px] text-muted-foreground"
+            title={disk.device ? `${disk.path || disk.device} · ${disk.device}` : disk.path}
+          >
+            {disk.path || (disk.type === "remote" ? "remote endpoint" : disk.device)}
+          </div>
+        </div>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-black/25">
         <div

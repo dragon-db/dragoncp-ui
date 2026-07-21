@@ -6,6 +6,9 @@ export interface DiskItem {
   used: string;
   free: string;
   total: string;
+  /** Mount point / watched path, e.g. /home/dragondb/ftp_ssd. */
+  path: string;
+  /** Backing device / filesystem, e.g. /dev/sdc1. */
   device: string;
   type: "local" | "remote";
 }
@@ -26,7 +29,8 @@ export function useDisks(): { disks: DiskItem[]; isLoading: boolean } {
         used: d.used_size ?? "—",
         free: d.available_size ?? "—",
         total: d.total_size ?? "—",
-        device: d.filesystem || d.path,
+        path: d.mount_point || d.path || "",
+        device: d.filesystem ?? "",
         type: "local",
       });
     });
@@ -39,6 +43,7 @@ export function useDisks(): { disks: DiskItem[]; isLoading: boolean } {
       used: storage.used_display,
       free: storage.free_display,
       total: storage.total_display,
+      path: "",
       device: "remote",
       type: "remote",
     });
