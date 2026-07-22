@@ -13,22 +13,12 @@ function DiskCell({ disk }: { disk: DiskItem }) {
   const sev = diskSeverity(disk.pct);
   const Icon = disk.type === "remote" ? IconCloud : IconDatabase;
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-start gap-2">
-        <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline gap-2">
-            <span className="truncate text-xs font-semibold text-foreground">{disk.name}</span>
-            <span className="flex-1" />
-            <span className={cn("font-mono text-xs font-medium", sevText[sev])}>{disk.pct}%</span>
-          </div>
-          <div
-            className="truncate font-mono text-[10px] text-muted-foreground"
-            title={disk.device ? `${disk.path || disk.device} · ${disk.device}` : disk.path}
-          >
-            {disk.path || (disk.type === "remote" ? "remote endpoint" : disk.device)}
-          </div>
-        </div>
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="truncate text-[13px] font-semibold text-foreground">{disk.name}</span>
+        <span className="flex-1" />
+        <span className={cn("font-mono text-xs font-medium", sevText[sev])}>{disk.pct}%</span>
       </div>
       <div className="h-1.5 overflow-hidden rounded-full bg-black/25">
         <div
@@ -36,9 +26,17 @@ function DiskCell({ disk }: { disk: DiskItem }) {
           style={{ width: `${Math.min(100, Math.max(0, disk.pct))}%` }}
         />
       </div>
-      <div className="flex justify-between font-mono text-[10px] text-muted-foreground">
-        <span>{disk.used} used</span>
-        <span className={cn(sev === "crit" && sevText.crit)}>{disk.free} free</span>
+      <div className="flex flex-col gap-1 font-mono text-[10px] text-muted-foreground">
+        <span
+          className="truncate"
+          title={disk.device ? `${disk.path || disk.device} · ${disk.device}` : disk.path}
+        >
+          {disk.path || (disk.type === "remote" ? "remote endpoint" : disk.device)}
+        </span>
+        <div className="flex justify-between">
+          <span>{disk.used} used</span>
+          <span className={cn(sev === "crit" && sevText.crit)}>{disk.free} free</span>
+        </div>
       </div>
     </div>
   );
