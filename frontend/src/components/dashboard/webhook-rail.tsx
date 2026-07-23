@@ -204,7 +204,7 @@ function WebhookRow({ item }: { item: WebhookNotification }) {
 export function WebhookRail() {
   const { data, isLoading, refetch } = useWebhookNotifications(undefined, 10);
   const notifications = data?.notifications ?? [];
-  const items = notifications.slice(0, 6);
+  const items = notifications.slice(0, 5);
 
   return (
     <section className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-card">
