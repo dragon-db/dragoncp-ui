@@ -40,7 +40,7 @@ export function AppLayout({ children }: AppLayoutProps) {
       <SidebarInset className="border border-border shadow-[0_24px_60px_-30px_rgba(0,0,0,0.85)]">
         <AppNavbar />
         <main className="flex-1 overflow-auto">
-          <div className="container mx-auto p-6">{children}</div>
+          <div className="mx-auto w-full max-w-[1920px] p-6 xl:px-8 xl:py-7">{children}</div>
         </main>
       </SidebarInset>
 
