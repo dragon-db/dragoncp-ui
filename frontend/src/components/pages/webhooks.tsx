@@ -23,7 +23,6 @@ import {
   onWebhookCaptured,
   onWebhookReceived,
 } from "@/services/socket";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -34,175 +33,224 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
   IconCheck,
+  IconChevronDown,
   IconCode,
   IconEye,
-  IconList,
   IconPlayerPlay,
   IconRefresh,
   IconTrash,
+  IconUser,
   IconWebhook,
 } from "@tabler/icons-react";
+import { cn } from "@/lib/utils";
+import {
+  formatSize,
+  groupNotifications,
+  groupStatus,
+  isSyncable,
+  itemDetail,
+  timeAgo,
+  totalSize,
+  type WebhookItem,
+} from "@/lib/webhook-grouping";
+import {
+  MediaBadge,
+  StatusBadge,
+  StatusDot,
+  WebhookPoster,
+} from "@/components/webhooks/webhook-bits";
 
-interface GroupedNotification {
-  key: string;
-  mediaType: string;
-  title: string;
-  seasonNumber?: number;
-  createdAt?: string;
-  requestedBy?: string;
-  year?: number;
-  notifications: WebhookNotification[];
-}
-
-type NotificationItem =
-  { type: "group"; value: GroupedNotification } | { type: "single"; value: WebhookNotification };
-
-const statusOrder: Record<string, number> = {
-  syncing: 0,
-  failed: 1,
-  QUEUED_PATH: 2,
-  QUEUED_SLOT: 3,
-  READY_FOR_TRANSFER: 4,
-  pending: 5,
-  MANUAL_SYNC_REQUIRED: 6,
-  manual_sync_required: 6,
-  completed: 7,
-};
-
+// Status / media chips and relative time come from the shared webhook helpers so
+// the page, its dialogs and the dashboard rail all present notifications alike.
 function getStatusBadge(status: string) {
-  switch (status) {
-    case "pending":
-      return <Badge className="border-amber-500/50 bg-amber-500/20 text-amber-300">Pending</Badge>;
-    case "READY_FOR_TRANSFER":
-      return <Badge className="border-blue-500/50 bg-blue-500/20 text-blue-300">Ready</Badge>;
-    case "QUEUED_SLOT":
-      return (
-        <Badge className="border-yellow-500/50 bg-yellow-500/20 text-yellow-300">Queued Slot</Badge>
-      );
-    case "QUEUED_PATH":
-      return (
-        <Badge className="border-yellow-500/50 bg-yellow-500/20 text-yellow-300">Queued Path</Badge>
-      );
-    case "syncing":
-      return <Badge className="border-cyan-500/50 bg-cyan-500/20 text-cyan-300">Syncing</Badge>;
-    case "completed":
-      return (
-        <Badge className="border-green-500/50 bg-green-500/20 text-green-300">Completed</Badge>
-      );
-    case "failed":
-      return <Badge className="border-red-500/50 bg-red-500/20 text-red-300">Failed</Badge>;
-    case "MANUAL_SYNC_REQUIRED":
-    case "manual_sync_required":
-      return (
-        <Badge className="border-orange-500/50 bg-orange-500/20 text-orange-300">
-          Manual Required
-        </Badge>
-      );
-    default:
-      return <Badge variant="outline">{status}</Badge>;
-  }
+  return <StatusBadge status={status} />;
 }
 
 function getMediaBadge(mediaType: string) {
-  switch (mediaType) {
-    case "movie":
-      return <Badge className="border-brand/50 bg-brand/20 text-brand-foreground">Movie</Badge>;
-    case "tvshows":
-    case "series":
-      return <Badge className="border-blue-500/50 bg-blue-500/20 text-blue-300">TV</Badge>;
-    case "anime":
-      return <Badge className="border-green-500/50 bg-green-500/20 text-green-300">Anime</Badge>;
-    default:
-      return <Badge variant="outline">{mediaType}</Badge>;
-  }
+  return <MediaBadge mediaType={mediaType} />;
 }
 
 function formatAgo(value?: string) {
-  if (!value) return "Unknown";
-  const date = new Date(value);
-  const diff = Date.now() - date.getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-function toGroupStatus(notifications: WebhookNotification[]) {
-  return (
-    notifications
-      .map((notification) => notification.status)
-      .sort((a, b) => (statusOrder[a] ?? 100) - (statusOrder[b] ?? 100))[0] ?? "pending"
-  );
-}
-
-function buildItems(notifications: WebhookNotification[]): NotificationItem[] {
-  const grouped = new Map<string, GroupedNotification>();
-  const singles: NotificationItem[] = [];
-
-  for (const notification of notifications) {
-    const mediaType = notification.media_type || "movie";
-    const isSeries = mediaType === "tvshows" || mediaType === "series" || mediaType === "anime";
-    if (!isSeries) {
-      singles.push({ type: "single", value: notification });
-      continue;
-    }
-
-    const slug =
-      notification.series_title_slug || notification.series_title || notification.display_title;
-    const season = notification.season_number ?? 0;
-    const key = `${slug}_S${season}`;
-
-    if (!grouped.has(key)) {
-      grouped.set(key, {
-        key,
-        mediaType,
-        title: notification.series_title || notification.display_title,
-        seasonNumber: season,
-        createdAt: notification.created_at,
-        requestedBy: notification.requested_by,
-        year: notification.year,
-        notifications: [],
-      });
-    }
-
-    const group = grouped.get(key)!;
-    group.notifications.push(notification);
-    if ((notification.created_at ?? "") > (group.createdAt ?? "")) {
-      group.createdAt = notification.created_at;
-    }
-  }
-
-  const groupedItems: NotificationItem[] = Array.from(grouped.values()).map((value) => ({
-    type: "group",
-    value,
-  }));
-  const result = [...groupedItems, ...singles];
-  result.sort((a, b) => {
-    const aDate = a.type === "group" ? a.value.createdAt : a.value.created_at;
-    const bDate = b.type === "group" ? b.value.createdAt : b.value.created_at;
-    return new Date(bDate ?? 0).getTime() - new Date(aDate ?? 0).getTime();
-  });
-
-  return result;
+  return timeAgo(value) || "Unknown";
 }
 
 function mapMediaType(mediaType: string) {
   if (mediaType === "series") return "tvshows";
   return mediaType;
+}
+
+const STATUS_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "completed", label: "Completed" },
+  { value: "pending", label: "Pending" },
+  { value: "syncing", label: "Syncing" },
+  { value: "MANUAL_SYNC_REQUIRED", label: "Manual" },
+  { value: "failed", label: "Failed" },
+] as const;
+
+interface NotificationRowProps {
+  item: WebhookItem;
+  expanded: boolean;
+  onToggle: () => void;
+  onSync: (notification: WebhookNotification) => void;
+  onSyncAll: (item: WebhookItem) => void;
+  onDelete: (notification: WebhookNotification) => void;
+  onDetails: (notification: WebhookNotification) => void;
+  onGroupDetails: (item: WebhookItem) => void;
+}
+
+/**
+ * One row per item: a series/anime season collapses its episodes into a single
+ * row (aggregate count + size, most urgent status) and can expand inline; a
+ * movie renders standalone.
+ */
+function NotificationRow({
+  item,
+  expanded,
+  onToggle,
+  onSync,
+  onSyncAll,
+  onDelete,
+  onDetails,
+  onGroupDetails,
+}: NotificationRowProps) {
+  const status = groupStatus(item.notifications);
+  const single = item.notifications[0];
+  const episodeCount = item.notifications.length;
+  const canSync = item.notifications.some(isSyncable) && status !== "syncing";
+
+  const meta = [item.requestedBy, itemDetail(item), formatSize(totalSize(item.notifications))]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <div className="border-b border-border last:border-b-0">
+      <div className="flex items-center gap-4 px-4 py-3 transition-colors hover:bg-muted/40">
+        <WebhookPoster item={item} className="h-[66px] w-[46px]" iconClassName="size-[18px]" />
+
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-sm font-semibold text-foreground">
+              {item.title}
+              {item.year ? (
+                <span className="font-normal text-muted-foreground"> ({item.year})</span>
+              ) : null}
+            </span>
+            <MediaBadge mediaType={item.mediaType} />
+          </div>
+          <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+            <IconUser className="size-3 shrink-0 opacity-80" />
+            <span className="truncate">{meta}</span>
+            <span className="shrink-0 opacity-50">·</span>
+            <span className="shrink-0">{timeAgo(item.createdAt)}</span>
+          </div>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-2">
+          <StatusBadge status={status} />
+
+          {item.isGroup ? (
+            <>
+              <Button variant="outline" size="sm" onClick={() => onGroupDetails(item)}>
+                <IconEye className="mr-1.5 size-3.5" />
+                Details ({episodeCount})
+              </Button>
+              {canSync ? (
+                <Button
+                  size="sm"
+                  className="border-0 bg-brand-gradient-x text-white"
+                  onClick={() => onSyncAll(item)}
+                >
+                  <IconPlayerPlay className="mr-1.5 size-3.5" />
+                  Sync all
+                </Button>
+              ) : status === "syncing" ? (
+                <Button variant="outline" size="sm" disabled>
+                  Syncing…
+                </Button>
+              ) : null}
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={onToggle}
+                title={expanded ? "Hide episodes" : "Show episodes"}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <IconChevronDown
+                  className={cn("size-4 transition-transform", expanded && "rotate-180")}
+                />
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" size="sm" onClick={() => onDetails(single)}>
+                <IconEye className="mr-1.5 size-3.5" />
+                Details
+              </Button>
+              {canSync && (
+                <Button
+                  size="sm"
+                  className="border-0 bg-brand-gradient-x text-white"
+                  onClick={() => onSync(single)}
+                >
+                  <IconPlayerPlay className="mr-1.5 size-3.5" />
+                  {single.status === "failed" ? "Retry" : "Sync"}
+                </Button>
+              )}
+              {status !== "syncing" && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => onDelete(single)}
+                  title="Delete notification"
+                  className="text-muted-foreground hover:text-rose-400"
+                >
+                  <IconTrash className="size-4" />
+                </Button>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Episodes in this season */}
+      {item.isGroup && expanded && (
+        <div className="border-t border-border bg-black/20 py-1 pr-4 pl-[78px]">
+          {item.notifications.map((notification) => {
+            return (
+              <div
+                key={notification.notification_id}
+                className="flex items-center gap-3 border-b border-border/50 py-2 font-mono text-[11px] text-muted-foreground last:border-b-0"
+              >
+                <StatusDot status={notification.status} />
+                <span className="truncate text-foreground/80">
+                  {notification.release_title || notification.display_title}
+                </span>
+                <span className="flex-1" />
+                <span className="shrink-0">{formatSize(notification.release_size)}</span>
+                <span className="w-16 shrink-0 text-right">{timeAgo(notification.created_at)}</span>
+                <StatusBadge status={notification.status} size="sm" />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => onDetails(notification)}
+                  title="Details"
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <IconEye className="size-3.5" />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function getApiErrorMessage(error: unknown) {
@@ -233,7 +281,8 @@ export function WebhooksPage() {
 
   const [detailsId, setDetailsId] = useState<string | null>(null);
   const [jsonId, setJsonId] = useState<string | null>(null);
-  const [selectedGroup, setSelectedGroup] = useState<GroupedNotification | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<WebhookItem | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [dryRunPayload, setDryRunPayload] = useState<unknown>(null);
 
   const [renameDetailsId, setRenameDetailsId] = useState<string | null>(null);
@@ -283,18 +332,25 @@ export function WebhooksPage() {
     };
   }, [notificationsQuery, renameQuery]);
 
-  const notifications = notificationsQuery.data?.notifications ?? [];
-  const items = useMemo(() => buildItems(notifications), [notifications]);
+  const notifications = useMemo(
+    () => notificationsQuery.data?.notifications ?? [],
+    [notificationsQuery.data?.notifications]
+  );
+  const items = useMemo(() => groupNotifications(notifications), [notifications]);
 
-  const pendingCount = notifications.filter(
-    (notification) => notification.status === "pending"
-  ).length;
-  const syncingCount = notifications.filter(
-    (notification) => notification.status === "syncing"
-  ).length;
-  const queuedCount = notifications.filter(
-    (notification) => notification.status === "QUEUED_SLOT" || notification.status === "QUEUED_PATH"
-  ).length;
+  // Counted per grouped item so the stats agree with the rows on screen.
+  const groupCounts = useMemo(() => {
+    let completed = 0;
+    let inProgress = 0;
+    let failed = 0;
+    for (const item of items) {
+      const status = groupStatus(item.notifications);
+      if (status === "completed") completed += 1;
+      else if (status === "failed") failed += 1;
+      else inProgress += 1;
+    }
+    return { completed, inProgress, failed };
+  }, [items]);
 
   const runSync = async (notification: WebhookNotification) => {
     try {
@@ -349,7 +405,7 @@ export function WebhooksPage() {
     }
   };
 
-  const syncAllInGroup = async (group: GroupedNotification) => {
+  const syncAllInGroup = async (group: WebhookItem) => {
     const candidates = group.notifications.filter(
       (notification) =>
         notification.status === "pending" ||
@@ -438,192 +494,102 @@ export function WebhooksPage() {
           <TabsTrigger value="rename">Rename History ({renameQuery.data?.total ?? 0})</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="notifications" className="mt-4 space-y-4">
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardContent className="pt-6">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="text-sm text-neutral-300">
-                  <span className="mr-4">{pendingCount} pending</span>
-                  <span className="mr-4">{syncingCount} syncing</span>
-                  <span>{queuedCount} queued</span>
+        <TabsContent value="notifications" className="mt-4 flex flex-col gap-3.5">
+          {/* Stats — counted over grouped items, matching what the list shows */}
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {[
+              {
+                label: "Notifications",
+                value: notifications.length,
+                unit: `in ${items.length} group${items.length === 1 ? "" : "s"}`,
+                tone: "text-foreground",
+              },
+              {
+                label: "Completed",
+                value: groupCounts.completed,
+                unit: "synced",
+                tone: "text-emerald-400",
+              },
+              {
+                label: "In progress",
+                value: groupCounts.inProgress,
+                unit: "pending",
+                tone: "text-amber-400",
+              },
+              {
+                label: "Failed",
+                value: groupCounts.failed,
+                unit: "needs retry",
+                tone: "text-rose-400",
+              },
+            ].map((stat) => (
+              <div key={stat.label} className="rounded-xl border border-border bg-card px-4 py-3">
+                <div className="mb-1.5 font-mono text-[10px] tracking-[0.06em] text-muted-foreground uppercase">
+                  {stat.label}
                 </div>
-                <Select
-                  value={statusFilter}
-                  onValueChange={(value) => setStatusFilter(value ?? "all")}
-                  items={{
-                    all: "All statuses",
-                    pending: "Pending",
-                    READY_FOR_TRANSFER: "Ready for Transfer",
-                    QUEUED_SLOT: "Queued Slot",
-                    QUEUED_PATH: "Queued Path",
-                    syncing: "Syncing",
-                    MANUAL_SYNC_REQUIRED: "Manual Sync Required",
-                    completed: "Completed",
-                    failed: "Failed",
-                  }}
-                >
-                  <SelectTrigger className="w-56">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All statuses</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
-                    <SelectItem value="READY_FOR_TRANSFER">Ready for Transfer</SelectItem>
-                    <SelectItem value="QUEUED_SLOT">Queued Slot</SelectItem>
-                    <SelectItem value="QUEUED_PATH">Queued Path</SelectItem>
-                    <SelectItem value="syncing">Syncing</SelectItem>
-                    <SelectItem value="MANUAL_SYNC_REQUIRED">Manual Sync Required</SelectItem>
-                    <SelectItem value="completed">Completed</SelectItem>
-                    <SelectItem value="failed">Failed</SelectItem>
-                  </SelectContent>
-                </Select>
+                <div className="flex items-baseline gap-1.5">
+                  <span className={cn("font-display text-2xl font-semibold", stat.tone)}>
+                    {stat.value}
+                  </span>
+                  <span className="text-[11px] text-muted-foreground">{stat.unit}</span>
+                </div>
               </div>
-            </CardContent>
-          </Card>
+            ))}
+          </div>
 
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardHeader>
-              <CardTitle className="text-white">Webhook Notifications</CardTitle>
-              <CardDescription className="text-neutral-400">
-                Series and anime are grouped by show and season
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[560px] pr-3">
-                {notificationsQuery.isLoading ? (
-                  <div className="space-y-3">
-                    {[1, 2, 3, 4].map((idx) => (
-                      <Skeleton key={idx} className="h-28 w-full" />
-                    ))}
-                  </div>
-                ) : items.length ? (
-                  <div className="space-y-3">
-                    {items.map((item) => {
-                      if (item.type === "single") {
-                        const notification = item.value;
-                        return (
-                          <div
-                            key={notification.notification_id}
-                            className="rounded-lg border border-neutral-700/50 bg-neutral-800/50 p-4"
-                          >
-                            <div className="flex items-start justify-between gap-4">
-                              <div className="min-w-0">
-                                <div className="mb-1 flex flex-wrap items-center gap-2">
-                                  <p className="truncate text-sm font-medium text-white">
-                                    {notification.display_title}
-                                  </p>
-                                  {getMediaBadge(notification.media_type)}
-                                  {getStatusBadge(notification.status)}
-                                </div>
-                                <p className="text-xs text-neutral-400">
-                                  Requested by {notification.requested_by || "Unknown"} -{" "}
-                                  {formatAgo(notification.created_at)}
-                                </p>
-                              </div>
-                              <div className="flex shrink-0 flex-wrap items-center gap-2">
-                                {(notification.status === "pending" ||
-                                  notification.status === "failed") && (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => runSync(notification)}
-                                  >
-                                    <IconPlayerPlay className="mr-1.5 h-4 w-4" />
-                                    {notification.status === "failed" ? "Retry" : "Sync"}
-                                  </Button>
-                                )}
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => setDetailsId(notification.notification_id)}
-                                >
-                                  <IconEye className="mr-1.5 h-4 w-4" />
-                                  Details
-                                </Button>
-                                {notification.status !== "syncing" && (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => runDelete(notification)}
-                                  >
-                                    <IconTrash className="mr-1.5 h-4 w-4" />
-                                    Delete
-                                  </Button>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      }
-
-                      const group = item.value;
-                      const groupStatus = toGroupStatus(group.notifications);
-                      const totalSize = group.notifications.reduce(
-                        (sum, current) => sum + (current.release_size ?? 0),
-                        0
-                      );
-
-                      return (
-                        <div
-                          key={group.key}
-                          className="rounded-lg border border-neutral-700/50 bg-neutral-800/50 p-4"
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="min-w-0">
-                              <div className="mb-1 flex flex-wrap items-center gap-2">
-                                <p className="truncate text-sm font-medium text-white">
-                                  {group.title}
-                                </p>
-                                {getMediaBadge(group.mediaType)}
-                                {getStatusBadge(groupStatus)}
-                              </div>
-                              <p className="text-xs text-neutral-400">
-                                Season {group.seasonNumber ?? 0} - {group.notifications.length}{" "}
-                                episode(s) - {(totalSize / 1024 / 1024 / 1024).toFixed(2)} GB
-                              </p>
-                              <p className="mt-1 text-xs text-neutral-500">
-                                Requested by {group.requestedBy || "Unknown"} -{" "}
-                                {formatAgo(group.createdAt)}
-                              </p>
-                            </div>
-                            <div className="flex shrink-0 flex-wrap items-center gap-2">
-                              {group.notifications.some(
-                                (notification) =>
-                                  notification.status === "pending" ||
-                                  notification.status === "failed"
-                              ) && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => syncAllInGroup(group)}
-                                >
-                                  <IconPlayerPlay className="mr-1.5 h-4 w-4" />
-                                  Sync All
-                                </Button>
-                              )}
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => setSelectedGroup(group)}
-                              >
-                                <IconList className="mr-1.5 h-4 w-4" />
-                                Details ({group.notifications.length})
-                              </Button>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="py-14 text-center text-neutral-500">
-                    <IconWebhook className="mx-auto mb-2 h-10 w-10" />
-                    No webhook notifications found
-                  </div>
+          {/* Filters */}
+          <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2.5">
+            {STATUS_FILTERS.map((filter) => (
+              <button
+                key={filter.value}
+                type="button"
+                onClick={() => setStatusFilter(filter.value)}
+                className={cn(
+                  "rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors",
+                  statusFilter === filter.value
+                    ? "border-brand/35 bg-brand/15 text-brand-foreground"
+                    : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                 )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
+              >
+                {filter.label}
+              </button>
+            ))}
+            <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+              series &amp; anime grouped by season
+            </span>
+          </div>
+
+          {/* Grouped list */}
+          <div className="overflow-hidden rounded-xl border border-border bg-card">
+            {notificationsQuery.isLoading ? (
+              <div className="flex flex-col gap-3 p-4">
+                {[1, 2, 3, 4].map((idx) => (
+                  <Skeleton key={idx} className="h-20 w-full rounded-lg" />
+                ))}
+              </div>
+            ) : items.length ? (
+              items.map((item) => (
+                <NotificationRow
+                  key={item.key}
+                  item={item}
+                  expanded={expandedKey === item.key}
+                  onToggle={() =>
+                    setExpandedKey((current) => (current === item.key ? null : item.key))
+                  }
+                  onSync={runSync}
+                  onSyncAll={syncAllInGroup}
+                  onDelete={runDelete}
+                  onDetails={(notification) => setDetailsId(notification.notification_id)}
+                  onGroupDetails={setSelectedGroup}
+                />
+              ))
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
+                <IconWebhook className="size-9" />
+                <span className="text-sm">No webhook notifications found</span>
+              </div>
+            )}
+          </div>
         </TabsContent>
 
         <TabsContent value="rename" className="mt-4">
