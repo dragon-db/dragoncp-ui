@@ -10,7 +10,6 @@ import {
   useTriggerWebhookSync,
   useVerifyRenameNotification,
   useWebhookDryRun,
-  useWebhookNotificationDetails,
   useWebhookNotificationJson,
   useWebhookNotifications,
   type RenameNotification,
@@ -38,7 +37,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
   IconCheck,
-  IconChevronDown,
   IconCode,
   IconEye,
   IconPlayerPlay,
@@ -56,27 +54,22 @@ import {
   distinctEpisodeCount,
   itemDetail,
   seasonBytes,
-  formatEpisodeRange,
-  releaseGroups,
   timeAgo,
   type WebhookItem,
 } from "@/lib/webhook-grouping";
-import { EpisodeDetails } from "@/components/webhooks/episode-details";
+import { EpisodeDetailPanel, EpisodeList } from "@/components/webhooks/episode-details";
 import {
-  MediaBadge,
-  StatusBadge,
-  StatusDot,
-  WebhookPoster,
-} from "@/components/webhooks/webhook-bits";
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { MediaBadge, StatusBadge, WebhookPoster } from "@/components/webhooks/webhook-bits";
 
 // Status / media chips and relative time come from the shared webhook helpers so
 // the page, its dialogs and the dashboard rail all present notifications alike.
 function getStatusBadge(status: string) {
   return <StatusBadge status={status} />;
-}
-
-function getMediaBadge(mediaType: string) {
-  return <MediaBadge mediaType={mediaType} />;
 }
 
 function formatAgo(value?: string) {
@@ -86,6 +79,23 @@ function formatAgo(value?: string) {
 function mapMediaType(mediaType: string) {
   if (mediaType === "series") return "tvshows";
   return mediaType;
+}
+
+function getApiErrorMessage(error: unknown) {
+  if (typeof error !== "object" || error === null) return undefined;
+
+  const maybeError = error as {
+    response?: { data?: { result?: { message?: string }; message?: string } };
+    result?: { message?: string };
+    message?: string;
+  };
+
+  return (
+    maybeError.response?.data?.result?.message ??
+    maybeError.response?.data?.message ??
+    maybeError.result?.message ??
+    maybeError.message
+  );
 }
 
 const STATUS_FILTERS = [
@@ -99,189 +109,94 @@ const STATUS_FILTERS = [
 
 interface NotificationRowProps {
   item: WebhookItem;
-  expanded: boolean;
-  onToggle: () => void;
   onSync: (notification: WebhookNotification) => void;
   onSyncAll: (item: WebhookItem) => void;
+  onComplete: (notification: WebhookNotification) => void;
+  onDryRun: (notification: WebhookNotification) => void;
+  onJson: (notification: WebhookNotification) => void;
   onDelete: (notification: WebhookNotification) => void;
-  onDetails: (notification: WebhookNotification) => void;
-  onGroupDetails: (item: WebhookItem) => void;
 }
 
 /**
- * One row per item: a series/anime season collapses its episodes into a single
- * row (aggregate count + size, most urgent status) and can expand inline; a
- * movie renders standalone.
+ * One row per item, expanding in place: a season lists its episodes (each of
+ * which opens its own detail), a movie opens its detail directly. Expanding is
+ * the only way in — there are no detail dialogs to get lost between.
  */
 function NotificationRow({
   item,
-  expanded,
-  onToggle,
   onSync,
   onSyncAll,
+  onComplete,
+  onDryRun,
+  onJson,
   onDelete,
-  onDetails,
-  onGroupDetails,
 }: NotificationRowProps) {
   const status = groupStatus(item.notifications);
   const single = item.notifications[0];
   const episodeCount = distinctEpisodeCount(item.notifications);
   const canSync = item.notifications.some(isSyncable) && status !== "syncing";
+  const actions = { onSync, onComplete, onDryRun, onJson, onDelete };
 
   const meta = [item.requestedBy, itemDetail(item), formatSize(seasonBytes(item.notifications))]
     .filter(Boolean)
     .join(" · ");
 
   return (
-    <div className="border-b border-border last:border-b-0">
-      <div className="flex items-center gap-4 px-4 py-3 transition-colors hover:bg-muted/40">
-        <WebhookPoster item={item} className="h-[66px] w-[46px]" iconClassName="size-[18px]" />
-
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-sm font-semibold text-foreground">
-              {item.title}
-              {item.year ? (
-                <span className="font-normal text-muted-foreground"> ({item.year})</span>
-              ) : null}
+    <AccordionItem value={item.key} className="border-b border-border last:border-b-0">
+      <div className="flex items-stretch">
+        <AccordionTrigger className="min-w-0 flex-1 items-center gap-3 px-4 py-3 no-underline hover:bg-muted/40 hover:no-underline">
+          <span className="flex min-w-0 flex-1 items-center gap-4">
+            <WebhookPoster item={item} className="h-[62px] w-[44px]" iconClassName="size-4" />
+            <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-sm font-semibold text-foreground">
+                  {item.title}
+                  {item.year ? (
+                    <span className="font-normal text-muted-foreground"> ({item.year})</span>
+                  ) : null}
+                </span>
+                <MediaBadge mediaType={item.mediaType} />
+              </span>
+              <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+                <IconUser className="size-3 shrink-0 opacity-80" />
+                <span className="truncate">{meta}</span>
+                <span className="shrink-0 opacity-50">·</span>
+                <span className="shrink-0">{timeAgo(item.createdAt)}</span>
+              </span>
             </span>
-            <MediaBadge mediaType={item.mediaType} />
-          </div>
-          <div className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-            <IconUser className="size-3 shrink-0 opacity-80" />
-            <span className="truncate">{meta}</span>
-            <span className="shrink-0 opacity-50">·</span>
-            <span className="shrink-0">{timeAgo(item.createdAt)}</span>
-          </div>
-        </div>
+            <StatusBadge status={status} />
+          </span>
+        </AccordionTrigger>
 
-        <div className="flex shrink-0 items-center gap-2">
-          <StatusBadge status={status} />
-
-          {item.isGroup ? (
-            <>
-              <Button variant="outline" size="sm" onClick={() => onGroupDetails(item)}>
-                <IconEye className="mr-1.5 size-3.5" />
-                Details ({episodeCount})
-              </Button>
-              {canSync ? (
-                <Button
-                  size="sm"
-                  className="border-0 bg-brand-gradient-x text-white"
-                  onClick={() => onSyncAll(item)}
-                >
-                  <IconPlayerPlay className="mr-1.5 size-3.5" />
-                  Sync all
-                </Button>
-              ) : status === "syncing" ? (
-                <Button variant="outline" size="sm" disabled>
-                  Syncing…
-                </Button>
-              ) : null}
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={onToggle}
-                title={expanded ? "Hide episodes" : "Show episodes"}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <IconChevronDown
-                  className={cn("size-4 transition-transform", expanded && "rotate-180")}
-                />
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button variant="outline" size="sm" onClick={() => onDetails(single)}>
-                <IconEye className="mr-1.5 size-3.5" />
-                Details
-              </Button>
-              {canSync && (
-                <Button
-                  size="sm"
-                  className="border-0 bg-brand-gradient-x text-white"
-                  onClick={() => onSync(single)}
-                >
-                  <IconPlayerPlay className="mr-1.5 size-3.5" />
-                  {single.status === "failed" ? "Retry" : "Sync"}
-                </Button>
-              )}
-              {status !== "syncing" && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => onDelete(single)}
-                  title="Delete notification"
-                  className="text-muted-foreground hover:text-rose-400"
-                >
-                  <IconTrash className="size-4" />
-                </Button>
-              )}
-            </>
-          )}
-        </div>
+        {canSync && (
+          <div className="flex items-center pr-4">
+            <Button
+              size="sm"
+              className="border-0 bg-brand-gradient-x text-white"
+              onClick={() => (item.isGroup ? onSyncAll(item) : onSync(single))}
+            >
+              <IconPlayerPlay className="mr-1.5 size-3.5" />
+              {item.isGroup ? "Sync all" : single.status === "failed" ? "Retry" : "Sync"}
+            </Button>
+          </div>
+        )}
       </div>
 
-      {/* Episodes in this season */}
-      {item.isGroup && expanded && (
-        <div className="border-t border-border bg-black/20 py-1 pr-4 pl-[78px]">
-          {releaseGroups(item.notifications).map((release) => (
-            <div
-              key={release.key}
-              className="flex items-center gap-3 border-b border-border/50 py-2 font-mono text-[11px] text-muted-foreground last:border-b-0"
-            >
-              <StatusDot status={release.status} />
-              <span className="w-[86px] shrink-0 text-foreground/70">
-                {formatEpisodeRange(release.episodes) || "—"}
-              </span>
-              <span className="truncate text-foreground/80" title={release.releaseTitle}>
-                {release.releaseTitle}
-              </span>
-              {release.isPack && (
-                <span className="shrink-0 rounded border border-brand/30 bg-brand/10 px-1.5 py-px text-[9px] font-semibold tracking-wide text-brand-hover uppercase">
-                  Pack
-                </span>
-              )}
-              <span className="flex-1" />
-              <span className="shrink-0">{formatSize(release.fileBytes)}</span>
-              <span className="w-16 shrink-0 text-right">{timeAgo(release.createdAt)}</span>
-              <StatusBadge status={release.status} size="sm" />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => onDetails(release.notifications[0])}
-                title="Details"
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <IconEye className="size-3.5" />
-              </Button>
+      <AccordionContent className="bg-black/20 px-4 pt-1 pb-4">
+        {item.isGroup ? (
+          <>
+            <div className="mb-2 font-mono text-[10.5px] text-muted-foreground">
+              {episodeCount} episode{episodeCount === 1 ? "" : "s"} · {item.notifications.length}{" "}
+              webhook{item.notifications.length === 1 ? "" : "s"} ·{" "}
+              {formatSize(seasonBytes(item.notifications))} on disk
             </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function getApiErrorMessage(error: unknown) {
-  if (typeof error !== "object" || error === null) return undefined;
-
-  const maybeError = error as {
-    response?: {
-      data?: {
-        result?: { message?: string };
-        message?: string;
-      };
-    };
-    result?: { message?: string };
-    message?: string;
-  };
-
-  return (
-    maybeError.response?.data?.result?.message ??
-    maybeError.response?.data?.message ??
-    maybeError.result?.message ??
-    maybeError.message
+            <EpisodeList item={item} actions={actions} />
+          </>
+        ) : (
+          <EpisodeDetailPanel notification={single} actions={actions} />
+        )}
+      </AccordionContent>
+    </AccordionItem>
   );
 }
 
@@ -289,10 +204,7 @@ export function WebhooksPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [activeTab, setActiveTab] = useState("notifications");
 
-  const [detailsId, setDetailsId] = useState<string | null>(null);
   const [jsonId, setJsonId] = useState<string | null>(null);
-  const [selectedGroup, setSelectedGroup] = useState<WebhookItem | null>(null);
-  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [dryRunPayload, setDryRunPayload] = useState<unknown>(null);
 
   const [renameDetailsId, setRenameDetailsId] = useState<string | null>(null);
@@ -307,7 +219,6 @@ export function WebhooksPage() {
   );
   const renameQuery = useRenameNotifications(100);
 
-  const detailsQuery = useWebhookNotificationDetails(detailsId ?? "");
   const jsonQuery = useWebhookNotificationJson(jsonId ?? "");
   const renameDetailsQuery = useRenameNotificationDetails(renameDetailsId ?? "");
 
@@ -475,11 +386,6 @@ export function WebhooksPage() {
     }
   };
 
-  const selectedNotification =
-    detailsQuery.data?.notification ??
-    notifications.find((item) => item.notification_id === detailsId) ??
-    null;
-
   return (
     <div className="space-y-6">
       <PageHeader title="Webhooks" description="Incoming media notifications and rename history">
@@ -578,21 +484,20 @@ export function WebhooksPage() {
                 ))}
               </div>
             ) : items.length ? (
-              items.map((item) => (
-                <NotificationRow
-                  key={item.key}
-                  item={item}
-                  expanded={expandedKey === item.key}
-                  onToggle={() =>
-                    setExpandedKey((current) => (current === item.key ? null : item.key))
-                  }
-                  onSync={runSync}
-                  onSyncAll={syncAllInGroup}
-                  onDelete={runDelete}
-                  onDetails={(notification) => setDetailsId(notification.notification_id)}
-                  onGroupDetails={setSelectedGroup}
-                />
-              ))
+              <Accordion>
+                {items.map((item) => (
+                  <NotificationRow
+                    key={item.key}
+                    item={item}
+                    onSync={runSync}
+                    onSyncAll={syncAllInGroup}
+                    onComplete={runComplete}
+                    onDryRun={runDryRun}
+                    onJson={(notification) => setJsonId(notification.notification_id)}
+                    onDelete={runDelete}
+                  />
+                ))}
+              </Accordion>
             ) : (
               <div className="flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
                 <IconWebhook className="size-9" />
@@ -693,126 +598,6 @@ export function WebhooksPage() {
           </Card>
         </TabsContent>
       </Tabs>
-
-      <Dialog open={Boolean(detailsId)} onOpenChange={(open) => !open && setDetailsId(null)}>
-        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle className="text-white">Webhook Details</DialogTitle>
-            <DialogDescription className="text-neutral-400">
-              Detailed notification payload and actions
-            </DialogDescription>
-          </DialogHeader>
-          {selectedNotification ? (
-            <div className="space-y-4 text-sm">
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Title</div>
-                  <div className="mt-1 text-neutral-200">{selectedNotification.display_title}</div>
-                </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Status</div>
-                  <div className="mt-1">{getStatusBadge(selectedNotification.status)}</div>
-                </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Media Type</div>
-                  <div className="mt-1">{getMediaBadge(selectedNotification.media_type)}</div>
-                </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Created</div>
-                  <div className="mt-1 text-neutral-200">
-                    {new Date(selectedNotification.created_at).toLocaleString()}
-                  </div>
-                </div>
-              </div>
-
-              <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                <div className="mb-2 text-neutral-500">Actions</div>
-                <div className="flex flex-wrap gap-2">
-                  {(selectedNotification.status === "pending" ||
-                    selectedNotification.status === "failed") && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => runSync(selectedNotification)}
-                    >
-                      <IconPlayerPlay className="mr-1.5 h-4 w-4" />
-                      {selectedNotification.status === "failed" ? "Retry" : "Sync"}
-                    </Button>
-                  )}
-                  {selectedNotification.status !== "completed" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => runComplete(selectedNotification)}
-                    >
-                      <IconCheck className="mr-1.5 h-4 w-4" />
-                      Mark Complete
-                    </Button>
-                  )}
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => runDryRun(selectedNotification)}
-                  >
-                    <IconRefresh className="mr-1.5 h-4 w-4" />
-                    Dry-Run
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setJsonId(selectedNotification.notification_id)}
-                  >
-                    <IconCode className="mr-1.5 h-4 w-4" />
-                    JSON
-                  </Button>
-                  {selectedNotification.status !== "syncing" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => runDelete(selectedNotification)}
-                    >
-                      <IconTrash className="mr-1.5 h-4 w-4" />
-                      Delete
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="text-neutral-500">Loading...</div>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(selectedGroup)}
-        onOpenChange={(open) => !open && setSelectedGroup(null)}
-      >
-        <DialogContent className="sm:max-w-5xl">
-          <DialogHeader>
-            <DialogTitle>
-              {selectedGroup?.title}
-              {selectedGroup?.seasonNumber != null ? ` · Season ${selectedGroup.seasonNumber}` : ""}
-            </DialogTitle>
-            <DialogDescription>
-              Episodes in this season, with the release that delivered each file
-            </DialogDescription>
-          </DialogHeader>
-          {selectedGroup && (
-            <div className="max-h-[65vh] w-full min-w-0 overflow-x-hidden overflow-y-auto pr-2">
-              <EpisodeDetails
-                item={selectedGroup}
-                actions={{
-                  onSync: runSync,
-                  onDryRun: runDryRun,
-                  onJson: (notification) => setJsonId(notification.notification_id),
-                  onDelete: runDelete,
-                }}
-              />
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={Boolean(jsonId)} onOpenChange={(open) => !open && setJsonId(null)}>
         <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-4xl">
