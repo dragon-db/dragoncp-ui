@@ -669,7 +669,7 @@ export function TransfersPage() {
         open={Boolean(detailsTransfer)}
         onOpenChange={(open) => !open && setDetailsTransfer(null)}
       >
-        <DialogContent className="max-w-3xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="sm:max-w-3xl border-neutral-800 bg-neutral-900">
           <DialogHeader>
             <DialogTitle className="text-white">Transfer Details</DialogTitle>
             <DialogDescription className="text-neutral-400">
@@ -753,7 +753,7 @@ export function TransfersPage() {
       </Dialog>
 
       <Dialog open={fullscreenLogs} onOpenChange={setFullscreenLogs}>
-        <DialogContent className="max-w-5xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="sm:max-w-5xl border-neutral-800 bg-neutral-900">
           <DialogHeader>
             <DialogTitle className="text-white">Fullscreen Logs</DialogTitle>
             <DialogDescription className="text-neutral-400">

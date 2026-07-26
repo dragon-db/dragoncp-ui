@@ -53,11 +53,15 @@ import {
   groupNotifications,
   groupStatus,
   isSyncable,
+  distinctEpisodeCount,
   itemDetail,
+  seasonBytes,
+  formatEpisodeRange,
+  releaseGroups,
   timeAgo,
-  totalSize,
   type WebhookItem,
 } from "@/lib/webhook-grouping";
+import { EpisodeDetails } from "@/components/webhooks/episode-details";
 import {
   MediaBadge,
   StatusBadge,
@@ -121,10 +125,10 @@ function NotificationRow({
 }: NotificationRowProps) {
   const status = groupStatus(item.notifications);
   const single = item.notifications[0];
-  const episodeCount = item.notifications.length;
+  const episodeCount = distinctEpisodeCount(item.notifications);
   const canSync = item.notifications.some(isSyncable) && status !== "syncing";
 
-  const meta = [item.requestedBy, itemDetail(item), formatSize(totalSize(item.notifications))]
+  const meta = [item.requestedBy, itemDetail(item), formatSize(seasonBytes(item.notifications))]
     .filter(Boolean)
     .join(" · ");
 
@@ -221,32 +225,38 @@ function NotificationRow({
       {/* Episodes in this season */}
       {item.isGroup && expanded && (
         <div className="border-t border-border bg-black/20 py-1 pr-4 pl-[78px]">
-          {item.notifications.map((notification) => {
-            return (
-              <div
-                key={notification.notification_id}
-                className="flex items-center gap-3 border-b border-border/50 py-2 font-mono text-[11px] text-muted-foreground last:border-b-0"
-              >
-                <StatusDot status={notification.status} />
-                <span className="truncate text-foreground/80">
-                  {notification.release_title || notification.display_title}
+          {releaseGroups(item.notifications).map((release) => (
+            <div
+              key={release.key}
+              className="flex items-center gap-3 border-b border-border/50 py-2 font-mono text-[11px] text-muted-foreground last:border-b-0"
+            >
+              <StatusDot status={release.status} />
+              <span className="w-[86px] shrink-0 text-foreground/70">
+                {formatEpisodeRange(release.episodes) || "—"}
+              </span>
+              <span className="truncate text-foreground/80" title={release.releaseTitle}>
+                {release.releaseTitle}
+              </span>
+              {release.isPack && (
+                <span className="shrink-0 rounded border border-brand/30 bg-brand/10 px-1.5 py-px text-[9px] font-semibold tracking-wide text-brand-hover uppercase">
+                  Pack
                 </span>
-                <span className="flex-1" />
-                <span className="shrink-0">{formatSize(notification.release_size)}</span>
-                <span className="w-16 shrink-0 text-right">{timeAgo(notification.created_at)}</span>
-                <StatusBadge status={notification.status} size="sm" />
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => onDetails(notification)}
-                  title="Details"
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  <IconEye className="size-3.5" />
-                </Button>
-              </div>
-            );
-          })}
+              )}
+              <span className="flex-1" />
+              <span className="shrink-0">{formatSize(release.fileBytes)}</span>
+              <span className="w-16 shrink-0 text-right">{timeAgo(release.createdAt)}</span>
+              <StatusBadge status={release.status} size="sm" />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => onDetails(release.notifications[0])}
+                title="Details"
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <IconEye className="size-3.5" />
+              </Button>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -685,7 +695,7 @@ export function WebhooksPage() {
       </Tabs>
 
       <Dialog open={Boolean(detailsId)} onOpenChange={(open) => !open && setDetailsId(null)}>
-        <DialogContent className="max-w-3xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle className="text-white">Webhook Details</DialogTitle>
             <DialogDescription className="text-neutral-400">
@@ -778,99 +788,34 @@ export function WebhooksPage() {
         open={Boolean(selectedGroup)}
         onOpenChange={(open) => !open && setSelectedGroup(null)}
       >
-        <DialogContent className="max-w-5xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="sm:max-w-5xl">
           <DialogHeader>
-            <DialogTitle className="text-white">Grouped Notification Details</DialogTitle>
-            <DialogDescription className="text-neutral-400">
-              Series/anime grouped by season
+            <DialogTitle>
+              {selectedGroup?.title}
+              {selectedGroup?.seasonNumber != null ? ` · Season ${selectedGroup.seasonNumber}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              Episodes in this season, with the release that delivered each file
             </DialogDescription>
           </DialogHeader>
           {selectedGroup && (
-            <div className="space-y-4">
-              <div className="text-sm text-neutral-300">
-                {selectedGroup.title} - Season {selectedGroup.seasonNumber ?? 0} -{" "}
-                {selectedGroup.notifications.length} notification(s)
-              </div>
-              <ScrollArea className="h-[60vh] pr-3">
-                <div className="space-y-3">
-                  {selectedGroup.notifications.map((notification) => (
-                    <div
-                      key={notification.notification_id}
-                      className="rounded border border-neutral-800 bg-neutral-950 p-3"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="truncate text-sm text-neutral-100">
-                              {notification.display_title}
-                            </span>
-                            {getStatusBadge(notification.status)}
-                          </div>
-                          <div className="mt-1 text-xs text-neutral-500">
-                            {new Date(notification.created_at).toLocaleString()}
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {(notification.status === "pending" ||
-                            notification.status === "failed") && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => runSync(notification)}
-                            >
-                              <IconPlayerPlay className="mr-1.5 h-4 w-4" />
-                              {notification.status === "failed" ? "Retry" : "Sync"}
-                            </Button>
-                          )}
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => runDryRun(notification)}
-                          >
-                            <IconRefresh className="mr-1.5 h-4 w-4" />
-                            Dry-Run
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setJsonId(notification.notification_id)}
-                          >
-                            <IconCode className="mr-1.5 h-4 w-4" />
-                            JSON
-                          </Button>
-                          {notification.status !== "completed" && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => runComplete(notification)}
-                            >
-                              <IconCheck className="mr-1.5 h-4 w-4" />
-                              Complete
-                            </Button>
-                          )}
-                          {notification.status !== "syncing" && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => runDelete(notification)}
-                            >
-                              <IconTrash className="mr-1.5 h-4 w-4" />
-                              Delete
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </ScrollArea>
+            <div className="max-h-[65vh] w-full min-w-0 overflow-x-hidden overflow-y-auto pr-2">
+              <EpisodeDetails
+                item={selectedGroup}
+                actions={{
+                  onSync: runSync,
+                  onDryRun: runDryRun,
+                  onJson: (notification) => setJsonId(notification.notification_id),
+                  onDelete: runDelete,
+                }}
+              />
             </div>
           )}
         </DialogContent>
       </Dialog>
 
       <Dialog open={Boolean(jsonId)} onOpenChange={(open) => !open && setJsonId(null)}>
-        <DialogContent className="max-w-4xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle className="text-white">Webhook JSON</DialogTitle>
             <DialogDescription className="text-neutral-400">Raw JSON payload</DialogDescription>
@@ -887,7 +832,7 @@ export function WebhooksPage() {
         open={Boolean(dryRunPayload)}
         onOpenChange={(open) => !open && setDryRunPayload(null)}
       >
-        <DialogContent className="max-w-4xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle className="text-white">Dry-Run Result</DialogTitle>
             <DialogDescription className="text-neutral-400">
@@ -906,7 +851,7 @@ export function WebhooksPage() {
         open={Boolean(renameDetailsId)}
         onOpenChange={(open) => !open && setRenameDetailsId(null)}
       >
-        <DialogContent className="max-w-4xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle className="text-white">Rename Details</DialogTitle>
             <DialogDescription className="text-neutral-400">
@@ -1002,7 +947,7 @@ export function WebhooksPage() {
         open={Boolean(renameVerifyPayload)}
         onOpenChange={(open) => !open && setRenameVerifyPayload(null)}
       >
-        <DialogContent className="max-w-4xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-4xl">
           <DialogHeader>
             <DialogTitle className="text-white">Rename Verification</DialogTitle>
             <DialogDescription className="text-neutral-400">

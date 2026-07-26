@@ -79,9 +79,59 @@ export interface QueueStatus {
   active_destinations?: string[];
 }
 
+/** Episode entry inside a Sonarr webhook payload (`episodes` JSON column). */
+export interface WebhookEpisode {
+  id?: number;
+  episodeNumber?: number;
+  seasonNumber?: number;
+  title?: string;
+  airDate?: string;
+  overview?: string;
+}
+
+/**
+ * The imported media file (`episode_files` JSON column). Its `size` is the real
+ * per-episode size — unlike `release_size`, which is the size of the whole grab.
+ */
+export interface WebhookEpisodeFile {
+  id?: number;
+  relativePath?: string;
+  path?: string;
+  quality?: string;
+  releaseGroup?: string;
+  sceneName?: string;
+  size?: number;
+  dateAdded?: string;
+  languages?: Array<{ id?: number; name?: string }>;
+  mediaInfo?: {
+    videoCodec?: string;
+    audioCodec?: string;
+    audioChannels?: number;
+    audioLanguages?: string[];
+    subtitles?: string[];
+    width?: number;
+    height?: number;
+    videoDynamicRangeType?: string;
+  };
+}
+
 export interface WebhookNotification {
   id?: number | string;
   notification_id: string;
+  /**
+   * Episodes this webhook covers. Sonarr fires one webhook per episode, so a
+   * season-pack grab produces several notifications that share a release_title
+   * and repeat the pack's release_size.
+   */
+  episodes?: WebhookEpisode[];
+  /** Imported file(s) for this webhook — the source of true per-episode size. */
+  episode_files?: WebhookEpisodeFile[];
+  /** Original Sonarr/Radarr payload as JSON text (holds release.releaseType). */
+  raw_webhook_data?: string;
+  release_indexer?: string;
+  season_path?: string;
+  series_path?: string;
+  series_id?: number;
   media_type: "movie" | "tvshows" | "anime" | "series" | string;
   display_title: string;
   status: WebhookStatus | string;

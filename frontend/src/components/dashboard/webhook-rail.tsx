@@ -11,7 +11,7 @@ import {
   itemDetail,
   formatSize,
   timeAgo,
-  totalSize,
+  seasonBytes,
   type WebhookItem,
 } from "@/lib/webhook-grouping";
 import { WebhookPoster, StatusBadge, MediaBadge } from "@/components/webhooks/webhook-bits";
@@ -20,7 +20,7 @@ function WebhookRow({ item }: { item: WebhookItem }) {
   const status = groupStatus(item.notifications);
   const meta = [
     item.requestedBy,
-    formatSize(totalSize(item.notifications)),
+    formatSize(seasonBytes(item.notifications)),
     timeAgo(item.createdAt),
   ]
     .filter(Boolean)

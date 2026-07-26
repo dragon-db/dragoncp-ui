@@ -737,7 +737,7 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
       )}
 
       <Dialog open={Boolean(dryRunResult)} onOpenChange={(open) => !open && setDryRunResult(null)}>
-        <DialogContent className="max-w-3xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="sm:max-w-3xl border-neutral-800 bg-neutral-900">
           <DialogHeader>
             <DialogTitle className="text-white">Dry-Run Result</DialogTitle>
             <DialogDescription className="text-neutral-400">
