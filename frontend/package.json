@@ -4,7 +4,8 @@
   "version": "2.1.4",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "DRAGONCP_BACKEND=dev vite --host 0.0.0.0",
+    "dev:prod": "DRAGONCP_BACKEND=prod vite --host 0.0.0.0 --port 5181 --strictPort",
     "build": "vite build && tsc -b",
     "lint": "eslint .",
     "format": "prettier --write src",
