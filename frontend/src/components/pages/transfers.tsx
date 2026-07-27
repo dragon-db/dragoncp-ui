@@ -27,6 +27,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useTransferPosters } from "@/hooks/useTransferPosters";
+import { WebhookPoster } from "@/components/webhooks/webhook-bits";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -115,6 +117,7 @@ export function TransfersPage() {
 
   const activeQuery = useActiveTransfers();
   const allQuery = useAllTransfers(200);
+  const posters = useTransferPosters();
 
   const cancelMutation = useCancelTransfer();
   const restartMutation = useRestartTransfer();
@@ -362,7 +365,16 @@ export function TransfersPage() {
                         className="rounded-lg border border-neutral-700/50 bg-neutral-800/50 p-4"
                       >
                         <div className="flex items-center justify-between gap-4">
-                          <div className="min-w-0">
+                          <WebhookPoster
+                            item={{
+                              posterUrl: posters.get(transfer.id),
+                              mediaType: transfer.media_type,
+                              title: transfer.parsed_title || transfer.folder_name,
+                            }}
+                            className="h-[62px] w-11"
+                            iconClassName="size-4"
+                          />
+                          <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
                               <p className="truncate text-sm font-medium text-white">
                                 {transfer.parsed_title || transfer.folder_name}
@@ -485,7 +497,16 @@ export function TransfersPage() {
                         className="rounded-lg border border-neutral-700/50 bg-neutral-800/50 p-4"
                       >
                         <div className="flex items-center justify-between gap-4">
-                          <div className="min-w-0">
+                          <WebhookPoster
+                            item={{
+                              posterUrl: posters.get(transfer.id),
+                              mediaType: transfer.media_type,
+                              title: transfer.parsed_title || transfer.folder_name,
+                            }}
+                            className="h-[62px] w-11"
+                            iconClassName="size-4"
+                          />
+                          <div className="min-w-0 flex-1">
                             <div className="flex flex-wrap items-center gap-2">
                               <p className="truncate text-sm font-medium text-white">
                                 {transfer.parsed_title || transfer.folder_name}
@@ -669,7 +690,7 @@ export function TransfersPage() {
         open={Boolean(detailsTransfer)}
         onOpenChange={(open) => !open && setDetailsTransfer(null)}
       >
-        <DialogContent className="sm:max-w-3xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle className="text-white">Transfer Details</DialogTitle>
             <DialogDescription className="text-neutral-400">
@@ -753,7 +774,7 @@ export function TransfersPage() {
       </Dialog>
 
       <Dialog open={fullscreenLogs} onOpenChange={setFullscreenLogs}>
-        <DialogContent className="sm:max-w-5xl border-neutral-800 bg-neutral-900">
+        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-5xl">
           <DialogHeader>
             <DialogTitle className="text-white">Fullscreen Logs</DialogTitle>
             <DialogDescription className="text-neutral-400">

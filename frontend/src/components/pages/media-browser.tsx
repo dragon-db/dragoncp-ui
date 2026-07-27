@@ -15,13 +15,7 @@ import { useStartTransfer } from "@/hooks/useTransfers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { DryRunDialog } from "@/components/dry-run/dry-run-report";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -35,7 +29,6 @@ import { Skeleton } from "@/components/ui/skeleton";
 import {
   IconArrowLeft,
   IconArrowNarrowRight,
-  IconCheck,
   IconChevronRight,
   IconDownload,
   IconFileSearch,
@@ -736,58 +729,16 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
         </Card>
       )}
 
-      <Dialog open={Boolean(dryRunResult)} onOpenChange={(open) => !open && setDryRunResult(null)}>
-        <DialogContent className="sm:max-w-3xl border-neutral-800 bg-neutral-900">
-          <DialogHeader>
-            <DialogTitle className="text-white">Dry-Run Result</DialogTitle>
-            <DialogDescription className="text-neutral-400">
-              Validation summary before sync execution
-            </DialogDescription>
-          </DialogHeader>
-          {dryRunResult && (
-            <div className="space-y-4 text-sm">
-              <div className="flex items-center gap-2">
-                {dryRunResult.safe_to_sync ? (
-                  <Badge className="border-green-500/50 bg-green-500/20 text-green-300">
-                    <IconCheck className="mr-1 h-3.5 w-3.5" />
-                    Safe to Sync
-                  </Badge>
-                ) : (
-                  <Badge className="border-red-500/50 bg-red-500/20 text-red-300">
-                    Manual Review Required
-                  </Badge>
-                )}
-                {dryRunResult.reason && (
-                  <span className="text-neutral-300">{dryRunResult.reason}</span>
-                )}
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Server Files</div>
-                  <div className="mt-1 text-neutral-200">{dryRunResult.server_file_count ?? 0}</div>
-                </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Local Files</div>
-                  <div className="mt-1 text-neutral-200">{dryRunResult.local_file_count ?? 0}</div>
-                </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Incoming</div>
-                  <div className="mt-1 text-neutral-200">{dryRunResult.incoming_count ?? 0}</div>
-                </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Deleted</div>
-                  <div className="mt-1 text-neutral-200">{dryRunResult.deleted_count ?? 0}</div>
-                </div>
-              </div>
-
-              <div className="max-h-72 overflow-auto rounded border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs whitespace-pre-wrap text-neutral-300">
-                {dryRunResult.raw_output || "No raw output available"}
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <DryRunDialog
+        payload={dryRunResult}
+        open={Boolean(dryRunResult)}
+        onOpenChange={(open) => !open && setDryRunResult(null)}
+        subtitle={
+          selectedFolder
+            ? `${selectedFolder}${selectedSeason ? ` · ${selectedSeason}` : ""} — what this sync would do`
+            : undefined
+        }
+      />
     </div>
   );
 }

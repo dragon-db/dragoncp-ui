@@ -137,6 +137,8 @@ export interface WebhookNotification {
   status: WebhookStatus | string;
   created_at: string;
   completed_at?: string;
+  /** Transfer this notification was synced under — the join to `Transfer.id`. */
+  transfer_id?: string;
   poster_url?: string;
   title?: string;
   year?: number;

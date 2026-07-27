@@ -2,32 +2,19 @@ import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { useActiveTransfers, useCancelTransfer, type Transfer } from "@/hooks/useTransfers";
+import { useTransferPosters } from "@/hooks/useTransferPosters";
+import { WebhookPoster } from "@/components/webhooks/webhook-bits";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   IconTransfer,
-  IconMovie,
-  IconDeviceTv,
-  IconBrandNetflix,
   IconPlus,
   IconRefresh,
   IconArrowNarrowRight,
   IconPlayerStop,
   IconInfoCircle,
 } from "@tabler/icons-react";
-
-function mediaIcon(mediaType: string) {
-  switch (mediaType) {
-    case "tvshows":
-    case "series":
-      return <IconDeviceTv className="size-4" />;
-    case "anime":
-      return <IconBrandNetflix className="size-4" />;
-    default:
-      return <IconMovie className="size-4" />;
-  }
-}
 
 function parseProgress(progress?: string): number {
   if (!progress) return 0;
@@ -37,22 +24,29 @@ function parseProgress(progress?: string): number {
 
 function TransferRow({
   transfer,
+  posterUrl,
   onCancel,
   cancelling,
 }: {
   transfer: Transfer;
+  posterUrl?: string;
   onCancel: (id: string) => void;
   cancelling: boolean;
 }) {
-  const icon = mediaIcon(transfer.media_type);
   const queued = transfer.status === "queued";
   const pct = parseProgress(transfer.progress);
 
   return (
     <div className="flex items-center gap-3.5 border-b border-border px-4 py-3 last:border-b-0">
-      <span className="flex size-10 shrink-0 items-center justify-center rounded-md border border-border bg-black/20 text-muted-foreground">
-        {icon}
-      </span>
+      <WebhookPoster
+        item={{
+          posterUrl,
+          mediaType: transfer.media_type,
+          title: transfer.parsed_title || transfer.folder_name,
+        }}
+        className="h-[54px] w-9"
+        iconClassName="size-4"
+      />
 
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex items-baseline gap-2">
@@ -107,6 +101,7 @@ function TransferRow({
 export function TransfersPanel() {
   const { data, isLoading, refetch } = useActiveTransfers();
   const cancelTransfer = useCancelTransfer();
+  const posters = useTransferPosters();
 
   const running = data?.queue_status.running_count ?? 0;
   const queued = data?.queue_status.queued_count ?? 0;
@@ -123,9 +118,12 @@ export function TransfersPanel() {
 
   return (
     <section className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-card">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <IconTransfer className="size-4 text-muted-foreground" />
-        <span className="font-display text-sm font-semibold text-foreground">Active Transfers</span>
+      {/* Actions wrap to their own line rather than squeezing the title on phones */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 border-b border-border px-4 py-3">
+        <IconTransfer className="size-4 shrink-0 text-muted-foreground" />
+        <span className="font-display text-sm font-semibold whitespace-nowrap text-foreground">
+          Active Transfers
+        </span>
         {running > 0 && (
           <Badge className="gap-1.5 border-brand/40 bg-brand/15 text-brand-foreground">
             <span className="size-1.5 rounded-full bg-brand-hover" />
@@ -137,22 +135,23 @@ export function TransfersPanel() {
             {queued} queued
           </Badge>
         )}
-        <span className="flex-1" />
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="text-muted-foreground hover:text-foreground"
-          onClick={() => refetch()}
-          title="Refresh"
-        >
-          <IconRefresh className="size-4" />
-        </Button>
-        <Link to="/media/$type" params={{ type: "movies" }}>
-          <Button size="sm" className="gap-1.5 border-0 bg-brand-gradient-x text-white">
-            <IconPlus className="size-4" />
-            New transfer
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-foreground"
+            onClick={() => refetch()}
+            title="Refresh"
+          >
+            <IconRefresh className="size-4" />
           </Button>
-        </Link>
+          <Link to="/media/$type" params={{ type: "movies" }}>
+            <Button size="sm" className="gap-1.5 border-0 bg-brand-gradient-x text-white">
+              <IconPlus className="size-4" />
+              New transfer
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {isLoading ? (
@@ -167,6 +166,7 @@ export function TransfersPanel() {
             <TransferRow
               key={transfer.id}
               transfer={transfer}
+              posterUrl={posters.get(transfer.id)}
               onCancel={handleCancel}
               cancelling={cancelTransfer.isPending}
             />
