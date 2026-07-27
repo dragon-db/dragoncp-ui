@@ -139,6 +139,9 @@ export function statusInfo(status: string): { label: string; tone: StatusTone } 
     case "MANUAL_SYNC_REQUIRED":
     case "manual_sync_required":
       return { label: "Manual", tone: "warn" };
+    // Rename runs report "partial" when some files landed and some did not.
+    case "partial":
+      return { label: "Partial", tone: "warn" };
     default:
       return { label: "Pending", tone: "warn" };
   }

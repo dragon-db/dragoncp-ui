@@ -23,7 +23,6 @@ import {
   onWebhookReceived,
 } from "@/services/socket";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -31,16 +30,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
   IconCheck,
   IconCode,
   IconEye,
+  IconPencil,
   IconPlayerPlay,
   IconRefresh,
+  IconTransfer,
   IconTrash,
   IconUser,
   IconWebhook,
@@ -53,6 +53,7 @@ import {
   isSyncable,
   distinctEpisodeCount,
   itemDetail,
+  mediaLabel,
   seasonBytes,
   timeAgo,
   type WebhookItem,
@@ -65,6 +66,14 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { MediaBadge, StatusBadge, WebhookPoster } from "@/components/webhooks/webhook-bits";
+import { AutoSyncControl } from "@/components/webhooks/auto-sync-panel";
+import { FilenameDiff } from "@/components/webhooks/filename-diff";
+import { RenameVerifyDialog } from "@/components/webhooks/rename-verify-report";
+import { episodeTagOf } from "@/lib/rename-diff";
+import { DryRunDialog } from "@/components/dry-run/dry-run-report";
+import { PageTabsList } from "@/components/layout/page-tabs";
+import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
+import { StatTiles } from "@/components/layout/stat-tiles";
 
 // Status / media chips and relative time come from the shared webhook helpers so
 // the page, its dialogs and the dashboard rail all present notifications alike.
@@ -79,6 +88,15 @@ function formatAgo(value?: string) {
 function mapMediaType(mediaType: string) {
   if (mediaType === "series") return "tvshows";
   return mediaType;
+}
+
+/** Title for dialogs: the series and season, or the movie and its year. */
+function notificationLabel(notification: WebhookNotification) {
+  const title = notification.series_title || notification.title || "Selected item";
+  if (notification.season_number !== undefined && notification.season_number !== null) {
+    return `${title} · Season ${String(notification.season_number).padStart(2, "0")}`;
+  }
+  return notification.year ? `${title} (${notification.year})` : title;
 }
 
 function getApiErrorMessage(error: unknown) {
@@ -113,6 +131,7 @@ interface NotificationRowProps {
   onSyncAll: (item: WebhookItem) => void;
   onComplete: (notification: WebhookNotification) => void;
   onDryRun: (notification: WebhookNotification) => void;
+  onViewDryRun: (notification: WebhookNotification) => void;
   onJson: (notification: WebhookNotification) => void;
   onDelete: (notification: WebhookNotification) => void;
 }
@@ -128,6 +147,7 @@ function NotificationRow({
   onSyncAll,
   onComplete,
   onDryRun,
+  onViewDryRun,
   onJson,
   onDelete,
 }: NotificationRowProps) {
@@ -135,44 +155,60 @@ function NotificationRow({
   const single = item.notifications[0];
   const episodeCount = distinctEpisodeCount(item.notifications);
   const canSync = item.notifications.some(isSyncable) && status !== "syncing";
-  const actions = { onSync, onComplete, onDryRun, onJson, onDelete };
+  const actions = { onSync, onComplete, onDryRun, onViewDryRun, onJson, onDelete };
 
-  const meta = [item.requestedBy, itemDetail(item), formatSize(seasonBytes(item.notifications))]
-    .filter(Boolean)
-    .join(" · ");
+  // Each fact stays its own element so narrow screens wrap them instead of
+  // cutting the line off mid-word.
+  const facts = [
+    item.requestedBy,
+    itemDetail(item),
+    formatSize(seasonBytes(item.notifications)),
+    timeAgo(item.createdAt),
+  ].filter(Boolean) as string[];
 
   return (
     <AccordionItem value={item.key} className="border-b border-border last:border-b-0">
-      <div className="flex items-stretch">
-        <AccordionTrigger className="min-w-0 flex-1 items-center gap-3 px-4 py-3 no-underline hover:bg-muted/40 hover:no-underline">
-          <span className="flex min-w-0 flex-1 items-center gap-4">
-            <WebhookPoster item={item} className="h-[62px] w-[44px]" iconClassName="size-4" />
+      <div className="flex flex-col items-stretch sm:flex-row">
+        <AccordionTrigger className="min-w-0 flex-1 items-start gap-3 px-4 py-3 no-underline hover:bg-muted/40 hover:no-underline sm:items-center">
+          <span className="flex min-w-0 flex-1 items-start gap-3 sm:items-center sm:gap-4">
+            <WebhookPoster
+              item={item}
+              className="h-[62px] w-[44px] shrink-0"
+              iconClassName="size-4"
+            />
             <span className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <span className="flex min-w-0 items-center gap-2">
-                <span className="truncate text-sm font-semibold text-foreground">
+              <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="text-sm font-semibold break-words text-foreground">
                   {item.title}
                   {item.year ? (
                     <span className="font-normal text-muted-foreground"> ({item.year})</span>
                   ) : null}
                 </span>
                 <MediaBadge mediaType={item.mediaType} />
+                {/* On phones the status reads with the title; on desktop it keeps
+                    its column at the end of the row. */}
+                <StatusBadge status={status} className="sm:hidden" />
               </span>
-              <span className="flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
+              <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11px] text-muted-foreground">
                 <IconUser className="size-3 shrink-0 opacity-80" />
-                <span className="truncate">{meta}</span>
-                <span className="shrink-0 opacity-50">·</span>
-                <span className="shrink-0">{timeAgo(item.createdAt)}</span>
+                {facts.map((fact, index) => (
+                  // Separator trails its fact so a wrapped line never opens with a dot.
+                  <span key={fact} className="flex items-center gap-1.5">
+                    {fact}
+                    {index < facts.length - 1 && <span className="opacity-50">·</span>}
+                  </span>
+                ))}
               </span>
             </span>
-            <StatusBadge status={status} />
+            <StatusBadge status={status} className="hidden sm:inline-flex" />
           </span>
         </AccordionTrigger>
 
         {canSync && (
-          <div className="flex items-center pr-4">
+          <div className="flex items-center px-4 pb-3 sm:p-0 sm:pr-4">
             <Button
               size="sm"
-              className="border-0 bg-brand-gradient-x text-white"
+              className="w-full border-0 bg-brand-gradient-x text-white sm:w-auto"
               onClick={() => (item.isGroup ? onSyncAll(item) : onSync(single))}
             >
               <IconPlayerPlay className="mr-1.5 size-3.5" />
@@ -202,10 +238,14 @@ function NotificationRow({
 
 export function WebhooksPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [activeTab, setActiveTab] = useState("notifications");
+  const [activeTab, setActiveTab] = useState("media-sync");
 
   const [jsonId, setJsonId] = useState<string | null>(null);
-  const [dryRunPayload, setDryRunPayload] = useState<unknown>(null);
+  const [dryRunView, setDryRunView] = useState<{
+    payload: unknown;
+    label: string;
+    performedAt?: string;
+  } | null>(null);
 
   const [renameDetailsId, setRenameDetailsId] = useState<string | null>(null);
   const [renameVerifyPayload, setRenameVerifyPayload] = useState<RenameVerificationResult | null>(
@@ -273,16 +313,34 @@ export function WebhooksPage() {
     return { completed, inProgress, failed };
   }, [items]);
 
+  // Rename runs summarised the same way: files, not webhooks, are what people
+  // count when they ask "did the rename land?".
+  const renameTotals = useMemo(() => {
+    const runs = renameQuery.data?.notifications ?? [];
+    let renamed = 0;
+    let failed = 0;
+    for (const run of runs) {
+      renamed += run.success_count ?? 0;
+      failed += run.failed_count ?? 0;
+    }
+    return {
+      runs: renameQuery.data?.total ?? runs.length,
+      renamed,
+      failed,
+      lastRun: runs.length ? timeAgo(runs[0].created_at).replace(" ago", "") || "—" : "—",
+    };
+  }, [renameQuery.data]);
+
   const runSync = async (notification: WebhookNotification) => {
     try {
       await syncMutation.mutateAsync({
         notificationId: notification.notification_id,
         mediaType: mapMediaType(notification.media_type),
       });
-      toast.success("Sync triggered");
+      toast.success("Sync started");
       notificationsQuery.refetch();
     } catch {
-      toast.error("Failed to trigger sync");
+      toast.error("Could not start the sync");
     }
   };
 
@@ -292,24 +350,24 @@ export function WebhooksPage() {
         notificationId: notification.notification_id,
         mediaType: mapMediaType(notification.media_type),
       });
-      toast.success("Marked complete");
+      toast.success("Marked as complete");
       notificationsQuery.refetch();
     } catch {
-      toast.error("Failed to mark complete");
+      toast.error("Could not mark it complete");
     }
   };
 
   const runDelete = async (notification: WebhookNotification) => {
-    if (!window.confirm("Delete this notification?")) return;
+    if (!window.confirm("Delete this sync record?")) return;
     try {
       await deleteMutation.mutateAsync({
         notificationId: notification.notification_id,
         mediaType: mapMediaType(notification.media_type),
       });
-      toast.success("Notification deleted");
+      toast.success("Sync record deleted");
       notificationsQuery.refetch();
     } catch {
-      toast.error("Failed to delete notification");
+      toast.error("Could not delete the sync record");
     }
   };
 
@@ -319,11 +377,23 @@ export function WebhooksPage() {
         notificationId: notification.notification_id,
         mediaType: mapMediaType(notification.media_type),
       });
-      setDryRunPayload(result.dry_run_result);
-      toast.info("Dry-run completed");
+      setDryRunView({
+        payload: result.dry_run_result,
+        label: notificationLabel(notification),
+      });
+      toast.info("Dry-run finished");
     } catch {
-      toast.error("Dry-run failed");
+      toast.error("Dry-run could not run");
     }
+  };
+
+  const showStoredDryRun = (notification: WebhookNotification) => {
+    if (!notification.dry_run_result) return;
+    setDryRunView({
+      payload: notification.dry_run_result,
+      label: notificationLabel(notification),
+      performedAt: notification.dry_run_performed_at,
+    });
   };
 
   const syncAllInGroup = async (group: WebhookItem) => {
@@ -336,7 +406,7 @@ export function WebhooksPage() {
     );
 
     if (!candidates.length) {
-      toast.info("No syncable notifications in this group");
+      toast.info("Nothing in this group needs a sync");
       return;
     }
 
@@ -352,17 +422,17 @@ export function WebhooksPage() {
   };
 
   const deleteRenameNotification = async (notification: RenameNotification) => {
-    if (!window.confirm("Delete this rename notification?")) return;
+    if (!window.confirm("Delete this rename run?")) return;
 
     try {
       await deleteRenameMutation.mutateAsync(notification.notification_id);
-      toast.success("Rename notification deleted");
+      toast.success("Rename run deleted");
       renameQuery.refetch();
       if (renameDetailsId === notification.notification_id) {
         setRenameDetailsId(null);
       }
     } catch {
-      toast.error("Failed to delete rename notification");
+      toast.error("Could not delete the rename run");
     }
   };
 
@@ -388,7 +458,8 @@ export function WebhooksPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Webhooks" description="Incoming media notifications and rename history">
+      <PageHeader title="Webhooks" description="Media syncs and renames">
+        <AutoSyncControl />
         <Button
           variant="outline"
           onClick={() => {
@@ -405,78 +476,69 @@ export function WebhooksPage() {
       </PageHeader>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList>
-          <TabsTrigger value="notifications">Notifications ({notifications.length})</TabsTrigger>
-          <TabsTrigger value="rename">Rename History ({renameQuery.data?.total ?? 0})</TabsTrigger>
-        </TabsList>
+        <PageTabsList
+          items={[
+            {
+              value: "media-sync",
+              label: "Media sync",
+              icon: IconTransfer,
+              count: notifications.length,
+            },
+            {
+              value: "renames",
+              label: "Renames",
+              icon: IconPencil,
+              count: renameQuery.data?.total ?? 0,
+            },
+          ]}
+        />
 
-        <TabsContent value="notifications" className="mt-4 flex flex-col gap-3.5">
-          {/* Stats — counted over grouped items, matching what the list shows */}
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {[
+        <TabsContent value="media-sync" className="mt-4 flex flex-col gap-3.5">
+          {/* Counted over grouped items, matching what the list below shows */}
+          <StatTiles
+            items={[
               {
-                label: "Notifications",
+                label: "Media syncs",
                 value: notifications.length,
                 unit: `in ${items.length} group${items.length === 1 ? "" : "s"}`,
-                tone: "text-foreground",
               },
-              {
-                label: "Completed",
-                value: groupCounts.completed,
-                unit: "synced",
-                tone: "text-emerald-400",
-              },
+              { label: "Completed", value: groupCounts.completed, unit: "synced", tone: "ok" },
               {
                 label: "In progress",
                 value: groupCounts.inProgress,
                 unit: "pending",
-                tone: "text-amber-400",
+                tone: "warn",
               },
-              {
-                label: "Failed",
-                value: groupCounts.failed,
-                unit: "needs retry",
-                tone: "text-rose-400",
-              },
-            ].map((stat) => (
-              <div key={stat.label} className="rounded-xl border border-border bg-card px-4 py-3">
-                <div className="mb-1.5 font-mono text-[10px] tracking-[0.06em] text-muted-foreground uppercase">
-                  {stat.label}
-                </div>
-                <div className="flex items-baseline gap-1.5">
-                  <span className={cn("font-display text-2xl font-semibold", stat.tone)}>
-                    {stat.value}
-                  </span>
-                  <span className="text-[11px] text-muted-foreground">{stat.unit}</span>
-                </div>
-              </div>
-            ))}
-          </div>
+              { label: "Failed", value: groupCounts.failed, unit: "needs retry", tone: "crit" },
+            ]}
+          />
 
-          {/* Filters */}
-          <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-border bg-card px-3 py-2.5">
-            {STATUS_FILTERS.map((filter) => (
-              <button
-                key={filter.value}
-                type="button"
-                onClick={() => setStatusFilter(filter.value)}
-                className={cn(
-                  "rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors",
-                  statusFilter === filter.value
-                    ? "border-brand/35 bg-brand/15 text-brand-foreground"
-                    : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                )}
-              >
-                {filter.label}
-              </button>
-            ))}
-            <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-              series &amp; anime grouped by season
-            </span>
-          </div>
-
-          {/* Grouped list */}
-          <div className="overflow-hidden rounded-xl border border-border bg-card">
+          <SectionCard
+            label="Arrivals"
+            description="Grouped by season"
+            toolbar={
+              <>
+                {STATUS_FILTERS.map((filter) => (
+                  <button
+                    key={filter.value}
+                    type="button"
+                    onClick={() => setStatusFilter(filter.value)}
+                    className={cn(
+                      "rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors",
+                      statusFilter === filter.value
+                        ? "border-brand/35 bg-brand/15 text-brand-foreground"
+                        : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+                    )}
+                  >
+                    {filter.label}
+                  </button>
+                ))}
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                  {items.length} shown
+                </span>
+              </>
+            }
+          >
             {notificationsQuery.isLoading ? (
               <div className="flex flex-col gap-3 p-4">
                 {[1, 2, 3, 4].map((idx) => (
@@ -493,181 +555,213 @@ export function WebhooksPage() {
                     onSyncAll={syncAllInGroup}
                     onComplete={runComplete}
                     onDryRun={runDryRun}
+                    onViewDryRun={showStoredDryRun}
                     onJson={(notification) => setJsonId(notification.notification_id)}
                     onDelete={runDelete}
                   />
                 ))}
               </Accordion>
             ) : (
-              <div className="flex flex-col items-center justify-center gap-2 py-16 text-muted-foreground">
-                <IconWebhook className="size-9" />
-                <span className="text-sm">No webhook notifications found</span>
-              </div>
+              <SectionEmpty
+                icon={IconWebhook}
+                title={statusFilter === "all" ? "No arrivals yet" : "Nothing matches this filter"}
+                hint={
+                  statusFilter === "all"
+                    ? "Imports show up here once Radarr or Sonarr points at this app."
+                    : undefined
+                }
+                action={
+                  statusFilter !== "all" ? (
+                    <Button variant="outline" size="sm" onClick={() => setStatusFilter("all")}>
+                      Show all
+                    </Button>
+                  ) : undefined
+                }
+              />
             )}
-          </div>
+          </SectionCard>
         </TabsContent>
 
-        <TabsContent value="rename" className="mt-4">
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardHeader>
-              <CardTitle className="text-white">Rename History</CardTitle>
-              <CardDescription className="text-neutral-400">
-                Live updates from rename webhook events
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[560px] pr-3">
-                {renameQuery.isLoading ? (
-                  <div className="space-y-3">
-                    {[1, 2, 3].map((idx) => (
-                      <Skeleton key={idx} className="h-24 w-full" />
-                    ))}
-                  </div>
-                ) : (renameQuery.data?.notifications.length ?? 0) > 0 ? (
-                  <div className="space-y-3">
-                    {(renameQuery.data?.notifications ?? []).map((notification) => (
-                      <div
-                        key={notification.notification_id}
-                        className="rounded-lg border border-neutral-700/50 bg-neutral-800/50 p-4"
-                      >
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <p className="text-sm font-medium text-white">
-                              {notification.series_title}
-                            </p>
-                            <p className="mt-1 text-xs text-neutral-400">
-                              {notification.success_count}/{notification.total_files} renamed -{" "}
-                              {notification.media_type}
-                            </p>
-                            <p className="mt-1 text-xs text-neutral-500">
-                              {formatAgo(notification.created_at)}
-                            </p>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            {getStatusBadge(notification.status)}
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setRenameDetailsId(notification.notification_id)}
-                            >
-                              <IconEye className="mr-1.5 h-4 w-4" />
-                              Details
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => runVerifyRename(notification)}
-                              disabled={verifyingRenameId === notification.notification_id}
-                            >
-                              <IconCheck className="mr-1.5 h-4 w-4" />
-                              {verifyingRenameId === notification.notification_id
-                                ? "Verifying..."
-                                : "Verify Rename"}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() =>
-                                window.open(
-                                  `/api/webhook/rename/notifications/${notification.notification_id}/json`,
-                                  "_blank"
-                                )
-                              }
-                            >
-                              <IconCode className="mr-1.5 h-4 w-4" />
-                              JSON
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => deleteRenameNotification(notification)}
-                            >
-                              <IconTrash className="mr-1.5 h-4 w-4" />
-                              Delete
-                            </Button>
-                          </div>
-                        </div>
+        <TabsContent value="renames" className="mt-4 flex flex-col gap-3.5">
+          <StatTiles
+            items={[
+              { label: "Renames", value: renameTotals.runs, unit: "webhook runs" },
+              {
+                label: "Files renamed",
+                value: renameTotals.renamed,
+                unit: "on this machine",
+                tone: "ok",
+              },
+              {
+                label: "Failed files",
+                value: renameTotals.failed,
+                unit: "not renamed",
+                tone: renameTotals.failed > 0 ? "crit" : "default",
+              },
+              {
+                label: "Last run",
+                value: renameTotals.lastRun,
+                unit: renameTotals.lastRun === "—" ? "" : "ago",
+              },
+            ]}
+          />
+
+          <SectionCard
+            label="Rename history"
+            description="Replays Sonarr's renames on this machine"
+            contentClassName="p-3"
+          >
+            {renameQuery.isLoading ? (
+              <div className="flex flex-col gap-3">
+                {[1, 2, 3].map((idx) => (
+                  <Skeleton key={idx} className="h-24 w-full rounded-lg" />
+                ))}
+              </div>
+            ) : (renameQuery.data?.notifications.length ?? 0) > 0 ? (
+              <div className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto pr-1">
+                {(renameQuery.data?.notifications ?? []).map((notification) => (
+                  <div
+                    key={notification.notification_id}
+                    className="flex flex-col gap-3 rounded-lg border border-border bg-card/60 p-3.5"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="flex min-w-0 flex-col gap-1">
+                        <p className="text-sm font-semibold break-words text-foreground">
+                          {notification.series_title}
+                        </p>
+                        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11px] text-muted-foreground">
+                          <span>
+                            {notification.success_count}/{notification.total_files} renamed
+                          </span>
+                          <span className="opacity-50">·</span>
+                          <span>{mediaLabel(notification.media_type)}</span>
+                          <span className="opacity-50">·</span>
+                          <span>{formatAgo(notification.created_at)}</span>
+                        </p>
                       </div>
-                    ))}
+                      {getStatusBadge(notification.status)}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setRenameDetailsId(notification.notification_id)}
+                      >
+                        <IconEye className="mr-1.5 size-3.5" />
+                        Details
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => runVerifyRename(notification)}
+                        disabled={verifyingRenameId === notification.notification_id}
+                      >
+                        <IconCheck className="mr-1.5 size-3.5" />
+                        {verifyingRenameId === notification.notification_id
+                          ? "Verifying…"
+                          : "Verify rename"}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          window.open(
+                            `/api/webhook/rename/notifications/${notification.notification_id}/json`,
+                            "_blank"
+                          )
+                        }
+                      >
+                        <IconCode className="mr-1.5 size-3.5" />
+                        View JSON
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-muted-foreground hover:text-rose-400"
+                        onClick={() => deleteRenameNotification(notification)}
+                      >
+                        <IconTrash className="mr-1.5 size-3.5" />
+                        Delete
+                      </Button>
+                    </div>
                   </div>
-                ) : (
-                  <div className="py-14 text-center text-neutral-500">No rename operations yet</div>
-                )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
+                ))}
+              </div>
+            ) : (
+              <SectionEmpty
+                icon={IconPencil}
+                title="No renames yet"
+                hint="When Sonarr renames files, the run lands here so you can replay it on this machine."
+              />
+            )}
+          </SectionCard>
         </TabsContent>
       </Tabs>
 
       <Dialog open={Boolean(jsonId)} onOpenChange={(open) => !open && setJsonId(null)}>
-        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-4xl">
+        <DialogContent className="sm:max-w-4xl">
           <DialogHeader>
-            <DialogTitle className="text-white">Webhook JSON</DialogTitle>
-            <DialogDescription className="text-neutral-400">Raw JSON payload</DialogDescription>
+            <DialogTitle>Webhook JSON</DialogTitle>
+            <DialogDescription>Raw JSON payload</DialogDescription>
           </DialogHeader>
           <Textarea
             readOnly
-            className="min-h-[60vh] border-neutral-800 bg-neutral-950 font-mono text-xs"
-            value={jsonQuery.data ? JSON.stringify(jsonQuery.data, null, 2) : "Loading..."}
+            className="min-h-[50vh] font-mono text-xs sm:min-h-[60vh]"
+            value={jsonQuery.data ? JSON.stringify(jsonQuery.data, null, 2) : "Loading…"}
           />
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={Boolean(dryRunPayload)}
-        onOpenChange={(open) => !open && setDryRunPayload(null)}
-      >
-        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-4xl">
-          <DialogHeader>
-            <DialogTitle className="text-white">Dry-Run Result</DialogTitle>
-            <DialogDescription className="text-neutral-400">
-              Validation output for selected notification
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            readOnly
-            className="min-h-[60vh] border-neutral-800 bg-neutral-950 font-mono text-xs"
-            value={dryRunPayload ? JSON.stringify(dryRunPayload, null, 2) : "No dry-run output"}
-          />
-        </DialogContent>
-      </Dialog>
+      <DryRunDialog
+        payload={dryRunView?.payload}
+        performedAt={dryRunView?.performedAt}
+        open={Boolean(dryRunView)}
+        onOpenChange={(open) => !open && setDryRunView(null)}
+        subtitle={dryRunView ? `${dryRunView.label} — what this sync would do` : undefined}
+      />
 
       <Dialog
         open={Boolean(renameDetailsId)}
         onOpenChange={(open) => !open && setRenameDetailsId(null)}
       >
-        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-4xl">
+        <DialogContent className="flex max-h-[88vh] flex-col overflow-hidden sm:max-w-4xl">
           <DialogHeader>
-            <DialogTitle className="text-white">Rename Details</DialogTitle>
-            <DialogDescription className="text-neutral-400">
-              Per-file rename results
-            </DialogDescription>
+            <DialogTitle>Rename details</DialogTitle>
+            <DialogDescription>Per-file rename results</DialogDescription>
           </DialogHeader>
           {renameDetailsQuery.data?.notification ? (
-            <div className="space-y-4">
-              <div className="grid gap-3 text-sm md:grid-cols-4">
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Series</div>
-                  <div className="mt-1 text-neutral-200">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+              <div className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-lg border border-border bg-card/60 px-3 py-2.5">
+                  <div className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground uppercase">
+                    Series
+                  </div>
+                  <div className="mt-1 break-words text-foreground">
                     {renameDetailsQuery.data.notification.series_title}
                   </div>
                 </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Status</div>
+                <div className="rounded-lg border border-border bg-card/60 px-3 py-2.5">
+                  <div className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground uppercase">
+                    Status
+                  </div>
                   <div className="mt-1">
                     {getStatusBadge(renameDetailsQuery.data.notification.status)}
                   </div>
                 </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Result</div>
-                  <div className="mt-1 text-neutral-200">
+                <div className="rounded-lg border border-border bg-card/60 px-3 py-2.5">
+                  <div className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground uppercase">
+                    Result
+                  </div>
+                  <div className="mt-1 text-foreground">
                     {renameDetailsQuery.data.notification.success_count}/
                     {renameDetailsQuery.data.notification.total_files} successful
                   </div>
                 </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Completed</div>
-                  <div className="mt-1 text-neutral-200">
+                <div className="rounded-lg border border-border bg-card/60 px-3 py-2.5">
+                  <div className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground uppercase">
+                    Completed
+                  </div>
+                  <div className="mt-1 text-foreground">
                     {renameDetailsQuery.data.notification.completed_at
                       ? new Date(renameDetailsQuery.data.notification.completed_at).toLocaleString()
                       : "Not completed"}
@@ -684,10 +778,10 @@ export function WebhooksPage() {
                     verifyingRenameId === renameDetailsQuery.data.notification.notification_id
                   }
                 >
-                  <IconCheck className="mr-1.5 h-4 w-4" />
+                  <IconCheck className="mr-1.5 size-3.5" />
                   {verifyingRenameId === renameDetailsQuery.data.notification.notification_id
-                    ? "Verifying..."
-                    : "Verify Rename"}
+                    ? "Verifying…"
+                    : "Verify rename"}
                 </Button>
                 <Button
                   size="sm"
@@ -699,57 +793,53 @@ export function WebhooksPage() {
                     )
                   }
                 >
-                  <IconCode className="mr-1.5 h-4 w-4" />
-                  JSON
+                  <IconCode className="mr-1.5 size-3.5" />
+                  View JSON
                 </Button>
               </div>
 
-              <ScrollArea className="h-[50vh] pr-3">
-                <div className="space-y-2">
-                  {(renameDetailsQuery.data.notification.renamed_files ?? []).map((file, index) => (
+              <div className="flex flex-col gap-2">
+                {(renameDetailsQuery.data.notification.renamed_files ?? []).map((file, index) => {
+                  const episode = episodeTagOf(file.new_name || file.previous_name);
+                  const failed = !file.new_name;
+                  return (
                     <div
                       key={`${index}-${file.previous_name}`}
-                      className="rounded border border-neutral-800 bg-neutral-950 p-3 text-xs"
+                      className="flex flex-col gap-2 rounded-lg border border-border bg-card/60 p-2.5"
                     >
-                      <div className="text-neutral-500">Before</div>
-                      <div className="break-all text-neutral-200">{file.previous_name || "-"}</div>
-                      <div className="mt-2 text-neutral-500">After</div>
-                      <div className="break-all text-neutral-200">
-                        {file.new_name || file.message || file.error || "-"}
+                      <div className="flex flex-wrap items-center gap-2">
+                        {episode && (
+                          <span className="font-mono text-[11px] font-semibold text-brand-hover">
+                            {episode}
+                          </span>
+                        )}
+                        {failed ? (
+                          <span className="text-[11px] text-rose-400">
+                            {file.message || file.error || "Not renamed"}
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-muted-foreground">
+                            renamed by Sonarr
+                          </span>
+                        )}
                       </div>
+                      <FilenameDiff before={file.previous_name} after={file.new_name} />
                     </div>
-                  ))}
-                </div>
-              </ScrollArea>
+                  );
+                })}
+              </div>
             </div>
           ) : (
-            <div className="text-neutral-500">Loading...</div>
+            <div className="text-muted-foreground">Loading…</div>
           )}
         </DialogContent>
       </Dialog>
 
-      <Dialog
+      <RenameVerifyDialog
+        result={renameVerifyPayload}
         open={Boolean(renameVerifyPayload)}
         onOpenChange={(open) => !open && setRenameVerifyPayload(null)}
-      >
-        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-4xl">
-          <DialogHeader>
-            <DialogTitle className="text-white">Rename Verification</DialogTitle>
-            <DialogDescription className="text-neutral-400">
-              On-disk check against the expected TO filenames from the stored Sonarr webhook
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            readOnly
-            className="min-h-[60vh] border-neutral-800 bg-neutral-950 font-mono text-xs"
-            value={
-              renameVerifyPayload
-                ? JSON.stringify(renameVerifyPayload, null, 2)
-                : "No verification output"
-            }
-          />
-        </DialogContent>
-      </Dialog>
+      />
     </div>
   );
 }
