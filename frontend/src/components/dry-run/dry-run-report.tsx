@@ -97,6 +97,11 @@ const FILE_FILTERS: Array<{
 const PAGE_SIZE = 60;
 
 function copyToClipboard(text: string, label: string) {
+  // Absent over plain http on a LAN address, which is how this app is often reached.
+  if (!navigator.clipboard) {
+    toast.error("Copy failed");
+    return;
+  }
   navigator.clipboard
     .writeText(text)
     .then(() => toast.success(`${label} copied`))

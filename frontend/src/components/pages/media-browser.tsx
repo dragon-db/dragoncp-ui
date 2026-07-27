@@ -174,6 +174,8 @@ export function MediaBrowserPage({ mediaType }: MediaBrowserPageProps) {
     setSearchTerm("");
     setSortMode("recent");
     setAutoConnectAttempted(false);
+    // The open report belongs to the library we just left.
+    setDryRunResult(null);
   }, [mediaType]);
 
   useEffect(() => {

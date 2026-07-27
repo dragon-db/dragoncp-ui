@@ -163,6 +163,11 @@ export function RenameVerifyReport({ result }: { result: RenameVerificationResul
   ].filter((segment) => segment.count > 0);
 
   const copyJson = () => {
+    // Absent over plain http on a LAN address, which is how this app is often reached.
+    if (!navigator.clipboard) {
+      toast.error("Copy failed");
+      return;
+    }
     navigator.clipboard
       .writeText(JSON.stringify(result, null, 2))
       .then(() => toast.success("JSON copied"))

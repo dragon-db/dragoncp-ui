@@ -2,7 +2,8 @@ import { Link, useLocation } from "@tanstack/react-router";
 import { useActiveTransfers } from "@/hooks/useTransfers";
 import { useWebhookNotifications } from "@/hooks/useWebhooks";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { RealtimeStatus } from "@/components/layout/realtime-status";
 import { IconHome, IconChevronRight, IconBell, IconSettings } from "@tabler/icons-react";
 
@@ -71,31 +72,32 @@ export function AppNavbar() {
         </div>
       </div>
 
-      {/* Notifications */}
-      <Link to="/webhooks">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="relative size-8 text-muted-foreground hover:text-foreground"
-          title={pendingCount > 0 ? `${pendingCount} pending webhook(s)` : "Webhooks"}
-        >
-          <IconBell className="size-[18px]" />
-          {pendingCount > 0 && (
-            <span className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-brand-accent ring-2 ring-background" />
-          )}
-        </Button>
+      {/* Notifications — the link carries the button styling itself; a <button>
+          nested inside the <a> would be an interactive element inside another. */}
+      <Link
+        to="/webhooks"
+        className={cn(
+          buttonVariants({ variant: "ghost", size: "icon" }),
+          "relative size-8 text-muted-foreground hover:text-foreground"
+        )}
+        title={pendingCount > 0 ? `${pendingCount} pending webhook(s)` : "Webhooks"}
+      >
+        <IconBell className="size-[18px]" />
+        {pendingCount > 0 && (
+          <span className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-brand-accent ring-2 ring-background" />
+        )}
       </Link>
 
       {/* Settings */}
-      <Link to="/settings">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-8 text-muted-foreground hover:text-foreground"
-          title="Settings"
-        >
-          <IconSettings className="size-[18px]" />
-        </Button>
+      <Link
+        to="/settings"
+        className={cn(
+          buttonVariants({ variant: "ghost", size: "icon" }),
+          "size-8 text-muted-foreground hover:text-foreground"
+        )}
+        title="Settings"
+      >
+        <IconSettings className="size-[18px]" />
       </Link>
 
       <Badge

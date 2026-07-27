@@ -532,9 +532,10 @@ export function formatBytes(bytes?: number): string {
   if (bytes === undefined || !Number.isFinite(bytes)) return "—";
   if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
+  // Clamped at both ends: a fractional byte count would otherwise index units[-1].
   const exponent = Math.min(
     units.length - 1,
-    Math.floor(Math.log(Math.abs(bytes)) / Math.log(1024))
+    Math.max(0, Math.floor(Math.log(Math.abs(bytes)) / Math.log(1024)))
   );
   const value = bytes / 1024 ** exponent;
   const digits = exponent === 0 ? 0 : value >= 100 ? 0 : value >= 10 ? 1 : 2;

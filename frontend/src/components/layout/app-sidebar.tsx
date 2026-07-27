@@ -153,6 +153,7 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   isActive={mediaSectionActive}
                   onClick={() => setMediaOpen((v) => !v)}
+                  aria-expanded={mediaExpanded}
                   className={navButton}
                 >
                   <IconLibraryPhoto />
