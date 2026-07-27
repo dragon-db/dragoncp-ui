@@ -68,7 +68,19 @@ export function useTransferStatus(transferId: string) {
   });
 }
 
-export function useTransferLogs(transferId: string) {
+/**
+ * Output for one transfer.
+ *
+ * Realtime is opt-in in this app, so the socket cannot be the only thing
+ * keeping a log current — `live` polls while a transfer is running, and socket
+ * events (when enabled) patch the same cache entry for instant updates.
+ * `enabled` keeps this to rows the user has actually opened.
+ */
+export function useTransferLogs(
+  transferId: string,
+  options?: { enabled?: boolean; live?: boolean }
+) {
+  const enabled = (options?.enabled ?? true) && !!transferId;
   return useQuery({
     queryKey: ["transfers", transferId, "logs"],
     queryFn: async () => {
@@ -80,7 +92,8 @@ export function useTransferLogs(transferId: string) {
       }>(`/transfer/${transferId}/logs`);
       return response.data;
     },
-    enabled: !!transferId,
+    enabled,
+    refetchInterval: enabled && options?.live ? 2000 : false,
   });
 }
 

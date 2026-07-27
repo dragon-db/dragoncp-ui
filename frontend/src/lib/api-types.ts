@@ -65,6 +65,8 @@ export interface Transfer {
   end_time?: string;
   paused_at?: string | null;
   created_at?: string;
+  /** Why a queued transfer is waiting: a free slot, or the destination path. */
+  queue_reason?: "slot" | "path" | string | null;
   log_count: number;
   logs?: string[];
   rsync_process_id?: number;

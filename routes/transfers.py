@@ -345,6 +345,11 @@ def api_active_transfers():
                 "dest_path": transfer["dest_path"],
                 "start_time": transfer["start_time"],
                 "paused_at": transfer.get("paused_at"),
+                # created_at lets the UI show how long a transfer waited before
+                # it started, which is the difference between a slow copy and a
+                # backed-up queue.
+                "created_at": transfer["created_at"],
+                "queue_reason": transfer.get("queue_reason"),
                 "rsync_process_id": transfer.get("rsync_process_id"),
                 "log_count": len(transfer["logs"]),
                 **build_progress_stats(transfer)

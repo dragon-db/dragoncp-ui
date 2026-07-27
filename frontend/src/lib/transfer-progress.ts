@@ -68,6 +68,36 @@ export function formatSizePair(
   };
 }
 
+/** Coarse duration for spans that can run from seconds to days. */
+export function formatDuration(ms?: number | null): string | null {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return null;
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+/** Parses the backend's naive-local ISO timestamps ("2026-07-27T22:14:48"). */
+export function parseTimestamp(value?: string | null): number | null {
+  if (!value) return null;
+  const ms = new Date(value.replace(" ", "T")).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * How long a transfer ran: to its end time if it finished, otherwise to now.
+ * Returns null when there is no start time to measure from.
+ */
+export function transferElapsed(transfer: Transfer, now: number): number | null {
+  const start = parseTimestamp(transfer.start_time);
+  if (start == null) return null;
+  const end = parseTimestamp(transfer.end_time) ?? now;
+  return Math.max(0, end - start);
+}
+
 /** Legacy fallback: pull a percentage out of a raw rsync log line. */
 export function parseProgressText(progress?: string): number {
   if (!progress) return 0;

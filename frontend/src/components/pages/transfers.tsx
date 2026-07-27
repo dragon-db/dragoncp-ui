@@ -1,7 +1,10 @@
 import { PageHeader } from "@/components/layout/page-header";
+import { PageTabsList } from "@/components/layout/page-tabs";
+import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
+import { StatTiles } from "@/components/layout/stat-tiles";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import api from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   useActiveTransfers,
   useAllTransfers,
@@ -11,143 +14,265 @@ import {
   usePauseTransfer,
   useRestartTransfer,
   useResumeTransfer,
+  useTransferLogs,
   type Transfer,
 } from "@/hooks/useTransfers";
-import { ConfirmDialog } from "@/components/transfers/confirm-dialog";
-import {
-  formatSizePair,
-  formatSpeed,
-  formatEta,
-  transferPercent,
-} from "@/lib/transfer-progress";
 import {
   onTransferComplete,
   onTransferPromoted,
   onTransferQueued,
   onTransferUpdate,
 } from "@/services/socket";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { useTransferPosters } from "@/hooks/useTransferPosters";
-import { WebhookPoster } from "@/components/webhooks/webhook-bits";
-import { Progress } from "@/components/ui/progress";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { WebhookPoster, MediaBadge } from "@/components/webhooks/webhook-bits";
+import { ConfirmDialog } from "@/components/transfers/confirm-dialog";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  ProgressMeter,
+  TransferStatusBadge,
+} from "@/components/transfers/transfer-bits";
+import { TransferDetailPanel, type TransferActions } from "@/components/transfers/transfer-detail";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import {
-  IconArrowsMaximize,
-  IconInfoCircle,
-  IconList,
+  formatBytes,
+  formatEta,
+  formatSizePair,
+  formatSpeed,
+  transferPercent,
+} from "@/lib/transfer-progress";
+// Relative times come from the shared webhook helper so "2h ago" reads the same
+// on both pages.
+import { timeAgo } from "@/lib/webhook-grouping";
+import {
+  IconActivity,
+  IconArrowBackUp,
   IconCircleX,
+  IconHistory,
   IconPlayerPause,
   IconPlayerPlay,
   IconRefresh,
   IconTrash,
-  IconArrowBackUp,
-  IconEye,
-  IconTerminal2,
 } from "@tabler/icons-react";
 
-interface LogTab {
-  transferId: string;
-  title: string;
-  status: string;
-  logs: string[];
-  autoScroll: boolean;
-}
+const ACTIVE_STATUSES = new Set(["running", "pending", "queued", "paused"]);
 
-function getStatusBadge(status: string) {
-  switch (status) {
-    case "running":
-      return <Badge className="border-blue-500/50 bg-blue-500/20 text-blue-400">RUNNING</Badge>;
-    case "completed":
-      return (
-        <Badge className="border-green-500/50 bg-green-500/20 text-green-400">COMPLETED</Badge>
-      );
-    case "failed":
-      return <Badge className="border-red-500/50 bg-red-500/20 text-red-400">FAILED</Badge>;
-    case "queued":
-      return <Badge className="border-amber-500/50 bg-amber-500/20 text-amber-400">QUEUED</Badge>;
-    case "paused":
-      return <Badge className="border-amber-500/50 bg-amber-500/20 text-amber-400">PAUSED</Badge>;
-    case "cancelled":
-      return (
-        <Badge className="border-neutral-500/50 bg-neutral-500/20 text-neutral-400">
-          CANCELLED
-        </Badge>
-      );
-    default:
-      return <Badge variant="outline">{status}</Badge>;
-  }
+const HISTORY_FILTERS = [
+  { value: "all", label: "All" },
+  { value: "completed", label: "Completed" },
+  { value: "failed", label: "Failed" },
+  { value: "cancelled", label: "Stopped" },
+] as const;
+
+interface TransferRowProps {
+  transfer: Transfer;
+  posterUrl?: string;
+  now: number;
+  expanded: boolean;
+  actions: TransferActions;
+  busy: boolean;
 }
 
 /**
- * Speed / ETA / size line for a transfer, from the stats the backend parses out
- * of rsync's progress output.
+ * One row per transfer, expanding in place to its full detail and live output —
+ * the same way a webhook arrival opens, so the two pages are navigated alike.
  */
-function TransferStats({ transfer }: { transfer: Transfer }) {
+function TransferRow({ transfer, posterUrl, now, expanded, actions, busy }: TransferRowProps) {
+  const status = transfer.status;
+  const running = status === "running";
+  const paused = status === "paused";
+  const queued = status === "queued" || status === "pending";
+  const percent = transferPercent(transfer);
   const size = formatSizePair(transfer.bytes_transferred, transfer.total_bytes);
-  const eta = transfer.status === "running" ? formatEta(transfer.eta_seconds) : null;
+  const eta = running ? formatEta(transfer.eta_seconds) : null;
 
-  if (!size && transfer.status !== "running") return null;
+  // Output is only fetched once the row is open, and only kept fresh while the
+  // transfer is still producing any.
+  const logsQuery = useTransferLogs(transfer.id, { enabled: expanded, live: running });
+
+  // Each fact is its own element so narrow screens wrap them rather than
+  // truncating the line.
+  const facts = [
+    transfer.season_name || undefined,
+    running ? formatSpeed(transfer.speed_bps) : undefined,
+    eta ? `ETA ${eta}` : undefined,
+    size ? `${size.value} ${size.unit}` : undefined,
+    timeAgo(transfer.start_time || transfer.created_at),
+  ].filter(Boolean) as string[];
 
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-neutral-400">
-      {transfer.status === "running" && (
-        <span className="text-brand-foreground">{formatSpeed(transfer.speed_bps)}</span>
-      )}
-      {eta && <span>ETA {eta}</span>}
-      {size && (
-        <span>
-          {size.value} {size.unit}
-        </span>
-      )}
-    </div>
+    <AccordionItem value={transfer.id} className="border-b border-border last:border-b-0">
+      <div className="flex flex-col items-stretch sm:flex-row">
+        <AccordionTrigger className="min-w-0 flex-1 items-start gap-3 px-4 py-3 no-underline hover:bg-muted/40 hover:no-underline sm:items-center">
+          <span className="flex min-w-0 flex-1 items-start gap-3 sm:items-center sm:gap-4">
+            <WebhookPoster
+              item={{
+                posterUrl,
+                mediaType: transfer.media_type,
+                title: transfer.parsed_title || transfer.folder_name,
+              }}
+              className="h-[62px] w-[44px] shrink-0"
+              iconClassName="size-4"
+            />
+            <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="text-sm font-semibold break-words text-foreground">
+                  {transfer.parsed_title || transfer.folder_name}
+                </span>
+                <MediaBadge mediaType={transfer.media_type} />
+                {/* On phones the status reads with the title; from sm up it
+                    keeps its column at the end of the row. */}
+                <TransferStatusBadge status={status} className="sm:hidden" />
+              </span>
+
+              {(running || paused || queued) && (
+                <span className="flex items-center gap-2.5">
+                  <ProgressMeter percent={percent} status={status} className="flex-1" />
+                  <span className="w-9 shrink-0 text-right font-mono text-[10.5px] text-foreground tabular-nums">
+                    {queued ? "—" : `${percent}%`}
+                  </span>
+                </span>
+              )}
+
+              <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11px] text-muted-foreground">
+                {facts.map((fact, index) => (
+                  // Separator trails its fact so a wrapped line never opens with a dot.
+                  <span key={`${fact}-${index}`} className="flex items-center gap-1.5">
+                    {fact}
+                    {index < facts.length - 1 && <span className="opacity-50">·</span>}
+                  </span>
+                ))}
+              </span>
+            </span>
+            <TransferStatusBadge status={status} className="hidden sm:inline-flex" />
+          </span>
+        </AccordionTrigger>
+
+        {/* The one action worth reaching without opening the row */}
+        {(running || paused || status === "failed") && (
+          <div className="flex items-center px-4 pb-3 sm:p-0 sm:pr-4">
+            {running && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full sm:w-auto"
+                disabled={busy}
+                onClick={() => actions.onPause(transfer)}
+              >
+                <IconPlayerPause className="mr-1.5 size-3.5" />
+                Pause
+              </Button>
+            )}
+            {paused && (
+              <Button
+                size="sm"
+                className="w-full border-0 bg-brand-gradient-x text-white sm:w-auto"
+                disabled={busy}
+                onClick={() => actions.onResume(transfer)}
+              >
+                <IconPlayerPlay className="mr-1.5 size-3.5" />
+                Resume
+              </Button>
+            )}
+            {status === "failed" && (
+              <Button
+                size="sm"
+                className="w-full border-0 bg-brand-gradient-x text-white sm:w-auto"
+                disabled={busy}
+                onClick={() => actions.onRestart(transfer)}
+              >
+                <IconArrowBackUp className="mr-1.5 size-3.5" />
+                Retry
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+
+      <AccordionContent className="bg-black/20 px-4 pt-1 pb-4">
+        <TransferDetailPanel
+          transfer={transfer}
+          logs={logsQuery.data?.logs ?? []}
+          logsLoading={logsQuery.isLoading}
+          now={now}
+          actions={actions}
+          busy={busy}
+        />
+      </AccordionContent>
+    </AccordionItem>
   );
 }
 
-function classifyLogLine(line: string) {
-  const lower = line.toLowerCase();
-  if (lower.includes("error") || lower.includes("failed")) return "text-red-300";
-  if (lower.includes("warning")) return "text-yellow-300";
-  if (lower.includes("completed") || lower.includes("success")) return "text-green-300";
-  return "text-neutral-300";
-}
+function TransferList({
+  transfers,
+  loading,
+  ...rowProps
+}: {
+  transfers: Transfer[];
+  loading: boolean;
+  posters: Map<string, string>;
+  now: number;
+  actions: TransferActions;
+  busy: boolean;
+  expanded: string[];
+  onExpandedChange: (value: string[]) => void;
+  empty: React.ReactNode;
+}) {
+  const { posters, now, actions, busy, expanded, onExpandedChange, empty } = rowProps;
 
-function formatAgo(time?: string) {
-  if (!time) return "Unknown";
-  const date = new Date(time);
-  const diff = Date.now() - date.getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "Just now";
-  if (mins < 60) return `${mins} min ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  if (loading) {
+    return (
+      <div className="flex flex-col gap-3 p-4">
+        {[1, 2, 3].map((index) => (
+          <Skeleton key={index} className="h-20 w-full rounded-lg" />
+        ))}
+      </div>
+    );
+  }
+
+  if (!transfers.length) return <>{empty}</>;
+
+  return (
+    <Accordion
+      value={expanded}
+      onValueChange={(value) => onExpandedChange(value as string[])}
+    >
+      {transfers.map((transfer) => (
+        <TransferRow
+          key={transfer.id}
+          transfer={transfer}
+          posterUrl={posters.get(transfer.id)}
+          now={now}
+          expanded={expanded.includes(transfer.id)}
+          actions={actions}
+          busy={busy}
+        />
+      ))}
+    </Accordion>
+  );
 }
 
 export function TransfersPage() {
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [detailsTransfer, setDetailsTransfer] = useState<Transfer | null>(null);
-  const [fullscreenLogs, setFullscreenLogs] = useState(false);
-  const [activeLogTab, setActiveLogTab] = useState<string | null>(null);
-  const [logTabs, setLogTabs] = useState<Record<string, LogTab>>({});
+  const [activeTab, setActiveTab] = useState("activity");
+  const [historyFilter, setHistoryFilter] = useState<string>("all");
+  const [expanded, setExpanded] = useState<string[]>([]);
 
+  // Ticks once a second so elapsed times and pause durations stay honest
+  // without re-fetching anything.
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const queryClient = useQueryClient();
   const activeQuery = useActiveTransfers();
   const allQuery = useAllTransfers(200);
   const posters = useTransferPosters();
@@ -159,228 +284,227 @@ export function TransfersPage() {
   const pauseMutation = usePauseTransfer();
   const resumeMutation = useResumeTransfer();
 
-  // Destructive actions are confirmed through a dialog rather than
-  // window.confirm, so the prompt can name the transfer and explain the effect.
   const [stopTarget, setStopTarget] = useState<Transfer | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Transfer | null>(null);
   const [confirmCleanup, setConfirmCleanup] = useState(false);
 
-  const allTransfers = useMemo(() => {
-    const list = allQuery.data?.transfers ?? [];
-    if (statusFilter === "all") return list;
-    return list.filter((x) => x.status === statusFilter);
-  }, [allQuery.data?.transfers, statusFilter]);
+  const busy =
+    pauseMutation.isPending ||
+    resumeMutation.isPending ||
+    cancelMutation.isPending ||
+    restartMutation.isPending;
 
-  useEffect(() => {
-    const unbindProgress = onTransferUpdate((payload) => {
-      const nextLogs = payload.logs ?? (payload.log ? [payload.log] : undefined);
-      setLogTabs((prev) => {
-        const existing = prev[payload.transfer_id];
-        if (!existing) return prev;
-        return {
-          ...prev,
-          [payload.transfer_id]: {
-            ...existing,
-            status: payload.status || existing.status,
-            logs: nextLogs ?? existing.logs,
-          },
-        };
-      });
-      activeQuery.refetch();
-    });
-    const unbindComplete = onTransferComplete((payload) => {
-      const nextLogs = payload.logs ?? (payload.log ? [payload.log] : undefined);
-      setLogTabs((prev) => {
-        const existing = prev[payload.transfer_id];
-        if (!existing) return prev;
-        return {
-          ...prev,
-          [payload.transfer_id]: {
-            ...existing,
-            status: payload.status || existing.status,
-            logs: nextLogs ?? existing.logs,
-          },
-        };
-      });
-      activeQuery.refetch();
-      allQuery.refetch();
-    });
-    const unbindQueued = onTransferQueued(() => {
-      activeQuery.refetch();
-      allQuery.refetch();
-    });
-    const unbindPromoted = onTransferPromoted(() => {
-      activeQuery.refetch();
-      allQuery.refetch();
-    });
-    return () => {
-      unbindProgress();
-      unbindComplete();
-      unbindQueued();
-      unbindPromoted();
-    };
-  }, [activeQuery, allQuery]);
+  const activeTransfers = useMemo(
+    () => activeQuery.data?.transfers ?? [],
+    [activeQuery.data?.transfers]
+  );
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "l") {
-        event.preventDefault();
-        if (!activeLogTab) return;
-        setLogTabs((prev) => {
-          const tab = prev[activeLogTab];
-          if (!tab) return prev;
-          toast.info(`Auto-scroll ${tab.autoScroll ? "disabled" : "enabled"} for current tab`);
-          return {
-            ...prev,
-            [activeLogTab]: { ...tab, autoScroll: !tab.autoScroll },
-          };
-        });
+  const historyTransfers = useMemo(() => {
+    const list = (allQuery.data?.transfers ?? []).filter((t) => !ACTIVE_STATUSES.has(t.status));
+    if (historyFilter === "all") return list;
+    return list.filter((t) => t.status === historyFilter);
+  }, [allQuery.data?.transfers, historyFilter]);
+
+  const historyAll = useMemo(
+    () => (allQuery.data?.transfers ?? []).filter((t) => !ACTIVE_STATUSES.has(t.status)),
+    [allQuery.data?.transfers]
+  );
+
+  /** Combined speed and remaining bytes across everything currently copying. */
+  const liveTotals = useMemo(() => {
+    let speed = 0;
+    let remaining = 0;
+    let running = 0;
+    for (const transfer of activeTransfers) {
+      if (transfer.status !== "running") continue;
+      running += 1;
+      speed += transfer.speed_bps ?? 0;
+      if (transfer.total_bytes != null && transfer.bytes_transferred != null) {
+        remaining += Math.max(0, transfer.total_bytes - transfer.bytes_transferred);
       }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        if (!activeLogTab) return;
-        setLogTabs((prev) => {
-          const tab = prev[activeLogTab];
-          if (!tab) return prev;
-          return {
-            ...prev,
-            [activeLogTab]: { ...tab, logs: [] },
-          };
-        });
-      }
-      if (event.key === "Escape") {
-        setFullscreenLogs(false);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [activeLogTab]);
-
-  const loadLogs = async (transferId: string, fallbackTitle: string) => {
-    try {
-      const response = await api.get<{
-        status: string;
-        logs: string[];
-        log_count: number;
-        transfer_status: string;
-      }>(`/transfer/${transferId}/logs`);
-
-      if (response.data.status !== "success") {
-        toast.error("Failed to load logs");
-        return;
-      }
-
-      setLogTabs((prev) => ({
-        ...prev,
-        [transferId]: {
-          transferId,
-          title: fallbackTitle,
-          status: response.data.transfer_status,
-          logs: response.data.logs,
-          autoScroll: prev[transferId]?.autoScroll ?? true,
-        },
-      }));
-      setActiveLogTab(transferId);
-    } catch {
-      toast.error("Failed to load logs");
     }
-  };
+    return { speed, remaining, running };
+  }, [activeTransfers]);
 
-  const loadDetails = async (transferId: string) => {
-    try {
-      const response = await api.get<{ status: string; transfer: Transfer }>(
-        `/transfer/${transferId}/status`
+  const historyTotals = useMemo(() => {
+    let completed = 0;
+    let failed = 0;
+    let cancelled = 0;
+    for (const transfer of historyAll) {
+      if (transfer.status === "completed") completed += 1;
+      else if (transfer.status === "failed") failed += 1;
+      else if (transfer.status === "cancelled") cancelled += 1;
+    }
+    const decided = completed + failed;
+    return {
+      total: historyAll.length,
+      completed,
+      failed,
+      cancelled,
+      successRate: decided ? Math.round((completed / decided) * 100) : null,
+    };
+  }, [historyAll]);
+
+  const pausedCount = activeTransfers.filter((t) => t.status === "paused").length;
+  const queuedCount = activeQuery.data?.queue_status.queued_count ?? 0;
+  const maxConcurrent = activeQuery.data?.queue_status.max_concurrent ?? 3;
+
+  useEffect(() => {
+    // Progress arrives many times a second per transfer. Writing it straight
+    // into the cache keeps the numbers live without a refetch per tick, which
+    // is what made the old page hammer the API while anything was running.
+    const offProgress = onTransferUpdate((payload) => {
+      const stats = payload.stats;
+      queryClient.setQueryData(
+        ["transfers", "active"],
+        (previous: { transfers: Transfer[] } | undefined) => {
+          if (!previous?.transfers) return previous;
+          return {
+            ...previous,
+            transfers: previous.transfers.map((transfer) =>
+              transfer.id === payload.transfer_id
+                ? {
+                    ...transfer,
+                    status: payload.status || transfer.status,
+                    progress: payload.progress ?? transfer.progress,
+                    log_count: payload.log_count ?? transfer.log_count,
+                    ...(stats ?? {}),
+                  }
+                : transfer
+            ),
+          };
+        }
       );
-      if (response.data.status !== "success") {
-        toast.error("Failed to load transfer details");
-        return;
+
+      // When realtime is on, patch the open row's log cache too so output
+      // appears without waiting for the next poll.
+      if (payload.logs) {
+        queryClient.setQueryData(
+          ["transfers", payload.transfer_id, "logs"],
+          (previous: { logs: string[] } | undefined) =>
+            previous ? { ...previous, logs: payload.logs! } : previous
+        );
       }
-      setDetailsTransfer(response.data.transfer);
-    } catch {
-      toast.error("Failed to load transfer details");
-    }
+    });
+
+    const offComplete = onTransferComplete((payload) => {
+      if (payload.logs) {
+        queryClient.setQueryData(
+          ["transfers", payload.transfer_id, "logs"],
+          (previous: { logs: string[] } | undefined) =>
+            previous ? { ...previous, logs: payload.logs! } : previous
+        );
+      }
+      activeQuery.refetch();
+      allQuery.refetch();
+    });
+    const offQueued = onTransferQueued(() => {
+      activeQuery.refetch();
+    });
+    const offPromoted = onTransferPromoted(() => {
+      activeQuery.refetch();
+    });
+
+    return () => {
+      offProgress();
+      offComplete();
+      offQueued();
+      offPromoted();
+    };
+  }, [activeQuery, allQuery, queryClient]);
+
+  const refreshAll = () => {
+    activeQuery.refetch();
+    allQuery.refetch();
   };
 
-  const runCancel = async (transferId: string) => {
+  const actions: TransferActions = {
+    onPause: async (transfer) => {
+      try {
+        await pauseMutation.mutateAsync(transfer.id);
+        toast.success("Transfer paused");
+        activeQuery.refetch();
+      } catch {
+        toast.error("Could not pause the transfer");
+      }
+    },
+    onResume: async (transfer) => {
+      try {
+        const result = await resumeMutation.mutateAsync(transfer.id);
+        toast.success(result?.message ?? "Transfer resumed");
+        refreshAll();
+      } catch {
+        toast.error("Could not resume the transfer");
+      }
+    },
+    onStop: (transfer) => setStopTarget(transfer),
+    onRestart: async (transfer) => {
+      try {
+        await restartMutation.mutateAsync(transfer.id);
+        toast.success("Transfer restarted");
+        refreshAll();
+      } catch {
+        toast.error("Could not restart the transfer");
+      }
+    },
+    onDelete: (transfer) => setDeleteTarget(transfer),
+  };
+
+  const runStop = async (transfer: Transfer) => {
     try {
-      await cancelMutation.mutateAsync(transferId);
+      await cancelMutation.mutateAsync(transfer.id);
       toast.success("Transfer stopped");
-      activeQuery.refetch();
-      allQuery.refetch();
+      refreshAll();
     } catch {
-      toast.error("Failed to stop transfer");
+      toast.error("Could not stop the transfer");
     }
   };
 
-  const runPause = async (transferId: string) => {
+  const runDelete = async (transfer: Transfer) => {
     try {
-      await pauseMutation.mutateAsync(transferId);
-      toast.success("Transfer paused");
-      activeQuery.refetch();
-    } catch {
-      toast.error("Failed to pause transfer");
-    }
-  };
-
-  const runResume = async (transferId: string) => {
-    try {
-      const result = await resumeMutation.mutateAsync(transferId);
-      toast.success(result?.message ?? "Transfer resumed");
-      activeQuery.refetch();
-      allQuery.refetch();
-    } catch {
-      toast.error("Failed to resume transfer");
-    }
-  };
-
-  const runRestart = async (transferId: string) => {
-    try {
-      await restartMutation.mutateAsync(transferId);
-      toast.success("Transfer restarted");
-      activeQuery.refetch();
-      allQuery.refetch();
-    } catch {
-      toast.error("Failed to restart transfer");
-    }
-  };
-
-  const runDelete = async (transferId: string) => {
-    try {
-      await deleteMutation.mutateAsync(transferId);
+      await deleteMutation.mutateAsync(transfer.id);
       toast.success("Transfer deleted");
-      setDetailsTransfer(null);
-      allQuery.refetch();
-      activeQuery.refetch();
-      setLogTabs((prev) => {
-        const next = { ...prev };
-        delete next[transferId];
-        return next;
-      });
-      if (activeLogTab === transferId) setActiveLogTab(null);
+      refreshAll();
+      queryClient.removeQueries({ queryKey: ["transfers", transfer.id, "logs"] });
+      setExpanded((prev) => prev.filter((id) => id !== transfer.id));
     } catch {
-      toast.error("Failed to delete transfer");
+      toast.error("Could not delete the transfer");
     }
   };
 
   const runCleanup = async () => {
     try {
       const result = await cleanupMutation.mutateAsync();
-      toast.success(`Cleaned ${result?.cleaned_count ?? 0} duplicate transfer(s)`);
-      allQuery.refetch();
-      activeQuery.refetch();
+      toast.success(`Removed ${result?.cleaned_count ?? 0} duplicate transfer(s)`);
+      refreshAll();
     } catch {
-      toast.error("Cleanup failed");
+      toast.error("Could not remove duplicates");
     }
   };
 
-  const activeTransfers = activeQuery.data?.transfers ?? [];
-  const currentTab = activeLogTab ? logTabs[activeLogTab] : null;
+  const rowProps = {
+    posters,
+    now,
+    actions,
+    busy,
+    expanded,
+    onExpandedChange: setExpanded,
+  };
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Transfers" description="Track running, queued, and completed transfers">
-        <Button variant="outline" onClick={() => activeQuery.refetch()}>
-          <IconRefresh className="mr-2 h-4 w-4" />
+      <PageHeader title="Transfers" description="Copies running now and everything that has run">
+        <Button
+          variant="outline"
+          onClick={refreshAll}
+          disabled={activeQuery.isFetching || allQuery.isFetching}
+        >
+          <IconRefresh
+            className={cn(
+              "mr-2 h-4 w-4",
+              (activeQuery.isFetching || allQuery.isFetching) && "animate-spin"
+            )}
+          />
           Refresh
         </Button>
         <Button
@@ -389,497 +513,174 @@ export function TransfersPage() {
           disabled={cleanupMutation.isPending}
         >
           <IconTrash className="mr-2 h-4 w-4" />
-          Cleanup
+          Remove duplicates
         </Button>
       </PageHeader>
 
-      <Card className="border-neutral-800 bg-neutral-900/50">
-        <CardHeader>
-          <CardTitle className="text-white">Queue Status</CardTitle>
-          <CardDescription className="text-neutral-400">
-            {activeQuery.data?.queue_status.running_count ?? 0}/
-            {activeQuery.data?.queue_status.max_concurrent ?? 3} running,{" "}
-            {activeQuery.data?.queue_status.queued_count ?? 0} queued
-          </CardDescription>
-        </CardHeader>
-      </Card>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <PageTabsList
+          items={[
+            {
+              value: "activity",
+              label: "Activity",
+              icon: IconActivity,
+              count: activeTransfers.length,
+            },
+            {
+              value: "history",
+              label: "History",
+              icon: IconHistory,
+              count: historyAll.length,
+            },
+          ]}
+        />
 
-      <Tabs defaultValue="active">
-        <TabsList>
-          <TabsTrigger value="active">Active ({activeTransfers.length})</TabsTrigger>
-          <TabsTrigger value="all">All Transfers ({allQuery.data?.total ?? 0})</TabsTrigger>
-          <TabsTrigger value="logs">Logs ({Object.keys(logTabs).length})</TabsTrigger>
-        </TabsList>
+        <TabsContent value="activity" className="mt-4 flex flex-col gap-3.5">
+          <StatTiles
+            items={[
+              {
+                label: "Copying now",
+                value: liveTotals.running,
+                unit: `of ${maxConcurrent} slots`,
+                tone: liveTotals.running ? "ok" : "default",
+              },
+              {
+                label: "Waiting",
+                value: queuedCount,
+                unit: queuedCount === 1 ? "in queue" : "in queue",
+                tone: queuedCount ? "warn" : "default",
+              },
+              {
+                label: "Paused",
+                value: pausedCount,
+                unit: "resumable",
+                tone: pausedCount ? "warn" : "default",
+              },
+              {
+                label: "Throughput",
+                value: liveTotals.speed ? formatSpeed(liveTotals.speed) : "—",
+                unit: liveTotals.remaining ? `${formatBytes(liveTotals.remaining)} left` : "",
+                tone: liveTotals.speed ? "ok" : "default",
+              },
+            ]}
+          />
 
-        <TabsContent value="active" className="mt-4">
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardContent className="pt-6">
-              <ScrollArea className="h-[500px] pr-3">
-                {activeQuery.isLoading ? (
-                  <div className="space-y-3">
-                    {[1, 2, 3].map((i) => (
-                      <Skeleton key={i} className="h-24 w-full" />
-                    ))}
-                  </div>
-                ) : activeTransfers.length ? (
-                  <div className="space-y-3">
-                    {activeTransfers.map((transfer) => (
-                      <div
-                        key={transfer.id}
-                        className="rounded-lg border border-neutral-700/50 bg-neutral-800/50 p-4"
-                      >
-                        <div className="flex items-center justify-between gap-4">
-                          <WebhookPoster
-                            item={{
-                              posterUrl: posters.get(transfer.id),
-                              mediaType: transfer.media_type,
-                              title: transfer.parsed_title || transfer.folder_name,
-                            }}
-                            className="h-[62px] w-11"
-                            iconClassName="size-4"
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="truncate text-sm font-medium text-white">
-                                {transfer.parsed_title || transfer.folder_name}
-                              </p>
-                              {getStatusBadge(transfer.status)}
-                            </div>
-                            <p className="mt-1 text-xs text-neutral-400">
-                              {transfer.media_type}
-                              {transfer.season_name ? ` - ${transfer.season_name}` : ""}
-                              {" - "}
-                              {transfer.progress}
-                            </p>
-                            <p className="mt-1 text-xs text-neutral-500">
-                              Started {formatAgo(transfer.start_time)}
-                            </p>
-                            <TransferStats transfer={transfer} />
-                            {(transfer.status === "running" || transfer.status === "paused") && (
-                              <div className="mt-2">
-                                <Progress value={transferPercent(transfer)} className="h-1.5" />
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex shrink-0 items-center gap-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => loadDetails(transfer.id)}
-                            >
-                              <IconEye className="mr-1.5 h-4 w-4" />
-                              Details
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() =>
-                                loadLogs(transfer.id, transfer.parsed_title || transfer.folder_name)
-                              }
-                            >
-                              <IconTerminal2 className="mr-1.5 h-4 w-4" />
-                              Logs ({transfer.log_count})
-                            </Button>
-                            {transfer.status === "running" && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => runPause(transfer.id)}
-                                disabled={pauseMutation.isPending}
-                              >
-                                <IconPlayerPause className="mr-1.5 h-4 w-4" />
-                                Pause
-                              </Button>
-                            )}
-                            {transfer.status === "paused" && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => runResume(transfer.id)}
-                                disabled={resumeMutation.isPending}
-                              >
-                                <IconPlayerPlay className="mr-1.5 h-4 w-4" />
-                                Resume
-                              </Button>
-                            )}
-                            {(transfer.status === "running" || transfer.status === "paused") && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setStopTarget(transfer)}
-                                disabled={cancelMutation.isPending}
-                              >
-                                <IconCircleX className="mr-1.5 h-4 w-4" />
-                                Stop
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="py-16 text-center text-neutral-500">
-                    <IconInfoCircle className="mx-auto mb-2 h-10 w-10" />
-                    No active transfers
-                  </div>
-                )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
+          <SectionCard
+            label="In flight"
+            description="Running, queued and paused copies"
+            toolbar={
+              <>
+                <span className="font-mono text-[11px] text-muted-foreground">
+                  {activeQuery.data?.queue_status.running_count ?? 0}/{maxConcurrent} running
+                  {queuedCount ? ` · ${queuedCount} queued` : ""}
+                </span>
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                  {activeTransfers.length} shown
+                </span>
+              </>
+            }
+          >
+            <TransferList
+              transfers={activeTransfers}
+              loading={activeQuery.isLoading}
+              {...rowProps}
+              empty={
+                <SectionEmpty
+                  icon={IconActivity}
+                  title="Nothing is copying"
+                  hint="Transfers started from Browse Media, or by a Radarr or Sonarr import, appear here while they run."
+                />
+              }
+            />
+          </SectionCard>
         </TabsContent>
 
-        <TabsContent value="all" className="mt-4">
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardHeader>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <CardTitle className="text-white">Transfer History</CardTitle>
-                  <CardDescription className="text-neutral-400">
-                    Filter and inspect completed, queued, failed, and cancelled transfers
-                  </CardDescription>
-                </div>
-                <Select
-                  value={statusFilter}
-                  onValueChange={(value) => setStatusFilter(value ?? "all")}
-                  items={{
-                    all: "All statuses",
-                    running: "Running",
-                    queued: "Queued",
-                    paused: "Paused",
-                    completed: "Completed",
-                    failed: "Failed",
-                    cancelled: "Cancelled",
-                  }}
-                >
-                  <SelectTrigger className="w-44">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All statuses</SelectItem>
-                    <SelectItem value="running">Running</SelectItem>
-                    <SelectItem value="queued">Queued</SelectItem>
-                    <SelectItem value="paused">Paused</SelectItem>
-                    <SelectItem value="completed">Completed</SelectItem>
-                    <SelectItem value="failed">Failed</SelectItem>
-                    <SelectItem value="cancelled">Cancelled</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[500px] pr-3">
-                {allQuery.isLoading ? (
-                  <div className="space-y-3">
-                    {[1, 2, 3, 4].map((i) => (
-                      <Skeleton key={i} className="h-24 w-full" />
-                    ))}
-                  </div>
-                ) : allTransfers.length ? (
-                  <div className="space-y-3">
-                    {allTransfers.map((transfer) => (
-                      <div
-                        key={transfer.id}
-                        className="rounded-lg border border-neutral-700/50 bg-neutral-800/50 p-4"
-                      >
-                        <div className="flex items-center justify-between gap-4">
-                          <WebhookPoster
-                            item={{
-                              posterUrl: posters.get(transfer.id),
-                              mediaType: transfer.media_type,
-                              title: transfer.parsed_title || transfer.folder_name,
-                            }}
-                            className="h-[62px] w-11"
-                            iconClassName="size-4"
-                          />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="truncate text-sm font-medium text-white">
-                                {transfer.parsed_title || transfer.folder_name}
-                              </p>
-                              {getStatusBadge(transfer.status)}
-                            </div>
-                            <p className="mt-1 text-xs text-neutral-400">
-                              {transfer.media_type}
-                              {transfer.season_name ? ` - ${transfer.season_name}` : ""}
-                              {" - "}
-                              {transfer.progress}
-                            </p>
-                            <p className="mt-1 text-xs text-neutral-500">
-                              Started {formatAgo(transfer.start_time)}
-                            </p>
-                            <TransferStats transfer={transfer} />
-                          </div>
-                          <div className="flex shrink-0 items-center gap-2">
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => loadDetails(transfer.id)}
-                            >
-                              <IconEye className="mr-1.5 h-4 w-4" />
-                              Details
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() =>
-                                loadLogs(transfer.id, transfer.parsed_title || transfer.folder_name)
-                              }
-                            >
-                              <IconTerminal2 className="mr-1.5 h-4 w-4" />
-                              Logs
-                            </Button>
-                            {(transfer.status === "failed" || transfer.status === "cancelled") && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => runRestart(transfer.id)}
-                                disabled={restartMutation.isPending}
-                              >
-                                <IconArrowBackUp className="mr-1.5 h-4 w-4" />
-                                Restart
-                              </Button>
-                            )}
-                            {transfer.status !== "running" && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setDeleteTarget(transfer)}
-                                disabled={deleteMutation.isPending}
-                              >
-                                <IconTrash className="mr-1.5 h-4 w-4" />
-                                Delete
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="py-16 text-center text-neutral-500">
-                    <IconList className="mx-auto mb-2 h-10 w-10" />
-                    No transfers found
-                  </div>
-                )}
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </TabsContent>
+        <TabsContent value="history" className="mt-4 flex flex-col gap-3.5">
+          <StatTiles
+            items={[
+              { label: "Transfers", value: historyTotals.total, unit: "on record" },
+              {
+                label: "Completed",
+                value: historyTotals.completed,
+                unit: "finished",
+                tone: "ok",
+              },
+              {
+                label: "Failed",
+                value: historyTotals.failed,
+                unit: "needs a retry",
+                tone: historyTotals.failed ? "crit" : "default",
+              },
+              {
+                label: "Success rate",
+                value: historyTotals.successRate == null ? "—" : `${historyTotals.successRate}%`,
+                unit: historyTotals.successRate == null ? "" : "of finished runs",
+                tone:
+                  historyTotals.successRate == null
+                    ? "default"
+                    : historyTotals.successRate >= 90
+                      ? "ok"
+                      : historyTotals.successRate >= 70
+                        ? "warn"
+                        : "crit",
+              },
+            ]}
+          />
 
-        <TabsContent value="logs" className="mt-4">
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="text-white">Transfer Logs</CardTitle>
-                  <CardDescription className="text-neutral-400">
-                    Ctrl/Cmd+L toggles auto-scroll, Ctrl/Cmd+K clears current log tab
-                  </CardDescription>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      if (!activeLogTab) return;
-                      setLogTabs((prev) => {
-                        const tab = prev[activeLogTab];
-                        if (!tab) return prev;
-                        return {
-                          ...prev,
-                          [activeLogTab]: { ...tab, autoScroll: !tab.autoScroll },
-                        };
-                      });
-                    }}
-                    disabled={!activeLogTab}
-                  >
-                    Auto-scroll
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      if (!activeLogTab) return;
-                      setLogTabs((prev) => {
-                        const tab = prev[activeLogTab];
-                        if (!tab) return prev;
-                        return {
-                          ...prev,
-                          [activeLogTab]: { ...tab, logs: [] },
-                        };
-                      });
-                    }}
-                    disabled={!activeLogTab}
-                  >
-                    Clear
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setFullscreenLogs(true)}
-                    disabled={!currentTab}
-                  >
-                    <IconArrowsMaximize className="mr-1.5 h-4 w-4" />
-                    Fullscreen
-                  </Button>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {Object.keys(logTabs).length ? (
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2 overflow-x-auto pb-1">
-                    {Object.values(logTabs).map((tab) => (
-                      <button
-                        key={tab.transferId}
-                        type="button"
-                        onClick={() => setActiveLogTab(tab.transferId)}
-                        className={`rounded-md border px-3 py-1.5 text-xs whitespace-nowrap ${
-                          activeLogTab === tab.transferId
-                            ? "border-brand bg-brand/10 text-brand-foreground"
-                            : "border-neutral-700 text-neutral-300 hover:border-neutral-500"
-                        }`}
-                      >
-                        {tab.title} [{tab.status}]
-                      </button>
-                    ))}
-                  </div>
-                  <ScrollArea className="h-[460px] rounded-md border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs">
-                    {currentTab?.logs.length ? (
-                      <div className="space-y-1">
-                        {currentTab.logs.map((line, idx) => (
-                          <div
-                            key={`${idx}-${line.slice(0, 20)}`}
-                            className={classifyLogLine(line)}
-                          >
-                            {line}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-neutral-500">No logs yet for this transfer.</div>
+          <SectionCard
+            label="Past runs"
+            description="Newest first"
+            toolbar={
+              <>
+                {HISTORY_FILTERS.map((filter) => (
+                  <button
+                    key={filter.value}
+                    type="button"
+                    onClick={() => setHistoryFilter(filter.value)}
+                    className={cn(
+                      "rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors",
+                      historyFilter === filter.value
+                        ? "border-brand/35 bg-brand/15 text-brand-foreground"
+                        : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
                     )}
-                  </ScrollArea>
-                </div>
-              ) : (
-                <div className="py-16 text-center text-neutral-500">
-                  <IconTerminal2 className="mx-auto mb-2 h-10 w-10" />
-                  Open a transfer log from Active/All tabs
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                  >
+                    {filter.label}
+                  </button>
+                ))}
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                  {historyTransfers.length} shown
+                </span>
+              </>
+            }
+          >
+            <TransferList
+              transfers={historyTransfers}
+              loading={allQuery.isLoading}
+              {...rowProps}
+              empty={
+                <SectionEmpty
+                  icon={IconHistory}
+                  title={
+                    historyFilter === "all" ? "No transfers yet" : "Nothing matches this filter"
+                  }
+                  hint={
+                    historyFilter === "all"
+                      ? "Finished copies are kept here with their full output."
+                      : undefined
+                  }
+                  action={
+                    historyFilter !== "all" ? (
+                      <Button variant="outline" size="sm" onClick={() => setHistoryFilter("all")}>
+                        Show all
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              }
+            />
+          </SectionCard>
         </TabsContent>
       </Tabs>
-
-      <Dialog
-        open={Boolean(detailsTransfer)}
-        onOpenChange={(open) => !open && setDetailsTransfer(null)}
-      >
-        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle className="text-white">Transfer Details</DialogTitle>
-            <DialogDescription className="text-neutral-400">
-              {detailsTransfer?.parsed_title || detailsTransfer?.folder_name}
-            </DialogDescription>
-          </DialogHeader>
-          {detailsTransfer && (
-            <div className="space-y-4 text-sm">
-              <div className="grid gap-3 md:grid-cols-2">
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Status</div>
-                  <div className="mt-1">{getStatusBadge(detailsTransfer.status)}</div>
-                </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Progress</div>
-                  <div className="mt-1 text-neutral-200">{detailsTransfer.progress}</div>
-                </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Source</div>
-                  <div className="mt-1 break-all text-neutral-300">
-                    {detailsTransfer.source_path}
-                  </div>
-                </div>
-                <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                  <div className="text-neutral-500">Destination</div>
-                  <div className="mt-1 break-all text-neutral-300">{detailsTransfer.dest_path}</div>
-                </div>
-              </div>
-              <div className="rounded border border-neutral-800 bg-neutral-950 p-3">
-                <div className="mb-2 text-neutral-500">Actions</div>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      loadLogs(
-                        detailsTransfer.id,
-                        detailsTransfer.parsed_title || detailsTransfer.folder_name
-                      )
-                    }
-                  >
-                    <IconTerminal2 className="mr-1.5 h-4 w-4" />
-                    View Logs
-                  </Button>
-                  {detailsTransfer.status === "running" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => runPause(detailsTransfer.id)}
-                    >
-                      <IconPlayerPause className="mr-1.5 h-4 w-4" />
-                      Pause
-                    </Button>
-                  )}
-                  {detailsTransfer.status === "paused" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => runResume(detailsTransfer.id)}
-                    >
-                      <IconPlayerPlay className="mr-1.5 h-4 w-4" />
-                      Resume
-                    </Button>
-                  )}
-                  {(detailsTransfer.status === "running" ||
-                    detailsTransfer.status === "paused") && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setStopTarget(detailsTransfer)}
-                    >
-                      <IconCircleX className="mr-1.5 h-4 w-4" />
-                      Stop
-                    </Button>
-                  )}
-                  {(detailsTransfer.status === "failed" ||
-                    detailsTransfer.status === "cancelled") && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => runRestart(detailsTransfer.id)}
-                    >
-                      <IconArrowBackUp className="mr-1.5 h-4 w-4" />
-                      Restart
-                    </Button>
-                  )}
-                  {detailsTransfer.status !== "running" && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setDeleteTarget(detailsTransfer)}
-                    >
-                      <IconTrash className="mr-1.5 h-4 w-4" />
-                      Delete
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
 
       <ConfirmDialog
         open={Boolean(stopTarget)}
@@ -891,16 +692,15 @@ export function TransfersPage() {
             <span className="font-medium text-foreground">
               {stopTarget?.parsed_title || stopTarget?.folder_name}
             </span>{" "}
-            will stop mid-transfer and be marked cancelled. Files already copied stay in place, but
-            the remaining files are not transferred. Use Pause instead if you intend to continue
-            later.
+            stops where it is and is marked stopped. Files already copied stay in place, but the
+            rest are not transferred. Pause instead if you mean to continue later.
           </>
         }
         confirmLabel="Stop transfer"
         cancelLabel="Keep running"
         pending={cancelMutation.isPending}
         onConfirm={() => {
-          if (stopTarget) runCancel(stopTarget.id);
+          if (stopTarget) runStop(stopTarget);
           setStopTarget(null);
         }}
       />
@@ -916,7 +716,7 @@ export function TransfersPage() {
             <span className="font-medium text-foreground">
               {deleteTarget?.parsed_title || deleteTarget?.folder_name}
             </span>{" "}
-            and its logs are removed from the history. Transferred files are not touched.
+            and its output are removed from the history. Copied files are not touched.
             {deleteTarget?.status === "paused" &&
               " This transfer is paused, so deleting it also means it can no longer be resumed."}
           </>
@@ -924,7 +724,7 @@ export function TransfersPage() {
         confirmLabel="Delete record"
         pending={deleteMutation.isPending}
         onConfirm={() => {
-          if (deleteTarget) runDelete(deleteTarget.id);
+          if (deleteTarget) runDelete(deleteTarget);
           setDeleteTarget(null);
         }}
       />
@@ -934,35 +734,11 @@ export function TransfersPage() {
         onOpenChange={setConfirmCleanup}
         icon={<IconTrash />}
         title="Remove duplicate transfers?"
-        description="Where several completed transfers share a destination path, only the most recent one is kept. Transferred files are not touched."
+        description="Where several completed transfers share a destination, only the most recent is kept. Copied files are not touched."
         confirmLabel="Remove duplicates"
         pending={cleanupMutation.isPending}
         onConfirm={runCleanup}
       />
-
-      <Dialog open={fullscreenLogs} onOpenChange={setFullscreenLogs}>
-        <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-5xl">
-          <DialogHeader>
-            <DialogTitle className="text-white">Fullscreen Logs</DialogTitle>
-            <DialogDescription className="text-neutral-400">
-              {currentTab?.title || "No tab selected"}
-            </DialogDescription>
-          </DialogHeader>
-          <ScrollArea className="h-[70vh] rounded-md border border-neutral-800 bg-neutral-950 p-3 font-mono text-xs">
-            {currentTab?.logs.length ? (
-              <div className="space-y-1">
-                {currentTab.logs.map((line, idx) => (
-                  <div key={`${idx}-${line.slice(0, 20)}`} className={classifyLogLine(line)}>
-                    {line}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-neutral-500">No logs available.</div>
-            )}
-          </ScrollArea>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

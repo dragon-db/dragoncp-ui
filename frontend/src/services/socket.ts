@@ -30,6 +30,14 @@ export interface TransferUpdate {
   queue_type?: "path" | "slot" | string;
   existing_transfer_id?: string;
   dest_path?: string;
+  /** Parsed rsync progress, so the UI can update live without a refetch. */
+  stats?: {
+    progress_percent?: number | null;
+    bytes_transferred?: number | null;
+    total_bytes?: number | null;
+    speed_bps?: number | null;
+    eta_seconds?: number | null;
+  };
 }
 
 export interface WebhookNotification {
