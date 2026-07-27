@@ -8,8 +8,17 @@ import os
 import subprocess
 import threading
 import re
+import time
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
+
+
+# How often a superseding progress line is allowed to reach the database. The
+# UI is told about every one over the socket; this only bounds writes.
+PROGRESS_WRITE_INTERVAL = 1.0
+
+# How many trailing lines ride along on a progress event.
+SOCKET_LOG_TAIL = 100
 
 
 # rsync -h reports sizes in powers of 1000 (a bare -h, not -hh).
@@ -74,6 +83,11 @@ def parse_rsync_total_size(line: str) -> Optional[int]:
         return None
     total = _to_bytes(match.group(1), match.group(2))
     return total or None
+
+
+def _known(stats: Dict) -> Dict:
+    """Drop unknown figures so a write never clears a column it has no value for."""
+    return {key: value for key, value in stats.items() if value is not None}
 
 
 def build_progress_stats(transfer: Dict) -> Dict:
@@ -621,35 +635,101 @@ class TransferService:
     def _monitor_transfer(self, transfer_id: str, process):
         """Monitor transfer progress with database updates"""
         print(f"🔍 Starting monitoring for transfer {transfer_id} (PID: {process.pid})")
-        
+
         try:
             # Use the socketio instance passed to the constructor
             socketio = self.socketio
-            
+
+            # The log tail is tracked here rather than re-read per line. Building
+            # the socket payload used to cost a second full-row read for every
+            # line rsync printed.
+            existing = self.transfer_model.get(transfer_id) or {}
+            tail = list(existing.get('logs') or [])
+            log_count = len(tail)
+            del tail[:-SOCKET_LOG_TAIL]
+
+            # Whether the last line actually WRITTEN is a progress line. This
+            # has to track the database, not the in-memory tail: when the write
+            # interval skips a tick the two diverge, and replacing based on the
+            # tail would overwrite a real log line with a progress line.
+            db_last_was_progress = bool(tail) and parse_rsync_progress(tail[-1]) is not None
+            last_line_was_progress = db_last_was_progress
+            last_progress_write = 0.0
+
+            # Latest parsed figures, so a throttled tick still reports live
+            # numbers to the UI without reading them back from the database.
+            latest_stats = build_progress_stats(existing)
+
+            # A progress line the interval skipped, held so it can be flushed
+            # when rsync stops talking.
+            pending_progress = None
+
             # Read output line by line
             for line in iter(process.stdout.readline, ''):
-                if line:
-                    line = line.strip()
+                if not line:
+                    continue
 
-                    # Fold any parsed speed/size/ETA into the same write
+                line = line.strip()
+                if not line:
+                    continue
+
+                stats = self._progress_updates(transfer_id, line)
+                if stats:
+                    latest_stats.update(stats)
+                is_progress = parse_rsync_progress(line) is not None
+
+                # A progress line supersedes the previous one instead of adding
+                # to the log; anything else is a real event and is kept.
+                if is_progress and last_line_was_progress and tail:
+                    tail[-1] = line
+                else:
+                    tail.append(line)
+                    log_count += 1
+                del tail[:-SOCKET_LOG_TAIL]
+
+                # Progress lines arrive several times a second and each one only
+                # moves the same numbers along, so they are persisted at an
+                # interval. Everything else is written as it happens, and
+                # carries the newest figures so the columns never lag behind a
+                # tick that the interval skipped.
+                now = time.monotonic()
+                if not is_progress or (now - last_progress_write) >= PROGRESS_WRITE_INTERVAL:
                     self.transfer_model.add_log(
-                        transfer_id, line, self._progress_updates(transfer_id, line)
+                        transfer_id, line, _known(latest_stats),
+                        replace_last=is_progress and db_last_was_progress
                     )
+                    db_last_was_progress = is_progress
+                    pending_progress = None
+                    if is_progress:
+                        last_progress_write = now
+                else:
+                    # Remember it so the last thing rsync reported is not lost
+                    # to the interval when the output ends.
+                    pending_progress = line
 
-                    # Get updated transfer data
-                    transfer = self.transfer_model.get(transfer_id)
+                last_line_was_progress = is_progress
 
-                    # Emit progress via WebSocket to all clients
-                    if socketio:
-                        socketio.emit('transfer_progress', {
-                            'transfer_id': transfer_id,
-                            'progress': line,
-                            'logs': transfer['logs'][-100:],  # Last 100 lines for better visibility
-                            'log_count': len(transfer['logs']),
-                            'status': transfer.get('status', 'running'),
-                            'stats': build_progress_stats(transfer)
-                        })
+                # The UI still sees every tick - the throttle is only about what
+                # reaches the database.
+                if socketio:
+                    socketio.emit('transfer_progress', {
+                        'transfer_id': transfer_id,
+                        'progress': line,
+                        'logs': tail,
+                        'log_count': log_count,
+                        'status': 'running',
+                        'stats': dict(latest_stats)
+                    })
             
+            # rsync has stopped writing. Flush the last progress line if the
+            # write interval skipped it, otherwise a finished transfer would be
+            # left showing whatever percentage happened to land on an interval.
+            if pending_progress:
+                self.transfer_model.add_log(
+                    transfer_id, pending_progress, _known(latest_stats),
+                    replace_last=db_last_was_progress
+                )
+
             # Wait for process to complete
             print(f"⏳ Waiting for transfer {transfer_id} to complete...")
             return_code = process.wait()

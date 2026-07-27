@@ -15,6 +15,12 @@ from datetime import datetime
 from typing import List, Dict, Optional
 
 
+# Backstop for a pathological log (a sync spanning tens of thousands of files).
+# Progress lines are collapsed before they get here, so reaching this cap means
+# the transfer genuinely produced that many distinct lines.
+LOG_MAX_LINES = 5000
+
+
 class Transfer:
     """Transfer model for database operations"""
     
@@ -218,20 +224,38 @@ class Transfer:
             conn.commit()
             return total_deleted
     
-    def add_log(self, transfer_id: str, log_line: str, extra_updates: Dict = None) -> bool:
+    def add_log(self, transfer_id: str, log_line: str, extra_updates: Dict = None,
+                replace_last: bool = False, max_lines: int = LOG_MAX_LINES) -> bool:
         """
         Add a log line to transfer
 
         extra_updates lets callers fold parsed progress stats (percent, speed,
         ETA, byte counts) into the same UPDATE, so streaming rsync output does
         not cost an extra write per line.
+
+        replace_last overwrites the final line instead of appending. rsync
+        emits a progress line several times a second, each one superseding the
+        last; appending them all would store tens of thousands of lines that
+        say nothing the newest one does not. Callers that recognise a
+        superseding line pass replace_last so only the latest is kept.
+
+        max_lines caps the stored log, dropping the oldest lines. The end of an
+        rsync log is the part worth keeping - it holds the --stats summary and
+        any errors - so the tail is what survives.
         """
         transfer = self.get(transfer_id)
         if not transfer:
             return False
 
         logs = transfer.get('logs', [])
-        logs.append(log_line)
+
+        if replace_last and logs:
+            logs[-1] = log_line
+        else:
+            logs.append(log_line)
+
+        if max_lines and len(logs) > max_lines:
+            del logs[:len(logs) - max_lines]
 
         updates = {
             'logs': logs,

@@ -165,8 +165,12 @@ class TransferSimulator:
             stats = parse_rsync_progress(log_line) or {}
             stats["total_bytes"] = total_bytes
 
-            # Persist log and emit progress
-            self.transfer_coordinator.transfer_model.add_log(transfer_id, log_line, stats)
+            # Every line here is a progress line, so each one supersedes the
+            # last - same collapsing the real monitor does, so simulated
+            # transfers do not store logs real ones never would.
+            self.transfer_coordinator.transfer_model.add_log(
+                transfer_id, log_line, stats, replace_last=step_index > 1
+            )
             transfer = self.transfer_coordinator.transfer_model.get(transfer_id)
             if self.socketio:
                 self.socketio.emit(
