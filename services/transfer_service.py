@@ -9,12 +9,87 @@ import subprocess
 import threading
 import re
 from datetime import datetime
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
+
+
+# rsync -h reports sizes in powers of 1000 (a bare -h, not -hh).
+_SIZE_UNITS = {'': 1, 'K': 1000, 'M': 1000 ** 2, 'G': 1000 ** 3,
+               'T': 1000 ** 4, 'P': 1000 ** 5}
+
+# A progress line from rsync's --info=progress2 output, e.g.
+#   "          2.70G  64%  142.31MB/s    0:00:11"
+# Without --human-readable the byte count is comma grouped ("2,834,567,890"),
+# and some rsync builds (plus the transfer simulator) omit the ETA field, so
+# both forms have to parse.
+_PROGRESS_LINE_RE = re.compile(
+    r'^\s*([\d,]+(?:\.\d+)?)\s*([KMGTPkmgtp]?)\s+(\d{1,3})%\s+'
+    r'([\d,]+(?:\.\d+)?)\s*([KMGTPkmgtp]?)B/s'
+    r'(?:\s+(\d+):(\d{2}):(\d{2}))?'
+)
+
+# The --stats summary line, which carries the exact total for the transfer set:
+#   "total size is 4.21G  speedup is 1.00"
+_TOTAL_SIZE_RE = re.compile(
+    r'total size is\s+([\d,]+(?:\.\d+)?)\s*([KMGTPkmgtp]?)', re.IGNORECASE
+)
+
+
+def _to_bytes(number: str, unit: str) -> int:
+    """Convert an rsync size token (e.g. "2.70", "G") to a byte count"""
+    try:
+        return int(float(number.replace(',', '')) * _SIZE_UNITS[unit.upper()])
+    except (ValueError, KeyError):
+        return 0
+
+
+def parse_rsync_progress(line: str) -> Optional[Dict]:
+    """
+    Parse one rsync progress line into structured stats.
+
+    Returns None for any line that is not a progress line (file names, the
+    --stats block, warnings), so callers can pass every log line through.
+    """
+    match = _PROGRESS_LINE_RE.match(line)
+    if not match:
+        return None
+
+    done_num, done_unit, percent, speed_num, speed_unit, hours, minutes, seconds = match.groups()
+
+    stats = {
+        'bytes_transferred': _to_bytes(done_num, done_unit),
+        'progress_percent': max(0, min(100, int(percent))),
+        'speed_bps': _to_bytes(speed_num, speed_unit),
+    }
+
+    if hours is not None:
+        stats['eta_seconds'] = int(hours) * 3600 + int(minutes) * 60 + int(seconds)
+
+    return stats
+
+
+def parse_rsync_total_size(line: str) -> Optional[int]:
+    """Extract the exact transfer-set size from the rsync --stats summary"""
+    match = _TOTAL_SIZE_RE.search(line)
+    if not match:
+        return None
+    total = _to_bytes(match.group(1), match.group(2))
+    return total or None
+
+
+def build_progress_stats(transfer: Dict) -> Dict:
+    """Pull the structured progress columns off a transfer row for API/socket use"""
+    return {
+        'progress_percent': transfer.get('progress_percent'),
+        'bytes_transferred': transfer.get('bytes_transferred'),
+        'total_bytes': transfer.get('total_bytes'),
+        'speed_bps': transfer.get('speed_bps'),
+        'eta_seconds': transfer.get('eta_seconds'),
+    }
 
 
 class TransferService:
     """Service for rsync process management and monitoring"""
-    
+
     def __init__(self, config, db_manager, transfer_model, socketio=None, queue_manager=None):
         self.config = config
         self.db = db_manager
@@ -22,6 +97,71 @@ class TransferService:
         self.socketio = socketio
         self.queue_manager = queue_manager
         self.transfers = {}  # Active transfer processes: {transfer_id: process}
+
+        # Transfers stopped on purpose: {transfer_id: 'cancelled' | 'paused'}.
+        # rsync exits non-zero when we terminate it, so without this the monitor
+        # thread would overwrite the real outcome with 'failed'.
+        self._intentional_stops = {}
+        self._stops_lock = threading.Lock()
+
+        # Locked-in total size per transfer, so the derived total does not
+        # jitter as the reported percentage ticks up.
+        self._total_estimates = {}
+
+    def _mark_intentional_stop(self, transfer_id: str, outcome: str):
+        with self._stops_lock:
+            self._intentional_stops[transfer_id] = outcome
+
+    def _take_intentional_stop(self, transfer_id: str) -> Optional[str]:
+        with self._stops_lock:
+            return self._intentional_stops.pop(transfer_id, None)
+
+    def _clear_intentional_stop(self, transfer_id: str):
+        with self._stops_lock:
+            self._intentional_stops.pop(transfer_id, None)
+
+    def _progress_updates(self, transfer_id: str, line: str) -> Optional[Dict]:
+        """
+        Build the column updates for one rsync output line, or None if the line
+        carries no progress information.
+        """
+        total = parse_rsync_total_size(line)
+        if total:
+            # The --stats summary is authoritative; replace the estimate.
+            self._total_estimates[transfer_id] = total
+            return {'total_bytes': total}
+
+        stats = parse_rsync_progress(line)
+        if not stats:
+            return None
+
+        estimated_total = self._estimate_total_bytes(transfer_id, stats)
+        if estimated_total:
+            stats['total_bytes'] = estimated_total
+
+        return stats
+
+    def _estimate_total_bytes(self, transfer_id: str, stats: Dict) -> Optional[int]:
+        """
+        Derive the transfer-set size from bytes-done and percent-done.
+
+        Below 5% the derived value swings wildly (1% of granularity is a huge
+        relative error), so hold off until the percentage is meaningful, then
+        keep the first estimate stable for the rest of the run.
+        """
+        cached = self._total_estimates.get(transfer_id)
+        if cached:
+            return cached
+
+        percent = stats.get('progress_percent') or 0
+        done = stats.get('bytes_transferred') or 0
+
+        if percent >= 5 and done > 0:
+            total = int(done * 100 / percent)
+            self._total_estimates[transfer_id] = total
+            return total
+
+        return None
 
     def _build_ssh_host_key_options(self) -> List[str]:
         """
@@ -301,7 +441,12 @@ class TransferService:
             print(f"📁 Source: {source_path}")
             print(f"📁 Destination: {dest_path}")
             print(f"📁 Type: {operation_type}")
-            
+
+            # A resumed or restarted run re-derives its own totals, and must not
+            # inherit a stop intent recorded for the previous run.
+            self._clear_intentional_stop(transfer_id)
+            self._total_estimates.pop(transfer_id, None)
+
             # Create destination directory
             try:
                 # Check TEST_MODE before creating destination directory
@@ -366,6 +511,10 @@ class TransferService:
             rsync_cmd = [
                 "rsync", "-av",
                 "--progress",
+                # progress2 reports percent/bytes/speed/ETA for the WHOLE
+                # transfer instead of the current file, which is what the UI
+                # shows. Keep --progress before it so -v still names each file.
+                "--info=progress2",
                 "--delete",
                 "--backup",
                 "--backup-dir", backup_dir,
@@ -438,11 +587,19 @@ class TransferService:
             # Store process
             self.transfers[transfer_id] = process
             
-            # Update transfer with process ID and running status
+            # Update transfer with process ID and running status.
+            # Stats are zeroed so a resumed run does not display the previous
+            # run's speed/ETA until rsync emits its first progress line.
             self.transfer_model.update(transfer_id, {
                 'status': 'running',
                 'rsync_process_id': process.pid,
-                'progress': 'Transfer started...'
+                'progress': 'Transfer started...',
+                'progress_percent': 0,
+                'bytes_transferred': 0,
+                'total_bytes': None,
+                'speed_bps': 0,
+                'eta_seconds': None,
+                'paused_at': None
             })
             
             # Start monitoring thread
@@ -473,13 +630,15 @@ class TransferService:
             for line in iter(process.stdout.readline, ''):
                 if line:
                     line = line.strip()
-                    
-                    # Add log line to database
-                    self.transfer_model.add_log(transfer_id, line)
-                    
+
+                    # Fold any parsed speed/size/ETA into the same write
+                    self.transfer_model.add_log(
+                        transfer_id, line, self._progress_updates(transfer_id, line)
+                    )
+
                     # Get updated transfer data
                     transfer = self.transfer_model.get(transfer_id)
-                    
+
                     # Emit progress via WebSocket to all clients
                     if socketio:
                         socketio.emit('transfer_progress', {
@@ -487,15 +646,29 @@ class TransferService:
                             'progress': line,
                             'logs': transfer['logs'][-100:],  # Last 100 lines for better visibility
                             'log_count': len(transfer['logs']),
-                            'status': transfer.get('status', 'running')
+                            'status': transfer.get('status', 'running'),
+                            'stats': build_progress_stats(transfer)
                         })
             
             # Wait for process to complete
             print(f"⏳ Waiting for transfer {transfer_id} to complete...")
             return_code = process.wait()
             print(f"🏁 Transfer {transfer_id} completed with return code: {return_code}")
-            
-            if return_code == 0:
+
+            # We terminate rsync ourselves for pause and cancel, so a non-zero
+            # exit is expected there. cancel_transfer/pause_transfer already
+            # wrote the correct row; do not overwrite it with 'failed'.
+            intentional_stop = self._take_intentional_stop(transfer_id)
+
+            if intentional_stop == 'paused':
+                status = 'paused'
+                progress = 'Transfer paused'
+                print(f"⏸️  Transfer {transfer_id} stopped for pause")
+            elif intentional_stop == 'cancelled':
+                status = 'cancelled'
+                progress = 'Transfer cancelled by user'
+                print(f"🛑 Transfer {transfer_id} stopped by user")
+            elif return_code == 0:
                 status = 'completed'
                 progress = 'Transfer completed successfully!'
                 print(f"✅ Transfer {transfer_id} completed successfully")
@@ -503,17 +676,20 @@ class TransferService:
                 status = 'failed'
                 progress = f'Transfer failed with exit code: {return_code}'
                 print(f"❌ Transfer {transfer_id} failed with exit code: {return_code}")
-            
-            # Update final status in database
-            self.transfer_model.update(transfer_id, {
-                'status': status,
-                'progress': progress,
-                'end_time': datetime.now().isoformat()
-            })
-            
+
+            if not intentional_stop:
+                # Update final status in database
+                self.transfer_model.update(transfer_id, {
+                    'status': status,
+                    'progress': progress,
+                    'end_time': datetime.now().isoformat(),
+                    'speed_bps': 0,
+                    'eta_seconds': None
+                })
+
             # Get final transfer data
             transfer = self.transfer_model.get(transfer_id)
-            
+
             # Emit completion status to all clients
             if socketio:
                 socketio.emit('transfer_complete', {
@@ -521,13 +697,15 @@ class TransferService:
                     'status': status,
                     'message': progress,
                     'logs': transfer['logs'][-100:],
-                    'log_count': len(transfer['logs'])
+                    'log_count': len(transfer['logs']),
+                    'stats': build_progress_stats(transfer)
                 })
-            
+
             # Remove from active transfers
             if transfer_id in self.transfers:
                 del self.transfers[transfer_id]
-            
+            self._total_estimates.pop(transfer_id, None)
+
             return status
             
         except Exception as e:
@@ -582,30 +760,115 @@ class TransferService:
             print(f"✅ Queued transfer {transfer_id} cancelled")
             return True
         
+        # A paused transfer has no live process, so cancelling is a state change
+        if transfer['status'] == 'paused':
+            self.transfer_model.update(transfer_id, {
+                'status': 'cancelled',
+                'progress': 'Transfer cancelled by user (was paused)',
+                'paused_at': None,
+                'end_time': datetime.now().isoformat()
+            })
+            print(f"✅ Paused transfer {transfer_id} cancelled")
+            return True
+
         # Handle running transfers
-        if transfer['status'] == 'running' and transfer['rsync_process_id']:
+        if transfer['status'] == 'running':
+            # A running row without a live rsync process is either a simulated
+            # transfer or one whose process already exited. There is nothing to
+            # signal, but the row still has to be cancellable - otherwise it is
+            # stuck as 'running' forever.
+            pid = transfer.get('rsync_process_id')
+            has_process = bool(pid) and self._is_process_running(pid)
+
+            if has_process:
+                try:
+                    import psutil
+
+                    # Record intent BEFORE terminating, so the monitor thread
+                    # reads 'cancelled' rather than treating the non-zero exit
+                    # as a failure
+                    self._mark_intentional_stop(transfer_id, 'cancelled')
+                    psutil.Process(pid).terminate()
+                except Exception as e:
+                    print(f"❌ Error cancelling transfer {transfer_id}: {e}")
+                    self._clear_intentional_stop(transfer_id)
+                    return False
+            else:
+                print(f"🛑 Transfer {transfer_id} has no live rsync process to signal")
+
+            self.transfer_model.update(transfer_id, {
+                'status': 'cancelled',
+                'progress': 'Transfer cancelled by user',
+                'end_time': datetime.now().isoformat(),
+                'speed_bps': 0,
+                'eta_seconds': None
+            })
+
+            # Remove from active transfers
+            if transfer_id in self.transfers:
+                del self.transfers[transfer_id]
+
+            return True
+
+        return False
+
+    def pause_transfer(self, transfer_id: str) -> Tuple[bool, str]:
+        """
+        Pause a running transfer.
+
+        rsync cannot be suspended safely (the command sets --timeout=300, so a
+        frozen process loses its connection after five minutes). Instead we stop
+        rsync and rely on --partial/--partial-dir, which are already part of the
+        transfer command: the partially written files stay on disk and the
+        resumed run picks up from them.
+        """
+        transfer = self.transfer_model.get(transfer_id)
+        if not transfer:
+            return False, 'Transfer not found'
+
+        if transfer['status'] != 'running':
+            return False, f"Only running transfers can be paused (currently {transfer['status']})"
+
+        # A running row without a live rsync process is either a simulated
+        # transfer or one whose process already exited; there is nothing to
+        # signal, so pausing is purely a state change.
+        pid = transfer.get('rsync_process_id')
+        has_process = bool(pid) and self._is_process_running(pid)
+
+        # Mark intent first so the monitor thread does not race us to 'failed'
+        self._mark_intentional_stop(transfer_id, 'paused')
+        self.transfer_model.update(transfer_id, {
+            'status': 'paused',
+            'progress': 'Transfer paused - partial files kept, resume to continue',
+            'paused_at': datetime.now().isoformat(),
+            'speed_bps': 0,
+            'eta_seconds': None
+        })
+
+        if has_process:
             try:
                 import psutil
-                process = psutil.Process(transfer['rsync_process_id'])
-                process.terminate()
-                
-                # Update status
-                self.transfer_model.update(transfer_id, {
-                    'status': 'cancelled',
-                    'progress': 'Transfer cancelled by user',
-                    'end_time': datetime.now().isoformat()
-                })
-                
-                # Remove from active transfers
-                if transfer_id in self.transfers:
-                    del self.transfers[transfer_id]
-                
-                return True
+                psutil.Process(pid).terminate()
             except Exception as e:
-                print(f"❌ Error cancelling transfer {transfer_id}: {e}")
-                return False
-        
-        return False
+                # Signalling failed, so the process is still running - put the
+                # row back rather than stranding it in a state it is not in
+                print(f"❌ Error pausing transfer {transfer_id}: {e}")
+                self._clear_intentional_stop(transfer_id)
+                self.transfer_model.update(transfer_id, {
+                    'status': 'running',
+                    'progress': f'Pause failed: {e}',
+                    'paused_at': None
+                })
+                return False, f'Failed to pause transfer: {e}'
+        else:
+            print(f"⏸️  Transfer {transfer_id} has no live rsync process to signal")
+            self._clear_intentional_stop(transfer_id)
+
+        if transfer_id in self.transfers:
+            del self.transfers[transfer_id]
+
+        print(f"⏸️  Transfer {transfer_id} paused")
+        return True, 'Transfer paused'
 
     def restart_transfer(self, transfer_id: str, backup_dir: str) -> bool:
         """Restart a failed or cancelled transfer"""

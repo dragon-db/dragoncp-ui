@@ -8,9 +8,18 @@ import {
   useCancelTransfer,
   useCleanupTransfers,
   useDeleteTransfer,
+  usePauseTransfer,
   useRestartTransfer,
+  useResumeTransfer,
   type Transfer,
 } from "@/hooks/useTransfers";
+import { ConfirmDialog } from "@/components/transfers/confirm-dialog";
+import {
+  formatSizePair,
+  formatSpeed,
+  formatEta,
+  transferPercent,
+} from "@/lib/transfer-progress";
 import {
   onTransferComplete,
   onTransferPromoted,
@@ -44,7 +53,9 @@ import {
   IconArrowsMaximize,
   IconInfoCircle,
   IconList,
-  IconPlayerStop,
+  IconCircleX,
+  IconPlayerPause,
+  IconPlayerPlay,
   IconRefresh,
   IconTrash,
   IconArrowBackUp,
@@ -72,6 +83,8 @@ function getStatusBadge(status: string) {
       return <Badge className="border-red-500/50 bg-red-500/20 text-red-400">FAILED</Badge>;
     case "queued":
       return <Badge className="border-amber-500/50 bg-amber-500/20 text-amber-400">QUEUED</Badge>;
+    case "paused":
+      return <Badge className="border-amber-500/50 bg-amber-500/20 text-amber-400">PAUSED</Badge>;
     case "cancelled":
       return (
         <Badge className="border-neutral-500/50 bg-neutral-500/20 text-neutral-400">
@@ -83,9 +96,29 @@ function getStatusBadge(status: string) {
   }
 }
 
-function parseProgress(progress: string): number {
-  const match = progress.match(/(\d{1,3})%/);
-  return match ? Math.max(0, Math.min(100, Number(match[1]))) : 0;
+/**
+ * Speed / ETA / size line for a transfer, from the stats the backend parses out
+ * of rsync's progress output.
+ */
+function TransferStats({ transfer }: { transfer: Transfer }) {
+  const size = formatSizePair(transfer.bytes_transferred, transfer.total_bytes);
+  const eta = transfer.status === "running" ? formatEta(transfer.eta_seconds) : null;
+
+  if (!size && transfer.status !== "running") return null;
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-neutral-400">
+      {transfer.status === "running" && (
+        <span className="text-brand-foreground">{formatSpeed(transfer.speed_bps)}</span>
+      )}
+      {eta && <span>ETA {eta}</span>}
+      {size && (
+        <span>
+          {size.value} {size.unit}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function classifyLogLine(line: string) {
@@ -123,6 +156,14 @@ export function TransfersPage() {
   const restartMutation = useRestartTransfer();
   const deleteMutation = useDeleteTransfer();
   const cleanupMutation = useCleanupTransfers();
+  const pauseMutation = usePauseTransfer();
+  const resumeMutation = useResumeTransfer();
+
+  // Destructive actions are confirmed through a dialog rather than
+  // window.confirm, so the prompt can name the transfer and explain the effect.
+  const [stopTarget, setStopTarget] = useState<Transfer | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Transfer | null>(null);
+  const [confirmCleanup, setConfirmCleanup] = useState(false);
 
   const allTransfers = useMemo(() => {
     const list = allQuery.data?.transfers ?? [];
@@ -263,10 +304,32 @@ export function TransfersPage() {
   const runCancel = async (transferId: string) => {
     try {
       await cancelMutation.mutateAsync(transferId);
-      toast.success("Transfer cancelled");
+      toast.success("Transfer stopped");
+      activeQuery.refetch();
+      allQuery.refetch();
+    } catch {
+      toast.error("Failed to stop transfer");
+    }
+  };
+
+  const runPause = async (transferId: string) => {
+    try {
+      await pauseMutation.mutateAsync(transferId);
+      toast.success("Transfer paused");
       activeQuery.refetch();
     } catch {
-      toast.error("Failed to cancel transfer");
+      toast.error("Failed to pause transfer");
+    }
+  };
+
+  const runResume = async (transferId: string) => {
+    try {
+      const result = await resumeMutation.mutateAsync(transferId);
+      toast.success(result?.message ?? "Transfer resumed");
+      activeQuery.refetch();
+      allQuery.refetch();
+    } catch {
+      toast.error("Failed to resume transfer");
     }
   };
 
@@ -282,7 +345,6 @@ export function TransfersPage() {
   };
 
   const runDelete = async (transferId: string) => {
-    if (!window.confirm("Delete this transfer record?")) return;
     try {
       await deleteMutation.mutateAsync(transferId);
       toast.success("Transfer deleted");
@@ -301,8 +363,6 @@ export function TransfersPage() {
   };
 
   const runCleanup = async () => {
-    if (!window.confirm("Remove duplicate transfers by destination path (keep latest successful)?"))
-      return;
     try {
       const result = await cleanupMutation.mutateAsync();
       toast.success(`Cleaned ${result?.cleaned_count ?? 0} duplicate transfer(s)`);
@@ -323,7 +383,11 @@ export function TransfersPage() {
           <IconRefresh className="mr-2 h-4 w-4" />
           Refresh
         </Button>
-        <Button variant="outline" onClick={runCleanup} disabled={cleanupMutation.isPending}>
+        <Button
+          variant="outline"
+          onClick={() => setConfirmCleanup(true)}
+          disabled={cleanupMutation.isPending}
+        >
           <IconTrash className="mr-2 h-4 w-4" />
           Cleanup
         </Button>
@@ -390,12 +454,10 @@ export function TransfersPage() {
                             <p className="mt-1 text-xs text-neutral-500">
                               Started {formatAgo(transfer.start_time)}
                             </p>
-                            {transfer.status === "running" && (
+                            <TransferStats transfer={transfer} />
+                            {(transfer.status === "running" || transfer.status === "paused") && (
                               <div className="mt-2">
-                                <Progress
-                                  value={parseProgress(transfer.progress)}
-                                  className="h-1.5"
-                                />
+                                <Progress value={transferPercent(transfer)} className="h-1.5" />
                               </div>
                             )}
                           </div>
@@ -422,11 +484,33 @@ export function TransfersPage() {
                               <Button
                                 variant="outline"
                                 size="sm"
-                                onClick={() => runCancel(transfer.id)}
+                                onClick={() => runPause(transfer.id)}
+                                disabled={pauseMutation.isPending}
+                              >
+                                <IconPlayerPause className="mr-1.5 h-4 w-4" />
+                                Pause
+                              </Button>
+                            )}
+                            {transfer.status === "paused" && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => runResume(transfer.id)}
+                                disabled={resumeMutation.isPending}
+                              >
+                                <IconPlayerPlay className="mr-1.5 h-4 w-4" />
+                                Resume
+                              </Button>
+                            )}
+                            {(transfer.status === "running" || transfer.status === "paused") && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setStopTarget(transfer)}
                                 disabled={cancelMutation.isPending}
                               >
-                                <IconPlayerStop className="mr-1.5 h-4 w-4" />
-                                Cancel
+                                <IconCircleX className="mr-1.5 h-4 w-4" />
+                                Stop
                               </Button>
                             )}
                           </div>
@@ -462,6 +546,7 @@ export function TransfersPage() {
                     all: "All statuses",
                     running: "Running",
                     queued: "Queued",
+                    paused: "Paused",
                     completed: "Completed",
                     failed: "Failed",
                     cancelled: "Cancelled",
@@ -474,6 +559,7 @@ export function TransfersPage() {
                     <SelectItem value="all">All statuses</SelectItem>
                     <SelectItem value="running">Running</SelectItem>
                     <SelectItem value="queued">Queued</SelectItem>
+                    <SelectItem value="paused">Paused</SelectItem>
                     <SelectItem value="completed">Completed</SelectItem>
                     <SelectItem value="failed">Failed</SelectItem>
                     <SelectItem value="cancelled">Cancelled</SelectItem>
@@ -522,6 +608,7 @@ export function TransfersPage() {
                             <p className="mt-1 text-xs text-neutral-500">
                               Started {formatAgo(transfer.start_time)}
                             </p>
+                            <TransferStats transfer={transfer} />
                           </div>
                           <div className="flex shrink-0 items-center gap-2">
                             <Button
@@ -557,7 +644,7 @@ export function TransfersPage() {
                               <Button
                                 variant="outline"
                                 size="sm"
-                                onClick={() => runDelete(transfer.id)}
+                                onClick={() => setDeleteTarget(transfer)}
                                 disabled={deleteMutation.isPending}
                               >
                                 <IconTrash className="mr-1.5 h-4 w-4" />
@@ -739,10 +826,31 @@ export function TransfersPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => runCancel(detailsTransfer.id)}
+                      onClick={() => runPause(detailsTransfer.id)}
                     >
-                      <IconPlayerStop className="mr-1.5 h-4 w-4" />
-                      Cancel
+                      <IconPlayerPause className="mr-1.5 h-4 w-4" />
+                      Pause
+                    </Button>
+                  )}
+                  {detailsTransfer.status === "paused" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => runResume(detailsTransfer.id)}
+                    >
+                      <IconPlayerPlay className="mr-1.5 h-4 w-4" />
+                      Resume
+                    </Button>
+                  )}
+                  {(detailsTransfer.status === "running" ||
+                    detailsTransfer.status === "paused") && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setStopTarget(detailsTransfer)}
+                    >
+                      <IconCircleX className="mr-1.5 h-4 w-4" />
+                      Stop
                     </Button>
                   )}
                   {(detailsTransfer.status === "failed" ||
@@ -760,7 +868,7 @@ export function TransfersPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => runDelete(detailsTransfer.id)}
+                      onClick={() => setDeleteTarget(detailsTransfer)}
                     >
                       <IconTrash className="mr-1.5 h-4 w-4" />
                       Delete
@@ -772,6 +880,65 @@ export function TransfersPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={Boolean(stopTarget)}
+        onOpenChange={(open) => !open && setStopTarget(null)}
+        icon={<IconCircleX />}
+        title="Stop this transfer?"
+        description={
+          <>
+            <span className="font-medium text-foreground">
+              {stopTarget?.parsed_title || stopTarget?.folder_name}
+            </span>{" "}
+            will stop mid-transfer and be marked cancelled. Files already copied stay in place, but
+            the remaining files are not transferred. Use Pause instead if you intend to continue
+            later.
+          </>
+        }
+        confirmLabel="Stop transfer"
+        cancelLabel="Keep running"
+        pending={cancelMutation.isPending}
+        onConfirm={() => {
+          if (stopTarget) runCancel(stopTarget.id);
+          setStopTarget(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        icon={<IconTrash />}
+        title="Delete this transfer record?"
+        description={
+          <>
+            The record for{" "}
+            <span className="font-medium text-foreground">
+              {deleteTarget?.parsed_title || deleteTarget?.folder_name}
+            </span>{" "}
+            and its logs are removed from the history. Transferred files are not touched.
+            {deleteTarget?.status === "paused" &&
+              " This transfer is paused, so deleting it also means it can no longer be resumed."}
+          </>
+        }
+        confirmLabel="Delete record"
+        pending={deleteMutation.isPending}
+        onConfirm={() => {
+          if (deleteTarget) runDelete(deleteTarget.id);
+          setDeleteTarget(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmCleanup}
+        onOpenChange={setConfirmCleanup}
+        icon={<IconTrash />}
+        title="Remove duplicate transfers?"
+        description="Where several completed transfers share a destination path, only the most recent one is kept. Transferred files are not touched."
+        confirmLabel="Remove duplicates"
+        pending={cleanupMutation.isPending}
+        onConfirm={runCleanup}
+      />
 
       <Dialog open={fullscreenLogs} onOpenChange={setFullscreenLogs}>
         <DialogContent className="border-neutral-800 bg-neutral-900 sm:max-w-5xl">

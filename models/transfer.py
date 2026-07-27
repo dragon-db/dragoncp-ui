@@ -218,19 +218,29 @@ class Transfer:
             conn.commit()
             return total_deleted
     
-    def add_log(self, transfer_id: str, log_line: str) -> bool:
-        """Add a log line to transfer"""
+    def add_log(self, transfer_id: str, log_line: str, extra_updates: Dict = None) -> bool:
+        """
+        Add a log line to transfer
+
+        extra_updates lets callers fold parsed progress stats (percent, speed,
+        ETA, byte counts) into the same UPDATE, so streaming rsync output does
+        not cost an extra write per line.
+        """
         transfer = self.get(transfer_id)
         if not transfer:
             return False
-        
+
         logs = transfer.get('logs', [])
         logs.append(log_line)
-        
-        return self.update(transfer_id, {
+
+        updates = {
             'logs': logs,
             'progress': log_line
-        })
+        }
+        if extra_updates:
+            updates.update(extra_updates)
+
+        return self.update(transfer_id, updates)
     
     def _parse_metadata(self, folder_name: str, season_name: str = None, 
                        media_type: str = '') -> Dict[str, str]:

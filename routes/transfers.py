@@ -13,6 +13,7 @@ import time
 from flask import Blueprint, jsonify, request
 from auth import require_auth
 from security import validate_path_component, assert_path_within_bounds, PathTraversalError
+from services.transfer_service import build_progress_stats
 
 transfers_bp = Blueprint('transfers', __name__)
 
@@ -192,6 +193,7 @@ def api_transfer_status(transfer_id):
                 "log_count": len(transfer["logs"]),
                 "start_time": transfer["start_time"],
                 "end_time": transfer.get("end_time"),
+                "paused_at": transfer.get("paused_at"),
                 "media_type": transfer["media_type"],
                 "folder_name": transfer["folder_name"],
                 "season_name": transfer.get("season_name"),
@@ -199,7 +201,8 @@ def api_transfer_status(transfer_id):
                 "parsed_season": transfer.get("parsed_season"),
                 "operation_type": transfer["operation_type"],
                 "source_path": transfer["source_path"],
-                "dest_path": transfer["dest_path"]
+                "dest_path": transfer["dest_path"],
+                **build_progress_stats(transfer)
             }
         })
     else:
@@ -215,6 +218,39 @@ def api_cancel_transfer(transfer_id):
         return jsonify({"status": "success", "message": "Transfer cancelled"})
     else:
         return jsonify({"status": "error", "message": "Failed to cancel transfer"})
+
+
+@transfers_bp.route('/transfer/<transfer_id>/pause', methods=['POST'])
+@require_auth
+def api_pause_transfer(transfer_id):
+    """
+    Pause a running transfer
+
+    Stops rsync but keeps the partially transferred files, so /resume continues
+    from where it stopped instead of starting over.
+    """
+    try:
+        success, message = transfer_coordinator.pause_transfer(transfer_id)
+        if success:
+            return jsonify({"status": "success", "message": message})
+        return jsonify({"status": "error", "message": message}), 400
+    except Exception as e:
+        print(f"❌ Error pausing transfer {transfer_id}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to pause transfer: {str(e)}"}), 500
+
+
+@transfers_bp.route('/transfer/<transfer_id>/resume', methods=['POST'])
+@require_auth
+def api_resume_transfer(transfer_id):
+    """Resume a paused transfer (may queue if no slot is free)"""
+    try:
+        success, message = transfer_coordinator.resume_transfer(transfer_id)
+        if success:
+            return jsonify({"status": "success", "message": message})
+        return jsonify({"status": "error", "message": message}), 400
+    except Exception as e:
+        print(f"❌ Error resuming transfer {transfer_id}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to resume transfer: {str(e)}"}), 500
 
 
 @transfers_bp.route('/transfer/<transfer_id>/logs')
@@ -264,8 +300,10 @@ def api_all_transfers():
                 "dest_path": transfer["dest_path"],
                 "start_time": transfer["start_time"],
                 "end_time": transfer.get("end_time"),
+                "paused_at": transfer.get("paused_at"),
                 "created_at": transfer["created_at"],
-                "log_count": len(transfer["logs"])
+                "log_count": len(transfer["logs"]),
+                **build_progress_stats(transfer)
             }
             formatted_transfers.append(formatted_transfer)
         
@@ -306,8 +344,10 @@ def api_active_transfers():
                 "source_path": transfer["source_path"],
                 "dest_path": transfer["dest_path"],
                 "start_time": transfer["start_time"],
+                "paused_at": transfer.get("paused_at"),
                 "rsync_process_id": transfer.get("rsync_process_id"),
-                "log_count": len(transfer["logs"])
+                "log_count": len(transfer["logs"]),
+                **build_progress_stats(transfer)
             }
             formatted_transfers.append(formatted_transfer)
         

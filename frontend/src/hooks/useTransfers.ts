@@ -3,6 +3,18 @@ import api from "@/lib/api";
 import type { QueueStatus, Transfer } from "@/lib/api-types";
 export type { QueueStatus, Transfer } from "@/lib/api-types";
 
+/**
+ * Several transfer endpoints report failures as `{status: "error"}` with HTTP
+ * 200, so a resolved request is not on its own proof the action happened.
+ * Throwing here keeps the mutations' error handling (and their toasts) honest.
+ */
+function assertSuccess<T extends { status?: string; message?: string }>(data: T): T {
+  if (data?.status === "error") {
+    throw new Error(data.message || "Request failed");
+  }
+  return data;
+}
+
 export interface TransferRequest {
   type: "folder" | "file";
   media_type: "movies" | "tvshows" | "anime";
@@ -98,7 +110,7 @@ export function useStartTransfer() {
         source: string;
         destination: string;
       }>("/transfer", data);
-      return response.data;
+      return assertSuccess(response.data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
@@ -112,7 +124,35 @@ export function useCancelTransfer() {
   return useMutation({
     mutationFn: async (transferId: string) => {
       const response = await api.post(`/transfer/${transferId}/cancel`);
-      return response.data;
+      return assertSuccess(response.data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["transfers"] });
+    },
+  });
+}
+
+export function usePauseTransfer() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (transferId: string) => {
+      const response = await api.post(`/transfer/${transferId}/pause`);
+      return assertSuccess(response.data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["transfers"] });
+    },
+  });
+}
+
+export function useResumeTransfer() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (transferId: string) => {
+      const response = await api.post(`/transfer/${transferId}/resume`);
+      return assertSuccess(response.data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
@@ -126,7 +166,7 @@ export function useRestartTransfer() {
   return useMutation({
     mutationFn: async (transferId: string) => {
       const response = await api.post(`/transfer/${transferId}/restart`);
-      return response.data;
+      return assertSuccess(response.data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
@@ -140,7 +180,7 @@ export function useDeleteTransfer() {
   return useMutation({
     mutationFn: async (transferId: string) => {
       const response = await api.post(`/transfer/${transferId}/delete`);
-      return response.data;
+      return assertSuccess(response.data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
@@ -154,7 +194,7 @@ export function useCleanupTransfers() {
   return useMutation({
     mutationFn: async () => {
       const response = await api.post("/transfers/cleanup");
-      return response.data;
+      return assertSuccess(response.data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transfers"] });

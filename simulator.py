@@ -15,6 +15,8 @@ import random
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from services.transfer_service import build_progress_stats, parse_rsync_progress
+
 
 class TransferSimulator:
     """Simulate multiple concurrent transfers with periodic log updates."""
@@ -128,19 +130,43 @@ class TransferSimulator:
 
         bytes_transferred = 0
         bytes_step = random.randint(2_000_000, 10_000_000)
+        total_bytes = bytes_step * steps
 
         for step_index in range(1, steps + 1):
             if stop_event.is_set():
                 self._finalize(transfer_id, status="cancelled", message="Simulation cancelled by user")
                 return
 
+            # A paused simulation stops ticking but stays alive, so the resume
+            # path can be exercised without rsync
+            while self._is_paused(transfer_id):
+                if stop_event.is_set():
+                    self._finalize(transfer_id, status="cancelled", message="Simulation cancelled by user")
+                    return
+                time.sleep(interval_seconds)
+
+            # Cancelled or deleted from the UI - stop rather than reporting
+            # progress (and eventually completion) for a transfer that is over
+            if not self._is_active(transfer_id):
+                return
+
             percent = int(step_index * 100 / steps)
             bytes_transferred += bytes_step
             speed = self._random_speed()
-            log_line = f"{bytes_transferred:,}  {percent}%  {speed}/s"
+            eta_seconds = int((steps - step_index) * interval_seconds)
+
+            # Same shape as rsync --info=progress2 output, so it flows through
+            # the real parser rather than a simulator-only code path
+            log_line = (
+                f"{bytes_transferred:,}  {percent}%  {speed}/s    "
+                f"{eta_seconds // 3600}:{(eta_seconds % 3600) // 60:02d}:{eta_seconds % 60:02d}"
+            )
+
+            stats = parse_rsync_progress(log_line) or {}
+            stats["total_bytes"] = total_bytes
 
             # Persist log and emit progress
-            self.transfer_coordinator.transfer_model.add_log(transfer_id, log_line)
+            self.transfer_coordinator.transfer_model.add_log(transfer_id, log_line, stats)
             transfer = self.transfer_coordinator.transfer_model.get(transfer_id)
             if self.socketio:
                 self.socketio.emit(
@@ -151,6 +177,7 @@ class TransferSimulator:
                         "logs": transfer["logs"][-100:],
                         "log_count": len(transfer["logs"]),
                         "status": transfer.get("status", "running"),
+                        "stats": build_progress_stats(transfer),
                     },
                 )
 
@@ -161,6 +188,14 @@ class TransferSimulator:
             self._finalize(transfer_id, status="failed", message="Transfer failed (simulated)")
         else:
             self._finalize(transfer_id, status="completed", message="Transfer completed successfully! (simulated)")
+
+    def _is_paused(self, transfer_id: str) -> bool:
+        transfer = self.transfer_coordinator.transfer_model.get(transfer_id)
+        return bool(transfer and transfer.get("status") == "paused")
+
+    def _is_active(self, transfer_id: str) -> bool:
+        transfer = self.transfer_coordinator.transfer_model.get(transfer_id)
+        return bool(transfer and transfer.get("status") in ("running", "pending", "paused"))
 
     def _finalize(self, transfer_id: str, status: str, message: str):
         # Unregister from queue manager when simulation completes

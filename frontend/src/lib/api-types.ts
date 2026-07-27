@@ -1,6 +1,6 @@
 export type SyncStatusType = "SYNCED" | "OUT_OF_SYNC" | "NO_INFO" | "LOADING" | "PARTIAL_SYNC";
 export type TransferStatus =
-  "pending" | "queued" | "running" | "completed" | "failed" | "cancelled";
+  "pending" | "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
 export type WebhookStatus =
   | "pending"
   | "READY_FOR_TRANSFER"
@@ -63,10 +63,17 @@ export interface Transfer {
   dest_path: string;
   start_time?: string;
   end_time?: string;
+  paused_at?: string | null;
   created_at?: string;
   log_count: number;
   logs?: string[];
   rsync_process_id?: number;
+  /** Structured rsync progress, parsed server-side from --info=progress2 output. */
+  progress_percent?: number | null;
+  bytes_transferred?: number | null;
+  total_bytes?: number | null;
+  speed_bps?: number | null;
+  eta_seconds?: number | null;
 }
 
 export interface QueueStatus {

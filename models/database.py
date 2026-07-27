@@ -261,6 +261,17 @@ class DatabaseManager:
             # Backward-compatible schema additions
             self._ensure_column(conn, 'transfers', 'queue_reason', "TEXT")
 
+            # Structured rsync progress, parsed from the --info=progress2 output
+            # so the UI can show speed/ETA/size without re-parsing log text.
+            self._ensure_column(conn, 'transfers', 'progress_percent', "INTEGER")
+            self._ensure_column(conn, 'transfers', 'bytes_transferred', "INTEGER")
+            self._ensure_column(conn, 'transfers', 'total_bytes', "INTEGER")
+            self._ensure_column(conn, 'transfers', 'speed_bps', "INTEGER")
+            self._ensure_column(conn, 'transfers', 'eta_seconds', "INTEGER")
+
+            # Pause/resume support
+            self._ensure_column(conn, 'transfers', 'paused_at', "DATETIME")
+
             conn.commit()
         
         print(f"✅ Database initialized: {self.db_path}")

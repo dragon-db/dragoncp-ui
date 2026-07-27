@@ -237,12 +237,21 @@ class TransferCoordinator:
                 # Transfer completed or failed
                 status = transfer['status'] if transfer else 'unknown'
                 dest_path = transfer.get('dest_path') if transfer else None
-                
+
+                if status == 'paused':
+                    # A pause is not an outcome. Release the slot and the
+                    # destination so queued work can proceed, but leave webhook
+                    # state and backup records alone - resume_transfer() starts
+                    # a fresh watcher that finalizes them when it really ends.
+                    print(f"⏸️  Transfer {transfer_id} paused, releasing queue slot")
+                    self.queue_manager.unregister_transfer(transfer_id, dest_path)
+                    break
+
                 # Unregister from queue manager (will promote next queued transfer)
                 # Pass dest_path for path-specific queue promotion
                 print(f"🏁 Transfer {transfer_id} finished with status: {status}")
                 self.queue_manager.unregister_transfer(transfer_id, dest_path)
-                
+
                 # Update webhook notification status
                 self.webhook_service.update_webhook_transfer_status(transfer_id, status, self.transfer_model)
                 
@@ -274,6 +283,121 @@ class TransferCoordinator:
         
         return result
     
+    def pause_transfer(self, transfer_id: str) -> Tuple[bool, str]:
+        """
+        Pause a running transfer and release its queue slot.
+
+        The slot is released here rather than left to _post_transfer_completion,
+        which only polls every few seconds - a resume issued inside that window
+        would otherwise be told the queue is full and be needlessly queued.
+        Unregistering twice is harmless, so the watcher can still run.
+        """
+        transfer = self.transfer_model.get(transfer_id)
+        dest_path = transfer.get('dest_path') if transfer else None
+
+        success, message = self.transfer_service.pause_transfer(transfer_id)
+
+        if success:
+            self.queue_manager.unregister_transfer(transfer_id, dest_path)
+
+        return success, message
+
+    def _resume_simulated_transfer(self, transfer_id: str) -> bool:
+        """
+        Put a simulated transfer back into the running state.
+
+        Simulated transfers (TEST_MODE only) are driven by a simulator thread
+        that is still alive and polling for this status, not by rsync. Starting
+        rsync for their fake paths would be wrong, so every path that would
+        otherwise launch a process has to route through here.
+        """
+        if not transfer_id.startswith('sim_'):
+            return False
+
+        self.transfer_model.update(transfer_id, {
+            'status': 'running',
+            'progress': 'Transfer resumed (simulated)...',
+            'paused_at': None
+        })
+        print(f"🧪 Simulated transfer {transfer_id} resumed without rsync")
+        return True
+
+    def resume_transfer(self, transfer_id: str) -> Tuple[bool, str]:
+        """
+        Resume a paused transfer.
+
+        Goes back through the queue manager rather than starting rsync directly,
+        so a resume respects the concurrency limit and cannot collide with a
+        transfer that claimed the same destination while this one was paused.
+        """
+        transfer = self.transfer_model.get(transfer_id)
+        if not transfer:
+            return False, 'Transfer not found'
+
+        if transfer['status'] != 'paused':
+            return False, f"Only paused transfers can be resumed (currently {transfer['status']})"
+
+        can_start, queue_status = self.queue_manager.register_transfer(
+            transfer_id, transfer['dest_path']
+        )
+
+        if queue_status == 'duplicate':
+            return False, 'Another transfer is already syncing to this destination'
+
+        if queue_status == 'queued':
+            self.transfer_model.update(transfer_id, {
+                'status': 'queued',
+                'progress': 'Resumed - waiting in queue...',
+                'queue_reason': 'slot',
+                'paused_at': None
+            })
+            print(f"⏳ Resumed transfer {transfer_id} added to queue")
+
+            if self.socketio:
+                self.socketio.emit('transfer_queued', {
+                    'transfer_id': transfer_id,
+                    'message': 'Resumed transfer added to queue'
+                })
+
+            return True, 'Transfer resumed and queued'
+
+        if not can_start:
+            return False, f'Could not resume transfer ({queue_status})'
+
+        if self._resume_simulated_transfer(transfer_id):
+            return True, 'Transfer resumed'
+
+        self.transfer_model.update(transfer_id, {
+            'status': 'pending',
+            'progress': 'Resuming transfer...',
+            'paused_at': None,
+            'end_time': None
+        })
+
+        transfer = self.transfer_model.get(transfer_id)
+        backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
+
+        success = self.transfer_service.start_rsync_process(
+            transfer_id,
+            transfer['source_path'],
+            transfer['dest_path'],
+            transfer['operation_type'],
+            backup_dir
+        )
+
+        if not success:
+            self.queue_manager.unregister_transfer(transfer_id)
+            return False, 'Failed to resume transfer'
+
+        import threading
+        threading.Thread(
+            target=self._post_transfer_completion,
+            args=(transfer_id,),
+            daemon=True
+        ).start()
+
+        return True, 'Transfer resumed'
+
     def restart_transfer(self, transfer_id: str) -> bool:
         """Restart a failed or cancelled transfer"""
         transfer = self.transfer_model.get(transfer_id)
@@ -291,9 +415,10 @@ class TransferCoordinator:
         return self.transfer_model.get_all(limit=limit)
     
     def get_active_transfers(self) -> List[Dict]:
-        """Get active transfers (running/pending/queued)"""
+        """Get active transfers (running/pending/queued/paused)"""
         all_transfers = self.transfer_model.get_all()
-        return [t for t in all_transfers if t['status'] in ['running', 'pending', 'queued']]
+        return [t for t in all_transfers
+                if t['status'] in ['running', 'pending', 'queued', 'paused']]
     
     def start_queued_transfer(self, transfer_id: str) -> bool:
         """
@@ -332,12 +457,17 @@ class TransferCoordinator:
             if updated_count > 0:
                 print(f"📋 Updated {updated_count} notification(s) linked to transfer {transfer_id} to SYNCING (transfer starting)")
         
+        # A queued simulated transfer (e.g. one resumed while the queue was
+        # full) is driven by its simulator thread, not rsync
+        if self._resume_simulated_transfer(transfer_id):
+            return True
+
         # Refresh transfer data after update
         transfer = self.transfer_model.get(transfer_id)
-        
+
         # Calculate dynamic backup directory
         backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
-        
+
         # Start the transfer
         success = self.transfer_service.start_rsync_process(
             transfer_id,
