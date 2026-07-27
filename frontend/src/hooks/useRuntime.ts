@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import api from '@/lib/api';
-import { toast } from 'sonner';
-import { useAppConfig, useRuntimeStatus } from '@/hooks/useConfig';
+import { useEffect, useMemo, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import api from "@/lib/api";
+import { toast } from "sonner";
+import { useAppConfig, useRuntimeStatus } from "@/hooks/useConfig";
 import {
   connectSocket,
   disconnectSocket,
@@ -18,10 +18,10 @@ import {
   sendActivityPing,
   type TransferUpdate,
   type WebhookCapturedEvent,
-} from '@/services/socket';
-import { useRuntimeStore } from '@/stores/runtime';
+} from "@/services/socket";
+import { useRuntimeStore } from "@/stores/runtime";
 
-const ACTIVITY_EVENTS: Array<keyof DocumentEventMap> = ['click', 'keydown', 'submit', 'touchstart'];
+const ACTIVITY_EVENTS: Array<keyof DocumentEventMap> = ["click", "keydown", "submit", "touchstart"];
 
 function buildRealtimeStatusMessage(payload: TransferUpdate): string {
   if (payload.message) return payload.message;
@@ -32,7 +32,7 @@ function buildRealtimeStatusMessage(payload: TransferUpdate): string {
 function buildWebhookToastMessage(payload: WebhookCapturedEvent): string {
   if (payload.message) return payload.message;
   if (payload.title) return `Webhook captured for ${payload.title}`;
-  return 'Webhook captured';
+  return "Webhook captured";
 }
 
 export function useRuntimeController() {
@@ -74,7 +74,7 @@ export function useRuntimeController() {
     setSocketError(null);
     setRealtimeRequested(true);
     connectSocket();
-    toast.success('Realtime updates enabled.');
+    toast.success("Realtime updates enabled.");
   };
 
   const disableRealtime = () => {
@@ -85,7 +85,7 @@ export function useRuntimeController() {
     setSocketConnected(false);
     disconnectSocket();
     clearLiveActivity();
-    toast.info('Realtime updates disabled.');
+    toast.info("Realtime updates disabled.");
   };
 
   const reconnectRealtime = () => {
@@ -100,7 +100,7 @@ export function useRuntimeController() {
     if (!socketConnected) return;
     markActivity();
     sendActivityPing();
-    toast.success('Realtime session extended.');
+    toast.success("Realtime session extended.");
   };
 
   return {
@@ -127,7 +127,11 @@ export function useRuntimeController() {
 
 export function useRuntimeConnection() {
   const queryClient = useQueryClient();
-  const { data: runtimeStatus, error: runtimeStatusError, isError: runtimeStatusIsError } = useRuntimeStatus();
+  const {
+    data: runtimeStatus,
+    error: runtimeStatusError,
+    isError: runtimeStatusIsError,
+  } = useRuntimeStatus();
   const { data: config } = useAppConfig();
   const {
     realtimeRequested,
@@ -157,7 +161,8 @@ export function useRuntimeConnection() {
 
   useEffect(() => {
     if (!runtimeStatusIsError) return;
-    const message = runtimeStatusError instanceof Error ? runtimeStatusError.message : 'Backend unavailable';
+    const message =
+      runtimeStatusError instanceof Error ? runtimeStatusError.message : "Backend unavailable";
     setBackendReachable(false, message);
   }, [runtimeStatusError, runtimeStatusIsError, setBackendReachable]);
 
@@ -175,7 +180,7 @@ export function useRuntimeConnection() {
 
     const socket = connectSocket();
     if (!socket) {
-      setSocketError('No auth token available for realtime session');
+      setSocketError("No auth token available for realtime session");
       return;
     }
 
@@ -190,7 +195,7 @@ export function useRuntimeConnection() {
 
     const onDisconnect = (reason: string) => {
       setSocketConnected(false);
-      if (reason !== 'io client disconnect' && realtimeRequested) {
+      if (reason !== "io client disconnect" && realtimeRequested) {
         setSocketError(reason);
       }
     };
@@ -199,18 +204,18 @@ export function useRuntimeConnection() {
       setSocketError(error.message);
     };
 
-    socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
-    socket.on('connect_error', onConnectError);
+    socket.on("connect", onConnect);
+    socket.on("disconnect", onDisconnect);
+    socket.on("connect_error", onConnectError);
 
     if (socket.connected) {
       onConnect();
     }
 
     return () => {
-      socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      socket.off('connect_error', onConnectError);
+      socket.off("connect", onConnect);
+      socket.off("disconnect", onDisconnect);
+      socket.off("connect_error", onConnectError);
     };
   }, [markActivity, realtimeRequested, setConfigChanged, setSocketConnected, setSocketError]);
 
@@ -247,66 +252,66 @@ export function useRuntimeConnection() {
 
     const unbindWebhookCaptured = onWebhookCaptured((payload) => {
       const message = buildWebhookToastMessage(payload);
-      setLiveActivity('webhook', message);
+      setLiveActivity("webhook", message);
       toast.info(message);
-      queryClient.invalidateQueries({ queryKey: ['webhooks'] });
+      queryClient.invalidateQueries({ queryKey: ["webhooks"] });
     });
 
     const unbindTestWebhook = onWebhookReceived((payload) => {
-      const message = payload?.message || 'Webhook connectivity verified';
-      setLiveActivity('webhook', message);
+      const message = payload?.message || "Webhook connectivity verified";
+      setLiveActivity("webhook", message);
       toast.info(message);
     });
 
     const unbindRenameReceived = onRenameWebhookReceived((payload) => {
       const message = payload.series_title
         ? `Rename webhook captured for ${payload.series_title}`
-        : 'Rename webhook captured';
-      setLiveActivity('rename', message);
+        : "Rename webhook captured";
+      setLiveActivity("rename", message);
       toast.info(message);
-      queryClient.invalidateQueries({ queryKey: ['webhooks', 'rename'] });
+      queryClient.invalidateQueries({ queryKey: ["webhooks", "rename"] });
     });
 
     const unbindRenameCompleted = onRenameCompleted((payload) => {
-      const message = payload.message || 'Rename flow completed';
-      setLiveActivity('rename', message);
+      const message = payload.message || "Rename flow completed";
+      setLiveActivity("rename", message);
       toast.success(message);
-      queryClient.invalidateQueries({ queryKey: ['webhooks', 'rename'] });
+      queryClient.invalidateQueries({ queryKey: ["webhooks", "rename"] });
     });
 
     const unbindTransferUpdate = onTransferUpdate((payload) => {
       const now = Date.now();
       if (now - lastTransferActivityRef.current < 2000) return;
       lastTransferActivityRef.current = now;
-      setLiveActivity('transfer', buildRealtimeStatusMessage(payload));
+      setLiveActivity("transfer", buildRealtimeStatusMessage(payload));
     });
 
     const unbindTransferQueued = onTransferQueued((payload) => {
       const message = buildRealtimeStatusMessage(payload);
-      setLiveActivity('transfer', message);
+      setLiveActivity("transfer", message);
       toast.info(message);
-      queryClient.invalidateQueries({ queryKey: ['transfers'] });
-      queryClient.invalidateQueries({ queryKey: ['webhooks'] });
+      queryClient.invalidateQueries({ queryKey: ["transfers"] });
+      queryClient.invalidateQueries({ queryKey: ["webhooks"] });
     });
 
     const unbindTransferPromoted = onTransferPromoted((payload) => {
       const message = buildRealtimeStatusMessage(payload);
-      setLiveActivity('transfer', message);
+      setLiveActivity("transfer", message);
       toast.success(message);
-      queryClient.invalidateQueries({ queryKey: ['transfers'] });
-      queryClient.invalidateQueries({ queryKey: ['webhooks'] });
+      queryClient.invalidateQueries({ queryKey: ["transfers"] });
+      queryClient.invalidateQueries({ queryKey: ["webhooks"] });
     });
 
     const unbindTransferComplete = onTransferComplete((payload) => {
       const message = buildRealtimeStatusMessage(payload);
-      setLiveActivity('transfer', message);
-      if (payload.status === 'failed') {
+      setLiveActivity("transfer", message);
+      if (payload.status === "failed") {
         toast.error(message);
       } else {
         toast.success(message);
       }
-      queryClient.invalidateQueries({ queryKey: ['transfers'] });
-      queryClient.invalidateQueries({ queryKey: ['webhooks'] });
+      queryClient.invalidateQueries({ queryKey: ["transfers"] });
+      queryClient.invalidateQueries({ queryKey: ["webhooks"] });
     });
 
     return () => {
@@ -331,7 +336,9 @@ export function useRuntimeConnection() {
 
       if (remainingMs <= 2 * 60 * 1000 && remainingMs > 60 * 1000 && !warningShownRef.current) {
         warningShownRef.current = true;
-        toast.warning(`Realtime connection will disconnect in ${Math.ceil(remainingMs / 60000)} minute(s) due to inactivity.`);
+        toast.warning(
+          `Realtime connection will disconnect in ${Math.ceil(remainingMs / 60000)} minute(s) due to inactivity.`
+        );
       }
 
       if (remainingMs <= 0) {
@@ -339,11 +346,14 @@ export function useRuntimeConnection() {
           const response = await api.get<{
             status: string;
             transfers: unknown[];
-          }>('/transfers/active');
-          const hasActiveTransfers = Array.isArray(response.data.transfers) && response.data.transfers.length > 0;
+          }>("/transfers/active");
+          const hasActiveTransfers =
+            Array.isArray(response.data.transfers) && response.data.transfers.length > 0;
           if (hasActiveTransfers) {
             if (!hasCheckedTransferRef.current) {
-              toast.info('Realtime session timeout prevented because active transfers are running.');
+              toast.info(
+                "Realtime session timeout prevented because active transfers are running."
+              );
               hasCheckedTransferRef.current = true;
             }
             markActivity();
@@ -356,7 +366,9 @@ export function useRuntimeConnection() {
 
         disconnectSocket();
         setAutoDisconnected(true);
-        toast.info('Realtime connection disconnected due to inactivity. Dashboard polling remains active.');
+        toast.info(
+          "Realtime connection disconnected due to inactivity. Dashboard polling remains active."
+        );
       }
     }, 15000);
 

@@ -1,6 +1,6 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import api from '@/lib/api';
-import type { Transfer } from '@/lib/api-types';
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import api from "@/lib/api";
+import type { Transfer } from "@/lib/api-types";
 
 export interface Backup {
   id: number;
@@ -14,7 +14,7 @@ export interface Backup {
   backup_path: string;
   file_count: number;
   total_size: number;
-  status: 'ready' | 'restored' | 'deleted';
+  status: "ready" | "restored" | "deleted";
   created_at: string;
   restored_at?: string;
 }
@@ -49,12 +49,12 @@ export interface RestorePlan {
 
 export function useBackups(limit = 100, includeDeleted = false) {
   return useQuery({
-    queryKey: ['backups', 'list', limit, includeDeleted],
+    queryKey: ["backups", "list", limit, includeDeleted],
     queryFn: async () => {
       const params = new URLSearchParams();
-      params.append('limit', limit.toString());
-      if (includeDeleted) params.append('include_deleted', '1');
-      
+      params.append("limit", limit.toString());
+      if (includeDeleted) params.append("include_deleted", "1");
+
       const response = await api.get<{
         status: string;
         backups: Backup[];
@@ -67,7 +67,7 @@ export function useBackups(limit = 100, includeDeleted = false) {
 
 export function useBackupDetails(backupId: string) {
   return useQuery({
-    queryKey: ['backups', backupId],
+    queryKey: ["backups", backupId],
     queryFn: async () => {
       const response = await api.get<{
         status: string;
@@ -81,9 +81,9 @@ export function useBackupDetails(backupId: string) {
 
 export function useBackupFiles(backupId: string, limit?: number) {
   return useQuery({
-    queryKey: ['backups', backupId, 'files', limit],
+    queryKey: ["backups", backupId, "files", limit],
     queryFn: async () => {
-      const params = limit ? `?limit=${limit}` : '';
+      const params = limit ? `?limit=${limit}` : "";
       const response = await api.get<{
         status: string;
         files: BackupFile[];
@@ -97,30 +97,30 @@ export function useBackupFiles(backupId: string, limit?: number) {
 
 export function useRestoreBackup() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: async ({ backupId, files }: { backupId: string; files?: string[] }) => {
       const response = await api.post(`/backups/${backupId}/restore`, { files });
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['backups'] });
-      queryClient.invalidateQueries({ queryKey: ['transfers'] });
+      queryClient.invalidateQueries({ queryKey: ["backups"] });
+      queryClient.invalidateQueries({ queryKey: ["transfers"] });
     },
   });
 }
 
 export function useDeleteBackup() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
-    mutationFn: async ({ 
-      backupId, 
-      deleteRecord = true, 
-      deleteFiles = false 
-    }: { 
-      backupId: string; 
-      deleteRecord?: boolean; 
+    mutationFn: async ({
+      backupId,
+      deleteRecord = true,
+      deleteFiles = false,
+    }: {
+      backupId: string;
+      deleteRecord?: boolean;
       deleteFiles?: boolean;
     }) => {
       const response = await api.post(`/backups/${backupId}/delete`, {
@@ -130,7 +130,7 @@ export function useDeleteBackup() {
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['backups'] });
+      queryClient.invalidateQueries({ queryKey: ["backups"] });
     },
   });
 }
@@ -149,7 +149,7 @@ export function usePlanRestoreBackup() {
 
 export function useReindexBackups() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: async () => {
       const response = await api.post<{
@@ -157,11 +157,11 @@ export function useReindexBackups() {
         message: string;
         imported: number;
         skipped: number;
-      }>('/backups/reindex');
+      }>("/backups/reindex");
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['backups'] });
+      queryClient.invalidateQueries({ queryKey: ["backups"] });
     },
   });
 }

@@ -1,6 +1,6 @@
-import { IconPlugConnectedX, IconRefresh } from '@tabler/icons-react';
-import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
+import { IconPlugConnectedX, IconRefresh } from "@tabler/icons-react";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 interface BackendUnavailableOverlayProps {
   isVisible: boolean;
@@ -27,18 +27,23 @@ export function BackendUnavailableOverlay({
           </div>
 
           <div className="space-y-2.5">
-            <h2 className="text-2xl font-semibold text-foreground sm:text-[1.75rem]">Backend Connection Unavailable</h2>
+            <h2 className="text-2xl font-semibold text-foreground sm:text-[1.75rem]">
+              Backend Connection Unavailable
+            </h2>
             <p className="mx-auto max-w-xl text-sm leading-relaxed text-muted-foreground sm:text-[0.95rem]">
-              Dragon-CP requires a live backend connection. All UI operations are disabled until connectivity is restored.
+              Dragon-CP requires a live backend connection. All UI operations are disabled until
+              connectivity is restored.
             </p>
           </div>
 
           {errorMessage && (
             <div className="mx-auto w-full max-w-xl rounded-xl border border-border/70 bg-background/55 px-4 py-3 text-left">
-              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-muted-foreground/90">
+              <p className="text-[0.68rem] font-semibold tracking-[0.18em] text-muted-foreground/90 uppercase">
                 Last Connection Error
               </p>
-              <p className="mt-1.5 break-all font-mono text-xs text-foreground/90">{errorMessage}</p>
+              <p className="mt-1.5 font-mono text-xs break-all text-foreground/90">
+                {errorMessage}
+              </p>
             </div>
           )}
 
@@ -50,7 +55,7 @@ export function BackendUnavailableOverlay({
               className="min-w-44 rounded-xl px-6 shadow-[0_14px_28px_-20px_rgba(217,70,239,0.95)]"
               autoFocus
             >
-              <IconRefresh className={cn('h-4 w-4', isRetrying && 'animate-spin')} />
+              <IconRefresh className={cn("h-4 w-4", isRetrying && "animate-spin")} />
               Retry Connection
             </Button>
           </div>

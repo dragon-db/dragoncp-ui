@@ -4,14 +4,19 @@
   "version": "2.1.4",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "DRAGONCP_BACKEND=dev vite --host 0.0.0.0",
+    "dev:prod": "DRAGONCP_BACKEND=prod vite --host 0.0.0.0 --port 5181 --strictPort",
     "build": "vite build && tsc -b",
     "lint": "eslint .",
+    "format": "prettier --write src",
+    "format:check": "prettier --check src",
     "preview": "vite preview"
   },
   "dependencies": {
     "@base-ui/react": "^1.0.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/nunito-sans": "^5.2.7",
+    "@fontsource-variable/space-grotesk": "^5.3.0",
     "@tabler/icons-react": "^3.36.0",
     "@tailwindcss/vite": "^4.1.17",
     "@tanstack/react-query": "^5.90.16",
@@ -43,6 +48,8 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "prettier": "^3.9.5",
+    "prettier-plugin-tailwindcss": "^0.8.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4"

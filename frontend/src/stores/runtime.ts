@@ -1,7 +1,8 @@
-import { create } from 'zustand';
+import { create } from "zustand";
 
-export type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'auto-disconnected' | 'config-changed';
-export type LiveActivityType = 'transfer' | 'webhook' | 'rename' | 'info' | null;
+export type ConnectionState =
+  "idle" | "connecting" | "connected" | "disconnected" | "auto-disconnected" | "config-changed";
+export type LiveActivityType = "transfer" | "webhook" | "rename" | "info" | null;
 
 interface RuntimeState {
   backendReachable: boolean;
@@ -33,15 +34,22 @@ interface RuntimeState {
 }
 
 function deriveState(
-  state: Pick<RuntimeState, 'realtimeRequested' | 'socketConnected' | 'wasAutoDisconnected' | 'configChanged' | 'socketError'>,
+  state: Pick<
+    RuntimeState,
+    | "realtimeRequested"
+    | "socketConnected"
+    | "wasAutoDisconnected"
+    | "configChanged"
+    | "socketError"
+  >
 ): ConnectionState {
-  if (state.socketConnected && state.configChanged) return 'config-changed';
-  if (state.socketConnected) return 'connected';
-  if (state.wasAutoDisconnected) return 'auto-disconnected';
-  if (!state.realtimeRequested) return 'idle';
-  if (state.configChanged) return 'config-changed';
-  if (state.socketError) return 'disconnected';
-  return 'connecting';
+  if (state.socketConnected && state.configChanged) return "config-changed";
+  if (state.socketConnected) return "connected";
+  if (state.wasAutoDisconnected) return "auto-disconnected";
+  if (!state.realtimeRequested) return "idle";
+  if (state.configChanged) return "config-changed";
+  if (state.socketError) return "disconnected";
+  return "connecting";
 }
 
 export const useRuntimeStore = create<RuntimeState>((set, get) => ({
@@ -51,7 +59,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   realtimeRequested: false,
   socketConnected: false,
   socketError: null,
-  connectionState: 'idle',
+  connectionState: "idle",
   lastActivityAt: Date.now(),
   timeoutMinutes: 30,
   wasAutoDisconnected: false,
@@ -130,7 +138,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       realtimeRequested: false,
       socketConnected: false,
       socketError: null,
-      connectionState: 'idle',
+      connectionState: "idle",
       lastActivityAt: Date.now(),
       timeoutMinutes: get().timeoutMinutes,
       wasAutoDisconnected: false,

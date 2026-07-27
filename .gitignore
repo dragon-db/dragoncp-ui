@@ -115,3 +115,19 @@ tmp/
 # ===================
 *.bak
 *.backup
+
+# ===================
+# Local-only dev tooling (not for GitHub)
+# ===================
+# Claude Code MCP config (shadcn MCP etc.)
+.mcp.json
+# Visual audit loop: screenshots + findings (Playwright MCP)
+.audit/
+# Playwright MCP default output dir
+.playwright-mcp/
+
+# Local-only design demo workspace (HTML mockups, not shipped)
+demo/
+
+# Local-only agent tooling (skills, settings) — not shipped
+.claude/

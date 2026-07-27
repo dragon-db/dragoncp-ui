@@ -1,25 +1,25 @@
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { useNavigate } from '@tanstack/react-router';
-import { authApi } from '@/lib/api';
-import { useAuthStore } from '@/stores/auth';
-import { destroySocket } from '@/services/socket';
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
+import { authApi } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth";
+import { destroySocket } from "@/services/socket";
 
 export function useLogin() {
   const login = useAuthStore((state) => state.login);
   const navigate = useNavigate();
-  
+
   return useMutation({
     mutationFn: async ({ username, password }: { username: string; password: string }) => {
       const response = await authApi.login(username, password);
-      if (response.status === 'error') {
-        throw new Error(response.message || 'Login failed');
+      if (response.status === "error") {
+        throw new Error(response.message || "Login failed");
       }
       return response;
     },
     onSuccess: (data) => {
       if (data.token && data.refresh_token && data.user && data.expires_at) {
         login(data.token, data.refresh_token, data.user, data.expires_at);
-        navigate({ to: '/dashboard' });
+        navigate({ to: "/dashboard" });
       }
     },
   });
@@ -28,29 +28,29 @@ export function useLogin() {
 export function useLogout() {
   const logout = useAuthStore((state) => state.logout);
   const navigate = useNavigate();
-  
+
   return useMutation({
     mutationFn: async () => {
       try {
         await authApi.logout();
       } catch (error) {
         // Even if logout fails on server, we still logout locally
-        console.warn('Server logout failed:', error);
+        console.warn("Server logout failed:", error);
       }
     },
     onSettled: () => {
       destroySocket();
       logout();
-      navigate({ to: '/login' });
+      navigate({ to: "/login" });
     },
   });
 }
 
 export function useVerifyAuth() {
   const { token, isAuthenticated } = useAuthStore();
-  
+
   return useQuery({
-    queryKey: ['auth', 'verify'],
+    queryKey: ["auth", "verify"],
     queryFn: async () => {
       const response = await authApi.verify();
       return response;
@@ -63,7 +63,7 @@ export function useVerifyAuth() {
 
 export function useAuthStatus() {
   return useQuery({
-    queryKey: ['auth', 'status'],
+    queryKey: ["auth", "status"],
     queryFn: async () => {
       const response = await authApi.status();
       return response;

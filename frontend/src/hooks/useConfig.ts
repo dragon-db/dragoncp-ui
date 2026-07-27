@@ -1,8 +1,20 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import axios from 'axios';
-import api from '@/lib/api';
-import type { AppConfig, DiskUsage, RemoteStorageInfo, SSHConfig, SSHConfigResponse } from '@/lib/api-types';
-export type { AppConfig, DiskUsage, RemoteStorageInfo, SSHConfig, SSHConfigResponse } from '@/lib/api-types';
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import axios from "axios";
+import api from "@/lib/api";
+import type {
+  AppConfig,
+  DiskUsage,
+  RemoteStorageInfo,
+  SSHConfig,
+  SSHConfigResponse,
+} from "@/lib/api-types";
+export type {
+  AppConfig,
+  DiskUsage,
+  RemoteStorageInfo,
+  SSHConfig,
+  SSHConfigResponse,
+} from "@/lib/api-types";
 
 const RUNTIME_STATUS_REFETCH_MS = 5000;
 const LEGACY_DEBUG_REFETCH_MS = 30000;
@@ -54,34 +66,35 @@ function normalizeLegacyRuntimeStatus(data: LegacyDebugResponse): RuntimeStatusR
 
 function runtimeStatusQueryOptions() {
   return {
-    queryKey: ['runtime', 'status'],
+    queryKey: ["runtime", "status"],
     queryFn: async () => {
       if (runtimeStatusEndpointUnsupported) {
-        const fallback = await api.get<LegacyDebugResponse>('/debug');
+        const fallback = await api.get<LegacyDebugResponse>("/debug");
         return normalizeLegacyRuntimeStatus(fallback.data);
       }
 
       try {
-        const response = await api.get<RuntimeStatusResponse>('/runtime/status');
+        const response = await api.get<RuntimeStatusResponse>("/runtime/status");
         return response.data;
       } catch (error) {
         if (axios.isAxiosError(error) && error.response?.status === 404) {
           runtimeStatusEndpointUnsupported = true;
-          const fallback = await api.get<LegacyDebugResponse>('/debug');
+          const fallback = await api.get<LegacyDebugResponse>("/debug");
           return normalizeLegacyRuntimeStatus(fallback.data);
         }
         throw error;
       }
     },
-    refetchInterval: () => (runtimeStatusEndpointUnsupported ? LEGACY_DEBUG_REFETCH_MS : RUNTIME_STATUS_REFETCH_MS),
+    refetchInterval: () =>
+      runtimeStatusEndpointUnsupported ? LEGACY_DEBUG_REFETCH_MS : RUNTIME_STATUS_REFETCH_MS,
   };
 }
 
 export function useAppConfig() {
   return useQuery({
-    queryKey: ['config'],
+    queryKey: ["config"],
     queryFn: async () => {
-      const response = await api.get<AppConfig>('/config');
+      const response = await api.get<AppConfig>("/config");
       return response.data;
     },
   });
@@ -89,39 +102,39 @@ export function useAppConfig() {
 
 export function useUpdateConfig() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: async (config: Partial<AppConfig>) => {
-      const response = await api.post('/config', config);
+      const response = await api.post("/config", config);
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['config'] });
-      queryClient.invalidateQueries({ queryKey: ['runtime', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ["config"] });
+      queryClient.invalidateQueries({ queryKey: ["runtime", "status"] });
     },
   });
 }
 
 export function useResetConfig() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: async () => {
-      const response = await api.post('/config/reset');
+      const response = await api.post("/config/reset");
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['config'] });
-      queryClient.invalidateQueries({ queryKey: ['runtime', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ["config"] });
+      queryClient.invalidateQueries({ queryKey: ["runtime", "status"] });
     },
   });
 }
 
 export function useEnvOnlyConfig() {
   return useQuery({
-    queryKey: ['config', 'env-only'],
+    queryKey: ["config", "env-only"],
     queryFn: async () => {
-      const response = await api.get<AppConfig>('/config/env-only');
+      const response = await api.get<AppConfig>("/config/env-only");
       return response.data;
     },
   });
@@ -129,9 +142,9 @@ export function useEnvOnlyConfig() {
 
 export function useSSHConfig() {
   return useQuery({
-    queryKey: ['ssh', 'config'],
+    queryKey: ["ssh", "config"],
     queryFn: async () => {
-      const response = await api.get<SSHConfigResponse>('/ssh-config');
+      const response = await api.get<SSHConfigResponse>("/ssh-config");
       return response.data;
     },
   });
@@ -150,60 +163,60 @@ export function useRuntimeStatus() {
 
 export function useSSHConnect() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: async (config: SSHConfig) => {
-      const response = await api.post('/connect', config);
+      const response = await api.post("/connect", config);
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ssh'] });
-      queryClient.invalidateQueries({ queryKey: ['media'] });
-      queryClient.invalidateQueries({ queryKey: ['runtime', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ["ssh"] });
+      queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["runtime", "status"] });
     },
   });
 }
 
 export function useSSHAutoConnect() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: async () => {
-      const response = await api.get('/auto-connect');
+      const response = await api.get("/auto-connect");
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ssh'] });
-      queryClient.invalidateQueries({ queryKey: ['media'] });
-      queryClient.invalidateQueries({ queryKey: ['runtime', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ["ssh"] });
+      queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["runtime", "status"] });
     },
   });
 }
 
 export function useSSHDisconnect() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: async () => {
-      const response = await api.post('/disconnect');
+      const response = await api.post("/disconnect");
       return response.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['ssh'] });
-      queryClient.invalidateQueries({ queryKey: ['media'] });
-      queryClient.invalidateQueries({ queryKey: ['runtime', 'status'] });
+      queryClient.invalidateQueries({ queryKey: ["ssh"] });
+      queryClient.invalidateQueries({ queryKey: ["media"] });
+      queryClient.invalidateQueries({ queryKey: ["runtime", "status"] });
     },
   });
 }
 
 export function useLocalDiskUsage() {
   return useQuery({
-    queryKey: ['disk', 'local'],
+    queryKey: ["disk", "local"],
     queryFn: async () => {
       const response = await api.get<{
         status: string;
         disk_info: DiskUsage[];
-      }>('/disk-usage/local');
+      }>("/disk-usage/local");
       return response.data;
     },
     refetchInterval: 60000, // Refresh every minute
@@ -212,12 +225,12 @@ export function useLocalDiskUsage() {
 
 export function useRemoteDiskUsage() {
   return useQuery({
-    queryKey: ['disk', 'remote'],
+    queryKey: ["disk", "remote"],
     queryFn: async () => {
       const response = await api.get<{
         status: string;
         storage_info: RemoteStorageInfo;
-      }>('/disk-usage/remote');
+      }>("/disk-usage/remote");
       return response.data;
     },
     refetchInterval: 60000, // Refresh every minute
@@ -226,9 +239,9 @@ export function useRemoteDiskUsage() {
 
 export function useDebugInfo() {
   return useQuery({
-    queryKey: ['debug'],
+    queryKey: ["debug"],
     queryFn: async () => {
-      const response = await api.get('/debug');
+      const response = await api.get("/debug");
       return response.data;
     },
   });
@@ -236,7 +249,7 @@ export function useDebugInfo() {
 
 export function useWebSocketStatus() {
   return useQuery({
-    queryKey: ['websocket', 'status'],
+    queryKey: ["websocket", "status"],
     queryFn: async () => {
       const response = await api.get<{
         status: string;
@@ -251,7 +264,7 @@ export function useWebSocketStatus() {
             timeout_minutes: number;
           }>;
         };
-      }>('/websocket/status');
+      }>("/websocket/status");
       return response.data;
     },
     refetchInterval: 5000,
