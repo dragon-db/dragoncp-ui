@@ -331,16 +331,24 @@ export function WebhooksPage() {
     };
   }, [renameQuery.data]);
 
-  const runSync = async (notification: WebhookNotification) => {
+  /**
+   * Returns whether the sync started, so a bulk run can count what failed.
+   * `silent` suppresses the per-item toast when the caller reports the batch.
+   */
+  const runSync = async (notification: WebhookNotification, options?: { silent?: boolean }) => {
     try {
       await syncMutation.mutateAsync({
         notificationId: notification.notification_id,
         mediaType: mapMediaType(notification.media_type),
       });
-      toast.success("Sync started");
-      notificationsQuery.refetch();
+      if (!options?.silent) {
+        toast.success("Sync started");
+        notificationsQuery.refetch();
+      }
+      return true;
     } catch {
-      toast.error("Could not start the sync");
+      if (!options?.silent) toast.error("Could not start the sync");
+      return false;
     }
   };
 
@@ -410,14 +418,19 @@ export function WebhooksPage() {
       return;
     }
 
-    const results = await Promise.allSettled(
-      candidates.map((notification) => runSync(notification))
+    // One message for the batch instead of one per episode.
+    const results = await Promise.all(
+      candidates.map((notification) => runSync(notification, { silent: true }))
     );
-    const failures = results.filter((result) => result.status === "rejected").length;
+    notificationsQuery.refetch();
+
+    const failures = results.filter((started) => !started).length;
     if (failures === 0) {
       toast.success(`Sync started for ${candidates.length} item(s)`);
+    } else if (failures === candidates.length) {
+      toast.error(`Could not start any of the ${candidates.length} syncs`);
     } else {
-      toast.error(`Failed to sync ${failures} item(s)`);
+      toast.warning(`Started ${candidates.length - failures}, failed ${failures}`);
     }
   };
 

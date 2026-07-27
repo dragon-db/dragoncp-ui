@@ -134,7 +134,7 @@ function normalizeValue(value: string | number | undefined) {
 
 function wasCriticalConfigChanged(
   baseConfig: AppConfig | undefined,
-  draft: Record<string, string>
+  draft: Record<string, string | number>
 ) {
   if (!baseConfig) return false;
   return criticalKeys.some((key) => normalizeValue(baseConfig[key]) !== normalizeValue(draft[key]));
@@ -253,7 +253,9 @@ export function SettingsPage() {
         manual_sync_thumbnail_url: discordDraft.manual_sync_thumbnail_url,
       });
 
-      const criticalChanged = wasCriticalConfigChanged(configQuery.data, draftConfig);
+      // Compare what was saved, not what was typed: an out-of-range timeout is
+      // clamped on the way out, and clamping to the stored value is no change.
+      const criticalChanged = wasCriticalConfigChanged(configQuery.data, configPayload);
       setConfigChanged(criticalChanged);
 
       if (criticalChanged) {

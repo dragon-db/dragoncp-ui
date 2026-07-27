@@ -131,11 +131,17 @@ export function BackupsPage() {
     setSelectedFiles(all);
   };
 
-  const planRestore = async (files?: string[]) => {
-    if (!selectedBackupId) return;
+  /**
+   * `backupId` is passed explicitly by the Restore shortcut on a list row: that
+   * click selects the backup and plans it in one go, and the selection is not
+   * readable yet at that point.
+   */
+  const planRestore = async (files?: string[], backupId?: string) => {
+    const targetBackupId = backupId ?? selectedBackupId;
+    if (!targetBackupId) return;
 
     try {
-      const result = await planMutation.mutateAsync({ backupId: selectedBackupId, files });
+      const result = await planMutation.mutateAsync({ backupId: targetBackupId, files });
       setRestorePlan(result.plan);
       setPlanPayloadFiles(files);
       setStage("plan");
@@ -263,9 +269,7 @@ export function BackupsPage() {
                       onOpenDelete={openDeleteStage}
                       onRestoreAll={(backupId) => {
                         openFilesStage(backupId);
-                        setTimeout(() => {
-                          planRestore(undefined);
-                        }, 0);
+                        planRestore(undefined, backupId);
                       }}
                     />
                   ))}
