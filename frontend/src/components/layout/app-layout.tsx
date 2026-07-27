@@ -3,6 +3,7 @@ import { useRuntimeStatus } from "@/hooks/useConfig";
 import { useRuntimeStore } from "@/stores/runtime";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { AppNavbar } from "@/components/layout/app-navbar";
+import { MobileNav } from "@/components/layout/mobile-nav";
 import { BackendUnavailableOverlay } from "@/components/layout/backend-unavailable-overlay";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 
@@ -40,8 +41,9 @@ export function AppLayout({ children }: AppLayoutProps) {
       <SidebarInset className="border border-border shadow-[0_24px_60px_-30px_rgba(0,0,0,0.85)]">
         <AppNavbar />
         <main className="flex-1 overflow-auto">
-          <div className="mx-auto w-full max-w-[1920px] p-6 xl:px-8 xl:py-7">{children}</div>
+          <div className="mx-auto w-full max-w-[1920px] p-4 sm:p-6 xl:px-8 xl:py-7">{children}</div>
         </main>
+        <MobileNav />
       </SidebarInset>
 
       <BackendUnavailableOverlay

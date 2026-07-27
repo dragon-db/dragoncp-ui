@@ -3,7 +3,6 @@ import { useActiveTransfers } from "@/hooks/useTransfers";
 import { useWebhookNotifications } from "@/hooks/useWebhooks";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { SidebarTrigger } from "@/components/ui/sidebar";
 import { RealtimeStatus } from "@/components/layout/realtime-status";
 import { IconHome, IconChevronRight, IconBell, IconSettings } from "@tabler/icons-react";
 
@@ -46,9 +45,8 @@ export function AppNavbar() {
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:px-6">
-      <SidebarTrigger className="text-muted-foreground md:hidden" />
-
-      {/* Breadcrumb — context, left */}
+      {/* Breadcrumb — context, left. Below md the bottom nav owns the sidebar
+          toggle, so the header keeps no trigger of its own. */}
       <nav className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
         <IconHome className="hidden size-4 shrink-0 sm:block" />
         <span className="hidden sm:inline">{crumb.section}</span>

@@ -7,6 +7,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { StatusBadge } from "@/components/webhooks/webhook-bits";
+import { DryRunSummary } from "@/components/dry-run/dry-run-report";
 import {
   episodeEntries,
   episodeFileOf,
@@ -33,6 +34,8 @@ export interface EpisodeActions {
   onDryRun: (notification: WebhookNotification) => void;
   onJson: (notification: WebhookNotification) => void;
   onDelete: (notification: WebhookNotification) => void;
+  /** Opens the stored dry-run result without re-running the validation. */
+  onViewDryRun?: (notification: WebhookNotification) => void;
 }
 
 function Fact({ label, value, mono }: { label: string; value?: string; mono?: boolean }) {
@@ -146,6 +149,20 @@ export function EpisodeDetailPanel({
         <PathBlock label="File path" value={file?.path || file?.relativePath} />
       </section>
 
+      {/* Last dry-run, when one was already stored for this notification */}
+      {notification.dry_run_result ? (
+        <section className="flex flex-col gap-1.5">
+          <span className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground uppercase">
+            Last validation
+          </span>
+          <DryRunSummary
+            payload={notification.dry_run_result}
+            performedAt={notification.dry_run_performed_at}
+            onOpen={actions.onViewDryRun ? () => actions.onViewDryRun?.(notification) : undefined}
+          />
+        </section>
+      ) : null}
+
       {/* Superseded grabs */}
       {entry && entry.history.length > 0 && (
         <section className="flex flex-col gap-1.5">
@@ -216,7 +233,7 @@ export function EpisodeList({ item, actions }: { item: WebhookItem; actions: Epi
   if (!entries.length) {
     return (
       <p className="py-3 text-xs text-muted-foreground">
-        No episode detail recorded for this notification.
+        No episode detail recorded for this arrival.
       </p>
     );
   }
@@ -232,38 +249,42 @@ export function EpisodeList({ item, actions }: { item: WebhookItem; actions: Epi
             value={String(entry.episodeNumber)}
             className="overflow-hidden rounded-lg border border-border bg-card/60"
           >
-            <AccordionTrigger className="items-center gap-3 px-3 py-2 no-underline hover:bg-muted/40 hover:no-underline">
-              <span className="flex min-w-0 flex-1 items-center gap-3">
-                <span className="font-mono text-xs font-semibold text-brand-hover">
-                  {entry.label}
-                </span>
-                <span className="truncate text-[13px] text-foreground">
-                  {entry.title || "Episode"}
-                </span>
-                {isPack && (
-                  <span className="shrink-0 rounded border border-brand/30 bg-brand/10 px-1.5 py-px text-[9px] font-semibold tracking-wide text-brand-hover uppercase">
-                    Pack
+            {/* Phones stack the episode above its facts; from sm up it is one row. */}
+            <AccordionTrigger className="items-start gap-3 px-3 py-2 no-underline hover:bg-muted/40 hover:no-underline sm:items-center">
+              <span className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+                <span className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="shrink-0 font-mono text-xs font-semibold text-brand-hover">
+                    {entry.label}
                   </span>
-                )}
-                {entry.history.length > 0 && (
-                  <span
-                    className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] text-muted-foreground"
-                    title={`${entry.history.length + 1} grabs for this episode`}
-                  >
-                    <IconHistory className="size-3" />
-                    {entry.history.length + 1}
+                  <span className="min-w-0 text-[13px] break-words text-foreground sm:truncate">
+                    {entry.title || "Episode"}
                   </span>
-                )}
-                <span className="flex-1" />
-                {file?.quality && (
-                  <span className="hidden font-mono text-[11px] text-muted-foreground sm:inline">
-                    {file.quality}
-                  </span>
-                )}
-                <span className="shrink-0 font-mono text-[11px] text-foreground/80">
-                  {formatSize(fileBytes(entry.current))}
+                  {isPack && (
+                    <span className="shrink-0 rounded border border-brand/30 bg-brand/10 px-1.5 py-px text-[9px] font-semibold tracking-wide text-brand-hover uppercase">
+                      Pack
+                    </span>
+                  )}
+                  {entry.history.length > 0 && (
+                    <span
+                      className="inline-flex shrink-0 items-center gap-1 font-mono text-[10px] text-muted-foreground"
+                      title={`${entry.history.length + 1} grabs for this episode`}
+                    >
+                      <IconHistory className="size-3" />
+                      {entry.history.length + 1}
+                    </span>
+                  )}
                 </span>
-                <StatusBadge status={entry.current.status} size="sm" />
+                <span className="flex shrink-0 flex-wrap items-center gap-2">
+                  {file?.quality && (
+                    <span className="font-mono text-[11px] text-muted-foreground">
+                      {file.quality}
+                    </span>
+                  )}
+                  <span className="font-mono text-[11px] text-foreground/80">
+                    {formatSize(fileBytes(entry.current))}
+                  </span>
+                  <StatusBadge status={entry.current.status} size="sm" />
+                </span>
               </span>
             </AccordionTrigger>
             <AccordionContent className="border-t border-border bg-black/20 px-3 py-3">
