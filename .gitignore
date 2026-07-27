@@ -128,3 +128,6 @@ tmp/
 
 # Local-only design demo workspace (HTML mockups, not shipped)
 demo/
+
+# Local-only agent tooling (skills, settings) — not shipped
+.claude/
