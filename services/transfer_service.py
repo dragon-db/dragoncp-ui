@@ -1002,7 +1002,7 @@ class TransferService:
 
     def resume_active_transfers(self):
         """Resume transfers that were running when app was stopped"""
-        active_transfers = self.transfer_model.get_all()
+        active_transfers = self.transfer_model.get_all(statuses=['running'], include_logs=False)
         resumed_count = 0
         active_running_transfer_ids = []
         

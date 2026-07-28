@@ -172,14 +172,14 @@ class SimulationService:
     def running_real_transfers(self) -> List[Dict]:
         """Genuine (non-simulation) transfers currently occupying the queue."""
         return [
-            transfer for transfer in self.coordinator.transfer_model.get_all()
-            if transfer['status'] in ('running', 'pending', 'queued')
-            and not transfer.get('is_simulation')
+            transfer for transfer in self.coordinator.transfer_model.get_all(
+                statuses=['running', 'pending', 'queued'], include_logs=False)
+            if not transfer.get('is_simulation')
         ]
 
     def active(self) -> List[Dict]:
         return [
-            transfer for transfer in self.coordinator.transfer_model.get_all()
+            transfer for transfer in self.coordinator.transfer_model.get_all(include_logs=False)
             if transfer.get('is_simulation')
         ]
 

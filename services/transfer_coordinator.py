@@ -395,15 +395,19 @@ class TransferCoordinator:
         """Get transfer status from database"""
         return self.transfer_model.get(transfer_id)
     
-    def get_all_transfers(self, limit: int = 50) -> List[Dict]:
-        """Get all transfers from database"""
-        return self.transfer_model.get_all(limit=limit)
+    def get_all_transfers(self, limit: int = 50, status_filter: str = None) -> List[Dict]:
+        """Get all transfers from database (listing only - no log bodies)"""
+        return self.transfer_model.get_all(
+            limit=limit, status_filter=status_filter, include_logs=False
+        )
     
+    ACTIVE_STATUSES = ['running', 'pending', 'queued', 'paused']
+
     def get_active_transfers(self) -> List[Dict]:
         """Get active transfers (running/pending/queued/paused)"""
-        all_transfers = self.transfer_model.get_all()
-        return [t for t in all_transfers
-                if t['status'] in ['running', 'pending', 'queued', 'paused']]
+        return self.transfer_model.get_all(
+            statuses=self.ACTIVE_STATUSES, include_logs=False
+        )
     
     def start_queued_transfer(self, transfer_id: str) -> bool:
         """

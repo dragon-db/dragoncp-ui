@@ -277,11 +277,11 @@ def api_all_transfers():
         limit = request.args.get('limit', 50, type=int)
         status_filter = request.args.get('status')
         
-        transfers = transfer_coordinator.get_all_transfers(limit=limit)
-        
-        # Apply status filter if provided
-        if status_filter:
-            transfers = [t for t in transfers if t['status'] == status_filter]
+        # Filtering happens in SQL: pulling every row back to drop most of
+        # them made the limit meaningless.
+        transfers = transfer_coordinator.get_all_transfers(
+            limit=limit, status_filter=status_filter
+        )
         
         # Format transfers for response
         formatted_transfers = []
@@ -302,7 +302,7 @@ def api_all_transfers():
                 "end_time": transfer.get("end_time"),
                 "paused_at": transfer.get("paused_at"),
                 "created_at": transfer["created_at"],
-                "log_count": len(transfer["logs"]),
+                "log_count": transfer["log_count"],
                 "is_simulation": bool(transfer.get("is_simulation")),
                 **build_progress_stats(transfer)
             }
@@ -352,7 +352,7 @@ def api_active_transfers():
                 "created_at": transfer["created_at"],
                 "queue_reason": transfer.get("queue_reason"),
                 "rsync_process_id": transfer.get("rsync_process_id"),
-                "log_count": len(transfer["logs"]),
+                "log_count": transfer["log_count"],
                 "is_simulation": bool(transfer.get("is_simulation")),
                 **build_progress_stats(transfer)
             }

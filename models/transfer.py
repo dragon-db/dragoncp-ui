@@ -26,6 +26,7 @@ class Transfer:
     
     def __init__(self, db_manager):
         self.db = db_manager
+        self._list_columns = None
     
     def create(self, transfer_data: Dict) -> str:
         """Create a new transfer record"""
@@ -122,39 +123,79 @@ class Transfer:
                 return transfer
             return None
     
-    def get_all(self, status_filter: str = None, limit: int = None) -> List[Dict]:
-        """Get all transfers with optional filtering"""
-        query = "SELECT * FROM transfers"
+    def _columns_except_logs(self, conn) -> List[str]:
+        """Column names for a listing query, cached per process."""
+        if self._list_columns is None:
+            self._list_columns = [
+                row[1] for row in conn.execute("PRAGMA table_info(transfers)").fetchall()
+                if row[1] != 'logs'
+            ]
+        return self._list_columns
+
+    def get_all(self, status_filter: str = None, limit: int = None,
+                statuses: List[str] = None, include_logs: bool = True) -> List[Dict]:
+        """
+        Get all transfers with optional filtering.
+
+        include_logs=False leaves the logs column out of the query entirely and
+        returns a log_count instead. A transfer's log is by far the largest
+        thing on the row, and no listing shows it - only how many lines there
+        are - so selecting it meant reading and JSON-parsing megabytes per
+        request to render counts.
+
+        statuses filters in SQL rather than in the caller, so a listing of the
+        few active transfers no longer walks the whole table to find them.
+        """
+        if include_logs:
+            select = "*"
+        else:
+            with self.db.get_connection() as conn:
+                columns = self._columns_except_logs(conn)
+            # json_valid guards rows written before the column held JSON
+            select = ", ".join(columns) + (
+                ", CASE WHEN json_valid(logs) THEN json_array_length(logs) ELSE 0 END AS log_count"
+            )
+
+        query = f"SELECT {select} FROM transfers"
         params = []
-        
+        conditions = []
+
         if status_filter:
-            query += " WHERE status = ?"
+            conditions.append("status = ?")
             params.append(status_filter)
-        
+
+        if statuses:
+            conditions.append(f"status IN ({', '.join('?' for _ in statuses)})")
+            params.extend(statuses)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
         query += " ORDER BY created_at DESC"
-        
+
         if limit:
             query += " LIMIT ?"
             params.append(limit)
-        
+
         with self.db.get_connection() as conn:
             cursor = conn.execute(query, params)
             transfers = []
-            
+
             for row in cursor.fetchall():
                 transfer = dict(row)
-                # Parse logs from JSON
-                if transfer['logs']:
-                    try:
-                        transfer['logs'] = json.loads(transfer['logs'])
-                    except json.JSONDecodeError:
+                if include_logs:
+                    # Parse logs from JSON
+                    if transfer['logs']:
+                        try:
+                            transfer['logs'] = json.loads(transfer['logs'])
+                        except json.JSONDecodeError:
+                            transfer['logs'] = []
+                    else:
                         transfer['logs'] = []
-                else:
-                    transfer['logs'] = []
                 transfers.append(transfer)
-            
+
             return transfers
-    
+
     def get_active(self) -> List[Dict]:
         """Get all active (running/pending) transfers"""
         return self.get_all(status_filter=None)  # We'll filter in memory for multiple statuses
