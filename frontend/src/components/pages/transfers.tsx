@@ -19,9 +19,12 @@ import {
 } from "@/hooks/useTransfers";
 import {
   onTransferComplete,
+  onTransferLogs,
   onTransferPromoted,
   onTransferQueued,
   onTransferUpdate,
+  subscribeTransferLogs,
+  unsubscribeTransferLogs,
 } from "@/services/socket";
 import { useTransferPosters } from "@/hooks/useTransferPosters";
 import { WebhookPoster, MediaBadge } from "@/components/webhooks/webhook-bits";
@@ -362,6 +365,13 @@ export function TransfersPage() {
   const queuedCount = activeQuery.data?.queue_status.queued_count ?? 0;
   const maxConcurrent = activeQuery.data?.queue_status.max_concurrent ?? 3;
 
+  // Ask the server for output only while a row is open, and stop when it
+  // closes. Without a subscription the server does not even build the payload.
+  useEffect(() => {
+    expanded.forEach(subscribeTransferLogs);
+    return () => expanded.forEach(unsubscribeTransferLogs);
+  }, [expanded]);
+
   useEffect(() => {
     // Progress arrives many times a second per transfer. Writing it straight
     // into the cache keeps the numbers live without a refetch per tick, which
@@ -389,25 +399,20 @@ export function TransfersPage() {
         }
       );
 
-      // When realtime is on, patch the open row's log cache too so output
-      // appears without waiting for the next poll.
-      if (payload.logs) {
-        queryClient.setQueryData(
-          ["transfers", payload.transfer_id, "logs"],
-          (previous: { logs: string[] } | undefined) =>
-            previous ? { ...previous, logs: payload.logs! } : previous
-        );
-      }
     });
 
-    const offComplete = onTransferComplete((payload) => {
-      if (payload.logs) {
-        queryClient.setQueryData(
-          ["transfers", payload.transfer_id, "logs"],
-          (previous: { logs: string[] } | undefined) =>
-            previous ? { ...previous, logs: payload.logs! } : previous
-        );
-      }
+    // Output arrives on its own event, only for transfers this client asked
+    // for. Everyone used to receive every transfer's log tail several times a
+    // second whether or not they had a row open.
+    const offLogs = onTransferLogs((payload) => {
+      queryClient.setQueryData(
+        ["transfers", payload.transfer_id, "logs"],
+        (previous: { logs: string[] } | undefined) =>
+          previous ? { ...previous, logs: payload.logs } : previous
+      );
+    });
+
+    const offComplete = onTransferComplete(() => {
       activeQuery.refetch();
       allQuery.refetch();
     });
@@ -420,6 +425,7 @@ export function TransfersPage() {
 
     return () => {
       offProgress();
+      offLogs();
       offComplete();
       offQueued();
       offPromoted();

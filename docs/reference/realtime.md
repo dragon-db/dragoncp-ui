@@ -18,20 +18,24 @@ What this means if you build on these events:
 
 ## Server-emitted events
 
-All events are emitted on the default namespace (`/`) and broadcast to every connected client.
+Events are emitted on the default namespace (`/`). Most are broadcast to every
+connected client; `transfer_logs` is the exception — it goes only to clients
+that asked for that transfer's output. See
+[Log streaming](#log-streaming-and-rooms).
 
 | Event | What triggers it | Emitted by | Payload fields |
 |---|---|---|---|
-| `transfer_progress` | Every line rsync writes while a transfer is running (the socket is *not* throttled; only the database writes are) | `services/transfer_service.py:738` | `transfer_id`, `progress` (the raw rsync line), `logs` (tail of at most 100 lines), `log_count`, `status` (always `"running"`), `stats` |
+| `transfer_progress` | Every line rsync writes while a transfer is running (the socket is *not* throttled; only the database writes are) | `services/transfer_service.py` | `transfer_id`, `progress` (the raw rsync line), `log_count`, `status` (always `"running"`), `stats`. **No log body** — see `transfer_logs` |
 | `transfer_progress` | Once, when a backup restore has built its plan and is about to start deleting/copying | `services/backup_service.py:198` | `transfer_id` (a synthetic `restore_<backup_id>_<timestamp>` id), `progress` (`"Planning restore: N item(s)"`), `logs` (up to 100 plan lines), `log_count`, `status` (`"running"`) |
-| `transfer_complete` | The rsync monitor thread has seen the process exit | `services/transfer_service.py:798` | `transfer_id`, `status` (`completed`, `failed`, `paused` or `cancelled`), `message`, `logs` (last 100), `log_count`, `stats` |
-| `transfer_complete` | The rsync monitor thread itself raised — the transfer row is forced to `failed` | `services/transfer_service.py:836` | `transfer_id`, `status` (`"failed"`), `message`, `logs` (last 100), `log_count` — **no** `stats` on this path |
+| `transfer_complete` | The rsync monitor thread has seen the process exit | `services/transfer_service.py` | `transfer_id`, `status` (`completed`, `failed`, `paused` or `cancelled`), `message`, `log_count`, `stats`. **No log body** |
+| `transfer_complete` | The rsync monitor thread itself raised — the transfer row is forced to `failed` | `services/transfer_service.py` | `transfer_id`, `status` (`"failed"`), `message`, `log_count` — **no** log body and **no** `stats` on this path |
 | `transfer_complete` | A backup restore finished, successfully or not | `services/backup_service.py:287` (success), `:306` (failure) | `transfer_id`, `status` (`completed` / `failed`), `message`, `logs` (last 100), `log_count` |
 | `transfer_queued` | A new transfer is held because another transfer already owns the destination path | `services/transfer_coordinator.py:144` | `transfer_id`, `status` (`"queued"`), `queue_type` (`"path"`), `existing_transfer_id`, `dest_path`, `message` |
 | `transfer_queued` | A new transfer is held because the concurrency cap is reached | `services/transfer_coordinator.py:182` | `transfer_id`, `message` (`"Transfer added to queue"`) |
 | `transfer_queued` | A paused transfer was resumed but had to go back into the queue | `services/transfer_coordinator.py:345` | `transfer_id`, `message` (`"Resumed transfer added to queue"`) |
 | `transfer_promoted` | A path-queued transfer got its destination path back and is about to start | `services/queue_manager.py:329` | `transfer_id`, `message`, `queue_type` (`"path"`) |
 | `transfer_promoted` | A slot-queued transfer got a free running slot and is about to start | `services/queue_manager.py:445` | `transfer_id`, `message` (`"Transfer promoted from queue"`) |
+| `transfer_logs` | A transfer produced output **and** at least one client is subscribed to it. Also once at completion | `services/transfer_service.py:_emit_logs` | `transfer_id`, `logs` (tail of at most 100 lines), `log_count`, `status`. **Room-scoped**, not broadcast |
 | `webhook_received` | A real (non-test) Radarr/Sonarr webhook was parsed and stored | `routes/webhooks.py:117` (movies), `:245` (series), `:370` (anime) | `notification_id`, `title`, `media_type` (`movies` / `tvshows` / `anime`), `auto_sync` (whether auto-sync is on for that media type), `message`, `timestamp` |
 | `test_webhook_received` | A webhook the receiver classified as a test (`eventType == "Test"`, title `Test Title`, or `testpath` in the folder path) | `routes/webhooks.py:87` (movies), `:201` (series), `:326` (anime) | `message`, `timestamp` |
 | `rename_webhook_received` | A Sonarr `Rename` webhook was parsed and stored, before the renames are executed | `services/rename_service.py:83` | `notification_id`, `series_title`, `total_files`, `media_type`, `timestamp` |
@@ -50,7 +54,43 @@ Two behaviours worth knowing before you rely on an event:
 |---|---|---|---|
 | `connect` (handshake) | The user enables realtime | `websocket.py:87` | Handler returns `False` to reject, `True` to accept |
 | `activity` | Any click, keypress, form submit or touch in the browser, throttled to once per 1.5 s; also on **Extend** and when a timeout is deferred | `websocket.py:155` | None — it just refreshes `last_activity` |
-| `authenticate` | After the axios interceptor refreshes the access token (`reAuthenticateSocket()` in `frontend/src/services/socket.ts`) | `websocket.py:163` | Acknowledgement callback: `{success: true, user}` or `{success: false, message}` |
+| `authenticate` | After the axios interceptor refreshes the access token (`reAuthenticateSocket()` in `frontend/src/services/socket.ts`) | `websocket.py` | Acknowledgement callback: `{success: true, user}` or `{success: false, message}` |
+| `transfer_logs_subscribe` | A transfer's row is expanded in the UI, and on every reconnect for rows still open | `websocket.py` | None. Joins room `transfer_logs:<transfer_id>` |
+| `transfer_logs_unsubscribe` | The row is collapsed or the page unmounts | `websocket.py` | None. Leaves the room |
+
+## Log streaming and rooms
+
+rsync output is the largest thing this application pushes, and it only matters
+to whoever has that transfer's row open. It used to ride along on every
+`transfer_progress` broadcast: roughly 4.4 KB per event against 297 bytes for
+the same event without it — **93% of the payload**, sent to every connected
+client several times a second whether or not anyone was reading it.
+
+Output now travels on its own event, scoped to a room per transfer:
+
+```text
+client expands a row  ->  transfer_logs_subscribe {transfer_id}
+                          server: join_room("transfer_logs:<id>")
+rsync writes a line   ->  transfer_progress   broadcast, ~300 bytes, no log body
+                      ->  transfer_logs       only to that room
+client collapses row  ->  transfer_logs_unsubscribe {transfer_id}
+```
+
+Three properties worth knowing:
+
+- **Unwatched transfers cost nothing extra.** `_emit_logs` checks
+  `has_log_subscribers()` before assembling anything, so a transfer nobody is
+  watching never builds a log payload at all.
+- **Subscriptions survive a reconnect.** Rooms live on the server connection and
+  are lost when a socket drops, so `frontend/src/services/socket.ts` keeps the
+  set of wanted transfers and replays it on `connect`.
+- **The polling path is unchanged.** Realtime is opt-in, so an open log panel
+  refreshes on its own 2-second poll regardless; the subscription only makes it
+  arrive sooner. Nothing depends on the socket being enabled.
+
+The registry is cleaned up on disconnect (`websocket.py:_drop_subscriber`),
+otherwise a dropped client would keep a transfer looking watched and the
+producer would keep building payloads for nobody.
 
 ## Connection lifecycle
 

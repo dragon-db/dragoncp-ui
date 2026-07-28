@@ -89,19 +89,6 @@ Notes:
   rsync-over-SSH would largely be rewritten. The safety rules for writing to and
   deleting from the remote server are recorded in the plan.
 
-### TASK-003 — Per-transfer socket rooms
-Status: planned      Priority: medium
-Tags: backend, performance, realtime
-Docs: [docs/plans/rsync-log-streaming.md](docs/plans/rsync-log-streaming.md), [docs/reference/realtime.md](docs/reference/realtime.md)
-
-Plan: `transfer_progress` carries a 100-line log tail and is broadcast to every
-connected client, roughly 3 MB/min each with three transfers running. Scope the
-emits to per-transfer subscription rooms, as designed in section 6 of the log
-streaming plan.
-
-Notes:
-- The storage half of that plan is done (progress lines no longer accumulate in
-  the database). This is the streaming half and is untouched.
 
 ---
 
@@ -136,6 +123,32 @@ Work from there.
 ---
 
 ## Done
+
+### TASK-003 — Per-transfer socket rooms
+Status: done      Priority: medium
+Tags: backend, frontend, performance, realtime
+Branch: feature/transfer-progress-stats-controls
+Docs: [docs/reference/realtime.md](docs/reference/realtime.md)
+
+Plan: rsync output was riding on every `transfer_progress` broadcast — 93% of
+the payload — and reaching every connected client whether or not anyone had that
+transfer open.
+
+Steps:
+- [x] subscription registry and room handlers in `websocket.py`
+- [x] split the log body onto a room-scoped `transfer_logs` event
+- [x] skip building the payload when nobody is subscribed
+- [x] subscribe/unsubscribe as rows expand, with replay on reconnect
+- [x] documented in `docs/reference/realtime.md`
+
+Notes:
+- Verified with a real socket client: a non-subscribed client receives progress
+  events with no log body and zero log events; subscribing starts the stream and
+  unsubscribing stops it.
+- The proposed three-event design (snapshot/chunk/end) was reduced to one event.
+  The snapshot already arrives over HTTP when a row opens, and the end state is
+  already carried by `transfer_complete`, so the extra events would have
+  duplicated both.
 
 ### TASK-006 — Transfers page rework
 Status: done      Priority: high

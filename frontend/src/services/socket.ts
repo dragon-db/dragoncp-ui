@@ -24,6 +24,10 @@ export interface TransferUpdate {
   folder_name: string;
   season_name?: string;
   log?: string;
+  /**
+   * No longer sent on `transfer_progress` or `transfer_complete` - subscribe
+   * with `subscribeTransferLogs` and listen for `transfer_logs` instead.
+   */
   logs?: string[];
   log_count?: number;
   message?: string;
@@ -38,6 +42,14 @@ export interface TransferUpdate {
     speed_bps?: number | null;
     eta_seconds?: number | null;
   };
+}
+
+/** Payload of `transfer_logs`, sent only to subscribers of that transfer. */
+export interface TransferLogsUpdate {
+  transfer_id: string;
+  logs: string[];
+  log_count: number;
+  status: string;
 }
 
 export interface WebhookNotification {
@@ -101,6 +113,12 @@ function ensureSocket(): Socket {
     bindTransportListeners(socket as Socket);
     const transport = socket?.io.engine?.transport?.name ?? "unknown";
     console.log(`🔌 Socket connected via ${transport}`);
+    // Rooms live on the server connection, so a reconnect starts with none.
+    // Replaying what the UI still wants keeps an open log panel live across a
+    // drop without the page having to know a drop happened.
+    for (const transferId of watchedTransfers) {
+      socket?.emit("transfer_logs_subscribe", { transfer_id: transferId });
+    }
   });
 
   socket.on("disconnect", (reason) => {
@@ -162,6 +180,41 @@ export function destroySocket(): void {
     socket.disconnect();
     socket = null;
   }
+}
+
+/**
+ * Transfers whose log output this client wants.
+ *
+ * Held here rather than in the page so it survives a reconnect: the server
+ * forgets room membership when a socket drops, and this is what tells it again.
+ */
+const watchedTransfers = new Set<string>();
+
+/**
+ * Start receiving one transfer's rsync output.
+ *
+ * Log lines are the largest thing the backend pushes and only matter to
+ * whoever has that transfer open, so they are not broadcast - a client has to
+ * ask. Safe to call when the socket is off; the intent is remembered and sent
+ * if realtime is enabled later.
+ */
+export function subscribeTransferLogs(transferId: string): void {
+  if (!transferId || watchedTransfers.has(transferId)) return;
+  watchedTransfers.add(transferId);
+  socket?.emit("transfer_logs_subscribe", { transfer_id: transferId });
+}
+
+/** Stop receiving a transfer's output. */
+export function unsubscribeTransferLogs(transferId: string): void {
+  if (!transferId || !watchedTransfers.delete(transferId)) return;
+  socket?.emit("transfer_logs_unsubscribe", { transfer_id: transferId });
+}
+
+/** Log output for a transfer this client subscribed to. */
+export function onTransferLogs(callback: (data: TransferLogsUpdate) => void): () => void {
+  if (!socket) return () => {};
+  socket.on("transfer_logs", callback);
+  return () => socket?.off("transfer_logs", callback);
 }
 
 export function getSocket(): Socket | null {

@@ -137,6 +137,32 @@ class TransferService:
         with self._stops_lock:
             self._intentional_stops.pop(transfer_id, None)
 
+    def _emit_logs(self, transfer_id: str, tail: List[str], log_count: int, status: str):
+        """
+        Send a transfer's log tail to the clients watching that transfer.
+
+        Skipped entirely when nobody is subscribed, which is the usual case -
+        an operator has at most one row open. That check is the point of the
+        exercise: an unwatched transfer costs a ~300 byte broadcast per tick
+        instead of ~4.4 KB to every connected client.
+        """
+        if not self.socketio:
+            return
+        try:
+            from websocket import has_log_subscribers, transfer_log_room
+        except ImportError:
+            return
+
+        if not has_log_subscribers(transfer_id):
+            return
+
+        self.socketio.emit('transfer_logs', {
+            'transfer_id': transfer_id,
+            'logs': tail,
+            'log_count': log_count,
+            'status': status,
+        }, to=transfer_log_room(transfer_id))
+
     def _progress_updates(self, transfer_id: str, line: str) -> Optional[Dict]:
         """
         Build the column updates for one rsync output line, or None if the line
@@ -734,15 +760,20 @@ class TransferService:
 
                 # The UI still sees every tick - the throttle is only about what
                 # reaches the database.
+                #
+                # The log tail is ~93% of what this event used to weigh and is
+                # only of interest to whoever has this transfer's row open, so
+                # it travels separately to that transfer's room. Everyone still
+                # gets the figures the list needs.
                 if socketio:
                     socketio.emit('transfer_progress', {
                         'transfer_id': transfer_id,
                         'progress': line,
-                        'logs': tail,
                         'log_count': log_count,
                         'status': 'running',
                         'stats': dict(latest_stats)
                     })
+                    self._emit_logs(transfer_id, tail, log_count, 'running')
             
             # rsync has stopped writing. Flush the last progress line if the
             # write interval skipped it, otherwise a finished transfer would be
@@ -799,10 +830,13 @@ class TransferService:
                     'transfer_id': transfer_id,
                     'status': status,
                     'message': progress,
-                    'logs': transfer['logs'][-100:],
                     'log_count': len(transfer['logs']),
                     'stats': build_progress_stats(transfer)
                 })
+                # One last push to anyone watching, so an open row ends on the
+                # real final output rather than waiting for a refetch.
+                self._emit_logs(transfer_id, transfer['logs'][-SOCKET_LOG_TAIL:],
+                                len(transfer['logs']), status)
 
             # Remove from active transfers
             if transfer_id in self.transfers:
@@ -837,9 +871,10 @@ class TransferService:
                     'transfer_id': transfer_id,
                     'status': 'failed',
                     'message': error_msg,
-                    'logs': transfer['logs'][-100:],
                     'log_count': len(transfer['logs'])
                 })
+                self._emit_logs(transfer_id, transfer['logs'][-SOCKET_LOG_TAIL:],
+                                len(transfer['logs']), 'failed')
             
             # Remove from active transfers
             if transfer_id in self.transfers:
