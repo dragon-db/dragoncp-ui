@@ -49,8 +49,6 @@ Public endpoints (no JWT required):
 - `POST /webhook/movies`
 - `POST /webhook/series`
 - `POST /webhook/anime`
-- `POST /test/simulate` (if `TEST_MODE=1`; otherwise auth required)
-- `POST /test/simulate/stop` (if `TEST_MODE=1`; otherwise auth required)
 
 ## Common Response Pattern
 
@@ -606,6 +604,52 @@ Output JSON:
 {"status":"success","message":"Transfer cancelled"}
 ```
 
+### POST `/transfer/{transfer_id}/pause`
+What it does: pauses a running transfer, keeping its partially copied files.
+
+rsync is stopped rather than suspended: the transfer command sets
+`--timeout=300`, so a frozen process would lose its connection after five
+minutes. The partial files remain on disk (`--partial`/`--partial-dir`), and the
+queue slot is released so queued transfers can start.
+
+Auth: required.
+
+Path param:
+- `transfer_id`
+
+Output JSON:
+```json
+{"status":"success","message":"Transfer paused"}
+```
+
+Errors (HTTP 400):
+- `{"status":"error","message":"Only running transfers can be paused (currently completed)"}`
+
+### POST `/transfer/{transfer_id}/resume`
+What it does: resumes a paused transfer, continuing from its partial files.
+
+Goes back through the queue manager, so a resume respects the concurrency limit
+and cannot collide with a transfer that claimed the same destination while this
+one was paused. If no slot is free the transfer is queued instead of started,
+and the message says so.
+
+Auth: required.
+
+Path param:
+- `transfer_id`
+
+Output JSON:
+```json
+{"status":"success","message":"Transfer resumed"}
+```
+```json
+{"status":"success","message":"Transfer resumed and queued"}
+```
+
+Errors (HTTP 400):
+- `{"status":"error","message":"Only paused transfers can be resumed (currently running)"}`
+- `{"status":"error","message":"Another transfer is already syncing to this destination"}`
+
 ### POST `/transfer/{transfer_id}/restart`
 What it does: restarts failed/cancelled transfer.
 
@@ -653,6 +697,16 @@ Output JSON:
 }
 ```
 
+Each transfer object carries the listing fields described under
+`/transfers/active` below, plus `end_time` and `created_at`.
+
+Implementation notes:
+- `status` filters in SQL, before `limit` is applied. It previously filtered the
+  page after limiting it, so asking for failed transfers returned none whenever
+  the newest `limit` rows happened to be completed.
+- Listings never include the `logs` array, only `log_count`. The log body is
+  available from `/transfer/{transfer_id}/logs`.
+
 ### GET `/transfers/active`
 What it does: returns currently active transfers plus queue state.
 
@@ -676,8 +730,26 @@ Output JSON:
 }
 ```
 
-Implementation note:
+Each transfer object contains:
+
+| Field | Meaning |
+|---|---|
+| `id`, `status`, `progress` | Transfer id, lifecycle state, latest rsync line |
+| `media_type`, `folder_name`, `season_name` | What is being copied |
+| `parsed_title`, `parsed_season` | Cleaned-up title/season for display |
+| `operation_type`, `source_path`, `dest_path` | Folder or file, and the paths |
+| `start_time`, `paused_at`, `created_at` | When it started, was paused, was queued |
+| `queue_reason` | `slot` or `path` for a queued transfer, else null |
+| `rsync_process_id` | PID of the running rsync, if any |
+| `log_count` | Number of stored log lines (the lines themselves are not included) |
+| `is_simulation` | True for rows created by the simulation tool |
+| `progress_percent`, `bytes_transferred`, `total_bytes`, `speed_bps`, `eta_seconds` | Parsed rsync progress; see `docs/database/v2_schema.md` |
+
+Implementation notes:
 - `queue_status.active_destinations` currently contains the transfer IDs that own reserved destinations, not the normalized path strings themselves.
+- The listing query excludes the `logs` column and counts it in SQL, and filters
+  by status in SQL rather than reading the whole table. This is why `log_count`
+  is present but `logs` is not.
 
 ### GET `/transfers/queue/status`
 What it does: returns queue state only.
@@ -1435,53 +1507,118 @@ Output JSON:
 
 ---
 
-## 10) Test Simulation Endpoints
+## 10) Simulation Endpoints
 
-### POST `/test/simulate`
-What it does: starts fake transfer simulations for UI testing.
+Runs the real transfer pipeline against throwaway files generated on the server,
+so queueing, webhook status handling and the UI can be observed without touching
+media or the remote server. Simulated rows are flagged `is_simulation` and are
+removed by cleanup.
 
-Auth:
-- If `TEST_MODE=1`: public.
-- Otherwise: JWT required.
+These replaced the former `POST /test/simulate` endpoints, which faked progress
+rather than running anything and bypassed authentication when `TEST_MODE=1`.
+These require auth and are safe to run in production.
 
-Input JSON (all fields optional):
+Implementation: `services/simulation_service.py`, `routes/simulation.py`.
+
+### GET `/simulation/status`
+What it does: returns the scenarios on offer and what is currently on the board.
+
+Auth: required.
+
+Output JSON:
 ```json
 {
-  "count": 3,
-  "steps": 40,
-  "interval": 0.5,
-  "failure_rate": 0.0
+  "status": "success",
+  "scenarios": [
+    {
+      "key": "queue_overflow",
+      "name": "Fill the queue",
+      "description": "Starts more copies than there are slots...",
+      "transfers": 5,
+      "size_mb": 24,
+      "bwlimit_kbps": 2000,
+      "same_destination": false,
+      "with_webhooks": true,
+      "fail": false
+    }
+  ],
+  "total": 0,
+  "by_status": {},
+  "finished": true,
+  "disk_bytes": 0,
+  "real_transfers_running": 0,
+  "max_concurrent": 3
 }
+```
+
+Scenario keys: `queue_overflow`, `path_conflict`, `slow_copy`, `failure`,
+`season_batch`.
+
+### POST `/simulation/start`
+What it does: generates fixture files and starts the scenario's transfers
+through `TransferCoordinator.start_transfer`.
+
+Auth: required.
+
+Input JSON:
+```json
+{"scenario": "queue_overflow", "confirm_busy": false}
 ```
 
 Output JSON:
 ```json
 {
   "status": "success",
-  "message": "Started 3 simulated transfers",
-  "transfer_ids": ["sim_1", "sim_2", "sim_3"]
+  "message": "Fill the queue started with 5 transfers",
+  "run_id": "sim_1785202435_caa5dd",
+  "transfer_ids": ["simulation_sim_1785202435_caa5dd_0"]
 }
 ```
 
-Error behavior:
-- `403` if simulation disabled (`TEST_MODE!=1`).
+Errors:
+- `409` when real transfers are running and `confirm_busy` was not set. The body
+  carries `code: "real_transfers_running"` and a `running` array naming them, so
+  the caller can confirm before taking a queue slot:
+  ```json
+  {
+    "status": "error",
+    "code": "real_transfers_running",
+    "message": "2 real transfer(s) are running. A simulation takes a queue slot and may delay them.",
+    "running": [{"id": "webhook_123", "title": "Some Show", "status": "running"}]
+  }
+  ```
+- `400` for an unknown scenario, a simulation already on the board, a scenario
+  above the size ceiling, or too little free disk.
 
-### POST `/test/simulate/stop`
-What it does: sends stop signal for running simulations.
+### POST `/simulation/stop`
+What it does: cancels simulated transfers still moving, leaving the rows so the
+result can be read.
 
-Auth:
-- If `TEST_MODE=1`: public.
-- Otherwise: JWT required.
-
-Input: no body required.
+Auth: required.
 
 Output JSON:
 ```json
-{"status":"success","message":"Stop signal sent"}
+{"status":"success","message":"Stopped 3 simulation transfer(s)","stopped":3}
 ```
 
-Error behavior:
-- `403` if simulation disabled (`TEST_MODE!=1`).
+### POST `/simulation/cleanup`
+What it does: removes every simulation row and the files it generated.
+
+Deletes only rows carrying `is_simulation` and only files under the simulation
+directory. Real transfers, notifications and media are untouched.
+
+Auth: required.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "message": "Cleared 5 transfer(s) and 5 notification(s)",
+  "transfers_removed": 5,
+  "notifications_removed": 5,
+  "files_removed": true
+}
+```
 
 ---
 
@@ -1491,10 +1628,14 @@ This document covers all `/api/*` routes currently implemented in backend Python
 - 5 auth endpoints
 - 8 config/SSH endpoints
 - 8 media endpoints
-- 10 transfer endpoints
-- 29 webhook-related endpoints (receivers, management, rename, settings, Discord)
+- 12 transfer endpoints (including `pause` and `resume`)
+- 30 webhook-related endpoints (receivers, management, rename, settings, Discord)
 - 7 backup endpoints
 - 7 debug endpoints
-- 2 simulation endpoints
+- 4 simulation endpoints
+- 2 log endpoints
 
-Total covered: 76 method+path API endpoints.
+Total covered: 84 method+path API endpoints.
+
+Counts verified against the `@*_bp.route`/`@app.route` decorators in `routes/`
+and `app.py`, counting one per method+path.

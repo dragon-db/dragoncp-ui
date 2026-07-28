@@ -19,6 +19,7 @@ Transfer rows in `transfers` use these statuses:
 - `pending`: admitted and preparing to start
 - `queued`: not allowed to start yet
 - `running`: rsync process active
+- `paused`: stopped on purpose, partial files kept, expected to resume
 - `completed`
 - `failed`
 - `cancelled`
@@ -144,7 +145,21 @@ If both the path and slot checks pass:
 
 ## Promotion Flow
 
-Promotion happens from `QueueManager.unregister_transfer()` after a running transfer finishes, fails, or is cancelled.
+Promotion happens from `QueueManager.unregister_transfer()` after a running transfer finishes, fails, is cancelled, or is paused.
+
+A pause is not an outcome, so it is handled differently from the rest:
+`TransferCoordinator.pause_transfer()` releases the slot immediately rather than
+waiting for the post-completion watcher, which only polls every few seconds - a
+resume issued inside that window would otherwise be told the queue is full.
+`_post_transfer_completion` then sees the paused status, releases the slot again
+(unregistering twice is harmless) and stops, deliberately leaving webhook status
+and backup finalization alone because the transfer is expected to resume.
+
+`TransferCoordinator.resume_transfer()` goes back through
+`QueueManager.register_transfer()`, so a resume respects the concurrency cap and
+cannot collide with a transfer that claimed the same destination while it was
+paused. When no slot is free the transfer becomes `queued` again and is promoted
+normally.
 
 Promotion order is always:
 1. same-path queue first

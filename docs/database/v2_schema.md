@@ -24,6 +24,17 @@ This document describes the current SQLite schema used by DragonCP.
 - `process_id` → `rsync_process_id` (clearer purpose)
 - `backup_dir` → `backup_path` (consistent with other path fields)
 
+### Post-v2 Additions
+
+Added through `DatabaseManager._ensure_column`, so existing databases pick them
+up on startup without a migration script:
+
+- `transfers`: `progress_percent`, `bytes_transferred`, `total_bytes`,
+  `speed_bps`, `eta_seconds` (parsed rsync progress); `paused_at`
+  (pause/resume); `is_simulation`, `simulation_bwlimit` (simulation tool)
+- `radarr_webhook.is_simulation`, `sonarr_webhook.is_simulation` - notifications
+  created by the simulation tool, removed by its cleanup
+
 ### Queue-Related Additions/Changes
 - `transfers.queue_reason` stores whether a queued transfer is blocked by `path` or `slot`
 - series/anime manual-sync-required rows currently use `requires_manual_sync` + `manual_sync_reason`
@@ -56,7 +67,21 @@ CREATE TABLE transfers (
     start_time DATETIME,
     end_time DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    -- Parsed rsync progress (added post-v2, via _ensure_column)
+    progress_percent INTEGER,
+    bytes_transferred INTEGER,
+    total_bytes INTEGER,
+    speed_bps INTEGER,
+    eta_seconds INTEGER,
+
+    -- Pause/resume
+    paused_at DATETIME,
+
+    -- Simulation tool
+    is_simulation INTEGER DEFAULT 0,
+    simulation_bwlimit INTEGER
 )
 ```
 
@@ -69,8 +94,9 @@ CREATE TABLE transfers (
 - `source_path` - Source path on remote server
 - `dest_path` - Destination path on local machine
 - `operation_type` - Type of operation: 'folder', 'file', etc. (renamed from `transfer_type`)
-- `status` - Transfer status: 'pending', 'queued', 'running', 'completed', 'failed', 'cancelled'
-- `progress` - Current progress information (text)
+- `status` - Transfer status: 'pending', 'queued', 'running', 'paused', 'completed', 'failed', 'cancelled'
+- `progress` - Latest rsync output line (text). The structured figures below are
+  the ones the UI reads; this is the raw line.
 - `queue_reason` - Queue reason for queued transfers: `path`, `slot`, or `NULL`
 - `rsync_process_id` - Process ID of the rsync process (renamed from `process_id`)
 - `logs` - JSON array of log entries
@@ -80,6 +106,34 @@ CREATE TABLE transfers (
 - `end_time` - Transfer end timestamp
 - `created_at` - Record creation timestamp
 - `updated_at` - Record last update timestamp
+
+**Parsed progress columns** (populated from rsync's `--info=progress2` output by
+`services/transfer_service.py`; see `parse_rsync_progress`):
+- `progress_percent` - Percent complete for the whole transfer, 0-100
+- `bytes_transferred` - Bytes copied so far
+- `total_bytes` - Size of the transfer set. Derived from percent and bytes while
+  running, then replaced with the exact figure from rsync's `--stats` summary
+- `speed_bps` - Current throughput in bytes per second, 0 once finished
+- `eta_seconds` - rsync's own estimate of seconds remaining, NULL once finished
+
+**Pause/resume:**
+- `paused_at` - When the transfer was paused, NULL otherwise. A pause stops the
+  rsync process and keeps the partial files; resuming starts a new rsync run that
+  continues from them via `--partial`/`--partial-dir`
+
+**Simulation tool** (see `services/simulation_service.py`):
+- `is_simulation` - 1 for rows created by the simulation tool. They run through
+  the real pipeline, so they live in this table; the flag is what tells them
+  apart from genuine history and what cleanup deletes by
+- `simulation_bwlimit` - Speed ceiling in KB/s for a simulated transfer, so a
+  scenario runs slowly enough to observe. NULL for real transfers
+
+**Log storage note:** `logs` holds a JSON array, but rsync progress lines are not
+accumulated into it. Consecutive progress lines collapse to the newest, so the
+array holds the durable output - file names, the `--stats` block, warnings and
+errors - plus at most one trailing progress line. Listing queries never select
+this column; they count it in SQL instead. See
+`docs/plans/RSYNC_LOG_STREAMING_REDESIGN.md`.
 
 **Indexes:**
 - `idx_transfer_id` on `transfer_id` - Fast lookup by transfer ID

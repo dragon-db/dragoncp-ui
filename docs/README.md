@@ -17,6 +17,7 @@ Use this file as the primary index for documentation under `docs/`. If you need 
 | Runtime, deployment, systemd, websocket stability | `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md` |
 | Sync architecture, webhooks, rsync flow | `docs/SYNC_APPLICATION_ANALYSIS.md` |
 | Queueing and transfer promotion | `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md` |
+| Testing transfers end to end without touching media | `docs/simulation/SIMULATION_IMPLEMENTATION.md` |
 | Path handling and destination rules | `docs/path-service/PATHSERVICE_IMPLEMENTATION_SUMMARY.md` |
 | React frontend structure and usage | `docs/frontend/FRONTEND_REFERENCE.md` |
 | HTTP/API endpoints | `docs/api/API_REFERENCE.md` |
@@ -46,6 +47,13 @@ Use this file as the primary index for documentation under `docs/`. If you need 
 - `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md`
   - Queue behavior, duplicate detection, concurrent transfer limits, and promotion behavior.
 
+### `/simulation/`
+
+- `docs/simulation/SIMULATION_IMPLEMENTATION.md`
+  - Running the real transfer pipeline against throwaway local files: scenarios,
+    the safety guards that make it usable in production, and what it
+    deliberately does not cover.
+
 ### `/path-service/`
 
 - `docs/path-service/PATHSERVICE_IMPLEMENTATION_SUMMARY.md`
@@ -73,15 +81,20 @@ Use this file as the primary index for documentation under `docs/`. If you need 
 - `docs/database/LEGACY_V2_MIGRATION_NOTES.md`
   - Legacy v1-to-v2 migration notes, including older destructive migration assumptions.
 
+### `/plans/`
+
+- `docs/plans/RSYNC_LOG_STREAMING_REDESIGN.md`
+  - Log streaming redesign. The storage half is implemented; per-transfer log
+    files, a runtime table and per-transfer websocket rooms are not.
+- `docs/plans/REMOTE_CONNECTION_CHECK.md`
+  - Planned check of the link to the remote server, parked until the native
+    transfer client exists. Holds the safety rules for writing to and deleting
+    from the server.
+
 ### `/refactoring/`
 
 - `docs/refactoring/REFACTORING_GUIDE.md`
   - Refactoring history and architectural decomposition from monolith to services/routes/models.
-
-### `/plans/`
-
-- `docs/plans/RSYNC_LOG_STREAMING_REDESIGN.md`
-  - Planned work related to rsync log streaming redesign.
 
 ### `/SKILLS/frontend-design/`
 
@@ -99,3 +112,5 @@ Use this file as the primary index for documentation under `docs/`. If you need 
 ## Last Updated
 
 - Documentation index refreshed for runtime stability and current docs structure: March 13, 2026
+- Transfer progress/pause/resume, log storage, listing queries and the simulation
+  tool documented; simulation section added: July 28, 2026

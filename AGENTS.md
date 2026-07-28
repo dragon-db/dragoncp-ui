@@ -59,6 +59,8 @@
   - queue behavior: `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md`
   - frontend React details: `docs/frontend/FRONTEND_REFERENCE.md`
   - API endpoints: `docs/api/API_REFERENCE.md`
+  - database schema: `docs/database/v2_schema.md`
+  - testing transfers without touching media: `docs/simulation/SIMULATION_IMPLEMENTATION.md`
 
 ## Attribution Policy
 

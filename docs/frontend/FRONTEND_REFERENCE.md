@@ -53,8 +53,11 @@ frontend/
 ├── src/
 │   ├── components/
 │   │   ├── auth/           # Authentication components
-│   │   ├── layout/         # Layout components (AppLayout)
+│   │   ├── layout/         # Layout components (AppLayout, PageTabsList,
+│   │   │                   #   SectionCard, StatTiles, PageHeader)
 │   │   ├── pages/          # Page-level components
+│   │   ├── transfers/      # Transfer row/detail/log/simulation pieces
+│   │   ├── webhooks/       # Webhook row/detail pieces
 │   │   └── ui/             # shadcn/Base UI components
 │   ├── hooks/              # Custom React hooks
 │   ├── lib/                # Utilities (api, utils, query-client)
@@ -143,7 +146,8 @@ frontend/
 | `useBackups` | Backup CRUD operations |
 | `useConfig` | App configuration |
 | `useMedia` | Media browsing & operations |
-| `useTransfers` | Transfer management |
+| `useTransfers` | Transfer management (start, pause, resume, stop, restart, delete, logs) |
+| `useSimulation` | Simulation scenarios: status, start, stop, cleanup |
 | `useWebhooks` | Webhook management |
 
 ---
@@ -174,6 +178,62 @@ routes/
         ├── index.tsx
         └── $type.tsx       # Dynamic: movies, tvshows, anime
 ```
+
+---
+
+## Transfers Page
+
+`components/pages/transfers.tsx`, built on the same layout primitives as the
+webhooks page: `PageHeader` → `PageTabsList` → `StatTiles` → `SectionCard` with
+rows that expand in place. There are no detail dialogs; opening a row is the
+only way in, matching how a webhook arrival opens.
+
+| Tab | Shows |
+|---|---|
+| Activity | Running, queued and paused copies, with combined throughput |
+| History | Finished runs, with a success rate and status filters |
+| Simulate | Scenario launcher for the simulation tool |
+
+Supporting components in `components/transfers/`:
+
+| File | Purpose |
+|---|---|
+| `transfer-bits.tsx` | `TransferStatusBadge`, `ProgressMeter`, `Chip`, `Fact`, `PathBlock` |
+| `transfer-detail.tsx` | Expanded row: progress, facts, paths, timeline, result, actions |
+| `transfer-logs.tsx` | Live rsync output with follow/clear/expand |
+| `simulation-panel.tsx` | Scenario cards, busy warning, cleanup; `SimulationBadge` |
+| `confirm-dialog.tsx` | State-driven `AlertDialog` for stop/delete/cleanup |
+
+`lib/transfer-progress.ts` holds the formatting: `formatBytes`, `formatSpeed`,
+`formatEta`, `formatSizePair`, `formatDuration`, `transferPercent`.
+
+Two things worth knowing when changing this page:
+
+- **Realtime is opt-in.** The socket only connects when the user enables it, so
+  a socket-only log would be frozen for anyone who has not. Open rows poll their
+  own log while the transfer runs (`useTransferLogs`, `live` option), and socket
+  events patch the same query cache when realtime is on.
+- **Progress events patch the cache rather than triggering a refetch.** They
+  arrive several times a second per transfer; refetching per event meant one API
+  round trip per rsync output line.
+
+---
+
+## Page Tab Bar
+
+`components/layout/page-tabs.tsx` — the section switcher used by the transfers
+and webhooks pages. It is shadcn's `Tabs` `variant="line"` re-tinted to the
+brand, so a page marks its active section the same way the mobile bottom nav
+does rather than introducing a second idiom.
+
+`PageTabItem` fields: `value`, `label`, `icon`, `count` (badge, omit when there
+is nothing to count), `atEnd` (pushes a segment to the far end, marking a tool
+rather than another view).
+
+Sizing notes, since both have bitten before: segments use `flex-initial` to beat
+the base trigger's `flex-1`, whose `0%` basis would give every segment the same
+width regardless of content; and count badges drop below `sm` so three segments
+fit on a phone without one scrolling out of sight.
 
 ---
 

@@ -178,12 +178,19 @@ class SimulationService:
         ]
 
     def active(self) -> List[Dict]:
+        """Every simulation row currently on the board, running or finished."""
         return [
             transfer for transfer in self.coordinator.transfer_model.get_all(include_logs=False)
             if transfer.get('is_simulation')
         ]
 
     def status(self) -> Dict:
+        """
+        What the Simulate tab needs in one call: the scenarios on offer, what is
+        on the board and in which states, how much disk the fixtures hold, and
+        whether real transfers are running - which decides whether starting one
+        needs confirming.
+        """
         rows = self.active()
         by_status: Dict[str, int] = {}
         for row in rows:
@@ -213,6 +220,16 @@ class SimulationService:
     # ------------------------------------------------------------------- start
 
     def start(self, scenario_key: str) -> Tuple[bool, str, Dict]:
+        """
+        Generate the fixtures for a scenario and hand each transfer to the
+        coordinator, the same way a webhook or a manual sync does.
+
+        Refuses when a simulation is already on the board, when the scenario
+        would exceed the size ceiling, or when the disk is too full. Anything
+        created before a failure is cleaned up rather than left behind.
+
+        Returns (started, message, {run_id, transfer_ids}).
+        """
         scenario = SCENARIOS.get(scenario_key)
         if not scenario:
             return False, f"Unknown scenario: {scenario_key}", {}
