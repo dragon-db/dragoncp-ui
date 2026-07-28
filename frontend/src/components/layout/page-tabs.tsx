@@ -40,7 +40,11 @@ export function PageTabsList({ items, className }: { items: PageTabItem[]; class
       className={cn(
         // `h-auto` twice: the base list pins a height under the horizontal
         // variant, which a plain `h-auto` does not beat.
-        "h-auto w-full flex-wrap justify-start gap-x-1 gap-y-0 rounded-none border-b border-border p-0",
+        // Scrolls rather than wraps when short of room. Wrapping stranded the
+        // last segment alone on a second row, which reads as broken; the rail
+        // sits inside the segment box now, so scrolling does not clip it.
+        "h-auto w-full justify-start gap-1 overflow-x-auto rounded-none border-b border-border p-0",
+        "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
         "group-data-horizontal/tabs:h-auto",
         className
       )}
@@ -52,7 +56,7 @@ export function PageTabsList({ items, className }: { items: PageTabItem[]; class
           className={cn(
             // `flex-none` beats the base trigger's `flex-1`, whose 0% basis
             // would stretch three segments across the whole row.
-            "h-auto flex-none gap-2 px-3 pb-2.5 text-[13px]",
+            "h-auto flex-none gap-1.5 px-2 pb-2.5 text-[13px] sm:gap-2 sm:px-3",
             // The base variant hangs its rule 5px below the segment, for a list
             // that has padding under it. This one sits directly on the
             // hairline, so the offset has to go — and the base sets it through
@@ -60,13 +64,21 @@ export function PageTabsList({ items, className }: { items: PageTabItem[]; class
             "after:bottom-0!",
             "data-active:text-brand-foreground data-active:after:bg-brand-gradient-x",
             "data-active:[&_svg]:text-brand-hover",
-            item.atEnd && "ml-auto"
+            // Only pushed to the end where there is room for the gap to read as
+            // deliberate. On a phone it just follows the others: `ml-auto` in a
+            // cramped row claims every spare pixel and strands the segment.
+            item.atEnd && "sm:ml-auto"
           )}
         >
           {item.icon && <item.icon />}
           {item.label}
           {item.count !== undefined && (
-            <Badge variant="secondary" className="px-1.5 font-mono tabular-nums">
+            <Badge
+              variant="secondary"
+              // Dropped on phones so three segments fit without scrolling one
+              // out of sight. The stat tiles directly below repeat the numbers.
+              className="hidden px-1.5 font-mono tabular-nums sm:inline-flex"
+            >
               {item.count}
             </Badge>
           )}
