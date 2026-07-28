@@ -1,4 +1,17 @@
-# Rsync Log Streaming Redesign Plan (No Implementation Yet)
+# Rsync Log Streaming Redesign Plan (Partly Implemented)
+
+> **Status update.** The storage half of this plan is done. Progress lines are
+> no longer accumulated: consecutive ones collapse to the newest, their writes
+> are throttled to one a second, the log is capped, and the second full-row read
+> per line is gone. Measured against the transfers on record, that took 149,317
+> stored lines down to 13,752 and roughly 2.3 GB of rewrite I/O down to 10 MB.
+> See `services/transfer_service.py`, `models/transfer.py` and
+> `scripts/compact_transfer_logs.py` for compacting what was already stored.
+>
+> Still outstanding from this document: per-transfer log files on disk with a
+> read offset for restart-safe continuity (section 4), the `transfer_runtime`
+> table (section 5.2), and per-transfer websocket subscription rooms
+> (section 6) — logs are still broadcast to all clients.
 
 ## 1. Purpose
 

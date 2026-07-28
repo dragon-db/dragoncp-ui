@@ -24,6 +24,7 @@ Use this file as the primary index for documentation under `docs/`. If you need 
 | Database schema | `docs/database/v2_schema.md` |
 | Auto-sync redesign notes | `docs/auto-sync/v3_autosync_implementation.md` |
 | Future/planned rsync log streaming work | `docs/plans/RSYNC_LOG_STREAMING_REDESIGN.md` |
+| Planned remote connection check (with the native client) | `docs/plans/REMOTE_CONNECTION_CHECK.md` |
 | Agent/frontend-design skill notes | `docs/SKILLS/frontend-design/SKILL.md` |
 
 ## Documentation By Feature Area
