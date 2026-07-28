@@ -4,7 +4,7 @@ Last updated: 2026-03-19
 
 ## Purpose
 
-This page keeps the older v2 migration guidance separate from the live schema reference in `docs/database/v2_schema.md`.
+This page keeps the older v2 migration guidance separate from the live schema reference in `../reference/database-schema.md`.
 
 Treat the notes here as legacy migration context, not as current runtime instructions.
 
@@ -29,6 +29,6 @@ If you need that legacy path, review the script and validate it against the curr
 
 ## Current References
 
-- Current live schema: `docs/database/v2_schema.md`
+- Current live schema: `../reference/database-schema.md`
 - Migration script reference: `scripts/migrate_v1_to_v2.py`
-- Legacy v1 schema: `docs/database/v1_schema.md`
+- Legacy v1 schema: no longer in the repository; reconstruct it from `scripts/migrate_v1_to_v2.py` if needed.

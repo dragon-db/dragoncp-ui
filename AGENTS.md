@@ -54,13 +54,13 @@
 - `docs/README.md` maps feature areas to the most relevant implementation/reference docs.
 - When working on a feature, check the matching section in `docs/README.md` first, then open the targeted doc file.
 - Useful common entry points:
-  - runtime and deployment: `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md`
-  - transfer flow and architecture: `docs/SYNC_APPLICATION_ANALYSIS.md`
-  - queue behavior: `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md`
-  - frontend React details: `docs/frontend/FRONTEND_REFERENCE.md`
-  - API endpoints: `docs/api/API_REFERENCE.md`
-  - database schema: `docs/database/v2_schema.md`
-  - testing transfers without touching media: `docs/simulation/SIMULATION_IMPLEMENTATION.md`
+  - runtime and deployment: `docs/operations/runtime-and-deployment.md`
+  - transfer flow and architecture: `docs/architecture/system-overview.md`
+  - queue behavior: `docs/features/queue/README.md`
+  - frontend React details: `docs/reference/frontend.md`
+  - API endpoints: `docs/reference/api.md`
+  - database schema: `docs/reference/database-schema.md`
+  - testing transfers without touching media: `docs/features/simulation/README.md`
 
 ## Attribution Policy
 

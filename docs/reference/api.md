@@ -16,7 +16,7 @@ Source checked while writing this file:
 - `routes/webhooks.py`
 - `routes/backups.py`
 - `routes/debug.py`
-- `docs/api/openapi.yaml` (reference only, not edited)
+- `openapi.yaml` (reference only, not edited)
 
 Base URL:
 ```text
@@ -70,6 +70,7 @@ Transfer status values:
 - `pending`
 - `queued`
 - `running`
+- `paused`
 - `completed`
 - `failed`
 - `cancelled`
@@ -324,10 +325,13 @@ Output JSON:
 {
   "host": "192.168.1.10",
   "username": "root",
-  "password": "",
-  "key_path": "/path/to/key"
+  "key_path": "/path/to/key",
+  "has_password": true
 }
 ```
+
+The stored password is never returned. It is reduced to the boolean
+`has_password` so it cannot reach the browser.
 
 ---
 
@@ -495,11 +499,14 @@ Output JSON:
   "status": "success",
   "dry_run_result": {
     "safe_to_sync": true,
-    "files_to_transfer": 3,
-    "files_to_delete": 0,
-    "total_size": "4.2 GB",
-    "deletions": [],
-    "warnings": []
+    "reason": "All safety checks passed",
+    "incoming_count": 3,
+    "deleted_count": 0,
+    "server_file_count": 12,
+    "local_file_count": 9,
+    "incoming_files": [],
+    "deleted_files": [],
+    "raw_output": "..."
   }
 }
 ```
@@ -743,7 +750,7 @@ Each transfer object contains:
 | `rsync_process_id` | PID of the running rsync, if any |
 | `log_count` | Number of stored log lines (the lines themselves are not included) |
 | `is_simulation` | True for rows created by the simulation tool |
-| `progress_percent`, `bytes_transferred`, `total_bytes`, `speed_bps`, `eta_seconds` | Parsed rsync progress; see `docs/database/v2_schema.md` |
+| `progress_percent`, `bytes_transferred`, `total_bytes`, `speed_bps`, `eta_seconds` | Parsed rsync progress; see `database-schema.md` |
 
 Implementation notes:
 - `queue_status.active_destinations` currently contains the transfer IDs that own reserved destinations, not the normalized path strings themselves.
@@ -787,12 +794,19 @@ Output JSON:
 
 ---
 
-## 5) Webhook Receiver Endpoints (Public)
+## 5) Webhook Receiver Endpoints
+
+These are the only endpoints intended to be reachable from outside the trusted
+network. They do not take a JWT, but they are not unauthenticated: each is
+decorated with `@require_webhook_auth` (`webhook_auth.py`), which enforces an
+HMAC `X-DragonCP-Signature` when `WEBHOOK_SECRET` is set and an IP allowlist
+when `WEBHOOK_ALLOWED_IPS` is set. They are open only when neither is
+configured. See `../features/webhooks/README.md`.
 
 ### POST `/webhook/movies`
 What it does: receives Radarr movie webhook, stores notification, optionally auto-syncs.
 
-Auth: public.
+Auth: webhook auth (HMAC signature and/or IP allowlist), not JWT.
 
 Input JSON: Radarr payload (movie import/test event payload).
 
@@ -813,7 +827,7 @@ Output JSON:
 ### POST `/webhook/series`
 What it does: receives Sonarr series webhook for TV shows.
 
-Auth: public.
+Auth: webhook auth (HMAC signature and/or IP allowlist), not JWT.
 
 Input JSON: Sonarr payload.
 
@@ -835,7 +849,7 @@ Output JSON:
 ### POST `/webhook/anime`
 What it does: receives Sonarr anime webhook (same logic pattern as series endpoint but `media_type=anime`).
 
-Auth: public.
+Auth: webhook auth (HMAC signature and/or IP allowlist), not JWT.
 
 Input JSON: Sonarr payload.
 
@@ -1034,8 +1048,8 @@ Output JSON:
   "status": "success",
   "dry_run_result": {
     "safe_to_sync": true,
-    "files_to_transfer": 0,
-    "files_to_delete": 0,
+    "incoming_count": 0,
+    "deleted_count": 0,
     "total_size": "0 B",
     "deletions": [],
     "warnings": []
@@ -1343,14 +1357,21 @@ Output JSON:
 {
   "status": "success",
   "plan": {
-    "backup_id": "id",
-    "source_path": "/backup/source",
-    "dest_path": "/restore/destination",
-    "file_count": 1,
-    "files": ["relative/path1.mkv"]
+    "operations": [
+      {
+        "backup_relative": "Season 01/Episode.mkv",
+        "backup_full": "/backups/<transfer_id>/Season 01/Episode.mkv",
+        "copy_to": "/media/tv/Show/Season 01/Episode.mkv",
+        "target_delete": null,
+        "context_display": "Show - S01E01"
+      }
+    ]
   }
 }
 ```
+
+Each entry is one file the restore would copy back, and `target_delete` names a
+file it would replace. See `../features/backups/README.md`.
 
 ### POST `/backups/reindex`
 What it does: scans backup directory and imports missing backup folders into DB.
@@ -1444,8 +1465,8 @@ Output JSON:
   "status": "success",
   "websocket_status": {
     "active_connections": 1,
-    "default_timeout_minutes": 60,
-    "max_timeout_minutes": 120,
+    "default_timeout_minutes": 35,
+    "max_timeout_minutes": 65,
     "connection_details": []
   }
 }
@@ -1507,7 +1528,49 @@ Output JSON:
 
 ---
 
-## 10) Simulation Endpoints
+## 10) Server Log Endpoints
+
+Implementation: `routes/logs.py`. The backend log file location, rotation size
+and retention are set by the logging configuration; see
+`../operations/runtime-and-deployment.md`.
+
+### GET `/logs`
+What it does: returns recent backend log records, filtered by severity.
+
+Auth: required.
+
+Query params:
+- `level` (default `ERROR`; one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) - returns records at that level and above
+- `limit` (default `200`, maximum `1000`)
+- `search` (optional case-insensitive substring match)
+
+The file is scanned backwards from the end, bounded between 1,000 and 20,000
+lines, so a very large log does not have to be read in full.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "entries": [],
+  "count": 0,
+  "level": "ERROR",
+  "log_file": "logs/dragoncp_backend.log"
+}
+```
+
+### GET `/logs/download`
+What it does: downloads the whole backend log file.
+
+Auth: required.
+
+Output: the log file as an attachment.
+
+Errors:
+- `404` `{"status":"error","message":"Log file is not available."}` when the file does not exist.
+
+---
+
+## 11) Simulation Endpoints
 
 Runs the real transfer pipeline against throwaway files generated on the server,
 so queueing, webhook status handling and the UI can be observed without touching
@@ -1633,9 +1696,10 @@ This document covers all `/api/*` routes currently implemented in backend Python
 - 7 backup endpoints
 - 7 debug endpoints
 - 4 simulation endpoints
-- 2 log endpoints
+- 2 server log endpoints
 
-Total covered: 84 method+path API endpoints.
+Total covered: 83 method+path API endpoints.
 
 Counts verified against the `@*_bp.route`/`@app.route` decorators in `routes/`
-and `app.py`, counting one per method+path.
+and `app.py`, counting one per method+path. `GET /` is excluded: it serves the
+legacy UI page and is not an API route.

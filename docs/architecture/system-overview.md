@@ -115,7 +115,7 @@ so consecutive progress lines collapse to the newest and their database writes
 are throttled; the socket still emits every one from an in-memory tail. Durable
 output - file names, the `--stats` block, warnings and errors - is kept in full.
 Against the transfers on record this took stored log lines from 149,317 to
-13,752. See `docs/plans/RSYNC_LOG_STREAMING_REDESIGN.md`.
+13,752. See `../plans/rsync-log-streaming.md`.
 
 Pause and resume: rsync cannot be suspended in place because the command sets
 `--timeout=300`, so a frozen process loses its connection after five minutes.
@@ -128,7 +128,7 @@ outcome rather than overwriting it with `failed`.
 
 The same execution path runs simulated transfers, pointed at local fixture files
 instead of over SSH and held to a bandwidth ceiling. See
-`docs/simulation/SIMULATION_IMPLEMENTATION.md`.
+`../features/simulation/README.md`.
 
 Dry-run validation (`services/transfer_service.py:26`) computes:
 - Incoming media files.
@@ -154,7 +154,7 @@ Important current-state notes:
 - manual-sync-required rows are still stored as `pending` plus `requires_manual_sync=1`; the explicit `MANUAL_SYNC_REQUIRED` status is planned but not yet normalized end-to-end.
 - listing queries exclude the `logs` column and count it in SQL, and filter by
   status in SQL. Only the detail and log endpoints read log bodies. See
-  `docs/database/v2_schema.md`.
+  `../reference/database-schema.md`.
 
 ## 7. Backup and Restore Logic
 

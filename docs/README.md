@@ -1,116 +1,150 @@
-# DragonCP Documentation Index
+# DragonCP Documentation
 
-Use this file as the primary index for documentation under `docs/`. If you need feature context, implementation history, API details, or deployment notes, start here and then open the most relevant doc.
+The front desk. Two jobs: tell you **where to start reading**, and tell you
+**how to add a doc** so the next reader can find it.
 
-## How To Use This Index
+[`INDEX.md`](INDEX.md) is the full listing of every document. This file is the
+map; `INDEX.md` is the catalogue.
 
-- Start with the topic table in the next section.
-- If the work is runtime, deployment, websocket, or service related, read `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md` first.
-- If the work is transfer, queue, rsync, or webhook related, read `docs/SYNC_APPLICATION_ANALYSIS.md` and `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md` first.
-- If the work is React/frontend specific, read `docs/frontend/FRONTEND_REFERENCE.md` first.
-- If you are unsure, scan the feature sections below for the closest match.
+---
 
-## Quick Topic Map
+## 1. How to explore
 
-| Topic | Start Here |
+### What each folder is for
+
+| Folder | Contains |
 |---|---|
-| Runtime, deployment, systemd, websocket stability | `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md` |
-| Sync architecture, webhooks, rsync flow | `docs/SYNC_APPLICATION_ANALYSIS.md` |
-| Queueing and transfer promotion | `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md` |
-| Testing transfers end to end without touching media | `docs/simulation/SIMULATION_IMPLEMENTATION.md` |
-| Path handling and destination rules | `docs/path-service/PATHSERVICE_IMPLEMENTATION_SUMMARY.md` |
-| React frontend structure and usage | `docs/frontend/FRONTEND_REFERENCE.md` |
-| HTTP/API endpoints | `docs/api/API_REFERENCE.md` |
-| Architecture and refactoring history | `docs/refactoring/REFACTORING_GUIDE.md` |
-| Database schema | `docs/database/v2_schema.md` |
-| Auto-sync redesign notes | `docs/auto-sync/v3_autosync_implementation.md` |
-| Future/planned rsync log streaming work | `docs/plans/RSYNC_LOG_STREAMING_REDESIGN.md` |
-| Planned remote connection check (with the native client) | `docs/plans/REMOTE_CONNECTION_CHECK.md` |
-| Agent/frontend-design skill notes | `docs/SKILLS/frontend-design/SKILL.md` |
+| `getting-started/` | Getting the app running for the first time: install, configuration, environment. |
+| `features/<area>/README.md` | One folder per user-visible capability. What it does, where the code is, how it behaves, its endpoints and its data. This is where most answers live. |
+| `reference/` | Contracts and lookups: API endpoints, database schema, frontend structure, path rules, design system. Things you check rather than read. |
+| `architecture/` | System-wide shape: how the pieces fit, how the codebase got decomposed. Nothing feature-specific. |
+| `operations/` | Running it in production: runtime, deployment, systemd, websocket stability. |
+| `api/` | `openapi.yaml` — the machine-readable API spec. The prose version is `reference/api.md`. |
+| `plans/` | Designs for work that is **not built yet**, or only half built. Never describes current behaviour without saying so. |
+| `archive/` | Superseded material kept for history. Do not trust it as current. |
 
-## Documentation By Feature Area
+### If you are working on X, read Y first
 
-### Root-Level Docs
+| You are working on | Read first | Then |
+|---|---|---|
+| A specific feature (transfers, backups, renames, webhooks, auth, notifications, media browsing, queue, auto-sync, simulation) | `features/<area>/README.md` | The `Related` links at the bottom of that doc |
+| Anything touching rsync, progress, pause/resume | `features/transfers/README.md` | `features/queue/README.md` |
+| Why a transfer is stuck, queued, or not starting | `features/queue/README.md` | `features/transfers/README.md` |
+| Radarr/Sonarr webhook payloads and what they trigger | `features/webhooks/README.md` | `features/auto-sync/README.md` |
+| Adding or changing an HTTP endpoint | `reference/api.md` | `api/openapi.yaml`, then the owning feature doc |
+| Adding or changing a database column | `reference/database-schema.md` | The owning feature doc's `Data` section |
+| React UI work | `reference/frontend.md` | `reference/design-system.md` |
+| Where files land on disk, destination paths, name normalization | `reference/path-handling.md` | `features/transfers/README.md` |
+| Deployment, systemd, gunicorn, socket drops in production | `operations/runtime-and-deployment.md` | `architecture/system-overview.md` |
+| First time in the codebase | `architecture/system-overview.md` | `architecture/service-decomposition.md` |
+| Setting the app up locally | `getting-started/installation.md` | `../AGENTS.md` |
+| Testing a transfer end to end without touching real media | `features/simulation/README.md` | — |
+| Something that does not exist yet | `plans/` | — |
 
-- `docs/SYNC_APPLICATION_ANALYSIS.md`
-  - End-to-end backend sync architecture, webhook flow, queueing behavior, rsync execution model, and QoS recommendations.
-- `docs/README.md`
-  - This index file.
+Operator conventions and runtime rules that are not documentation (single
+gunicorn worker, TEST_MODE, attribution policy) live in `../AGENTS.md`, not here.
 
-### `/runtime-stability/`
+---
 
-- `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md`
-  - Runtime hardening for issues `#38` and `#39`, including Socket.IO stability, Gunicorn/systemd deployment, touched files, and verification notes.
+## 2. How to document
 
-### `/queue-management/`
+### Where a new doc goes
 
-- `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md`
-  - Queue behavior, duplicate detection, concurrent transfer limits, and promotion behavior.
+| Kind of material | Location |
+|---|---|
+| A user-visible capability | `features/<area>/README.md` — new folder if the area is new |
+| A contract someone looks up: endpoints, schema, frontend structure, path rules | `reference/<topic>.md` |
+| Running or deploying the app | `operations/<topic>.md` |
+| How the whole system fits together | `architecture/<topic>.md` |
+| Work that is not built yet | `plans/<topic>.md` |
+| Material replaced by something newer | move it to `archive/`, do not delete |
 
-### `/simulation/`
+If a doc could plausibly go in two places, put it in `features/` and link to it
+from the others. Feature docs are the default home.
 
-- `docs/simulation/SIMULATION_IMPLEMENTATION.md`
-  - Running the real transfer pipeline against throwaway local files: scenarios,
-    the safety guards that make it usable in production, and what it
-    deliberately does not cover.
+### The feature doc template
 
-### `/path-service/`
+Every `features/<area>/README.md` uses these sections, in this order. Skip a
+section only when it genuinely does not apply.
 
-- `docs/path-service/PATHSERVICE_IMPLEMENTATION_SUMMARY.md`
-  - Path normalization and destination-path construction behavior used by transfer logic.
+```
+# <Feature name>
 
-### `/frontend/`
+<One paragraph: what this does for the operator, in plain terms. No file names.>
 
-- `docs/frontend/FRONTEND_REFERENCE.md`
-  - React frontend architecture, route structure, state usage, and current frontend implementation notes.
+## Where it lives
+| Concern | File |    <- one row per responsibility, pointing at the real file
 
-### `/api/`
+## How it works
+### 1. <Step>            <- numbered stages in the order they happen
+### 2. <Step>
 
-- `docs/api/API_REFERENCE.md`
-  - API endpoint reference and request/response details.
+## Behaviour worth knowing
+- Bullets. Surprises, edge cases, known gaps and bugs. Say what the
+  operator sees, not what the code does.
 
-### `/auto-sync/`
+## Data
+<Which tables/columns/files this feature writes, and what writes them.>
 
-- `docs/auto-sync/v3_autosync_implementation.md`
-  - Auto-sync redesign details, queue conversion behavior, and webhook-driven sync decisions.
+## API
+| Method | Path | Purpose |    <- plus any socket events emitted
 
-### `/database/`
+## Related
+- Links to neighbouring docs, relative paths.
+```
 
-- `docs/database/v2_schema.md`
-  - Current database schema documentation.
-- `docs/database/LEGACY_V2_MIGRATION_NOTES.md`
-  - Legacy v1-to-v2 migration notes, including older destructive migration assumptions.
+`features/transfers/README.md` is the reference implementation of this shape.
+`features/queue/`, `features/auto-sync/` and `features/simulation/` predate it
+and do not match — bring them into line when you next touch them.
 
-### `/plans/`
+Docs outside `features/` are free-form, but still lead with a paragraph saying
+what the doc is for.
 
-- `docs/plans/RSYNC_LOG_STREAMING_REDESIGN.md`
-  - Log streaming redesign. The storage half is implemented; per-transfer log
-    files, a runtime table and per-transfer websocket rooms are not.
-- `docs/plans/REMOTE_CONNECTION_CHECK.md`
-  - Planned check of the link to the remote server, parked until the native
-    transfer client exists. Holds the safety rules for writing to and deleting
-    from the server.
+### Naming
 
-### `/refactoring/`
+- Filenames are `lowercase-kebab-case.md`. No spaces, no underscores, no dates
+  in the name.
+- A folder's entry point is always `README.md`. A folder with one doc still uses
+  `README.md`.
+- Folder names are lowercase-kebab-case, singular or plural by what reads
+  naturally (`backups`, `auth`).
+- Link between docs with relative paths, so links survive being read outside the
+  repo.
 
-- `docs/refactoring/REFACTORING_GUIDE.md`
-  - Refactoring history and architectural decomposition from monolith to services/routes/models.
+### Every doc must be in INDEX.md
 
-### `/SKILLS/frontend-design/`
+A doc that is not listed in [`INDEX.md`](INDEX.md) does not exist — nobody will
+find it. Adding a file and updating `INDEX.md` are one change, not two. If you
+move or delete a doc, fix `INDEX.md` in the same commit.
 
-- `docs/SKILLS/frontend-design/SKILL.md`
-  - Skill-specific notes for frontend design work.
+### Claims must be checkable
 
-## Recommended Starting Points
+- Every statement must be verifiable against the code as it is now. If you
+  cannot point at the file that makes it true, do not write it.
+- Do not guess. If you believe something is true but did not confirm it, write
+  the claim and mark it **`Not verified:`** — an honest gap is useful, a
+  confident wrong answer is not.
+- Document what actually happens, including bugs and gaps. "Deleting a queued
+  transfer leaks its reservation" belongs in `Behaviour worth knowing`; it does
+  not belong in `plans/` just because it is unwelcome.
+- Aspirational behaviour goes in `plans/`, clearly labelled as unbuilt. Never
+  describe planned behaviour in a feature doc's present tense.
+- Prefer describing what the operator sees over narrating code paths. Name files
+  in `Where it lives` and where a reader needs to go next — not as a substitute
+  for explaining the behaviour.
 
-1. New to the project: read `docs/refactoring/REFACTORING_GUIDE.md`
-2. Investigating sync/webhook/rsync behavior: read `docs/SYNC_APPLICATION_ANALYSIS.md`
-3. Investigating runtime/socket/service issues: read `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md`
-4. Working on React UI: read `docs/frontend/FRONTEND_REFERENCE.md`
-5. Working on queue behavior: read `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md`
+### When to update
 
-## Last Updated
+| You changed | Update |
+|---|---|
+| An HTTP endpoint (added, removed, path, request or response shape) | `reference/api.md`, `api/openapi.yaml`, and the owning `features/<area>/README.md` `API` section |
+| A database column or table | `reference/database-schema.md` and the owning feature doc's `Data` section |
+| A feature's behaviour | That feature's `README.md` — `How it works` if the flow changed, `Behaviour worth knowing` if the visible outcome did |
+| A socket event | The owning feature doc's `API` section and `reference/frontend.md` |
+| Where a responsibility lives (moved or renamed a file) | The `Where it lives` table in every feature doc that names it |
+| Config, env vars, install steps | `getting-started/installation.md`, and `operations/runtime-and-deployment.md` if it affects production |
+| Something a `plans/` doc described, now built | Move the content into the feature doc; leave the plan only if part of it is still unbuilt |
+| Added, moved, renamed or deleted any doc | `INDEX.md` |
 
-- Documentation index refreshed for runtime stability and current docs structure: March 13, 2026
-- Transfer progress/pause/resume, log storage, listing queries and the simulation
-  tool documented; simulation section added: July 28, 2026
+Doc updates ship in the same commit as the code change. A doc that describes
+last week's behaviour is worse than no doc.

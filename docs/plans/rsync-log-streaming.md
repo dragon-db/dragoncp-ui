@@ -167,8 +167,8 @@ Optional new fields:
 
 Update docs:
 
-1. `docs/api/openapi.yaml`
-2. `docs/api/API_REFERENCE.md`
+1. `docs/reference/openapi.yaml`
+2. `../reference/api.md`
 
 ---
 

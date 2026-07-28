@@ -87,7 +87,11 @@ CREATE TABLE transfers (
 
 **Column Descriptions:**
 - `id` - Primary key, auto-incrementing integer
-- `transfer_id` - Unique identifier for the transfer (UUID format)
+- `transfer_id` - Unique identifier for the transfer. Not a UUID; the prefix
+  records what created it: `transfer_<epoch>` (manual),
+  `webhook_<notification_id>_<epoch>` (Radarr),
+  `series_webhook_<notification_id>_<epoch>` (Sonarr),
+  `simulation_<run_id>_<index>`, `restore_<backup_id>_<epoch>`
 - `media_type` - Type of media: 'movies', 'tvshows', 'anime'
 - `folder_name` - Name of the media folder
 - `season_name` - Name of the season folder (for series/anime)
@@ -133,7 +137,7 @@ accumulated into it. Consecutive progress lines collapse to the newest, so the
 array holds the durable output - file names, the `--stats` block, warnings and
 errors - plus at most one trailing progress line. Listing queries never select
 this column; they count it in SQL instead. See
-`docs/plans/RSYNC_LOG_STREAMING_REDESIGN.md`.
+`../plans/rsync-log-streaming.md`.
 
 **Indexes:**
 - `idx_transfer_id` on `transfer_id` - Fast lookup by transfer ID
@@ -173,6 +177,7 @@ CREATE TABLE radarr_webhook (
     error_message TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     completed_at DATETIME,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     transfer_id TEXT,
     raw_webhook_data TEXT
 )
@@ -180,7 +185,10 @@ CREATE TABLE radarr_webhook (
 
 **Column Descriptions:**
 - `id` - Primary key, auto-incrementing integer
-- `notification_id` - Unique identifier for the notification (UUID format)
+- `notification_id` - Unique identifier for the notification. Not a UUID;
+  `movie_<movieId>_<epoch>` for Radarr, `<media_type>_<seriesId>_s<season>_ef<episodeFileId>`
+  for Sonarr (falling back to a microsecond timestamp), `rename_<seriesId>_<epoch_ms>`
+  for renames
 - `title` - Movie title
 - `year` - Release year
 - `folder_path` - Server source path
@@ -263,7 +271,10 @@ CREATE TABLE sonarr_webhook (
 
 **Column Descriptions:**
 - `id` - Primary key, auto-incrementing integer
-- `notification_id` - Unique identifier for the notification (UUID format)
+- `notification_id` - Unique identifier for the notification. Not a UUID;
+  `movie_<movieId>_<epoch>` for Radarr, `<media_type>_<seriesId>_s<season>_ef<episodeFileId>`
+  for Sonarr (falling back to a microsecond timestamp), `rename_<seriesId>_<epoch_ms>`
+  for renames
 - `media_type` - Type of media: 'tvshows' or 'anime'
 - `series_title` - Series title
 - `series_title_slug` - URL-safe series identifier
@@ -352,7 +363,10 @@ CREATE TABLE rename_webhook (
 
 **Column Descriptions:**
 - `id` - Primary key, auto-incrementing integer
-- `notification_id` - Unique identifier for the notification (UUID format)
+- `notification_id` - Unique identifier for the notification. Not a UUID;
+  `movie_<movieId>_<epoch>` for Radarr, `<media_type>_<seriesId>_s<season>_ef<episodeFileId>`
+  for Sonarr (falling back to a microsecond timestamp), `rename_<seriesId>_<epoch_ms>`
+  for renames
 - `media_type` - Type of media: 'tvshows' or 'anime'
 - `series_title` - Series title
 - `series_id` - Series ID from Sonarr
@@ -428,7 +442,8 @@ CREATE TABLE backup (
 
 **Column Descriptions:**
 - `id` - Primary key, auto-incrementing integer
-- `backup_id` - Unique identifier for the backup (UUID format)
+- `backup_id` - Unique identifier for the backup. Not a UUID; it is set to the
+  transfer id that produced the backup
 - `transfer_id` - Associated transfer ID
 - `media_type` - Type of media: 'movies', 'tvshows', 'anime'
 - `folder_name` - Name of the media folder
@@ -547,14 +562,13 @@ All indexes are created with `CREATE INDEX IF NOT EXISTS` to allow safe re-execu
 
 Older v1-to-v2 migration guidance, including destructive migration assumptions, has been moved out of this live schema reference.
 
-See `docs/database/LEGACY_V2_MIGRATION_NOTES.md` for legacy migration context.
+See `../archive/v1-to-v2-migration-notes.md` for legacy migration context.
 
 ---
 
 ## Related Documentation
 
-- **v1 Schema:** `docs/database/v1_schema.md`
-- **Legacy migration notes:** `docs/database/LEGACY_V2_MIGRATION_NOTES.md`
+- **Legacy migration notes:** `../archive/v1-to-v2-migration-notes.md`
 - **Database Manager:** `models/database.py`
 - **Transfer Model:** `models/transfer.py`
 - **Backup Model:** `models/backup.py`

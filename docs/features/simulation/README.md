@@ -38,7 +38,7 @@ remote server and remote filesystem reachability are all bypassed, because the
 copy never leaves this machine.
 
 That is deliberate: it is a different question with a different failure mode.
-See `docs/plans/REMOTE_CONNECTION_CHECK.md`, which is parked until the native
+See `../../plans/remote-connection-check.md`, which is parked until the native
 transfer client work.
 
 ## 3. Scenarios
@@ -57,7 +57,7 @@ Each carries a transfer count, a fixture size, and a `bwlimit_kbps` that decides
 how long it runs. A scenario with `with_webhooks` also creates notification rows
 and drives the real trigger path, which is what exercises the
 `QUEUED_SLOT`/`QUEUED_PATH` status handling described in
-`docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md`.
+`../queue/README.md`.
 
 ## 4. Safety
 

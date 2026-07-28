@@ -213,7 +213,7 @@ This is the **ACTUAL folder** created by Sonarr on disk!
 ## 📊 Files Modified
 
 ### **Files Created:**
-1. ✅ `services/path_service.py` (274 lines) - New centralized path service
+1. ✅ `services/path_service.py` - New centralized path service
 
 ### **Files Modified:**
 1. ✅ `services/webhook_service.py` 

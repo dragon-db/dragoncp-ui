@@ -100,10 +100,10 @@ This document records the production-runtime and Socket.IO stability work comple
 - `deploy/gunicorn.conf.py`
 - `deploy/dragoncp-ui.service.example`
 - `README.md`
-- `SETUP.md`
+- `docs/getting-started/installation.md`
 - `frontend/README.md`
 - `frontend/package.json`
-- `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md`
+- `docs/operations/runtime-and-deployment.md`
 
 ## Verification Performed
 

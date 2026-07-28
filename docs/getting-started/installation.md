@@ -299,7 +299,9 @@ dragoncp_ui/
 │   └── style.css            # CSS styles
 ├── requirements.txt         # Python dependencies
 ├── README.md               # Main documentation
-└── SETUP.md               # This file
+└── docs/
+    └── getting-started/
+        └── installation.md  # This file
 ```
 
 ### Development Setup
@@ -404,6 +406,6 @@ logging.basicConfig(level=logging.DEBUG)
 
 For additional support:
 - Check the main README.md for basic usage
-- Review this SETUP.md for detailed configuration
+- Review this installation guide for detailed configuration
 - Check the main DragonCP project documentation
 - Review the troubleshooting section above
