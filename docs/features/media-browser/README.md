@@ -347,6 +347,119 @@ Full contracts: [../../reference/api.md](../../reference/api.md). Note that the
 canonical sync-status list there is `SYNCED`, `OUT_OF_SYNC`, `NO_INFO`, which
 matches the backend.
 
+## The screen
+
+`frontend/src/components/pages/media-browser.tsx` renders one page per library;
+the sidebar link decides which of `movies`, `tvshows` and `anime` it is opened
+with. The header carries the title of whatever you have selected, a "Refresh
+Folders" button and a "Refresh Sync Status" button. Both are disabled until the
+browse session is connected, and each spins while its own request is in flight.
+Refreshing sync status also re-requests the per-season statuses when you have a
+folder open.
+
+If there is no browse session the page shows the amber "Remote browse session
+required" card instead of a folder list, with a "Connect Browse Session" button
+when SSH host and username are already saved and an "Open Settings" link either
+way.
+
+### Finding a folder
+
+The folder list has a "Search folders" box and a sort dropdown, both of which
+only affect the folder level - seasons and episodes have neither.
+
+Search is a plain case-insensitive substring match on the folder name. The card
+subtitle counts what you are looking at: `120 folders` normally, `7 of 120
+folders` while a search is narrowing it.
+
+The sort dropdown offers two orders:
+
+- **Recently Modified** - the default. Folders are ordered by the modification
+  time the listing returned, newest first. Because that time is the newest file
+  anywhere under the folder (see "How modification times are read"), this puts
+  the titles that changed on the server most recently at the top.
+- **Alphabetical** - `localeCompare` on the folder name.
+
+Switching library resets the view to the folder list and clears the search box,
+the selection and the sort back to Recently Modified.
+
+Each folder row shows the name, a relative date under it ("Today",
+"Yesterday", "4 days ago", "3 weeks ago", or a plain date once it is older than
+30 days; blank when no timestamp came back) and the sync badge on the right -
+"Synced", "Out of Sync", "Not checked" for `NO_INFO`, and "Partial" for the
+`PARTIAL_SYNC` value the backend never sends. While a sync-status refresh is
+running, every badge on screen reads "Loading" regardless of its real value.
+
+### Drilling down
+
+The path is library -> folder -> season -> options -> episodes, with movies
+skipping the season step: selecting a movie folder goes straight to the options
+screen. A breadcrumb appears above the card as soon as you leave the folder
+list, and each earlier crumb is clickable to go back to that level. The season
+card also has its own "Back" button and the episode card a "Back to Options"
+button.
+
+Seasons are not sorted by name first. They are ordered by sync status - out of
+sync, then not checked, then synced - and only then alphabetically, so the
+season that needs attention is at the top. Episodes are rendered in whatever
+order the API returned them.
+
+### Transfer options
+
+The options screen shows the folder (and season) you picked and up to four
+choices:
+
+- **Sync Entire Folder** - starts the transfer for the whole folder or season.
+  The toast repeats the message the API returned, which is where you find out
+  whether it started or was queued.
+- **Dry-Run** - runs the preview described below. It does not start anything.
+- **Manual Episode Sync** and **Download Single Episode** - only shown for a
+  season, and both simply open the episode list.
+
+The episode list gives each filename a "Download" button that starts a
+file-level transfer for that one episode.
+
+Nothing on this screen requires a dry-run before a sync. The two buttons are
+independent; the preview is advice, not a gate.
+
+### The dry-run preview
+
+"Dry-Run" opens a dialog titled "Dry-run validation", subtitled with the folder
+and season you are looking at. It is rendered by
+`frontend/src/components/dry-run/dry-run-report.tsx` from the parser in
+`frontend/src/lib/dry-run.ts`, and the same dialog is used by the Webhooks page.
+Closing it discards the result; switching library also clears it.
+
+The dialog answers, top to bottom:
+
+- **A verdict banner.** "Safe to sync" when the backend returned
+  `safe_to_sync`, "Manual review required" when it did not, and "Validation
+  failed" when rsync never reported at all - no raw output and no counted files.
+  That third state matters: it is the difference between "nothing would change"
+  and "we could not find out", and the report says so rather than showing
+  zeroes.
+- **Five counters** - Incoming, Deleting, Already in sync, Server files, Local
+  files - and a proportional bar splitting the folder into unchanged, incoming
+  and deleted.
+- **Safety checks**, three of them, each shown as passed or not with its own
+  detail line: the server holds at least as many files as the local copy;
+  deletions do not outnumber incoming files; rsync produced no error lines.
+- **rsync errors or warnings**, when the output contained any, up to eight.
+- **The file list.** One row per path with a New / Update / In sync / Delete
+  label, the episode marker when the filename carries one, the release tags in
+  brackets and the extension. Filter buttons (All, Incoming, In sync, Deleting)
+  carry their own counts, a box filters by path text, and the list pages in
+  blocks of 60 behind a "Show N more" button.
+- **Collapsible detail** - the full rsync statistics table with the source it
+  connected to, the raw rsync output, and the JSON payload, the last two with
+  copy buttons.
+
+This is the safety step because it is the only view on this page grounded in
+actual files. The folder badge is a timestamp comparison and will read "Synced"
+in several situations where the destination does not hold the files (see
+"Behaviour worth knowing"). The dry run asks rsync what it would really do -
+and, because a real sync runs with `--delete`, the "Deleting" list is the only
+place you see which local files would be removed before they are removed.
+
 ## Related
 
 - [../queue/README.md](../queue/README.md) - what happens after a transfer is started

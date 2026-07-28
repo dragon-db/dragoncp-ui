@@ -184,6 +184,52 @@ All endpoints are registered under `/api` (`app.py`) and require authentication.
 
 The plan response is `{"status": "success", "plan": {"operations": [...]}}`, where each operation has `backup_relative`, `backup_full`, `copy_to`, `target_delete` and `context_display`. The example shown for this endpoint in `docs/reference/api.md` does not match what `plan_context_restore` returns.
 
+## The screen
+
+`frontend/src/components/pages/backups.tsx` is a single page that swaps between four stages, with a breadcrumb across the top once you leave the first one. Three of them are the restore path - history, files, confirmation - and the fourth is the delete screen, reached from either of the first two.
+
+### 1. Backup History
+
+The landing stage lists the backups newest first, with the total in the card subtitle. Each row shows the folder name (falling back to the transfer ID and then the backup ID) with the season appended, a status badge, the media type, and a line reading `N file(s) - <size> - <created date>`. Only `ready`, `restored` and `deleted` get a coloured badge; anything else, `files_removed` included, prints its raw status in a plain outline.
+
+Every row has **Files** and **Delete**. **Restore** appears only while the status is `ready`.
+
+Two buttons sit in the page header: **Refresh**, and **Import/Reindex**, described below.
+
+### 2. Backup Files
+
+"Files" opens the table of what that transfer displaced: a checkbox per row, the detected context (`Series - S01E04`, `Title (2019)`, or `-` when none was detected), the path relative to the backup folder, and the file size. The header checkbox selects or clears everything.
+
+Three actions sit above the table. **Restore Selected (N)** is disabled until at least one row is ticked and plans only those paths. **Restore All** plans every file in the backup. **Delete Backup** jumps to the delete stage.
+
+### 3. Restore Plan Preview
+
+Both restore buttons call the plan endpoint and land here - the breadcrumb calls this step "Confirmation". The table has one row per planned operation: the backup file's relative path with its context underneath (or "No context detected"), and the action.
+
+The action column is where the destination match shows up. When the plan found a destination file to remove first, the row reads `Replace: <path>` in amber above `Copy To: <path>` in green. When it did not - or when the file it found is the same path being written - only the green `Copy To` line appears. A plan that matched nothing shows "No operations in restore plan".
+
+**Apply Restore** runs it, and **Back to Files** returns to the table. The restore runs synchronously on the server, so the button stays disabled until rsync has finished; on success the page returns to the history list and refetches it.
+
+What gets applied is exactly what was planned: the page remembers the file list it sent to the plan endpoint and sends that same list to the restore endpoint. Nothing is re-derived between the preview and the run.
+
+### The Restore shortcut versus going through the files
+
+The **Restore** button on a history row does two things at once: it opens the files stage for that backup and immediately plans a restore with no file list. Because "no file list" means "everything", the shortcut is exactly **Restore All** with the file table skipped - you land straight on the confirmation preview, and pressing Back drops you onto the files table you jumped over.
+
+So the shortcut is not a faster restore, only a faster route to the same preview. The difference from going through the files stage is which paths reach the plan: the shortcut always sends none (all files), while **Restore Selected** sends the ticked relative paths and plans only those. Both then apply what the preview showed, and both are still one confirmation away from anything being written.
+
+One consequence of the shortcut is worth knowing: it is offered only on rows whose status is `ready`, so a backup that has already been restored, or whose files were removed, has to be opened through **Files** first.
+
+### 4. Delete Backup
+
+The delete stage has two independent switches - "Delete backup record" (on by default) and "Delete backup files" (off by default), the latter naming the actual backup path it would empty. Turning the files switch on reveals the list of files that would be removed, with sizes. The delete button is disabled while both switches are off.
+
+### Import/Reindex
+
+The **Import/Reindex** button in the header is a recovery action, not a refresh. It asks the server to walk the backup directory and create records for backup folders that have no database row - the case after a database reset, an older install, or a transfer whose finalization never ran. It creates records only; it never deletes, moves or restores files. Folders that already have a record, folders with no files in them, and directory names without an underscore are skipped, and the toast reports how many were imported.
+
+The reconstruction rules and their limits are in "Reindexing folders found on disk" above - in particular, folders left by webhook or simulation transfers import with an empty destination and cannot then be restored from this page.
+
 ## Related
 
 - [../queue/README.md](../queue/README.md) - why a paused transfer skips backup finalization and a resumed one reuses the same backup folder

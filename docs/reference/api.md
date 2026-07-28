@@ -2,6 +2,23 @@
 
 Purpose: human-friendly reference for every backend HTTP API endpoint implemented by the Python server.
 
+## This File Is Authoritative
+
+This document is the authoritative description of the API. It is written by
+reading the route decorators and handler bodies in `app.py` and `routes/`, and
+it is what you should trust for request shapes, response fields, status codes
+and behaviour.
+
+`openapi.yaml` in this same directory is the machine-readable companion. It
+lists every endpoint with its method, path, auth requirement and a one-line
+summary, so it can be imported into an API client or used to generate a
+stub client. Its request and response schemas are deliberately thin - they name
+the common fields and nothing more. When the two disagree, this file wins and
+`openapi.yaml` is the one that needs fixing.
+
+Both files are maintained by hand against the same source. Changing an endpoint
+means changing both.
+
 ## IMPORTANT NOTE (For AI Agents)
 
 - Use this document as a reference.
@@ -16,7 +33,9 @@ Source checked while writing this file:
 - `routes/webhooks.py`
 - `routes/backups.py`
 - `routes/debug.py`
-- `openapi.yaml` (reference only, not edited)
+- `routes/logs.py`
+- `routes/simulation.py`
+- `services/rename_service.py`
 
 Base URL:
 ```text
@@ -1132,6 +1151,77 @@ Output JSON:
 {"status":"success","message":"Rename notification deleted successfully"}
 ```
 
+### POST `/webhook/rename/notifications/{notification_id}/verify`
+What it does: checks whether the files from one rename run are on disk under
+their new names right now.
+
+This is a read-only check. It renames nothing, and the result is returned to the
+caller only - it is not written back to the rename history row. Running it twice
+is free.
+
+Auth: required.
+
+Path param:
+- `notification_id`
+
+Input: no body required.
+
+The file list comes from the stored per-file rename results. If those are empty,
+the stored raw webhook payload is re-parsed instead, so a run whose results never
+persisted can still be checked.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "result": {
+    "notification_id": "rename_123_1700000000000",
+    "series_title": "Example Show",
+    "media_type": "tvshows",
+    "status": "partial",
+    "total_files": 3,
+    "verified_count": 2,
+    "failed_count": 1,
+    "verified_at": "2026-07-27T10:00:00",
+    "files": [
+      {
+        "previous_name": "old.mkv",
+        "expected_name": "new.mkv",
+        "local_previous_path": "/media/tv/Example Show/Season 01/old.mkv",
+        "local_expected_path": "/media/tv/Example Show/Season 01/new.mkv",
+        "actual_name": "new.mkv",
+        "actual_path": "/media/tv/Example Show/Season 01/new.mkv",
+        "status": "verified",
+        "message": "Expected renamed file exists locally"
+      }
+    ],
+    "message": "Verified 2/3 renamed file(s) for Example Show (1 missing)"
+  }
+}
+```
+
+`result.status` is `verified` when every file passed, `failed` when none did, and
+`partial` in between. Each entry in `files` is `verified` or `failed`, with one of
+these messages:
+- `Expected renamed file exists locally` - the file is where it should be
+- `File still exists at the previous path` - still under its old name; `actual_path` points at it, so the season needs re-syncing
+- `Expected renamed file was not found locally` - neither name is present, usually because the season was never synced to this machine
+- `Path traversal rejected: ...` - the path in the payload failed the safety check and was not looked at
+
+Status codes:
+- `200` whenever the check ran, **including** when `result.status` is `partial`
+  or `failed`. The HTTP code reports whether the check ran, not whether it
+  passed. Callers must read `result.status`, not the status code, to know the
+  outcome.
+- `400` only when there is nothing to verify: the notification exists but has no
+  file records and no usable stored payload. Body is
+  `{"status":"error","result":{...,"status":"failed","message":"No renamed files are available for verification"}}`.
+- `404` when the notification does not exist.
+- `500` when the rename service is not wired up, or on an unexpected error.
+
+See `../features/renames/README.md` for what the three failure shapes mean in
+practice and how the Renames tab presents them.
+
 ---
 
 ## 7) Webhook and Discord Settings Endpoints
@@ -1540,7 +1630,7 @@ What it does: returns recent backend log records, filtered by severity.
 Auth: required.
 
 Query params:
-- `level` (default `ERROR`; one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`) - returns records at that level and above
+- `level` (default `ERROR`; one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`, `ALL`). Matching is not uniformly "that level and above": `ALL` returns everything, `ERROR` returns `ERROR` and `CRITICAL`, `WARNING` returns `WARNING`, `ERROR` and `CRITICAL`, and `DEBUG`, `INFO` and `CRITICAL` match that level **exactly**. So `level=INFO` hides errors. An unrecognised value is silently coerced to `ERROR` rather than rejected (`routes/logs.py:_normalize_level`, `_level_matches`).
 - `limit` (default `200`, maximum `1000`)
 - `search` (optional case-insensitive substring match)
 
@@ -1551,19 +1641,27 @@ Output JSON:
 ```json
 {
   "status": "success",
-  "entries": [],
-  "count": 0,
+  "log_file": "logs/dragoncp_backend.log",
   "level": "ERROR",
-  "log_file": "logs/dragoncp_backend.log"
+  "limit": 200,
+  "line_count": 2,
+  "size_bytes": 20971520,
+  "last_modified": "2026-07-28T10:15:48",
+  "lines": [
+    { "level": "ERROR", "text": "2026-07-28 10:15:48 | ERROR | ... | message" }
+  ]
 }
 ```
+
+`lines` holds objects, not strings, and is ordered oldest-first.
 
 ### GET `/logs/download`
 What it does: downloads the whole backend log file.
 
 Auth: required.
 
-Output: the log file as an attachment.
+Output: the live log file as a `text/plain` attachment. Rotated files
+(`.log.1` and older) are not served by any endpoint.
 
 Errors:
 - `404` `{"status":"error","message":"Log file is not available."}` when the file does not exist.

@@ -129,8 +129,6 @@ Management endpoints (session auth):
 
 Socket events: `rename_webhook_received` (before work starts) and `rename_completed` (after a successfully persisted run).
 
-Note: `../../reference/api.md` documents the list, detail, json and delete endpoints but not the verify endpoint at time of writing.
-
 ## Related
 
 - [Auto-sync](../auto-sync/README.md) — what happens to the non-rename Sonarr events on the same receivers

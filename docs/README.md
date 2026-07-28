@@ -14,12 +14,11 @@ map; `INDEX.md` is the catalogue.
 
 | Folder | Contains |
 |---|---|
-| `getting-started/` | Getting the app running for the first time: install, configuration, environment. |
-| `features/<area>/README.md` | One folder per user-visible capability. What it does, where the code is, how it behaves, its endpoints and its data. This is where most answers live. |
-| `reference/` | Contracts and lookups: API endpoints, database schema, frontend structure, path rules, design system. Things you check rather than read. |
+| `getting-started/` | Getting the app running for the first time: install, configuration, environment, the launcher and `TEST_MODE`, the frontend dev server, and the test suite. |
+| `features/<area>/README.md` | One folder per user-visible capability. What it does, where the code is, how it behaves, its endpoints and its data. This is where most answers live. Screens count as capabilities: `dashboard/` and `settings/` describe pages rather than backend flows. |
+| `reference/` | Contracts and lookups: API endpoints, database schema, frontend structure, socket events, path rules, configuration keys, design system. Things you check rather than read. `openapi.yaml` — the machine-readable API spec — lives here too, alongside its prose version `reference/api.md`. |
 | `architecture/` | System-wide shape: how the pieces fit, how the codebase got decomposed. Nothing feature-specific. |
-| `operations/` | Running it in production: runtime, deployment, systemd, websocket stability. |
-| `api/` | `openapi.yaml` — the machine-readable API spec. The prose version is `reference/api.md`. |
+| `operations/` | Running it in production: runtime, deployment, systemd, websocket stability, backend logging, and the hand-run maintenance scripts. |
 | `plans/` | Designs for work that is **not built yet**, or only half built. Never describes current behaviour without saying so. |
 | `archive/` | Superseded material kept for history. Do not trust it as current. |
 
@@ -31,13 +30,22 @@ map; `INDEX.md` is the catalogue.
 | Anything touching rsync, progress, pause/resume | `features/transfers/README.md` | `features/queue/README.md` |
 | Why a transfer is stuck, queued, or not starting | `features/queue/README.md` | `features/transfers/README.md` |
 | Radarr/Sonarr webhook payloads and what they trigger | `features/webhooks/README.md` | `features/auto-sync/README.md` |
-| Adding or changing an HTTP endpoint | `reference/api.md` | `api/openapi.yaml`, then the owning feature doc |
+| Adding or changing an HTTP endpoint | `reference/api.md` | `reference/openapi.yaml`, then the owning feature doc |
 | Adding or changing a database column | `reference/database-schema.md` | The owning feature doc's `Data` section |
+| Adding or changing a Socket.IO event | `reference/realtime.md` | The owning feature doc's `API` section |
 | React UI work | `reference/frontend.md` | `reference/design-system.md` |
+| The landing page — what the panels show, poll, and hide | `features/dashboard/README.md` | `features/queue/README.md` |
+| SSH credentials, media paths, auto-sync toggles, and where a setting is stored | `features/settings/README.md` | `reference/configuration.md` |
+| A configuration key: what reads it, what it defaults to, what wins | `reference/configuration.md` | `getting-started/installation.md` |
 | Where files land on disk, destination paths, name normalization | `reference/path-handling.md` | `features/transfers/README.md` |
 | Deployment, systemd, gunicorn, socket drops in production | `operations/runtime-and-deployment.md` | `architecture/system-overview.md` |
+| Reading the backend log, or working out why a sync went quiet | `operations/logging.md` | `features/queue/README.md` |
+| Something behaves oddly — check whether it is already known | `operations/known-issues.md` | `operations/logging.md` |
+| Migrating, verifying or compacting the database by hand | `operations/maintenance-scripts.md` | `reference/database-schema.md` |
 | First time in the codebase | `architecture/system-overview.md` | `architecture/service-decomposition.md` |
 | Setting the app up locally | `getting-started/installation.md` | `../AGENTS.md` |
+| Starting the backend and the frontend dev server, or using `TEST_MODE` | `getting-started/running.md` | `getting-started/installation.md` |
+| Running or adding automated tests | `getting-started/testing.md` | The owning feature doc |
 | Testing a transfer end to end without touching real media | `features/simulation/README.md` | — |
 | Something that does not exist yet | `plans/` | — |
 
@@ -137,10 +145,10 @@ move or delete a doc, fix `INDEX.md` in the same commit.
 
 | You changed | Update |
 |---|---|
-| An HTTP endpoint (added, removed, path, request or response shape) | `reference/api.md`, `api/openapi.yaml`, and the owning `features/<area>/README.md` `API` section |
+| An HTTP endpoint (added, removed, path, request or response shape) | `reference/api.md`, `reference/openapi.yaml`, and the owning `features/<area>/README.md` `API` section |
 | A database column or table | `reference/database-schema.md` and the owning feature doc's `Data` section |
 | A feature's behaviour | That feature's `README.md` — `How it works` if the flow changed, `Behaviour worth knowing` if the visible outcome did |
-| A socket event | The owning feature doc's `API` section and `reference/frontend.md` |
+| A socket event | `reference/realtime.md`, the owning feature doc's `API` section, and `reference/frontend.md` |
 | Where a responsibility lives (moved or renamed a file) | The `Where it lives` table in every feature doc that names it |
 | Config, env vars, install steps | `getting-started/installation.md`, and `operations/runtime-and-deployment.md` if it affects production |
 | Something a `plans/` doc described, now built | Move the content into the feature doc; leave the plan only if part of it is still unbuilt |

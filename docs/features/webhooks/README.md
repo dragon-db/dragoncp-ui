@@ -190,6 +190,51 @@ Management (all behind `require_auth`):
 
 Full contracts: [../../reference/api.md](../../reference/api.md). Note that the API reference currently describes the three receivers as "public"; they have been behind `require_webhook_auth` since the auth module was added, and are only unauthenticated when neither `WEBHOOK_SECRET` nor `WEBHOOK_ALLOWED_IPS` is configured.
 
+## The screen
+
+`frontend/src/components/pages/webhooks.tsx` splits the page into two tabs, each with its own counter in the tab strip: **Media sync**, counting the notifications currently loaded, and **Renames**, counting the rename runs the API reports. The page listens on the socket and refetches the matching list when a webhook is captured or a rename arrives or completes.
+
+Two controls sit in the header and apply to both tabs. **Refresh** refetches both lists. **Auto-sync** is a popover with one switch per library (Movies, TV Shows, Anime); the trigger button carries a dot per library, lit when that library syncs on its own, plus an `n/3` count, so the state is readable without opening it. Each switch writes immediately and confirms with a toast. The popover footer states the batching wait currently configured, e.g. "TV & anime wait 60s after the last episode".
+
+### Media sync tab
+
+Four tiles head the tab - media syncs, completed, in progress, failed. The first is the raw notification count, annotated with how many groups they collapse into ("in 7 groups"). The other three are counted per group, using the group's own status, so they agree with the rows on screen rather than with the notification count.
+
+Under them, the "Arrivals" card lists the notifications, filtered by a row of status buttons: All, Completed, Pending, Syncing, Manual, Failed. The Manual filter passes `MANUAL_SYNC_REQUIRED`, which as noted above is never stored, so it returns nothing. The right of the toolbar shows how many rows are on screen.
+
+### One row per season, not per episode
+
+Grouping is done in `frontend/src/lib/webhook-grouping.ts`. Series, TV and anime notifications collapse into one row per series and season, keyed on the series slug plus the season number; movies stay one row each. A season pack that fans out into a dozen episode webhooks is therefore one row. Rows are ordered by the newest notification in each.
+
+The group takes the most urgent status any of its episodes holds, in this order: syncing, failed, queued-path, queued-slot, ready, pending, manual. Only when none of those is present does the row read completed - so a season is never reported as done while one episode is still failed or queued.
+
+The row itself shows the poster, the title and year, a media badge, the status, and a facts line: who requested it, `Season N · M episodes`, the size on disk, and how long ago it arrived. The episode count is distinct episode numbers, not webhooks, so an episode grabbed individually and then upgraded by a pack is counted once. The size is likewise the newest imported file per episode number - the grab size on a season pack's webhook is the size of the whole pack repeated on every episode, so summing it would multiply the season.
+
+A group with anything syncable in it gets a **Sync all** button that starts a sync for every pending, failed or manual notification in the group and reports the batch in one message. A movie row gets **Sync**, or **Retry** when the last attempt failed.
+
+Expanding a group shows a summary line (`M episodes · K webhooks · <size> on disk`) and then one row per episode, showing the file currently on disk with its quality, size and status, marked "Pack" when Sonarr classified the release as a season pack and carrying a history count when the episode was grabbed more than once. Expanding an episode - or a movie row, which expands straight to it - opens the full detail: the release chips and title, media facts read from the stored payload, the season and file paths, the stored dry-run result as a one-line summary with a "Details" button that opens the shared dry-run dialog, the superseded grabs under "Replaced by upgrade", and the per-item actions (Sync/Retry, Mark complete, Dry-run, View JSON, and Delete, which is hidden while the item is syncing).
+
+### Renames tab
+
+Four tiles again: rename runs, files renamed, failed files, and how long ago the last run was. The counts are summed over the per-run `success_count` and `failed_count`, so they count files, not webhooks.
+
+The "Rename history" card lists the runs: series title, `x/y renamed`, the media label, how long ago, and the run's status badge - `completed`, `partial` or `failed`. Each run offers **Details** (a dialog with the run's totals and a before/after filename diff per file, marking a file as not renamed when it has no new name), **Verify rename**, **View JSON** (opens the stored payload in a new tab) and **Delete**.
+
+### How the verification report classifies each file
+
+**Verify rename** re-checks the run against this machine and opens the report in `frontend/src/components/webhooks/rename-verify-report.tsx`. The backend records only `verified` or `failed` per file, plus a message and whichever path it actually found; the report turns that into four outcomes:
+
+| Shown as | Meaning | What the record looked like |
+| --- | --- | --- |
+| **Verified** | The file is on disk under its new name | per-file status `verified` |
+| **Old name** | The rename never reached this machine - the previous filename is still there | not verified, but a path was found on disk (`actual_path` set) |
+| **Blocked** | The path was rejected before it could be checked | not verified and the message mentions traversal |
+| **Missing** | Neither the new nor the old name is on disk | not verified and no path found |
+
+The distinction is the point of the report: "Old name" means re-sync that season, while "Missing" means go looking - the file is not there under either name. The filter buttons above the list are All, Verified, Old name and Missing, and the Missing filter includes the blocked files.
+
+Above the list sit a verdict banner - "Every file verified", "Some files not verified", "Nothing to verify", or "No files verified", taken from the run-level status - four counters, and a proportional bar. Each file row carries its outcome badge, the episode marker, a before/after filename diff, and for anything not verified either the path that was found (`on disk: …`) or the path it looked for (`looked for: …`). The whole verification payload is available as JSON at the bottom, with a copy button.
+
 ## Related
 
 - [../auto-sync/README.md](../auto-sync/README.md) — the batching window, dry-run gate and manual-sync flag in detail
