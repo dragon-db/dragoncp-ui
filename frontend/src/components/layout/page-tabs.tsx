@@ -33,9 +33,12 @@ export function PageTabsList({ items, className }: { items: PageTabItem[]; class
     // `group-data-horizontal/tabs:h-auto` is needed as well as `h-auto` — the
     // base TabsList pins a 32px height with that same variant, which a plain
     // `h-auto` does not override, and the taller segments then spill out of it.
+    // `overflow-hidden` is the guarantee, not the fix: whatever the segments do,
+    // an active pill can never paint outside the track's rounded edge. The
+    // shrinking below is what stops it needing to.
     <TabsList
       className={cn(
-        "w-full gap-1 rounded-full border border-border bg-card p-1 group-data-horizontal/tabs:h-auto sm:w-fit",
+        "w-full gap-1 overflow-hidden rounded-full border border-border bg-card p-1 group-data-horizontal/tabs:h-auto sm:w-fit",
         className
       )}
     >
@@ -48,22 +51,38 @@ export function PageTabsList({ items, className }: { items: PageTabItem[]; class
             />
           )}
           <TabsTrigger
-          value={item.value}
-          className={cn(
-            "h-9 flex-1 gap-2 rounded-full px-4 text-[13px] font-medium sm:flex-none",
-            "data-active:bg-brand/15 data-active:font-semibold data-active:text-brand-foreground",
-            "data-active:ring-1 data-active:ring-brand/35 data-active:ring-inset",
-            "dark:data-active:border-transparent dark:data-active:bg-brand/15",
-            "[&_svg]:text-current data-active:[&_svg]:text-brand-hover"
-          )}
-        >
-          {item.icon && <item.icon className="size-4" />}
-          {item.label}
-          {item.count !== undefined && (
-            <span className="rounded-full bg-black/25 px-1.5 py-px font-mono text-[10px] text-current tabular-nums">
-              {item.count}
-            </span>
-          )}
+            value={item.value}
+            className={cn(
+              // Segments size to their own content and give up room in
+              // proportion when there is not enough - equal thirds would
+              // squeeze "Activity 0" to fit "Simulate", which needs less.
+              // `min-w-0` is what allows any of it: flex items default to
+              // `min-width: auto` and would otherwise push out of the track.
+              // `flex-initial` (0 1 auto) overrides the base trigger's `flex-1`,
+              // whose 0% basis gives every segment the same width whatever it
+              // contains - which is what squeezed "Activity 0" to fit
+              // "Simulate". Sizing to content and shrinking only when short of
+              // room keeps the labels whole. `flex-none` above sm stops them
+              // shrinking at all, since the track is `w-fit` there and grows.
+              "h-9 min-w-0 flex-initial gap-1.5 rounded-full px-2 text-[13px] font-medium",
+              "sm:flex-none sm:gap-2 sm:px-4",
+              "data-active:bg-brand/15 data-active:font-semibold data-active:text-brand-foreground",
+              "data-active:ring-1 data-active:ring-brand/35 data-active:ring-inset",
+              "dark:data-active:border-transparent dark:data-active:bg-brand/15",
+              "[&_svg]:text-current data-active:[&_svg]:text-brand-hover"
+            )}
+          >
+            {item.icon && <item.icon className="size-4 shrink-0" />}
+            {/* The label is the only part that may give up room; the icon and
+                the count stay legible at any width. */}
+            <span className="min-w-0 truncate">{item.label}</span>
+            {/* Dropped on phones, where the room buys a readable label and the
+                stat tiles directly below already carry the same numbers. */}
+            {item.count !== undefined && (
+              <span className="hidden shrink-0 rounded-full bg-black/25 px-1.5 py-px font-mono text-[10px] text-current tabular-nums sm:inline">
+                {item.count}
+              </span>
+            )}
           </TabsTrigger>
         </Fragment>
       ))}
