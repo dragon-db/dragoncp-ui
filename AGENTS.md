@@ -48,6 +48,19 @@
 - Prefer clear diagnostics around Socket.IO mode, reconnect behavior, and fallback transport state.
 - Protect unattended operation: backend restarts, token refresh, websocket reconnect, and transfer monitoring should degrade gracefully.
 
+## Task Tracking
+
+- `TASKS.md` at the repository root is the current task tracker. Read it before
+  starting work.
+- If the work matches an existing task, use it. Otherwise add one.
+- Record decisions as they are made, not reconstructed at the end.
+- Before finishing a session, leave a `Handoff:` line on the task saying where
+  you stopped and what comes next. Work here spans separate sessions that share
+  no memory, so that line is how the next one starts anywhere other than blind.
+- Point a task's `Docs:` at the relevant page under `docs/` rather than
+  restating it.
+- A database-backed replacement is designed in `docs/plans/task-manager.md`.
+
 ## Documentation Lookup
 
 - Use `docs/README.md` as the primary documentation index before searching individual docs.

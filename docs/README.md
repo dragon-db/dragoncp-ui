@@ -41,6 +41,7 @@ map; `INDEX.md` is the catalogue.
 | Deployment, systemd, gunicorn, socket drops in production | `operations/runtime-and-deployment.md` | `architecture/system-overview.md` |
 | Reading the backend log, or working out why a sync went quiet | `operations/logging.md` | `features/queue/README.md` |
 | Something behaves oddly — check whether it is already known | `operations/known-issues.md` | `operations/logging.md` |
+| Picking up work, or leaving it for the next session | `../TASKS.md` | `plans/task-manager.md` |
 | Migrating, verifying or compacting the database by hand | `operations/maintenance-scripts.md` | `reference/database-schema.md` |
 | First time in the codebase | `architecture/system-overview.md` | `architecture/service-decomposition.md` |
 | Setting the app up locally | `getting-started/installation.md` | `../AGENTS.md` |

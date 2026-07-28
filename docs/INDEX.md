@@ -75,6 +75,7 @@ as a description of how the system behaves today.
 
 | Doc | What it is |
 |---|---|
+| [`plans/task-manager.md`](plans/task-manager.md) | **Not implemented.** Design for a database-backed task tracker for project work, so context survives between AI agent sessions — schema, the agent-facing CLI, the UI, and the `AGENTS.md` contract that makes agents actually write to it. `TASKS.md` at the repository root is the interim stopgap. |
 | [`plans/rsync-log-streaming.md`](plans/rsync-log-streaming.md) | **Partly implemented.** The log-storage half is done (progress-line collapsing, throttled writes, capped logs — 149k stored lines down to 13.7k); still unbuilt are per-transfer log files with restart-safe read offsets, the `transfer_runtime` table, and per-transfer WebSocket rooms, so logs are still broadcast to every client. |
 | [`plans/remote-connection-check.md`](plans/remote-connection-check.md) | **Not implemented.** Design for an on-demand "is the link to the server healthy and how fast" check, why it is separate from the simulation tool, and the safety rules for writing to and deleting from the remote server; parked until the planned native transfer client exists. |
 
