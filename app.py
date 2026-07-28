@@ -21,7 +21,7 @@ from config import DragonCPConfig, APP_VERSION
 from ssh import SSHManager
 from websocket import register_websocket_handlers, start_cleanup_thread, websocket_connections
 from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT
-from auth import require_auth, test_mode_or_auth
+from auth import require_auth
 
 # Import models
 from models import DatabaseManager
@@ -30,12 +30,14 @@ from models.webhook import RenameNotification
 # Import services
 from services import TransferCoordinator
 from services.rename_service import RenameService
+from services.simulation_service import SimulationService
 
 # Import routes
 from routes import (
     auth_bp, media_bp, transfers_bp, backups_bp, webhooks_bp, debug_bp, logs_bp,
+    simulation_bp,
     init_media_routes, init_transfer_routes, init_backup_routes,
-    init_webhook_routes, init_debug_routes
+    init_webhook_routes, init_debug_routes, init_simulation_routes
 )
 
 
@@ -253,6 +255,12 @@ init_backup_routes(transfer_coordinator)
 init_webhook_routes(config, transfer_coordinator, rename_service)
 init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
 
+# Simulations run the real transfer pipeline against throwaway local files.
+# Anything a previous process left behind is cleared before serving.
+simulation_service = SimulationService(config, transfer_coordinator, socketio)
+simulation_service.purge_leftovers()
+init_simulation_routes(simulation_service)
+
 # Register route blueprints
 app.register_blueprint(auth_bp, url_prefix='/api')
 app.register_blueprint(media_bp, url_prefix='/api')
@@ -261,6 +269,7 @@ app.register_blueprint(backups_bp, url_prefix='/api')
 app.register_blueprint(webhooks_bp, url_prefix='/api')
 app.register_blueprint(debug_bp, url_prefix='/api')
 app.register_blueprint(logs_bp, url_prefix='/api')
+app.register_blueprint(simulation_bp, url_prefix='/api')
 
 logger.info('Backend logging file: %s', LOG_FILE_PATH)
 
@@ -470,58 +479,6 @@ def api_reset_config():
 def api_env_config():
     """Get only environment configuration (without session overrides) - Protected"""
     return jsonify(sanitize_config_response(config.env_config))
-
-
-# ===== TEST SIMULATION ENDPOINTS =====
-
-@app.route('/api/test/simulate', methods=['POST'])
-@test_mode_or_auth
-def api_start_simulation():
-    """Start simulated transfers for UI testing (no rsync). Controlled by TEST_MODE env."""
-    if os.environ.get('TEST_MODE', '0') != '1':
-        return jsonify({"status": "error", "message": "Simulation disabled. Set TEST_MODE=1 to enable."}), 403
-
-    try:
-        from simulator import TransferSimulator
-        simulator = TransferSimulator(transfer_coordinator, socketio)
-        
-        payload = request.json or {}
-        count = int(payload.get('count', 3))
-        steps = int(payload.get('steps', 40))
-        interval = float(payload.get('interval', 0.5))
-        failure_rate = float(payload.get('failure_rate', 0.0))
-
-        started = simulator.start_simulations(
-            count=count,
-            steps=steps,
-            interval_seconds=interval,
-            failure_rate=failure_rate,
-        )
-        return jsonify({
-            "status": "success",
-            "message": f"Started {len(started)} simulated transfers",
-            "transfer_ids": started,
-        })
-    except Exception as e:
-        print(f"❌ Error starting simulation: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@app.route('/api/test/simulate/stop', methods=['POST'])
-@test_mode_or_auth
-def api_stop_simulation():
-    """Signal all running simulations to stop."""
-    if os.environ.get('TEST_MODE', '0') != '1':
-        return jsonify({"status": "error", "message": "Simulation disabled. Set TEST_MODE=1 to enable."}), 403
-
-    try:
-        from simulator import TransferSimulator
-        # Note: We'd need to maintain a global simulator instance for this to work properly
-        # For now, just return success
-        return jsonify({"status": "success", "message": "Stop signal sent"})
-    except Exception as e:
-        print(f"❌ Error stopping simulation: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 # ===== MAIN ENTRY POINT =====

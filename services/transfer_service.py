@@ -20,6 +20,10 @@ PROGRESS_WRITE_INTERVAL = 1.0
 # How many trailing lines ride along on a progress event.
 SOCKET_LOG_TAIL = 100
 
+# Default speed ceiling for simulation transfers, in KB/s. A local copy would
+# otherwise finish before the UI could show anything.
+SIMULATION_BWLIMIT_KBPS = 4000
+
 
 # rsync -h reports sizes in powers of 1000 (a bare -h, not -hh).
 _SIZE_UNITS = {'': 1, 'K': 1000, 'M': 1000 ** 2, 'G': 1000 ** 3,
@@ -28,8 +32,7 @@ _SIZE_UNITS = {'': 1, 'K': 1000, 'M': 1000 ** 2, 'G': 1000 ** 3,
 # A progress line from rsync's --info=progress2 output, e.g.
 #   "          2.70G  64%  142.31MB/s    0:00:11"
 # Without --human-readable the byte count is comma grouped ("2,834,567,890"),
-# and some rsync builds (plus the transfer simulator) omit the ETA field, so
-# both forms have to parse.
+# and some rsync builds omit the ETA field, so both forms have to parse.
 _PROGRESS_LINE_RE = re.compile(
     r'^\s*([\d,]+(?:\.\d+)?)\s*([KMGTPkmgtp]?)\s+(\d{1,3})%\s+'
     r'([\d,]+(?:\.\d+)?)\s*([KMGTPkmgtp]?)B/s'
@@ -478,17 +481,26 @@ class TransferService:
                 })
                 return False
             
+            # A simulation copies fixture files that live on this machine, so it
+            # runs rsync locally instead of over SSH. Everything downstream -
+            # the monitor, progress parsing, queueing, pause and resume - is the
+            # same code the real transfers use, which is the point of it.
+            transfer_row = self.transfer_model.get(transfer_id) or {}
+            is_simulation = bool(transfer_row.get('is_simulation'))
+
             # Get SSH connection details
             ssh_user = self.config.get("REMOTE_USER")
             ssh_host = self.config.get("REMOTE_IP")
             ssh_password = self.config.get("REMOTE_PASSWORD", "")
             ssh_key_path = self.config.get("SSH_KEY_PATH", "")
-            
+
+            if is_simulation:
+                print(f"🎭 Simulation transfer - running rsync locally, no SSH")
             print(f"🔑 SSH User: {ssh_user}")
             print(f"🔑 SSH Host: {ssh_host}")
             print(f"🔑 SSH Key Path: {ssh_key_path}")
             
-            if not ssh_user or not ssh_host:
+            if not is_simulation and (not ssh_user or not ssh_host):
                 print("❌ SSH credentials not configured")
                 self.transfer_model.update(transfer_id, {
                     'status': 'failed',
@@ -554,25 +566,36 @@ class TransferService:
                 "--no-motd"
             ]
             
-            # Add --dry-run flag when TEST_MODE is enabled
-            if os.environ.get('TEST_MODE', '0') == '1':
+            # Add --dry-run flag when TEST_MODE is enabled. A simulation is
+            # exempt: it copies its own fixture files, so it has to actually
+            # move bytes for the progress figures to mean anything.
+            if os.environ.get('TEST_MODE', '0') == '1' and not is_simulation:
                 rsync_cmd.append("--dry-run")
                 print("🧪 TEST_MODE enabled - rsync will run in dry-run mode (no actual file transfers)")
-            
-            # Build SSH options for rsync
-            # SECURITY (SEC-07): host-key verification per configured policy
-            ssh_options = self._build_ssh_host_key_options() + ["-o", "Compression=no"]
-            if ssh_key_path and os.path.exists(ssh_key_path):
-                ssh_options.extend(["-i", ssh_key_path])
-            
-            rsync_cmd.extend(["-e", f"ssh {' '.join(ssh_options)}"])
-            
-            # IMPORTANT: Always use trailing slash for folder syncs to sync contents, not the folder itself
-            # For 'file' type, no trailing slash; for 'folder' type, trailing slash on both source and dest
-            if operation_type == "file":
-                rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}", f"{dest_path}/"])
+
+            if is_simulation:
+                # Hold the copy to a realistic speed so progress, ETA and the
+                # queue behave the way they do against a remote server, rather
+                # than finishing instantly at local disk speed.
+                bwlimit = transfer_row.get('simulation_bwlimit') or SIMULATION_BWLIMIT_KBPS
+                rsync_cmd = [arg for arg in rsync_cmd if not arg.startswith("--bwlimit")]
+                rsync_cmd.append(f"--bwlimit={int(bwlimit)}")
+                rsync_cmd.extend([f"{source_path}/", f"{dest_path}/"])
             else:
-                rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
+                # Build SSH options for rsync
+                # SECURITY (SEC-07): host-key verification per configured policy
+                ssh_options = self._build_ssh_host_key_options() + ["-o", "Compression=no"]
+                if ssh_key_path and os.path.exists(ssh_key_path):
+                    ssh_options.extend(["-i", ssh_key_path])
+
+                rsync_cmd.extend(["-e", f"ssh {' '.join(ssh_options)}"])
+
+                # IMPORTANT: Always use trailing slash for folder syncs to sync contents, not the folder itself
+                # For 'file' type, no trailing slash; for 'folder' type, trailing slash on both source and dest
+                if operation_type == "file":
+                    rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}", f"{dest_path}/"])
+                else:
+                    rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
             
             print(f"🔄 Starting rsync: {' '.join(rsync_cmd)}")
             

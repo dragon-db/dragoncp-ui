@@ -272,6 +272,18 @@ class DatabaseManager:
             # Pause/resume support
             self._ensure_column(conn, 'transfers', 'paused_at', "DATETIME")
 
+            # Rehearsals: rows created by the simulation tool. They run through
+            # the real pipeline so they must live in the real tables, but they
+            # are flagged so they can be shown as rehearsals and removed
+            # afterwards without touching genuine history.
+            self._ensure_column(conn, 'transfers', 'is_simulation', "INTEGER DEFAULT 0")
+            # Speed ceiling in KB/s for a rehearsal, so a scenario can run slow
+            # enough to exercise pause and resume, or fast enough to fill the
+            # queue quickly. Survives a restart, unlike in-memory run state.
+            self._ensure_column(conn, 'transfers', 'simulation_bwlimit', "INTEGER")
+            self._ensure_column(conn, 'radarr_webhook', 'is_simulation', "INTEGER DEFAULT 0")
+            self._ensure_column(conn, 'sonarr_webhook', 'is_simulation', "INTEGER DEFAULT 0")
+
             conn.commit()
         
         print(f"✅ Database initialized: {self.db_path}")

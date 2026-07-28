@@ -303,6 +303,7 @@ def api_all_transfers():
                 "paused_at": transfer.get("paused_at"),
                 "created_at": transfer["created_at"],
                 "log_count": len(transfer["logs"]),
+                "is_simulation": bool(transfer.get("is_simulation")),
                 **build_progress_stats(transfer)
             }
             formatted_transfers.append(formatted_transfer)
@@ -352,6 +353,7 @@ def api_active_transfers():
                 "queue_reason": transfer.get("queue_reason"),
                 "rsync_process_id": transfer.get("rsync_process_id"),
                 "log_count": len(transfer["logs"]),
+                "is_simulation": bool(transfer.get("is_simulation")),
                 **build_progress_stats(transfer)
             }
             formatted_transfers.append(formatted_transfer)

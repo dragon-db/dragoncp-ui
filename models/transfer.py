@@ -47,8 +47,9 @@ class Transfer:
                     INSERT INTO transfers (
                         transfer_id, media_type, folder_name, season_name,
                         source_path, dest_path, operation_type, status, progress,
-                        queue_reason, rsync_process_id, parsed_title, parsed_season, start_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        queue_reason, rsync_process_id, parsed_title, parsed_season, start_time,
+                        is_simulation, simulation_bwlimit
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     transfer_data['transfer_id'],
                     transfer_data['media_type'],
@@ -63,7 +64,9 @@ class Transfer:
                     transfer_data.get('rsync_process_id'),
                     parsed_data['title'],
                     parsed_data['season'],
-                    transfer_data.get('start_time', datetime.now().isoformat())
+                    transfer_data.get('start_time', datetime.now().isoformat()),
+                    1 if transfer_data.get('is_simulation') else 0,
+                    transfer_data.get('simulation_bwlimit')
                 ))
                 conn.commit()
                 print(f"✅ Transfer record created successfully for {transfer_data['transfer_id']}")

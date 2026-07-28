@@ -75,9 +75,11 @@ class TransferCoordinator:
                 ).start()
     
     # Transfer Operations
-    def start_transfer(self, transfer_id: str, source_path: str, dest_path: str, 
-                      operation_type: str = "folder", media_type: str = "", 
-                      folder_name: str = "", season_name: str = None) -> Tuple[bool, str]:
+    def start_transfer(self, transfer_id: str, source_path: str, dest_path: str,
+                      operation_type: str = "folder", media_type: str = "",
+                      folder_name: str = "", season_name: str = None,
+                      is_simulation: bool = False,
+                      simulation_bwlimit: int = None) -> Tuple[bool, str]:
         """
         Start a new transfer with database persistence and queue management
         
@@ -125,7 +127,9 @@ class TransferCoordinator:
                 'status': 'queued',  # Changed from 'duplicate' to 'queued'
                 'progress': queue_message,
                 'queue_reason': 'path',  # Explicit tracking: 'path' or 'slot'
-                'start_time': datetime.now().isoformat()  # Track when queued
+                'start_time': datetime.now().isoformat(),  # Track when queued
+                'is_simulation': is_simulation,
+                'simulation_bwlimit': simulation_bwlimit
             }
             
             self.transfer_model.create(transfer_data)
@@ -165,7 +169,9 @@ class TransferCoordinator:
                 'operation_type': operation_type,
                 'status': 'queued',
                 'progress': 'Waiting in queue...',
-                'queue_reason': 'slot'  # Explicit tracking: 'path' or 'slot'
+                'queue_reason': 'slot',  # Explicit tracking: 'path' or 'slot'
+                'is_simulation': is_simulation,
+                'simulation_bwlimit': simulation_bwlimit
             }
             
             self.transfer_model.create(transfer_data)
@@ -192,7 +198,9 @@ class TransferCoordinator:
                 'source_path': source_path,
                 'dest_path': dest_path,
                 'operation_type': operation_type,
-                'status': 'pending'
+                'status': 'pending',
+                'is_simulation': is_simulation,
+                'simulation_bwlimit': simulation_bwlimit
             }
             
             self.transfer_model.create(transfer_data)
@@ -302,26 +310,6 @@ class TransferCoordinator:
 
         return success, message
 
-    def _resume_simulated_transfer(self, transfer_id: str) -> bool:
-        """
-        Put a simulated transfer back into the running state.
-
-        Simulated transfers (TEST_MODE only) are driven by a simulator thread
-        that is still alive and polling for this status, not by rsync. Starting
-        rsync for their fake paths would be wrong, so every path that would
-        otherwise launch a process has to route through here.
-        """
-        if not transfer_id.startswith('sim_'):
-            return False
-
-        self.transfer_model.update(transfer_id, {
-            'status': 'running',
-            'progress': 'Transfer resumed (simulated)...',
-            'paused_at': None
-        })
-        print(f"🧪 Simulated transfer {transfer_id} resumed without rsync")
-        return True
-
     def resume_transfer(self, transfer_id: str) -> Tuple[bool, str]:
         """
         Resume a paused transfer.
@@ -363,9 +351,6 @@ class TransferCoordinator:
 
         if not can_start:
             return False, f'Could not resume transfer ({queue_status})'
-
-        if self._resume_simulated_transfer(transfer_id):
-            return True, 'Transfer resumed'
 
         self.transfer_model.update(transfer_id, {
             'status': 'pending',
@@ -457,11 +442,6 @@ class TransferCoordinator:
             if updated_count > 0:
                 print(f"📋 Updated {updated_count} notification(s) linked to transfer {transfer_id} to SYNCING (transfer starting)")
         
-        # A queued simulated transfer (e.g. one resumed while the queue was
-        # full) is driven by its simulator thread, not rsync
-        if self._resume_simulated_transfer(transfer_id):
-            return True
-
         # Refresh transfer data after update
         transfer = self.transfer_model.get(transfer_id)
 

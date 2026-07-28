@@ -31,6 +31,7 @@ import {
   TransferStatusBadge,
 } from "@/components/transfers/transfer-bits";
 import { TransferDetailPanel, type TransferActions } from "@/components/transfers/transfer-detail";
+import { SimulationBadge, SimulationPanel } from "@/components/transfers/simulation-panel";
 import {
   Accordion,
   AccordionContent,
@@ -55,6 +56,7 @@ import {
   IconActivity,
   IconArrowBackUp,
   IconCircleX,
+  IconFlask,
   IconHistory,
   IconPlayerPause,
   IconPlayerPlay,
@@ -127,6 +129,7 @@ function TransferRow({ transfer, posterUrl, now, expanded, actions, busy }: Tran
                   {transfer.parsed_title || transfer.folder_name}
                 </span>
                 <MediaBadge mediaType={transfer.media_type} />
+                {transfer.is_simulation && <SimulationBadge />}
                 {/* On phones the status reads with the title; from sm up it
                     keeps its column at the end of the row. */}
                 <TransferStatusBadge status={status} className="sm:hidden" />
@@ -532,6 +535,7 @@ export function TransfersPage() {
               icon: IconHistory,
               count: historyAll.length,
             },
+            { value: "simulate", label: "Simulate", icon: IconFlask },
           ]}
         />
 
@@ -679,6 +683,9 @@ export function TransfersPage() {
               }
             />
           </SectionCard>
+        </TabsContent>
+        <TabsContent value="simulate" className="mt-4">
+          <SimulationPanel onStarted={() => setActiveTab("activity")} />
         </TabsContent>
       </Tabs>
 
