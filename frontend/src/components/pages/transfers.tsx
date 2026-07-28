@@ -349,6 +349,16 @@ export function TransfersPage() {
   }, [historyAll]);
 
   const pausedCount = activeTransfers.filter((t) => t.status === "paused").length;
+
+  // Simulated rows left on the board, running or finished. Surfaced on the tab
+  // so an abandoned simulation is visible without opening it.
+  const simulationCount = useMemo(() => {
+    const ids = new Set<string>();
+    for (const transfer of [...activeTransfers, ...historyAll]) {
+      if (transfer.is_simulation) ids.add(transfer.id);
+    }
+    return ids.size;
+  }, [activeTransfers, historyAll]);
   const queuedCount = activeQuery.data?.queue_status.queued_count ?? 0;
   const maxConcurrent = activeQuery.data?.queue_status.max_concurrent ?? 3;
 
@@ -535,7 +545,15 @@ export function TransfersPage() {
               icon: IconHistory,
               count: historyAll.length,
             },
-            { value: "simulate", label: "Simulate", icon: IconFlask },
+            {
+              value: "simulate",
+              label: "Simulate",
+              icon: IconFlask,
+              // Only counts when something is actually on the board
+              count: simulationCount || undefined,
+              // A tool, not another view of the transfer list
+              separated: true,
+            },
           ]}
         />
 

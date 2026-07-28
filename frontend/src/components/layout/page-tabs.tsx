@@ -1,4 +1,4 @@
-import type { ComponentType } from "react";
+import { Fragment, type ComponentType } from "react";
 import { TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
@@ -17,6 +17,13 @@ export interface PageTabItem {
   icon?: ComponentType<{ className?: string }>;
   /** Shown as a chip after the label. Omit when there is nothing to count. */
   count?: number;
+  /**
+   * Draws a rule before this segment, marking it as a different kind of thing
+   * from the ones before it — a tool sitting after a set of views, rather than
+   * another view. Without it a countless segment among counted ones just reads
+   * as one that forgot its chip.
+   */
+  separated?: boolean;
 }
 
 export function PageTabsList({ items, className }: { items: PageTabItem[]; className?: string }) {
@@ -33,8 +40,14 @@ export function PageTabsList({ items, className }: { items: PageTabItem[]; class
       )}
     >
       {items.map((item) => (
-        <TabsTrigger
-          key={item.value}
+        <Fragment key={item.value}>
+          {item.separated && (
+            <span
+              aria-hidden
+              className="my-2 w-px shrink-0 self-stretch bg-border"
+            />
+          )}
+          <TabsTrigger
           value={item.value}
           className={cn(
             "h-9 flex-1 gap-2 rounded-full px-4 text-[13px] font-medium sm:flex-none",
@@ -51,7 +64,8 @@ export function PageTabsList({ items, className }: { items: PageTabItem[]; class
               {item.count}
             </span>
           )}
-        </TabsTrigger>
+          </TabsTrigger>
+        </Fragment>
       ))}
     </TabsList>
   );
