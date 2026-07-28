@@ -552,7 +552,7 @@ export function TransfersPage() {
               // Only counts when something is actually on the board
               count: simulationCount || undefined,
               // A tool, not another view of the transfer list
-              separated: true,
+              atEnd: true,
             },
           ]}
         />
