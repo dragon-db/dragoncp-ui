@@ -102,13 +102,10 @@ def get_cors_origins():
     return origins if origins else '*'
 
 
-def env_flag(name: str, default: bool = False) -> bool:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        raw_value = _early_config.get(name)
-    if raw_value is None:
-        return default
-    return str(raw_value).strip().lower() in {'1', 'true', 'yes', 'on'}
+# No local env_flag here. Every key in the env file is pushed into os.environ by
+# the loop above before any flag is read, so a _early_config fallback would be
+# unreachable - and a second parser is exactly the divergence that let
+# TEST_MODE=true mean two different things. env_flags.env_flag is the reader.
 
 
 def _socketio_verbose_logging_enabled() -> bool:

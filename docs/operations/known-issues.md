@@ -136,6 +136,16 @@ each, plus why simulations are safe despite being exempt from the dry run.
 
 ## Realtime
 
+- **Backup restore does not reserve its destination.** `BackupService.restore_backup`
+  writes straight to `dest_path` and deletes files there without going near
+  `QueueManager`, which is what serialises transfers against each other by
+  destination. A restore can therefore pre-delete and rsync into a library path
+  while a transfer is writing the same one. Raised in review on PR #54 and left
+  alone deliberately: reserving the destination means threading queue
+  registration through the backup service and releasing it on every success,
+  failure and early return, which is its own piece of work rather than a
+  correction to that PR.
+
 - ~~**`transfer_failed` has a listener and no emitter.**~~ Fixed by deleting the
   helper. Failures arrive as `transfer_complete` carrying `status: "failed"`,
   which the pages already listen for; a subscriber for an event nobody sends
@@ -171,8 +181,18 @@ each, plus why simulations are safe despite being exempt from the dry run.
   matches across both tables rather than returning the length of the page it
   built, so the dashboard ticker and rail badge report the real figure instead
   of capping at their own page sizes.
-- **The Manual status filter always returns nothing.** It queries
-  `MANUAL_SYNC_REQUIRED`, which nothing writes.
+- ~~**The Manual status filter always returns nothing.**~~ Fixed. It queried
+  `MANUAL_SYNC_REQUIRED` as a status, which nothing writes;
+  `mark_for_manual_sync` leaves the status as `pending` and raises the
+  `requires_manual_sync` flag. The filter now matches that flag *and* a pending
+  status, because nothing ever lowers the flag - production has two completed
+  arrivals still carrying it, which a flag-only match would have listed as
+  outstanding work. Nine arrivals on production are genuinely awaiting manual
+  sync and were unfindable.
+- **`requires_manual_sync` is never cleared.** Once
+  `TransferCoordinator.mark_for_manual_sync` raises it, nothing lowers it - not
+  a later sync, not completion. Any query using the flag alone will keep
+  reporting arrivals that were long since dealt with.
 - **`PARTIAL_SYNC` is rendered but never returned** by any backend code.
 - **Undefined CSS variables.** `webhook-bits.tsx:29` builds the poster fallback
   from `var(--surface-3)` and `var(--surface-2)`; neither is defined anywhere in

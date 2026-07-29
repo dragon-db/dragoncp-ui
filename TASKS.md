@@ -117,6 +117,35 @@ Notes:
   be re-run.
 - Handoff: this is the only follow-up left from the rsync log storage work.
 
+### TASK-009 — Rebind transfer socket listeners without churn
+Status: planned      Priority: medium
+Tags: frontend, realtime
+Docs: [docs/reference/frontend.md](docs/reference/frontend.md)
+
+Plan: the Transfers page binds its five socket listeners in an effect that
+depends on the `useQuery` result objects. Those are new on every render, so the
+effect re-runs continuously and each progress tick tears down and rebinds every
+listener, with a window in between where events land on nothing. Raised in
+review on PR #54.
+
+The obvious fix - depend on `queryClient` only and invalidate by key - was
+implemented and reverted: with realtime enabled the Activity list stopped
+showing running transfers entirely, reproducibly, while the same page on the
+previous code kept working. The data reached the browser (a hand-issued fetch
+returned the running row) but the rendered list stayed empty, so something about
+binding once rather than continuously changes what the query cache ends up
+holding. Root cause not found.
+
+Steps:
+- [ ] reproduce with a minimal case and find why the cache empties
+- [ ] rebind on socket identity rather than on render
+- [ ] verify with realtime on *and* off, on a freshly loaded page
+
+Notes:
+- Verify on a fresh page load. A page left open across a Vite HMR cycle shows
+  the same symptom for unrelated reasons and will send you chasing ghosts.
+- Handoff: the reverted attempt is in the PR #54 review discussion.
+
 ## Backlog
 
 ### TASK-004 — Triage the known issues

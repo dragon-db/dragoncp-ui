@@ -25,6 +25,18 @@ LOG_MAX_LINES = 5000
 DELETE_BATCH = 400
 
 
+def escape_like(term: str) -> str:
+    """
+    Neutralise LIKE wildcards in a user's search text.
+
+    Without this a search for `%` matches every row, and `_` matches any single
+    character. That is merely confusing in a listing, but these filters also
+    drive bulk delete, where "select all matching" on an unescaped `%` means
+    every record.
+    """
+    return term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+
 class Transfer:
     """Transfer model for database operations"""
     
@@ -148,10 +160,11 @@ class Transfer:
         if search:
             # Matches what a person would remember about a transfer: what it was
             # called, which season, or where it went.
-            term = f"%{search.strip()}%"
+            term = f"%{escape_like(search.strip())}%"
             conditions.append(
-                "(parsed_title LIKE ? OR folder_name LIKE ? OR season_name LIKE ?"
-                " OR dest_path LIKE ? OR source_path LIKE ? OR transfer_id LIKE ?)"
+                "(parsed_title LIKE ? ESCAPE '\\' OR folder_name LIKE ? ESCAPE '\\'"
+                " OR season_name LIKE ? ESCAPE '\\' OR dest_path LIKE ? ESCAPE '\\'"
+                " OR source_path LIKE ? ESCAPE '\\' OR transfer_id LIKE ? ESCAPE '\\')"
             )
             params.extend([term] * 6)
         return (" WHERE " + " AND ".join(conditions)) if conditions else "", params
@@ -201,22 +214,23 @@ class Transfer:
                 batch = transfer_ids[start:start + DELETE_BATCH]
                 placeholders = ', '.join('?' for _ in batch)
 
-                running = [
+                # The exclusion is part of the DELETE, not just the SELECT
+                # before it: a transfer can be restarted between the two, and a
+                # row deleted out from under a live rsync process leaves that
+                # process with nowhere to report.
+                deleted += conn.execute(
+                    f"DELETE FROM transfers"
+                    f" WHERE transfer_id IN ({placeholders}) AND status != 'running'", batch
+                ).rowcount
+
+                # Read back what survived, so the caller is told what actually
+                # stayed rather than what looked running a moment ago.
+                skipped.extend(
                     row['transfer_id'] for row in conn.execute(
                         f"SELECT transfer_id FROM transfers"
-                        f" WHERE transfer_id IN ({placeholders}) AND status = 'running'", batch
+                        f" WHERE transfer_id IN ({placeholders})", batch
                     ).fetchall()
-                ]
-                skipped.extend(running)
-
-                running_set = set(running)
-                deletable = [tid for tid in batch if tid not in running_set]
-                if not deletable:
-                    continue
-                placeholders = ', '.join('?' for _ in deletable)
-                deleted += conn.execute(
-                    f"DELETE FROM transfers WHERE transfer_id IN ({placeholders})", deletable
-                ).rowcount
+                )
             conn.commit()
         return deleted, skipped
 

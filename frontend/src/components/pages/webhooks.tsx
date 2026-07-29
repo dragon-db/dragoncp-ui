@@ -361,6 +361,11 @@ export function WebhooksPage() {
     setSelectAllMatching(false);
   }, [statusFilter, debouncedSearch, notificationLimit]);
 
+  // Manual is not a stored status - it is the `requires_manual_sync` flag on an
+  // arrival that is still pending - so it carries its own count rather than one
+  // read out of status_counts, where it would never have appeared.
+  const manualSyncCount = notificationsQuery.data?.manual_sync_count ?? 0;
+
   const statusChoices = useMemo(
     () =>
       STATUS_FILTERS.map((filter) => ({
@@ -368,9 +373,11 @@ export function WebhooksPage() {
         count:
           filter.value === "all"
             ? Object.values(notificationStatusCounts).reduce((sum, n) => sum + n, 0)
-            : (notificationStatusCounts[filter.value] ?? 0),
+            : filter.value === "MANUAL_SYNC_REQUIRED"
+              ? manualSyncCount
+              : (notificationStatusCounts[filter.value] ?? 0),
       })),
-    [notificationStatusCounts]
+    [notificationStatusCounts, manualSyncCount]
   );
 
   const pageKeys = items.map((item) => item.key);

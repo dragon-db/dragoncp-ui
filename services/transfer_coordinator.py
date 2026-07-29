@@ -371,6 +371,17 @@ class TransferCoordinator:
         )
 
         if not success:
+            # The row was set to 'pending' above. Leaving it there strands the
+            # transfer: no monitor was started, the queue slot is about to be
+            # released, and 'pending' counts as active - so it sits in Activity
+            # forever, and cancel_transfer has no branch for it. Put it back to
+            # paused, which is both true and retryable: the partial files are
+            # still on disk and resume can be tried again.
+            self.transfer_model.update(transfer_id, {
+                'status': 'paused',
+                'progress': 'Resume failed - partial files kept, try again',
+                'paused_at': datetime.now().isoformat()
+            })
             self.queue_manager.unregister_transfer(transfer_id)
             return False, 'Failed to resume transfer'
 

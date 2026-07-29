@@ -471,6 +471,11 @@ def api_webhook_notifications():
             "limit": limit,
             "offset": offset,
             "status_counts": catalog.status_counts(media_type=media_type, search=search),
+            # Separate from status_counts: a flagged arrival keeps its real
+            # status, so counting it as one would double it in any total.
+            "manual_sync_count": catalog.manual_sync_count(
+                media_type=media_type, search=search
+            ),
             # Everything on record regardless of the current question, so a tab
             # badge does not count down as someone types.
             "unfiltered_total": catalog.count(media_type=media_type),

@@ -919,14 +919,19 @@ class TransferService:
             pid = transfer.get('rsync_process_id')
             has_process = bool(pid) and self._is_process_running(pid)
 
+            # Recorded before the process check, not inside it. `has_process` is
+            # a point-in-time answer: rsync can have exited while its monitor is
+            # still parked in process.wait(), about to write a terminal status.
+            # Without an intent waiting for it, that monitor overwrites this
+            # cancellation with 'completed' or 'failed'. A leftover intent costs
+            # nothing - the monitor pops it, and start_rsync_process clears it
+            # before the next run.
+            self._mark_intentional_stop(transfer_id, 'cancelled')
+
             if has_process:
                 try:
                     import psutil
 
-                    # Record intent BEFORE terminating, so the monitor thread
-                    # reads 'cancelled' rather than treating the non-zero exit
-                    # as a failure
-                    self._mark_intentional_stop(transfer_id, 'cancelled')
                     psutil.Process(pid).terminate()
                 except Exception as e:
                     print(f"❌ Error cancelling transfer {transfer_id}: {e}")
@@ -1000,8 +1005,11 @@ class TransferService:
                 })
                 return False, f'Failed to pause transfer: {e}'
         else:
+            # The intent is deliberately left in place. rsync may have exited
+            # with its monitor still to run; that monitor pops the intent and
+            # keeps the row 'paused' instead of finalising it as complete or
+            # failed. start_rsync_process clears it before the next run.
             print(f"⏸️  Transfer {transfer_id} has no live rsync process to signal")
-            self._clear_intentional_stop(transfer_id)
 
         if transfer_id in self.transfers:
             del self.transfers[transfer_id]

@@ -13,6 +13,8 @@ import json
 from datetime import datetime
 from typing import List, Dict, Optional
 
+from models.transfer import escape_like
+
 
 class WebhookNotification:
     """WebhookNotification model for movie webhook notifications"""
@@ -924,6 +926,16 @@ _SONARR_SEARCH_COLUMNS = (
 # 'movie'/'movies' select the Radarr table, anything else the Sonarr table.
 _MOVIE_TYPES = {'movie', 'movies'}
 
+# Not a stored status. `mark_for_manual_sync` leaves status as 'pending' and
+# raises the `requires_manual_sync` flag, so a filter on this name has to
+# become a filter on the flag - matching it against the status column matches
+# nothing, which is exactly what the UI's Manual filter used to do.
+#
+# The status is part of the predicate because nothing ever lowers the flag: an
+# arrival that was synced later keeps it, and matching on the flag alone would
+# list work that is already done. Production carries two such rows.
+MANUAL_SYNC_FILTER = 'MANUAL_SYNC_REQUIRED'
+
 
 class NotificationCatalog:
     """
@@ -939,8 +951,11 @@ class NotificationCatalog:
         self.webhook_model = webhook_model
         self.series_webhook_model = series_webhook_model
 
-    def _tables_for(self, media_type: str = None) -> List[str]:
-        """Which tables a media-type filter selects."""
+    def _tables_for(self, media_type: str = None, status: str = None) -> List[str]:
+        """Which tables a filter selects."""
+        # Only the series table records the manual-sync flag.
+        if status == MANUAL_SYNC_FILTER:
+            return [] if media_type in _MOVIE_TYPES else ['sonarr_webhook']
         if not media_type:
             return ['radarr_webhook', 'sonarr_webhook']
         return ['radarr_webhook'] if media_type in _MOVIE_TYPES else ['sonarr_webhook']
@@ -950,7 +965,9 @@ class NotificationCatalog:
         """WHERE fragment and parameters for one table."""
         conditions, params = [], []
 
-        if status:
+        if status == MANUAL_SYNC_FILTER:
+            conditions.append("(requires_manual_sync = 1 AND status = 'pending')")
+        elif status:
             conditions.append("status = ?")
             params.append(status)
 
@@ -965,9 +982,14 @@ class NotificationCatalog:
                 params.append(media_type)
 
         if search:
+            # Wildcards in the search text are escaped: this filter also drives
+            # bulk delete, where an unescaped `%` would turn "select all
+            # matching" into "select everything".
             columns = _RADARR_SEARCH_COLUMNS if table == 'radarr_webhook' else _SONARR_SEARCH_COLUMNS
-            conditions.append("(" + " OR ".join(f"{c} LIKE ?" for c in columns) + ")")
-            params.extend([f"%{search.strip()}%"] * len(columns))
+            conditions.append(
+                "(" + " OR ".join(f"{c} LIKE ? ESCAPE '\\'" for c in columns) + ")"
+            )
+            params.extend([f"%{escape_like(search.strip())}%"] * len(columns))
 
         return (" WHERE " + " AND ".join(conditions)) if conditions else "", params
 
@@ -975,7 +997,7 @@ class NotificationCatalog:
         """How many notifications match, across both tables."""
         total = 0
         with self.db.get_connection() as conn:
-            for table in self._tables_for(media_type):
+            for table in self._tables_for(media_type, status):
                 where, params = self._where(table, status, media_type, search)
                 total += conn.execute(
                     f"SELECT COUNT(*) AS n FROM {table}{where}", params
@@ -989,6 +1011,8 @@ class NotificationCatalog:
         """
         counts: Dict[str, int] = {}
         with self.db.get_connection() as conn:
+            # No status here: this counts every status, so both tables take part
+            # and the manual-sync pseudo-filter does not apply.
             for table in self._tables_for(media_type):
                 where, params = self._where(table, None, media_type, search)
                 rows = conn.execute(
@@ -997,6 +1021,16 @@ class NotificationCatalog:
                 for row in rows:
                     counts[row['status']] = counts.get(row['status'], 0) + row['n']
         return counts
+
+    def manual_sync_count(self, media_type: str = None, search: str = None) -> int:
+        """
+        How many arrivals are flagged for manual sync.
+
+        Reported separately from `status_counts` rather than folded into it: a
+        flagged row keeps its real status too, so counting it as a status would
+        double it in any total built from those counts.
+        """
+        return self.count(status=MANUAL_SYNC_FILTER, media_type=media_type, search=search)
 
     def _ordered_keys(self, status=None, media_type=None, search=None,
                       limit=None, offset=0) -> List[tuple]:
@@ -1008,7 +1042,10 @@ class NotificationCatalog:
         with its own columns intact.
         """
         selects, params = [], []
-        for table in self._tables_for(media_type):
+        tables = self._tables_for(media_type, status)
+        if not tables:
+            return []
+        for table in tables:
             where, table_params = self._where(table, status, media_type, search)
             selects.append(
                 f"SELECT '{table}' AS source_table, notification_id, created_at FROM {table}{where}"
@@ -1109,7 +1146,7 @@ class NotificationCatalog:
         """
         deleted = 0
         with self.db.get_connection() as conn:
-            for table in self._tables_for(media_type):
+            for table in self._tables_for(media_type, status):
                 where, params = self._where(table, status, media_type, search)
                 deleted += conn.execute(f"DELETE FROM {table}{where}", params).rowcount
             conn.commit()

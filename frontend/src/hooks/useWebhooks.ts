@@ -38,6 +38,12 @@ export interface ListPage {
   status_counts: Record<string, number>;
   /** Records on file ignoring the current filter and search. */
   unfiltered_total: number;
+  /**
+   * Arrivals flagged for manual sync. Reported separately from `status_counts`
+   * because a flagged arrival keeps its real status too - counting it as a
+   * status would double it in any total built from those counts.
+   */
+  manual_sync_count: number;
 }
 
 export interface NotificationListOptions {

@@ -178,3 +178,58 @@ class TransferLoggingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IntentionalStopWindowTests(unittest.TestCase):
+    """
+    Cancelling or pausing a transfer whose rsync has already exited.
+
+    `has_process` is a point-in-time answer. rsync can be gone while its monitor
+    thread is still parked in `process.wait()`, about to write a terminal
+    status. If the stop intent is not recorded on that path, the monitor pops
+    nothing and overwrites the operator's cancellation with 'completed' or
+    'failed'.
+    """
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        db_path = os.path.join(self.tempdir.name, "stops.db")
+        self.db = DatabaseManager(os.path.relpath(db_path, REPO_ROOT))
+        self.model = Transfer(self.db)
+        self.service = transfer_service.TransferService({}, self.db, self.model)
+
+    def make(self, transfer_id, status):
+        self.model.create({
+            "transfer_id": transfer_id, "media_type": "movies",
+            "folder_name": "Fixture", "source_path": "/s", "dest_path": "/d",
+            "operation_type": "folder", "status": status,
+            # No pid, so has_process is False - the window under test.
+        })
+
+    def test_cancel_records_intent_with_no_live_process(self):
+        self.make("gone", "running")
+
+        self.assertTrue(self.service.cancel_transfer("gone"))
+        self.assertEqual(self.model.get("gone")["status"], "cancelled")
+        # The monitor would read this and leave the row alone.
+        self.assertEqual(self.service._take_intentional_stop("gone"), "cancelled")
+
+    def test_pause_keeps_intent_with_no_live_process(self):
+        self.make("gone", "running")
+
+        ok, _message = self.service.pause_transfer("gone")
+
+        self.assertTrue(ok)
+        self.assertEqual(self.model.get("gone")["status"], "paused")
+        self.assertEqual(self.service._take_intentional_stop("gone"), "paused")
+
+    def test_a_stale_intent_does_not_leak_into_the_next_run(self):
+        """What makes recording it unconditionally safe."""
+        self.make("again", "running")
+        self.service.cancel_transfer("again")
+        self.assertIsNotNone(self.service._take_intentional_stop("again"))
+
+        self.service._mark_intentional_stop("again", "cancelled")
+        self.service._clear_intentional_stop("again")
+        self.assertIsNone(self.service._take_intentional_stop("again"))
