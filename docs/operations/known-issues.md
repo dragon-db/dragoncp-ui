@@ -120,8 +120,9 @@ Only `TEST_MODE=1` is safe. Both readers should use the same predicate.
 - **`rename_completed` is skipped when persistence fails.**
   `services/rename_service.py` returns early if `rename_model.update()` fails,
   so the files are renamed on disk and the UI never hears about it.
-- **Every event is broadcast to every client.** No emit passes `room`, `to` or
-  `namespace`.
+- **Every event but one is broadcast to every client.** `transfer_logs` is
+  room-scoped (`services/transfer_service.py:164`); no other emit passes `room`,
+  `to` or `namespace`.
 - **Emits are swallowed.** `services/backup_service.py` wraps them in bare
   `try/except: pass`, and `routes/webhooks.py` routes them through
   `emit_socketio_event()`, which does the same.
@@ -142,8 +143,10 @@ Only `TEST_MODE=1` is safe. Both readers should use the same predicate.
   numbers will not match what the server reports.
 - **Local disks are numbered by availability, not by config key.** If
   `DISK_PATH_1` is unreachable, `DISK_PATH_2` is displayed as "Local Disk 1".
-- **Webhook counts saturate.** `total` is `len()` of the already-limited list
-  (`routes/webhooks.py:461`), so the ticker caps at 10 and the rail badge at 30.
+- ~~**Webhook counts saturate.**~~ Fixed. `/webhook/notifications` now counts
+  matches across both tables rather than returning the length of the page it
+  built, so the dashboard ticker and rail badge report the real figure instead
+  of capping at their own page sizes.
 - **The Manual status filter always returns nothing.** It queries
   `MANUAL_SYNC_REQUIRED`, which nothing writes.
 - **`PARTIAL_SYNC` is rendered but never returned** by any backend code.

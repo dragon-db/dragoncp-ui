@@ -901,3 +901,231 @@ class RenameNotification:
             conn.commit()
             return cursor.rowcount
 
+
+
+# ---------------------------------------------------------------------------
+# Cross-table notification listing
+# ---------------------------------------------------------------------------
+
+# Movie and series notifications live in separate tables with different shapes,
+# but the UI shows them as one list. Reading each table with the same limit and
+# merging in Python - what this replaces - both loses rows (the newest 50 of
+# each is not the newest 50 overall once one source dominates) and cannot report
+# how many notifications actually match, only how many were returned.
+
+# What a person would search for: what it was called, where it went, who asked.
+_RADARR_SEARCH_COLUMNS = (
+    'title', 'folder_path', 'file_path', 'release_title', 'requested_by', 'notification_id',
+)
+_SONARR_SEARCH_COLUMNS = (
+    'series_title', 'season_path', 'series_path', 'release_title', 'requested_by', 'notification_id',
+)
+
+# 'movie'/'movies' select the Radarr table, anything else the Sonarr table.
+_MOVIE_TYPES = {'movie', 'movies'}
+
+
+class NotificationCatalog:
+    """
+    Movie and series webhook notifications read as a single ordered list.
+
+    Ordering, paging and counting happen in SQL across both tables at once, so a
+    page is the newest N notifications overall and the total is the real number
+    of matches rather than the size of the page.
+    """
+
+    def __init__(self, db_manager, webhook_model, series_webhook_model):
+        self.db = db_manager
+        self.webhook_model = webhook_model
+        self.series_webhook_model = series_webhook_model
+
+    def _tables_for(self, media_type: str = None) -> List[str]:
+        """Which tables a media-type filter selects."""
+        if not media_type:
+            return ['radarr_webhook', 'sonarr_webhook']
+        return ['radarr_webhook'] if media_type in _MOVIE_TYPES else ['sonarr_webhook']
+
+    def _where(self, table: str, status: str = None, media_type: str = None,
+               search: str = None):
+        """WHERE fragment and parameters for one table."""
+        conditions, params = [], []
+
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+
+        # Only the series table distinguishes tvshows from anime; 'series' is a
+        # legacy value for the same thing and has to keep matching.
+        if table == 'sonarr_webhook' and media_type and media_type not in _MOVIE_TYPES:
+            if media_type in ('tvshows', 'series'):
+                conditions.append("(media_type = ? OR media_type = ?)")
+                params.extend(['tvshows', 'series'])
+            else:
+                conditions.append("media_type = ?")
+                params.append(media_type)
+
+        if search:
+            columns = _RADARR_SEARCH_COLUMNS if table == 'radarr_webhook' else _SONARR_SEARCH_COLUMNS
+            conditions.append("(" + " OR ".join(f"{c} LIKE ?" for c in columns) + ")")
+            params.extend([f"%{search.strip()}%"] * len(columns))
+
+        return (" WHERE " + " AND ".join(conditions)) if conditions else "", params
+
+    def count(self, status: str = None, media_type: str = None, search: str = None) -> int:
+        """How many notifications match, across both tables."""
+        total = 0
+        with self.db.get_connection() as conn:
+            for table in self._tables_for(media_type):
+                where, params = self._where(table, status, media_type, search)
+                total += conn.execute(
+                    f"SELECT COUNT(*) AS n FROM {table}{where}", params
+                ).fetchone()['n']
+        return total
+
+    def status_counts(self, media_type: str = None, search: str = None) -> Dict[str, int]:
+        """
+        Match count per status, so the filter buttons can show how many are
+        behind each one without the client fetching every page to find out.
+        """
+        counts: Dict[str, int] = {}
+        with self.db.get_connection() as conn:
+            for table in self._tables_for(media_type):
+                where, params = self._where(table, None, media_type, search)
+                rows = conn.execute(
+                    f"SELECT status, COUNT(*) AS n FROM {table}{where} GROUP BY status", params
+                ).fetchall()
+                for row in rows:
+                    counts[row['status']] = counts.get(row['status'], 0) + row['n']
+        return counts
+
+    def _ordered_keys(self, status=None, media_type=None, search=None,
+                      limit=None, offset=0) -> List[tuple]:
+        """
+        (table, notification_id) for the matching rows, newest first.
+
+        Selecting only the keys keeps the union cheap regardless of how wide and
+        how different the two tables are; the page is then read from each table
+        with its own columns intact.
+        """
+        selects, params = [], []
+        for table in self._tables_for(media_type):
+            where, table_params = self._where(table, status, media_type, search)
+            selects.append(
+                f"SELECT '{table}' AS source_table, notification_id, created_at FROM {table}{where}"
+            )
+            params.extend(table_params)
+
+        query = " UNION ALL ".join(selects) + " ORDER BY created_at DESC, notification_id DESC"
+        if limit is not None:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+        with self.db.get_connection() as conn:
+            return [(row['source_table'], row['notification_id'])
+                    for row in conn.execute(query, params).fetchall()]
+
+    def page(self, status: str = None, media_type: str = None, search: str = None,
+             limit: int = 50, offset: int = 0) -> List[Dict]:
+        """
+        One page of notifications, newest first, in display shape.
+
+        Each row carries `media_type` and `display_title` so the UI does not
+        have to know which table it came from.
+        """
+        keys = self._ordered_keys(status, media_type, search, limit, offset)
+        if not keys:
+            return []
+
+        by_table: Dict[str, List[str]] = {}
+        for table, notification_id in keys:
+            by_table.setdefault(table, []).append(notification_id)
+
+        loaded: Dict[tuple, Dict] = {}
+        for table, ids in by_table.items():
+            model = self.webhook_model if table == 'radarr_webhook' else self.series_webhook_model
+            for notification in self._load(model, table, ids):
+                loaded[(table, notification['notification_id'])] = notification
+
+        # Reassemble in the order the union produced, which is the only place
+        # the two tables are ranked against each other.
+        return [loaded[key] for key in keys if key in loaded]
+
+    def _load(self, model, table: str, ids: List[str]) -> List[Dict]:
+        """Full rows for a page's ids, decorated for display."""
+        placeholders = ", ".join("?" for _ in ids)
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {table} WHERE notification_id IN ({placeholders})", ids
+            ).fetchall()
+
+        notifications = []
+        for row in rows:
+            notification = dict(row)
+            if table == 'radarr_webhook':
+                for field in ('languages', 'subtitles'):
+                    notification[field] = _parse_json_list(notification.get(field))
+                notification['media_type'] = 'movie'
+                notification['display_title'] = notification.get('title')
+            else:
+                for field in ('tags', 'episodes', 'episode_files'):
+                    notification[field] = _parse_json_list(notification.get(field))
+                season = notification.get('season_number')
+                season_text = f" Season {season}" if season else ""
+                notification['display_title'] = f"{notification.get('series_title')}{season_text}"
+            notifications.append(notification)
+        return notifications
+
+    def delete(self, notification_ids: List[str]) -> int:
+        """
+        Delete notifications by id, from whichever table holds them.
+
+        Ids are unique across both tables, so a delete is issued against each
+        and only the owning table matches. That keeps the caller from having to
+        track which source a row came from.
+        """
+        if not notification_ids:
+            return 0
+
+        deleted = 0
+        with self.db.get_connection() as conn:
+            for start in range(0, len(notification_ids), _DELETE_BATCH):
+                batch = notification_ids[start:start + _DELETE_BATCH]
+                placeholders = ", ".join("?" for _ in batch)
+                for table in ('radarr_webhook', 'sonarr_webhook'):
+                    deleted += conn.execute(
+                        f"DELETE FROM {table} WHERE notification_id IN ({placeholders})", batch
+                    ).rowcount
+            conn.commit()
+        return deleted
+
+    def delete_matching(self, status: str = None, media_type: str = None,
+                        search: str = None) -> int:
+        """
+        Delete every notification matching a filter.
+
+        This is what "select all" performs: the filter is re-evaluated on the
+        server rather than the client sending thousands of ids, so what gets
+        deleted is exactly what the filter describes.
+        """
+        deleted = 0
+        with self.db.get_connection() as conn:
+            for table in self._tables_for(media_type):
+                where, params = self._where(table, status, media_type, search)
+                deleted += conn.execute(f"DELETE FROM {table}{where}", params).rowcount
+            conn.commit()
+        return deleted
+
+
+# SQLite's default variable limit is 999; stay well inside it per statement.
+_DELETE_BATCH = 400
+
+
+def _parse_json_list(raw) -> List:
+    """A JSON list column, tolerating the nulls and blanks older rows contain."""
+    if isinstance(raw, list):
+        return raw
+    try:
+        value = json.loads(raw or '[]')
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return value if isinstance(value, list) else []

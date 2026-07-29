@@ -56,7 +56,7 @@ function WebhookRow({ item }: { item: WebhookItem }) {
 }
 
 export function WebhookRail() {
-  const { data, isLoading, refetch } = useWebhookNotifications(undefined, 30);
+  const { data, isLoading, refetch } = useWebhookNotifications({ limit: 30 });
   // Group series/anime by show + season so one show doesn't flood the rail.
   const items = useMemo(
     () => groupNotifications(data?.notifications ?? []).slice(0, 5),

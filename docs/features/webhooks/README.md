@@ -176,7 +176,8 @@ Receivers (authenticated by `require_webhook_auth`, not by the user session):
 
 Management (all behind `require_auth`):
 
-- `GET /api/webhook/notifications` — movies + series + anime merged and sorted newest first; `status` and `limit` query params
+- `GET /api/webhook/notifications` — one page of movies + series + anime, newest first; `status`, `media_type`, `search`, `limit` and `offset` query params
+- `POST /api/webhook/notifications/bulk-delete` — delete many notifications by id, or every notification a filter finds
 - `GET /api/webhook/series/notifications`, `GET /api/webhook/anime/notifications`
 - `GET /api/webhook/notifications/<id>` — tries the movie table, then the series table
 - `GET /api/webhook/notifications/<id>/json` — the stored raw payload
@@ -192,15 +193,50 @@ Full contracts: [../../reference/api.md](../../reference/api.md). Note that the 
 
 ## The screen
 
-`frontend/src/components/pages/webhooks.tsx` splits the page into two tabs, each with its own counter in the tab strip: **Media sync**, counting the notifications currently loaded, and **Renames**, counting the rename runs the API reports. The page listens on the socket and refetches the matching list when a webhook is captured or a rename arrives or completes.
+`frontend/src/components/pages/webhooks.tsx` splits the page into two tabs, each with its own counter in the tab strip: **Media sync**, counting every notification on record, and **Renames**, counting the rename runs the API reports. The page listens on the socket and refetches the matching list when a webhook is captured or a rename arrives or completes.
 
 Two controls sit in the header and apply to both tabs. **Refresh** refetches both lists. **Auto-sync** is a popover with one switch per library (Movies, TV Shows, Anime); the trigger button carries a dot per library, lit when that library syncs on its own, plus an `n/3` count, so the state is readable without opening it. Each switch writes immediately and confirms with a toast. The popover footer states the batching wait currently configured, e.g. "TV & anime wait 60s after the last episode".
 
 ### Media sync tab
 
-Four tiles head the tab - media syncs, completed, in progress, failed. The first is the raw notification count, annotated with how many groups they collapse into ("in 7 groups"). The other three are counted per group, using the group's own status, so they agree with the rows on screen rather than with the notification count.
+Four tiles head the tab - media syncs, completed, in progress, failed. All four
+count notifications across the whole record, not the page in view, taken from
+the `status_counts` the listing returns; "in progress" is everything that is
+neither completed nor failed. The first tile is annotated with how many groups
+the current page collapses into. The tiles and the filter buttons therefore
+agree - they used to disagree, because the tiles counted groups on screen while
+the filters counted notifications in the table.
 
-Under them, the "Arrivals" card lists the notifications, filtered by a row of status buttons: All, Completed, Pending, Syncing, Manual, Failed. The Manual filter passes `MANUAL_SYNC_REQUIRED`, which as noted above is never stored, so it returns nothing. The right of the toolbar shows how many rows are on screen.
+Under them, the "Arrivals" card lists the notifications, filtered by a row of
+status buttons: All, Completed, Pending, Syncing, Manual, Failed. Each carries
+its own count, taken from the same `status_counts`, so the number is the reason
+to click. The Manual filter passes `MANUAL_SYNC_REQUIRED`, which as noted above
+is never stored, so it returns nothing.
+
+### Searching, paging and clearing arrivals
+
+A search box sits at the end of the toolbar and matches title, folder or season
+path, release title, requester or notification id. Typing is debounced by 300 ms,
+because the search runs against the database rather than the rows already loaded.
+
+Below the list, the pager states the position in records rather than page
+numbers - "51–100 of 141 arrivals" - with page sizes of 25, 50 and 100. Changing
+the filter, the search or the page size returns to the first page.
+
+Because grouping happens after paging, a season whose episodes fall either side
+of a page boundary appears as a group on each page. The page is a window on the
+arrivals; grouping is what happens inside it.
+
+Each row carries a checkbox, and a bar above the list appears once anything is
+picked. It offers two distinct things: **Select page**, which takes the rows in
+view, and **Select all N**, which means every notification the current filter
+finds - the server re-runs the filter at delete time, so it covers pages nobody
+has opened. Deleting is confirmed first, and the prompt states which of the two
+is about to happen. Selecting a season row selects every arrival in it.
+
+Deleting an arrival does not touch media already copied, nor the transfer that
+copied it. Deleting a pending arrival does mean it can no longer be synced from
+this screen, and the confirmation says so.
 
 ### One row per season, not per episode
 

@@ -706,32 +706,87 @@ Common error:
 - `{"status":"error","message":"Cannot delete a running transfer. Please cancel it first."}`
 
 ### GET `/transfers/all`
-What it does: returns historical transfer list with optional filtering.
+What it does: returns one page of the transfer history, newest first, with
+optional filtering and search.
 
 Auth: required.
 
 Query params:
-- `limit` (default `50`)
+- `limit` (default `50`, capped at `200`)
+- `offset` (default `0`) — where the page starts
 - `status` (optional exact status filter)
+- `statuses` (optional comma-separated list, e.g. `completed,failed,cancelled`)
+- `search` (optional) — matches `parsed_title`, `folder_name`, `season_name`,
+  `dest_path`, `source_path` or `transfer_id`, case-insensitively and anywhere
+  in the value
 
 Output JSON:
 ```json
 {
   "status": "success",
   "transfers": [],
-  "total": 0
+  "total": 0,
+  "count": 0,
+  "limit": 50,
+  "offset": 0,
+  "status_counts": {},
+  "unfiltered_total": 0
 }
 ```
+
+- `total` — records matching `status`/`statuses`/`search`, across the whole table
+- `count` — records on this page
+- `status_counts` — matching records per status, so filter controls can show
+  their own counts without a request each. Honours `statuses` and `search`;
+  ignores `status`, so the counts stay stable as filters change.
+- `unfiltered_total` — records matching `statuses` alone, ignoring `status` and
+  `search`, for a tab badge that should not move while someone types
 
 Each transfer object carries the listing fields described under
 `/transfers/active` below, plus `end_time` and `created_at`.
 
 Implementation notes:
-- `status` filters in SQL, before `limit` is applied. It previously filtered the
-  page after limiting it, so asking for failed transfers returned none whenever
-  the newest `limit` rows happened to be completed.
+- Filtering, searching and paging all happen in SQL. `status` previously
+  filtered the page after limiting it, so asking for failed transfers returned
+  none whenever the newest `limit` rows happened to be completed.
 - Listings never include the `logs` array, only `log_count`. The log body is
   available from `/transfer/{transfer_id}/logs`.
+
+### POST `/transfers/bulk-delete`
+What it does: deletes several transfer records at once, either by id or by
+re-running a filter on the server.
+
+Auth: required.
+
+Input JSON — either an explicit list:
+```json
+{ "ids": ["transfer_id_1", "transfer_id_2"] }
+```
+or every record a filter finds:
+```json
+{ "all_matching": true, "status": "failed", "statuses": ["completed", "failed"], "search": "dune" }
+```
+
+`all_matching` re-evaluates the filter here rather than trusting a list of ids,
+so "select all" means every match and not only the rows a client had loaded.
+When it is set, `ids` is ignored.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "deleted_count": 0,
+  "skipped": [],
+  "message": "Nothing to delete"
+}
+```
+
+- `skipped` — ids of transfers left alone because they are still `running`. A
+  running transfer has a live rsync process behind it, so its row is never
+  deleted; it must be cancelled first.
+
+Deleting `completed` records also removes the sync history that Browse Media
+reads, so media those transfers copied will show as not yet synced afterwards.
 
 ### GET `/transfers/active`
 What it does: returns currently active transfers plus queue state.
@@ -879,22 +934,82 @@ Output JSON shape is same pattern as series endpoint.
 ## 6) Webhook Notification Management Endpoints
 
 ### GET `/webhook/notifications`
-What it does: returns combined notifications across movies + series + anime, sorted newest first.
+What it does: returns one page of notifications across movies + series + anime,
+newest first.
 
 Auth: required.
 
 Query params:
-- `status` (optional)
-- `limit` (default `50`)
+- `status` (optional exact status filter)
+- `media_type` (optional) — `movies`/`movie` selects the Radarr table; anything
+  else selects the Sonarr table, with `tvshows` also matching the legacy
+  `series` value
+- `search` (optional) — matches title, folder or season path, release title,
+  requester or notification id in whichever table is being read
+- `limit` (default `50`, capped at `200`)
+- `offset` (default `0`)
 
 Output JSON:
 ```json
 {
   "status": "success",
   "notifications": [],
-  "total": 0
+  "total": 0,
+  "count": 0,
+  "limit": 50,
+  "offset": 0,
+  "status_counts": {},
+  "unfiltered_total": 0
 }
 ```
+
+- `total` — notifications matching the filter across both tables
+- `count` — notifications on this page
+- `status_counts` — matching notifications per status; honours `media_type` and
+  `search`, ignores `status`
+- `unfiltered_total` — notifications matching `media_type` alone
+
+Each notification carries `media_type` (`movie` for Radarr rows, the stored
+value for Sonarr rows) and `display_title` so a caller does not need to know
+which table it came from.
+
+Implementation notes:
+- Ordering, paging and counting run across both tables in one query. The
+  endpoint used to read each table with the same `limit`, merge in Python and
+  re-slice, which could return no more rows than `limit` however far a caller
+  paged, and reported `total` as the length of the page it had just built.
+
+### POST `/webhook/notifications/bulk-delete`
+What it does: deletes several notifications at once, either by id or by
+re-running a filter on the server.
+
+Auth: required.
+
+Input JSON — either an explicit list:
+```json
+{ "ids": ["notification_id_1", "notification_id_2"] }
+```
+or every notification a filter finds:
+```json
+{ "all_matching": true, "status": "failed", "media_type": "tvshows", "search": "dune" }
+```
+
+Ids are unique across both tables, so a delete by id finds the owning table
+without the caller tracking which source a row came from. When `all_matching`
+is set, `ids` is ignored.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "deleted_count": 0,
+  "message": "Deleted 0 notifications"
+}
+```
+
+Deleting a notification does not touch media already copied, nor the transfers
+that copied it. Deleting a `pending` notification means it can no longer be
+synced from the UI.
 
 ### GET `/webhook/series/notifications`
 What it does: returns only TV series notifications.
@@ -1789,14 +1904,14 @@ This document covers all `/api/*` routes currently implemented in backend Python
 - 5 auth endpoints
 - 8 config/SSH endpoints
 - 8 media endpoints
-- 12 transfer endpoints (including `pause` and `resume`)
-- 30 webhook-related endpoints (receivers, management, rename, settings, Discord)
+- 13 transfer endpoints (including `pause`, `resume` and `bulk-delete`)
+- 31 webhook-related endpoints (receivers, management, rename, settings, Discord)
 - 7 backup endpoints
 - 7 debug endpoints
 - 4 simulation endpoints
 - 2 server log endpoints
 
-Total covered: 83 method+path API endpoints.
+Total covered: 85 method+path API endpoints.
 
 Counts verified against the `@*_bp.route`/`@app.route` decorators in `routes/`
 and `app.py`, counting one per method+path. `GET /` is excluded: it serves the

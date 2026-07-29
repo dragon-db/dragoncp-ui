@@ -248,9 +248,52 @@ only how many lines there are — so selecting it meant reading and JSON-parsing
 megabytes per request to render counts. The column list is read once from
 `PRAGMA table_info(transfers)` and cached per process, so any column added later
 appears in listings automatically. `json_valid` guards rows written before the
-column held JSON. Status filtering and the limit are both applied in SQL;
+column held JSON. Filtering, searching and paging are all applied in SQL;
 filtering used to happen after the limit, which meant a page of recent completed
 transfers could hide every failed one.
+
+### 9a. Paging the history
+
+History is a page, not a prefix. `Transfer.get_all()` takes `limit`, `offset`,
+`search` and either a single `status` or a set of `statuses`; `count()` and
+`status_counts()` answer the same filter without the page window, sharing one
+`_filter_sql()` so a listing and its total cannot drift apart.
+
+The page states three different numbers, and they are not interchangeable:
+
+| Field | Counts |
+|---|---|
+| `count` | rows on this page |
+| `total` | rows matching the current filter and search |
+| `unfiltered_total` | rows matching only the status set — what the tab badge shows, so it does not move while someone types |
+
+`search` matches anywhere in `parsed_title`, `folder_name`, `season_name`,
+`dest_path`, `source_path` or `transfer_id` — what a person remembers about a
+transfer rather than what the schema calls it.
+
+The History tab asks for `statuses=completed,failed,cancelled`, so live
+transfers never reach it. Before this, the page fetched a fixed 200 rows and
+narrowed them in the browser: with 519 transfers on record, 61% of the history
+could not be reached at all, and "Failed" showed nothing whenever the newest 200
+rows happened to be completed.
+
+### 9b. Deleting in bulk
+
+`Transfer.delete_many()` takes a list of ids and returns
+`(deleted_count, skipped_ids)`. Transfers still `running` are never deleted —
+there is a live rsync process behind the row — so they come back in `skipped`
+and the caller reports them rather than losing them silently. Ids are deleted in
+batches of `DELETE_BATCH` (400), safely inside SQLite's 999-variable limit.
+
+`POST /transfers/bulk-delete` accepts either explicit `ids` or `all_matching`
+with the same filter the list was showing. The `all_matching` form re-runs the
+query on the server, which is what lets "select all" mean every match rather
+than the rows a browser happened to have loaded.
+
+Deleting `completed` records has a consequence beyond the list: `get_sync_status`
+reads completed transfers to decide the SYNCED / OUT_OF_SYNC badges in Browse
+Media, so media covered by a deleted record shows as not yet synced. The
+confirmation in the UI says so.
 
 Both coordinator listing methods (`get_all_transfers`, `get_active_transfers`)
 and `resume_active_transfers()` pass `include_logs=False`. The detail endpoints
@@ -366,9 +409,10 @@ contracts are in [../../reference/api.md](../../reference/api.md).
 | POST | `/transfer/{id}/resume` | Continue a paused transfer, re-admitted through the queue |
 | POST | `/transfer/{id}/restart` | Run a failed, cancelled or completed transfer again |
 | POST | `/transfer/{id}/delete` | Delete the record (not while running) |
-| GET | `/transfers/all` | History listing, optional `status` and `limit` |
+| GET | `/transfers/all` | History page — `limit`, `offset`, `status`, `statuses`, `search` |
 | GET | `/transfers/active` | Running/pending/queued/paused plus queue status |
 | GET | `/transfers/queue/status` | Queue counters only |
+| POST | `/transfers/bulk-delete` | Delete many records by id, or every record a filter finds |
 | POST | `/transfers/cleanup` | Drop duplicate completed rows per destination |
 
 Every endpoint is behind `@require_auth`. Socket events emitted from this

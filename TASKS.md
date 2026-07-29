@@ -124,6 +124,39 @@ Work from there.
 
 ## Done
 
+### TASK-007 — Pagination, search and bulk clear
+Status: done      Priority: high
+Tags: backend, frontend, transfers, webhooks
+Branch: feature/transfer-progress-stats-controls
+Docs: [docs/reference/api.md](docs/reference/api.md),
+[docs/reference/frontend.md](docs/reference/frontend.md)
+
+Plan: both long lists were capped slices narrowed in the browser. With 519
+transfers and 806 webhook notifications in production, 61% of the transfer
+history could not be reached, and the "Failed" filter showed nothing while 15
+failed transfers existed further back.
+
+Steps:
+- [x] `search`, `offset`, real `count()` and `status_counts()` on the transfer model
+- [x] `NotificationCatalog` — one ordered, paged, counted view across both webhook tables
+- [x] `POST /transfers/bulk-delete` and `POST /webhook/notifications/bulk-delete`,
+      each taking explicit ids or a filter to re-run
+- [x] shared `list-controls.tsx`: search, filter chips with counts, pager, selection bar
+- [x] History tab and Media sync tab rebuilt on them
+- [x] 17 tests in `tests/test_listing_pagination.py`
+- [x] api.md, openapi.yaml, both feature docs and frontend.md
+
+Notes:
+- Bulk delete refuses a `running` transfer and names it in `skipped`; the row has
+  a live rsync process behind it.
+- Deleting completed transfers clears the sync history behind the SYNCED badges
+  in Browse Media. The confirmation says so.
+- Webhook rows are grouped by season *after* paging, so a season straddling a
+  page boundary shows on both pages. Documented rather than fixed - the fix
+  would mean grouping in SQL across two differently-shaped tables.
+- Handoff: done and verified against a seeded dev database (123 transfers, 156
+  notifications), then the seed rows were removed.
+
 ### TASK-003 — Per-transfer socket rooms
 Status: done      Priority: medium
 Tags: backend, frontend, performance, realtime

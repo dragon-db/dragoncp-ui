@@ -8,10 +8,16 @@
 > See `services/transfer_service.py`, `models/transfer.py` and
 > `scripts/compact_transfer_logs.py` for compacting what was already stored.
 >
+> Per-transfer websocket subscription rooms (section 6) are also done: log
+> output now goes only to clients that asked for that transfer, and the producer
+> skips building the payload when nobody is listening.
+>
 > Still outstanding from this document: per-transfer log files on disk with a
 > read offset for restart-safe continuity (section 4), the `transfer_runtime`
-> table (section 5.2), and per-transfer websocket subscription rooms
-> (section 6) — logs are still broadcast to all clients.
+> table (section 5.2), and retention cleanup for those files (phase 4). Until
+> those land, acceptance criterion 3 — "full raw logs are not stored in DB" — is
+> not met: logs still live in the `transfers.logs` column, capped at 5,000 lines
+> and with progress ticks collapsed, but in the database all the same.
 
 ## 1. Purpose
 

@@ -144,8 +144,9 @@ pair wraps TanStack Query around the Axios client in `lib/api.ts`.
 | `useRuntime.ts` | `useRuntimeController`, `useRuntimeConnection` |
 | `useSimulation.ts` | `useSimulationStatus`, `useStartSimulation`, `useStopSimulation`, `useCleanupSimulation` (plus the `busyConflictFrom` helper) |
 | `useTransferPosters.ts` | `useTransferPosters` |
-| `useTransfers.ts` | `useActiveTransfers`, `useAllTransfers`, `useTransferStatus`, `useTransferLogs`, `useQueueStatus`, `useStartTransfer`, `useCancelTransfer`, `usePauseTransfer`, `useResumeTransfer`, `useRestartTransfer`, `useDeleteTransfer`, `useCleanupTransfers` |
-| `useWebhooks.ts` | `useWebhookNotifications`, `useRenameNotifications`, `useRenameNotificationDetails`, `useDeleteRenameNotification`, `useVerifyRenameNotification`, `useWebhookNotificationDetails`, `useWebhookNotificationJson`, `useTriggerWebhookSync`, `useMarkWebhookComplete`, `useDeleteWebhookNotification`, `useWebhookDryRun`, `useWebhookSettings`, `useUpdateWebhookSettings`, `useDiscordSettings`, `useUpdateDiscordSettings`, `useTestDiscord` |
+| `useDebouncedValue.ts` | `useDebouncedValue` — holds a value back until typing settles, no network |
+| `useTransfers.ts` | `useActiveTransfers`, `useAllTransfers`, `useTransferStatus`, `useTransferLogs`, `useQueueStatus`, `useStartTransfer`, `useCancelTransfer`, `usePauseTransfer`, `useResumeTransfer`, `useRestartTransfer`, `useDeleteTransfer`, `useBulkDeleteTransfers`, `useCleanupTransfers` |
+| `useWebhooks.ts` | `useWebhookNotifications`, `useBulkDeleteNotifications`, `useRenameNotifications`, `useRenameNotificationDetails`, `useDeleteRenameNotification`, `useVerifyRenameNotification`, `useWebhookNotificationDetails`, `useWebhookNotificationJson`, `useTriggerWebhookSync`, `useMarkWebhookComplete`, `useDeleteWebhookNotification`, `useWebhookDryRun`, `useWebhookSettings`, `useUpdateWebhookSettings`, `useDiscordSettings`, `useUpdateDiscordSettings`, `useTestDiscord` |
 
 Three of these are worth knowing about before changing anything:
 
@@ -268,7 +269,7 @@ expand in place. There are no detail dialogs; opening a row is the only way in.
 | Tab | Shows |
 |---|---|
 | Activity | Running, queued and paused copies |
-| History | Finished runs, with status filters (All, Completed, Failed, Stopped) |
+| History | Finished runs — status filters (All, Completed, Failed, Stopped), search, paging and bulk delete |
 | Simulate | Scenario launcher for the simulation tool |
 
 Supporting components in `components/transfers/`:
@@ -279,7 +280,7 @@ Supporting components in `components/transfers/`:
 | `transfer-detail.tsx` | `TransferDetailPanel` and its `TransferActions` interface |
 | `transfer-logs.tsx` | Live rsync output; only lines that break rsync's repetitive rhythm are tinted |
 | `simulation-panel.tsx` | `SimulationPanel` scenario launcher and `SimulationBadge` |
-| `confirm-dialog.tsx` | State-driven `AlertDialog` for stop/delete/cleanup |
+| `confirm-dialog.tsx` | State-driven `AlertDialog` for stop/delete/cleanup/bulk delete |
 
 `lib/transfer-progress.ts` holds the formatting and derivation: `formatBytes`,
 `formatSpeed`, `formatEta`, `formatSizePair`, `formatDuration`,
@@ -295,6 +296,34 @@ Two things worth knowing when changing this page:
 - **Progress events patch the cache rather than triggering a refetch.** They
   arrive several times a second per transfer; refetching per event meant one API
   round trip per rsync output line.
+- **History is filtered, searched and paged on the server.** The tab requests
+  `statuses=completed,failed,cancelled` so live rows never reach it, and the
+  filter buttons pass a `status` rather than narrowing what arrived. Filtering in
+  the browser could only ever find what the fetched slice contained, which is why
+  "Failed" showed nothing while failures existed further back.
+
+## List Controls
+
+`components/layout/list-controls.tsx` holds what both long lists need, so the
+Transfers History tab and the Media sync tab are driven identically:
+
+| Export | Purpose |
+|---|---|
+| `ListSearch` | Search box with a clear button; pair with `useDebouncedValue` |
+| `FilterChips` | Status filters, each showing its own server-counted total |
+| `ListPagination` | Position stated in records ("51–100 of 519"), page sizes 25/50/100, previous/next |
+| `SelectionBar` | Appears once rows are picked: select page, select every match, clear, delete |
+| `RowCheckbox` | Row tick that does not open the row it sits on |
+
+Two distinctions these encode are worth keeping:
+
+- **Select page and select-all-matching are separate actions.** The first takes
+  the rows in view; the second means every record the filter finds, which the
+  server re-evaluates at delete time rather than the browser shipping thousands
+  of ids. Touching any single row cancels the broader claim.
+- **Counts describe the record, not the page.** Filter chips and stat tiles read
+  `status_counts` from the listing; tab badges read `unfiltered_total`, which
+  ignores the search so a badge does not count down as someone types.
 
 See [transfers](../features/transfers/README.md), [queue](../features/queue/README.md)
 and [simulation](../features/simulation/README.md) for the backend side.
@@ -303,7 +332,13 @@ and [simulation](../features/simulation/README.md) for the backend side.
 
 `components/pages/webhooks.tsx` has two tabs, `Media sync` and `Renames`, each
 with its own stat tiles. The media-sync tab filters by All, Completed, Pending,
-Syncing, Manual (`MANUAL_SYNC_REQUIRED`) and Failed.
+Syncing, Manual (`MANUAL_SYNC_REQUIRED`) and Failed, each chip carrying its own
+count, and uses the shared [list controls](#list-controls) for search, paging and
+bulk delete.
+
+Rows are grouped by season after paging, so a season split across a page
+boundary appears on both pages; selecting a season row selects every arrival
+inside it.
 
 Supporting components in `components/webhooks/`:
 

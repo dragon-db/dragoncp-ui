@@ -138,9 +138,49 @@ components:
       name: limit
       in: query
       required: false
+      description: Page size. Values above 200 are clamped to 200.
       schema:
         type: integer
         default: 50
+        maximum: 200
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Where the page starts, counted in records.
+      schema:
+        type: integer
+        default: 0
+    Search:
+      name: search
+      in: query
+      required: false
+      description: >-
+        Free-text match, applied anywhere in the searched columns. Transfers
+        search title, folder, season, source and destination paths and the
+        transfer id; notifications search title, paths, release title,
+        requester and notification id.
+      schema:
+        type: string
+    StatusesFilter:
+      name: statuses
+      in: query
+      required: false
+      description: >-
+        Comma-separated statuses to include, e.g. `completed,failed,cancelled`.
+        Used where a list covers a set of statuses rather than one.
+      schema:
+        type: string
+    MediaTypeFilter:
+      name: media_type
+      in: query
+      required: false
+      description: >-
+        `movies`/`movie` selects movie notifications; anything else selects
+        series notifications, with `tvshows` also matching the legacy `series`
+        value.
+      schema:
+        type: string
 
   schemas:
     SuccessResponse:
@@ -183,6 +223,40 @@ components:
             additionalProperties: true
         total:
           type: integer
+          description: >-
+            The number of records returned. Only the paged listings report a
+            figure independent of the page - see PagedNotificationList.
+
+    PagedNotificationList:
+      description: >-
+        One page of the combined notification list. Rows carry `media_type`
+        (`movie` for movie rows, the stored value for series rows) and
+        `display_title`, so a caller need not know which table a row came from.
+      allOf:
+        - $ref: '#/components/schemas/NotificationList'
+        - type: object
+          properties:
+            total:
+              type: integer
+              description: Records matching the filter across the whole table.
+            count:
+              type: integer
+              description: Records on this page.
+            limit:
+              type: integer
+            offset:
+              type: integer
+            status_counts:
+              type: object
+              additionalProperties:
+                type: integer
+              description: >-
+                Matching records per status. Honours the search and set filters and
+                ignores the single-status filter, so counts stay stable as filters
+                change.
+            unfiltered_total:
+              type: integer
+              description: Records ignoring the status filter and search.
 
     TransferList:
       type: object
@@ -197,6 +271,37 @@ components:
             additionalProperties: true
         total:
           type: integer
+          description: >-
+            The number of records returned. Only the paged listings report a
+            figure independent of the page - see PagedTransferList.
+
+    PagedTransferList:
+      description: One page of the transfer history.
+      allOf:
+        - $ref: '#/components/schemas/TransferList'
+        - type: object
+          properties:
+            total:
+              type: integer
+              description: Records matching the filter across the whole table.
+            count:
+              type: integer
+              description: Records on this page.
+            limit:
+              type: integer
+            offset:
+              type: integer
+            status_counts:
+              type: object
+              additionalProperties:
+                type: integer
+              description: >-
+                Matching records per status. Honours the search and set filters and
+                ignores the single-status filter, so counts stay stable as filters
+                change.
+            unfiltered_total:
+              type: integer
+              description: Records ignoring the status filter and search.
 
     QueueStatus:
       type: object
@@ -1001,19 +1106,81 @@ paths:
   /transfers/all:
     get:
       tags: [Transfers]
-      summary: List historical transfers, filtered in SQL by status before the limit is applied
+      summary: List one page of transfer history, filtered, searched and paged in SQL
       parameters:
         - $ref: '#/components/parameters/Limit50'
+        - $ref: '#/components/parameters/Offset'
         - $ref: '#/components/parameters/StatusFilter'
+        - $ref: '#/components/parameters/StatusesFilter'
+        - $ref: '#/components/parameters/Search'
       responses:
         '200':
           description: Transfer list; carries `log_count` but never the log bodies
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TransferList'
+                $ref: '#/components/schemas/PagedTransferList'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /transfers/bulk-delete:
+    post:
+      tags: [Transfers]
+      summary: Delete several transfer records, by id or by re-running a filter
+      description: >-
+        With `all_matching`, the filter is re-evaluated on the server rather
+        than trusting a list of ids, so "select all" means every match and not
+        only the rows a client had loaded; `ids` is then ignored. Transfers that
+        are still running are never deleted and come back in `skipped`.
+        Deleting completed records also removes the sync history Browse Media
+        reads, so the media they copied will show as not yet synced.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids:
+                  type: array
+                  items:
+                    type: string
+                all_matching:
+                  type: boolean
+                status:
+                  type: string
+                statuses:
+                  type: array
+                  items:
+                    type: string
+                search:
+                  type: string
+      responses:
+        '200':
+          description: How many records were deleted, and which were left alone
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  deleted_count:
+                    type: integer
+                  skipped:
+                    type: array
+                    items:
+                      type: string
+                    description: Ids of transfers left alone because they are still running.
+                  message:
+                    type: string
+        '400':
+          description: '`ids` was present but not a list'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: Deletion failed
 
   /transfers/active:
     get:
@@ -1212,19 +1379,76 @@ paths:
   /webhook/notifications:
     get:
       tags: [Webhooks - Management]
-      summary: List movie, series and anime notifications together, newest first
+      summary: List one page of movie, series and anime notifications, newest first
+      description: >-
+        Ordering, paging and counting run across both notification tables in one
+        query, so a page is the newest records overall and `total` is the real
+        number of matches.
       parameters:
         - $ref: '#/components/parameters/StatusFilter'
+        - $ref: '#/components/parameters/MediaTypeFilter'
+        - $ref: '#/components/parameters/Search'
         - $ref: '#/components/parameters/Limit50'
+        - $ref: '#/components/parameters/Offset'
       responses:
         '200':
           description: Notification list
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/NotificationList'
+                $ref: '#/components/schemas/PagedNotificationList'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /webhook/notifications/bulk-delete:
+    post:
+      tags: [Webhooks - Management]
+      summary: Delete several notifications, by id or by re-running a filter
+      description: >-
+        Notification ids are unique across both tables, so a delete by id finds
+        the owning table without the caller tracking the source. With
+        `all_matching` the filter is re-evaluated here and `ids` is ignored.
+        Media already copied and the transfers that copied it are not touched.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids:
+                  type: array
+                  items:
+                    type: string
+                all_matching:
+                  type: boolean
+                status:
+                  type: string
+                media_type:
+                  type: string
+                search:
+                  type: string
+      responses:
+        '200':
+          description: How many notifications were deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [success]
+                  deleted_count:
+                    type: integer
+                  message:
+                    type: string
+        '400':
+          description: '`ids` was present but not a list'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: Deletion failed
 
   /webhook/series/notifications:
     get:

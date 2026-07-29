@@ -20,6 +20,10 @@ from typing import List, Dict, Optional
 # the transfer genuinely produced that many distinct lines.
 LOG_MAX_LINES = 5000
 
+# SQLite allows 999 bound variables per statement by default; a batch well under
+# that keeps a large bulk delete to a handful of statements.
+DELETE_BATCH = 400
+
 
 class Transfer:
     """Transfer model for database operations"""
@@ -132,8 +136,120 @@ class Transfer:
             ]
         return self._list_columns
 
+    def _filter_sql(self, status_filter=None, statuses=None, search=None):
+        """Shared WHERE clause for listing and counting, so they cannot drift."""
+        conditions, params = [], []
+        if status_filter:
+            conditions.append("status = ?")
+            params.append(status_filter)
+        if statuses:
+            conditions.append(f"status IN ({', '.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        if search:
+            # Matches what a person would remember about a transfer: what it was
+            # called, which season, or where it went.
+            term = f"%{search.strip()}%"
+            conditions.append(
+                "(parsed_title LIKE ? OR folder_name LIKE ? OR season_name LIKE ?"
+                " OR dest_path LIKE ? OR source_path LIKE ? OR transfer_id LIKE ?)"
+            )
+            params.extend([term] * 6)
+        return (" WHERE " + " AND ".join(conditions)) if conditions else "", params
+
+    def count(self, status_filter: str = None, statuses: List[str] = None,
+              search: str = None) -> int:
+        """
+        How many transfers match, ignoring limit and offset.
+
+        Pagination needs the real total, not the size of the page it just
+        fetched - the previous listing reported the latter, so the UI could not
+        tell a full page from the end of the results.
+        """
+        where, params = self._filter_sql(status_filter, statuses, search)
+        with self.db.get_connection() as conn:
+            return conn.execute(f"SELECT COUNT(*) AS n FROM transfers{where}", params).fetchone()['n']
+
+    def status_counts(self, search: str = None, statuses: List[str] = None) -> Dict[str, int]:
+        """
+        How many transfers sit in each status, so the filter controls can show
+        their own counts without fetching a page per filter.
+
+        `statuses` narrows the set being counted - History counts only finished
+        runs, because that is all it lists.
+        """
+        where, params = self._filter_sql(statuses=statuses, search=search)
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT status, COUNT(*) AS n FROM transfers{where} GROUP BY status", params
+            ).fetchall()
+        return {row['status']: row['n'] for row in rows}
+
+    def delete_many(self, transfer_ids: List[str]) -> tuple:
+        """
+        Delete several transfers, refusing any that are still running.
+
+        Returns (deleted_count, skipped_ids). A running transfer has a live
+        rsync process behind it; deleting the row would leave that process with
+        nowhere to report, so it is left alone and named in the result.
+        """
+        if not transfer_ids:
+            return 0, []
+
+        deleted, skipped = 0, []
+        with self.db.get_connection() as conn:
+            for start in range(0, len(transfer_ids), DELETE_BATCH):
+                batch = transfer_ids[start:start + DELETE_BATCH]
+                placeholders = ', '.join('?' for _ in batch)
+
+                running = [
+                    row['transfer_id'] for row in conn.execute(
+                        f"SELECT transfer_id FROM transfers"
+                        f" WHERE transfer_id IN ({placeholders}) AND status = 'running'", batch
+                    ).fetchall()
+                ]
+                skipped.extend(running)
+
+                running_set = set(running)
+                deletable = [tid for tid in batch if tid not in running_set]
+                if not deletable:
+                    continue
+                placeholders = ', '.join('?' for _ in deletable)
+                deleted += conn.execute(
+                    f"DELETE FROM transfers WHERE transfer_id IN ({placeholders})", deletable
+                ).rowcount
+            conn.commit()
+        return deleted, skipped
+
+    def delete_matching(self, status_filter: str = None, statuses: List[str] = None,
+                        search: str = None) -> tuple:
+        """
+        Delete every transfer matching a filter, sparing any still running.
+
+        This is what "select all" performs. The filter is re-evaluated here, in
+        one statement, rather than the caller listing every id it wants gone -
+        which would mean reading the whole matching set back just to name it,
+        and would miss anything that arrived in between.
+        """
+        where, params = self._filter_sql(status_filter, statuses, search)
+        joiner = " AND" if where else " WHERE"
+
+        with self.db.get_connection() as conn:
+            running = [
+                row['transfer_id'] for row in conn.execute(
+                    f"SELECT transfer_id FROM transfers{where}{joiner} status = 'running'",
+                    params,
+                ).fetchall()
+            ]
+            deleted = conn.execute(
+                f"DELETE FROM transfers{where}{joiner} status != 'running'", params
+            ).rowcount
+            conn.commit()
+
+        return deleted, running
+
     def get_all(self, status_filter: str = None, limit: int = None,
-                statuses: List[str] = None, include_logs: bool = True) -> List[Dict]:
+                statuses: List[str] = None, include_logs: bool = True,
+                search: str = None, offset: int = None) -> List[Dict]:
         """
         Get all transfers with optional filtering.
 
@@ -156,26 +272,16 @@ class Transfer:
                 ", CASE WHEN json_valid(logs) THEN json_array_length(logs) ELSE 0 END AS log_count"
             )
 
-        query = f"SELECT {select} FROM transfers"
-        params = []
-        conditions = []
-
-        if status_filter:
-            conditions.append("status = ?")
-            params.append(status_filter)
-
-        if statuses:
-            conditions.append(f"status IN ({', '.join('?' for _ in statuses)})")
-            params.extend(statuses)
-
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-
-        query += " ORDER BY created_at DESC"
+        where, params = self._filter_sql(status_filter, statuses, search)
+        query = f"SELECT {select} FROM transfers{where} ORDER BY created_at DESC"
 
         if limit:
             query += " LIMIT ?"
             params.append(limit)
+            # OFFSET is only meaningful with a LIMIT in SQLite
+            if offset:
+                query += " OFFSET ?"
+                params.append(offset)
 
         with self.db.get_connection() as conn:
             cursor = conn.execute(query, params)
