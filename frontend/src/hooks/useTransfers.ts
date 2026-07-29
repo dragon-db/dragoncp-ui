@@ -3,6 +3,18 @@ import api from "@/lib/api";
 import type { QueueStatus, Transfer } from "@/lib/api-types";
 export type { QueueStatus, Transfer } from "@/lib/api-types";
 
+/**
+ * Several transfer endpoints report failures as `{status: "error"}` with HTTP
+ * 200, so a resolved request is not on its own proof the action happened.
+ * Throwing here keeps the mutations' error handling (and their toasts) honest.
+ */
+function assertSuccess<T extends { status?: string; message?: string }>(data: T): T {
+  if (data?.status === "error") {
+    throw new Error(data.message || "Request failed");
+  }
+  return data;
+}
+
 export interface TransferRequest {
   type: "folder" | "file";
   media_type: "movies" | "tvshows" | "anime";
@@ -27,16 +39,91 @@ export function useActiveTransfers() {
   });
 }
 
-export function useAllTransfers(limit = 50) {
+/** What a paged listing returns, alongside the rows themselves. */
+export interface ListPage {
+  /** Records matching the filter, across the whole table. */
+  total: number;
+  /** Records on this page. */
+  count: number;
+  limit: number;
+  offset: number;
+  /** Matching records per status, so filters can show their own counts. */
+  status_counts: Record<string, number>;
+  /** Records on file ignoring the current filter and search. */
+  unfiltered_total: number;
+}
+
+export interface TransferListOptions {
+  limit?: number;
+  offset?: number;
+  /** A status to filter by; omit for every status. */
+  status?: string;
+  /** A set of statuses to include - History asks for finished runs only. */
+  statuses?: string[];
+  search?: string;
+}
+
+/**
+ * A page of transfer history.
+ *
+ * Filtering, searching and paging all happen on the server. Fetching a fixed
+ * slice and narrowing it in the browser meant a filter could only ever find
+ * what that slice happened to contain — with hundreds of transfers on record,
+ * "Failed" showed nothing while failures existed further back.
+ */
+export function useAllTransfers(options: TransferListOptions = {}) {
+  const { limit = 50, offset = 0, status, statuses, search } = options;
+
   return useQuery({
-    queryKey: ["transfers", "all", limit],
+    queryKey: ["transfers", "all", { limit, offset, status, statuses, search }],
     queryFn: async () => {
-      const response = await api.get<{
-        status: string;
-        transfers: Transfer[];
-        total: number;
-      }>(`/transfers/all?limit=${limit}`);
+      const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+      if (status) params.set("status", status);
+      if (statuses?.length) params.set("statuses", statuses.join(","));
+      if (search) params.set("search", search);
+
+      const response = await api.get<{ status: string; transfers: Transfer[] } & ListPage>(
+        `/transfers/all?${params}`
+      );
       return response.data;
+    },
+    // Keeps the current page on screen while the next one loads, so paging and
+    // typing do not blank the list.
+    placeholderData: (previous) => previous,
+  });
+}
+
+export interface BulkDeleteTransfers {
+  /** Specific transfers to delete. Ignored when `all_matching` is set. */
+  ids?: string[];
+  /** Delete every transfer matching the filter below, not just the loaded rows. */
+  all_matching?: boolean;
+  status?: string;
+  statuses?: string[];
+  search?: string;
+}
+
+/**
+ * Delete several transfers at once.
+ *
+ * Running transfers are refused by the server and named in `skipped`, so a
+ * sweep that leaves some behind can say which and why.
+ */
+export function useBulkDeleteTransfers() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (payload: BulkDeleteTransfers) => {
+      const response = await api.post<{
+        status: string;
+        deleted_count: number;
+        skipped: string[];
+        message: string;
+      }>("/transfers/bulk-delete", payload);
+      return assertSuccess(response.data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["transfers"] });
     },
   });
 }
@@ -56,7 +143,19 @@ export function useTransferStatus(transferId: string) {
   });
 }
 
-export function useTransferLogs(transferId: string) {
+/**
+ * Output for one transfer.
+ *
+ * Realtime is opt-in in this app, so the socket cannot be the only thing
+ * keeping a log current — `live` polls while a transfer is running, and socket
+ * events (when enabled) patch the same cache entry for instant updates.
+ * `enabled` keeps this to rows the user has actually opened.
+ */
+export function useTransferLogs(
+  transferId: string,
+  options?: { enabled?: boolean; live?: boolean }
+) {
+  const enabled = (options?.enabled ?? true) && !!transferId;
   return useQuery({
     queryKey: ["transfers", transferId, "logs"],
     queryFn: async () => {
@@ -68,7 +167,8 @@ export function useTransferLogs(transferId: string) {
       }>(`/transfer/${transferId}/logs`);
       return response.data;
     },
-    enabled: !!transferId,
+    enabled,
+    refetchInterval: enabled && options?.live ? 2000 : false,
   });
 }
 
@@ -98,7 +198,7 @@ export function useStartTransfer() {
         source: string;
         destination: string;
       }>("/transfer", data);
-      return response.data;
+      return assertSuccess(response.data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
@@ -112,7 +212,35 @@ export function useCancelTransfer() {
   return useMutation({
     mutationFn: async (transferId: string) => {
       const response = await api.post(`/transfer/${transferId}/cancel`);
-      return response.data;
+      return assertSuccess(response.data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["transfers"] });
+    },
+  });
+}
+
+export function usePauseTransfer() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (transferId: string) => {
+      const response = await api.post(`/transfer/${transferId}/pause`);
+      return assertSuccess(response.data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["transfers"] });
+    },
+  });
+}
+
+export function useResumeTransfer() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (transferId: string) => {
+      const response = await api.post(`/transfer/${transferId}/resume`);
+      return assertSuccess(response.data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
@@ -126,7 +254,7 @@ export function useRestartTransfer() {
   return useMutation({
     mutationFn: async (transferId: string) => {
       const response = await api.post(`/transfer/${transferId}/restart`);
-      return response.data;
+      return assertSuccess(response.data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
@@ -140,7 +268,7 @@ export function useDeleteTransfer() {
   return useMutation({
     mutationFn: async (transferId: string) => {
       const response = await api.post(`/transfer/${transferId}/delete`);
-      return response.data;
+      return assertSuccess(response.data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
@@ -154,7 +282,7 @@ export function useCleanupTransfers() {
   return useMutation({
     mutationFn: async () => {
       const response = await api.post("/transfers/cleanup");
-      return response.data;
+      return assertSuccess(response.data);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["transfers"] });

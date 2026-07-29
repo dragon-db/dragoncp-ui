@@ -26,22 +26,95 @@ export interface DiscordSettings {
   enabled: boolean;
 }
 
-export function useWebhookNotifications(status?: string, limit = 50) {
-  return useQuery({
-    queryKey: ["webhooks", "notifications", status, limit],
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      if (status) params.append("status", status);
-      params.append("limit", limit.toString());
+/** What a paged listing returns, alongside the rows themselves. */
+export interface ListPage {
+  /** Records matching the filter, across both webhook tables. */
+  total: number;
+  /** Records on this page. */
+  count: number;
+  limit: number;
+  offset: number;
+  /** Matching records per status, so filters can show their own counts. */
+  status_counts: Record<string, number>;
+  /** Records on file ignoring the current filter and search. */
+  unfiltered_total: number;
+  /**
+   * Arrivals flagged for manual sync. Reported separately from `status_counts`
+   * because a flagged arrival keeps its real status too - counting it as a
+   * status would double it in any total built from those counts.
+   */
+  manual_sync_count: number;
+}
 
-      const response = await api.get<{
-        status: string;
-        notifications: WebhookNotification[];
-        total: number;
-      }>(`/webhook/notifications?${params}`);
+export interface NotificationListOptions {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  mediaType?: string;
+  search?: string;
+}
+
+/**
+ * A page of movie and series arrivals, newest first.
+ *
+ * Ordering and paging run across both sources on the server. The page used to
+ * request the same number from each and merge them here, which meant the newer
+ * source crowded the other one off the list.
+ */
+export function useWebhookNotifications(options: NotificationListOptions = {}) {
+  const { limit = 50, offset = 0, status, mediaType, search } = options;
+
+  return useQuery({
+    queryKey: ["webhooks", "notifications", { limit, offset, status, mediaType, search }],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        limit: String(limit),
+        offset: String(offset),
+      });
+      if (status) params.set("status", status);
+      if (mediaType) params.set("media_type", mediaType);
+      if (search) params.set("search", search);
+
+      const response = await api.get<
+        { status: string; notifications: WebhookNotification[] } & ListPage
+      >(`/webhook/notifications?${params}`);
       return response.data;
     },
     refetchInterval: 10000, // Poll every 10 seconds
+    // Keeps the current page on screen while the next one loads.
+    placeholderData: (previous) => previous,
+  });
+}
+
+export interface BulkDeleteNotifications {
+  /** Specific notifications to delete. Ignored when `all_matching` is set. */
+  ids?: string[];
+  /** Delete every notification matching the filter below. */
+  all_matching?: boolean;
+  status?: string;
+  media_type?: string;
+  search?: string;
+}
+
+/** Delete several webhook notifications at once. */
+export function useBulkDeleteNotifications() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (payload: BulkDeleteNotifications) => {
+      const response = await api.post<{
+        status: string;
+        deleted_count: number;
+        message: string;
+      }>("/webhook/notifications/bulk-delete", payload);
+      if (response.data?.status === "error") {
+        throw new Error(response.data.message || "Request failed");
+      }
+      return response.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["webhooks"] });
+    },
   });
 }
 

@@ -283,7 +283,7 @@ class QueueManager:
             return
         
         # Get all queued transfers from database (both transfer records and webhook notifications)
-        all_transfers = self.transfer_model.get_all()
+        all_transfers = self.transfer_model.get_all(statuses=['queued'], include_logs=False)
         
         # Filter for transfers with status='queued' and same dest_path
         queued_path_transfers = [
@@ -357,7 +357,7 @@ class QueueManager:
             return
         
         # Get all queued transfers from database
-        all_transfers = self.transfer_model.get_all()
+        all_transfers = self.transfer_model.get_all(statuses=['queued'], include_logs=False)
         queued_transfers = [
             t for t in all_transfers 
             if t['status'] == 'queued'
@@ -465,7 +465,9 @@ class QueueManager:
         """Get current queue status"""
         with self.lock:
             # Get all transfers from database
-            all_transfers = self.transfer_model.get_all()
+            all_transfers = self.transfer_model.get_all(
+                statuses=['running', 'queued'], include_logs=False
+            )
             
             running_transfers = [
                 t for t in all_transfers 
@@ -493,7 +495,9 @@ class QueueManager:
         Should be called on app startup or periodically.
         """
         with self.lock:
-            all_transfers = self.transfer_model.get_all()
+            all_transfers = self.transfer_model.get_all(
+                statuses=['running', 'queued'], include_logs=False
+            )
             running_records = [
                 t for t in all_transfers
                 if t['status'] == 'running'

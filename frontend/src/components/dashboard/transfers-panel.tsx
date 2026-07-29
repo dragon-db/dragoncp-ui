@@ -1,40 +1,72 @@
 import { Link } from "@tanstack/react-router";
+import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { useActiveTransfers, useCancelTransfer, type Transfer } from "@/hooks/useTransfers";
+import {
+  useActiveTransfers,
+  useCancelTransfer,
+  usePauseTransfer,
+  useResumeTransfer,
+  type Transfer,
+} from "@/hooks/useTransfers";
 import { useTransferPosters } from "@/hooks/useTransferPosters";
 import { WebhookPoster } from "@/components/webhooks/webhook-bits";
+import { ConfirmDialog } from "@/components/transfers/confirm-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  formatSizePair,
+  formatSpeed,
+  formatEta,
+  transferPercent,
+} from "@/lib/transfer-progress";
 import {
   IconTransfer,
   IconPlus,
   IconRefresh,
   IconArrowNarrowRight,
-  IconPlayerStop,
+  IconPlayerPause,
+  IconPlayerPlay,
+  IconCircleX,
+  IconDots,
+  IconTerminal2,
   IconInfoCircle,
 } from "@tabler/icons-react";
 
-function parseProgress(progress?: string): number {
-  if (!progress) return 0;
-  const match = progress.match(/(\d{1,3})%/);
-  return match ? Math.max(0, Math.min(100, Number(match[1]))) : 0;
-}
+/** Fixed column widths, shared by the header labels and every row. */
+const COL_PERCENT = "w-10 shrink-0 text-right";
+const COL_SPEED = "hidden w-24 shrink-0 text-right sm:block";
+const COL_SIZE = "hidden w-20 shrink-0 text-right sm:block";
 
 function TransferRow({
   transfer,
   posterUrl,
-  onCancel,
-  cancelling,
+  onPause,
+  onResume,
+  onRequestStop,
+  busy,
 }: {
   transfer: Transfer;
   posterUrl?: string;
-  onCancel: (id: string) => void;
-  cancelling: boolean;
+  onPause: (id: string) => void;
+  onResume: (id: string) => void;
+  onRequestStop: (transfer: Transfer) => void;
+  busy: boolean;
 }) {
   const queued = transfer.status === "queued";
-  const pct = parseProgress(transfer.progress);
+  const paused = transfer.status === "paused";
+  const running = transfer.status === "running";
+  const pct = transferPercent(transfer);
+  const size = formatSizePair(transfer.bytes_transferred, transfer.total_bytes);
+  const eta = running ? formatEta(transfer.eta_seconds) : null;
 
   return (
     <div className="flex items-center gap-3.5 border-b border-border px-4 py-3 last:border-b-0">
@@ -56,20 +88,22 @@ function TransferRow({
           {transfer.season_name && (
             <span className="truncate text-xs text-muted-foreground">{transfer.season_name}</span>
           )}
+          {paused && (
+            <Badge variant="outline" className="shrink-0 border-amber-500/40 text-amber-400">
+              Paused
+            </Badge>
+          )}
         </div>
-        <div className="mb-1.5 flex items-center gap-2">
-          <div className="h-0.5 flex-1 overflow-hidden rounded-full bg-black/25">
-            <div
-              className={cn(
-                "h-full rounded-full",
-                queued ? "bg-muted-foreground" : "bg-brand-gradient-x"
-              )}
-              style={{ width: `${queued ? 0 : pct}%` }}
-            />
-          </div>
-          <span className="min-w-9 text-right font-mono text-[10px] text-foreground">
-            {queued ? "—" : `${pct}%`}
-          </span>
+        <div className="mb-1.5 h-1 overflow-hidden rounded-full bg-white/8">
+          <div
+            className={cn(
+              "h-full rounded-full",
+              queued && "bg-muted-foreground",
+              paused && "bg-amber-500/70",
+              running && "bg-brand-gradient-x"
+            )}
+            style={{ width: `${queued ? 0 : pct}%` }}
+          />
         </div>
         <div className="flex items-center gap-1.5 truncate font-mono text-[10px] text-muted-foreground">
           <span className="truncate">{transfer.source_path}</span>
@@ -78,22 +112,95 @@ function TransferRow({
         </div>
       </div>
 
-      {queued ? (
-        <Badge variant="outline" className="shrink-0 text-muted-foreground">
-          Queued
-        </Badge>
-      ) : (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="shrink-0 text-muted-foreground hover:text-rose-400"
-          onClick={() => onCancel(transfer.id)}
-          disabled={transfer.status !== "running" || cancelling}
-          title="Cancel transfer"
-        >
-          <IconPlayerStop className="size-4" />
-        </Button>
-      )}
+      <span className={cn(COL_PERCENT, "font-mono text-[11px] text-foreground")}>
+        {queued ? "—" : `${pct}%`}
+      </span>
+
+      <div className={COL_SPEED}>
+        {queued ? (
+          <Badge variant="outline" className="text-muted-foreground">
+            Queued
+          </Badge>
+        ) : paused ? (
+          <span className="font-mono text-[11px] text-amber-400">Paused</span>
+        ) : (
+          <>
+            <div className="font-mono text-xs font-semibold text-brand-foreground">
+              {formatSpeed(transfer.speed_bps)}
+            </div>
+            {eta && <div className="font-mono text-[10px] text-muted-foreground">ETA {eta}</div>}
+          </>
+        )}
+      </div>
+
+      <div className={COL_SIZE}>
+        {size ? (
+          <>
+            <div className="font-mono text-xs text-foreground">{size.value}</div>
+            <div className="font-mono text-[10px] text-muted-foreground">{size.unit}</div>
+          </>
+        ) : (
+          <span className="font-mono text-xs text-muted-foreground">—</span>
+        )}
+      </div>
+
+      <div className="flex shrink-0 items-center gap-0.5">
+        {running && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-foreground"
+            onClick={() => onPause(transfer.id)}
+            disabled={busy}
+            title="Pause transfer"
+          >
+            <IconPlayerPause className="size-4" />
+            <span className="sr-only">Pause transfer</span>
+          </Button>
+        )}
+        {paused && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-foreground"
+            onClick={() => onResume(transfer.id)}
+            disabled={busy}
+            title="Resume transfer"
+          >
+            <IconPlayerPlay className="size-4" />
+            <span className="sr-only">Resume transfer</span>
+          </Button>
+        )}
+
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={<Button variant="ghost" size="icon-sm" />}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <IconDots className="size-4" />
+            <span className="sr-only">More actions</span>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-48">
+            <DropdownMenuItem render={<Link to="/transfers" />}>
+              <IconTerminal2 />
+              View logs
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onClick={() => onRequestStop(transfer)}>
+              <IconCircleX />
+              Stop transfer
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </div>
+  );
+}
+
+function SectionLabel({ children }: { children: ReactNode }) {
+  return (
+    <div className="border-b border-border bg-muted/20 px-4 py-1.5 font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+      {children}
     </div>
   );
 }
@@ -101,18 +208,66 @@ function TransferRow({
 export function TransfersPanel() {
   const { data, isLoading, refetch } = useActiveTransfers();
   const cancelTransfer = useCancelTransfer();
+  const pauseTransfer = usePauseTransfer();
+  const resumeTransfer = useResumeTransfer();
   const posters = useTransferPosters();
 
-  const running = data?.queue_status.running_count ?? 0;
-  const queued = data?.queue_status.queued_count ?? 0;
-  const transfers = data?.transfers ?? [];
+  const [stopTarget, setStopTarget] = useState<Transfer | null>(null);
 
-  const handleCancel = async (id: string) => {
+  const running = data?.queue_status.running_count ?? 0;
+  const queuedCount = data?.queue_status.queued_count ?? 0;
+  const transfers = useMemo(() => data?.transfers ?? [], [data?.transfers]);
+
+  // Queued transfers are grouped under their own heading, matching how the
+  // queue actually behaves: they are waiting, not progressing.
+  const { activeRows, queuedRows } = useMemo(() => {
+    const visible = transfers.slice(0, 8);
+    return {
+      activeRows: visible.filter((t) => t.status !== "queued"),
+      queuedRows: visible.filter((t) => t.status === "queued"),
+    };
+  }, [transfers]);
+
+  const anyPausable = activeRows.some((t) => t.status === "running");
+  const busy = pauseTransfer.isPending || resumeTransfer.isPending || cancelTransfer.isPending;
+
+  const handlePause = async (id: string) => {
+    try {
+      await pauseTransfer.mutateAsync(id);
+      toast.success("Transfer paused");
+    } catch {
+      toast.error("Failed to pause transfer");
+    }
+  };
+
+  const handleResume = async (id: string) => {
+    try {
+      const result = await resumeTransfer.mutateAsync(id);
+      toast.success(result?.message ?? "Transfer resumed");
+    } catch {
+      toast.error("Failed to resume transfer");
+    }
+  };
+
+  const handlePauseAll = async () => {
+    const targets = activeRows.filter((t) => t.status === "running");
+    const results = await Promise.allSettled(
+      targets.map((t) => pauseTransfer.mutateAsync(t.id))
+    );
+    const failed = results.filter((r) => r.status === "rejected").length;
+    if (failed) {
+      toast.error(`Paused ${targets.length - failed} of ${targets.length} transfers`);
+    } else {
+      toast.success(`Paused ${targets.length} transfer${targets.length === 1 ? "" : "s"}`);
+    }
+  };
+
+  const handleStop = async (id: string) => {
     try {
       await cancelTransfer.mutateAsync(id);
-      toast.success("Transfer cancelled");
+      toast.success("Transfer stopped");
     } catch {
-      toast.error("Failed to cancel transfer");
+      toast.error("Failed to stop transfer");
     }
   };
 
@@ -130,12 +285,23 @@ export function TransfersPanel() {
             {running} running
           </Badge>
         )}
-        {queued > 0 && (
+        {queuedCount > 0 && (
           <Badge variant="outline" className="text-muted-foreground">
-            {queued} queued
+            {queuedCount} queued
           </Badge>
         )}
         <div className="ml-auto flex items-center gap-2">
+          {anyPausable && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground hover:text-foreground"
+              onClick={handlePauseAll}
+              disabled={busy}
+            >
+              Pause all
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -162,15 +328,44 @@ export function TransfersPanel() {
         </div>
       ) : transfers.length ? (
         <div className="flex-1">
-          {transfers.slice(0, 6).map((transfer) => (
+          {/* Column headings so the speed/size figures are self-explanatory */}
+          <div className="flex items-center gap-3.5 border-b border-border px-4 py-1.5 font-mono text-[10px] tracking-widest text-muted-foreground uppercase">
+            <span className="w-9 shrink-0" />
+            <span className="min-w-0 flex-1">Transfer</span>
+            <span className={COL_PERCENT} />
+            <span className={COL_SPEED}>Speed</span>
+            <span className={COL_SIZE}>Size</span>
+            <span className="w-[3.75rem] shrink-0" />
+          </div>
+
+          {activeRows.map((transfer) => (
             <TransferRow
               key={transfer.id}
               transfer={transfer}
               posterUrl={posters.get(transfer.id)}
-              onCancel={handleCancel}
-              cancelling={cancelTransfer.isPending}
+              onPause={handlePause}
+              onResume={handleResume}
+              onRequestStop={setStopTarget}
+              busy={busy}
             />
           ))}
+
+          {queuedRows.length > 0 && (
+            <>
+              <SectionLabel>Queued · {queuedRows.length}</SectionLabel>
+              {queuedRows.map((transfer) => (
+                <TransferRow
+                  key={transfer.id}
+                  transfer={transfer}
+                  posterUrl={posters.get(transfer.id)}
+                  onPause={handlePause}
+                  onResume={handleResume}
+                  onRequestStop={setStopTarget}
+                  busy={busy}
+                />
+              ))}
+            </>
+          )}
         </div>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 py-12 text-muted-foreground">
@@ -183,6 +378,30 @@ export function TransfersPanel() {
           </Link>
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(stopTarget)}
+        onOpenChange={(open) => !open && setStopTarget(null)}
+        icon={<IconCircleX />}
+        title="Stop this transfer?"
+        description={
+          <>
+            <span className="font-medium text-foreground">
+              {stopTarget?.parsed_title || stopTarget?.folder_name}
+            </span>{" "}
+            will stop mid-transfer and be marked cancelled. Files already copied stay in place, but
+            the remaining files are not transferred. Use Pause instead if you intend to continue
+            later.
+          </>
+        }
+        confirmLabel="Stop transfer"
+        cancelLabel="Keep running"
+        pending={cancelTransfer.isPending}
+        onConfirm={() => {
+          if (stopTarget) handleStop(stopTarget.id);
+          setStopTarget(null);
+        }}
+      />
     </section>
   );
 }

@@ -75,9 +75,11 @@ class TransferCoordinator:
                 ).start()
     
     # Transfer Operations
-    def start_transfer(self, transfer_id: str, source_path: str, dest_path: str, 
-                      operation_type: str = "folder", media_type: str = "", 
-                      folder_name: str = "", season_name: str = None) -> Tuple[bool, str]:
+    def start_transfer(self, transfer_id: str, source_path: str, dest_path: str,
+                      operation_type: str = "folder", media_type: str = "",
+                      folder_name: str = "", season_name: str = None,
+                      is_simulation: bool = False,
+                      simulation_bwlimit: int = None) -> Tuple[bool, str]:
         """
         Start a new transfer with database persistence and queue management
         
@@ -125,7 +127,9 @@ class TransferCoordinator:
                 'status': 'queued',  # Changed from 'duplicate' to 'queued'
                 'progress': queue_message,
                 'queue_reason': 'path',  # Explicit tracking: 'path' or 'slot'
-                'start_time': datetime.now().isoformat()  # Track when queued
+                'start_time': datetime.now().isoformat(),  # Track when queued
+                'is_simulation': is_simulation,
+                'simulation_bwlimit': simulation_bwlimit
             }
             
             self.transfer_model.create(transfer_data)
@@ -165,7 +169,9 @@ class TransferCoordinator:
                 'operation_type': operation_type,
                 'status': 'queued',
                 'progress': 'Waiting in queue...',
-                'queue_reason': 'slot'  # Explicit tracking: 'path' or 'slot'
+                'queue_reason': 'slot',  # Explicit tracking: 'path' or 'slot'
+                'is_simulation': is_simulation,
+                'simulation_bwlimit': simulation_bwlimit
             }
             
             self.transfer_model.create(transfer_data)
@@ -192,7 +198,9 @@ class TransferCoordinator:
                 'source_path': source_path,
                 'dest_path': dest_path,
                 'operation_type': operation_type,
-                'status': 'pending'
+                'status': 'pending',
+                'is_simulation': is_simulation,
+                'simulation_bwlimit': simulation_bwlimit
             }
             
             self.transfer_model.create(transfer_data)
@@ -237,12 +245,21 @@ class TransferCoordinator:
                 # Transfer completed or failed
                 status = transfer['status'] if transfer else 'unknown'
                 dest_path = transfer.get('dest_path') if transfer else None
-                
+
+                if status == 'paused':
+                    # A pause is not an outcome. Release the slot and the
+                    # destination so queued work can proceed, but leave webhook
+                    # state and backup records alone - resume_transfer() starts
+                    # a fresh watcher that finalizes them when it really ends.
+                    print(f"⏸️  Transfer {transfer_id} paused, releasing queue slot")
+                    self.queue_manager.unregister_transfer(transfer_id, dest_path)
+                    break
+
                 # Unregister from queue manager (will promote next queued transfer)
                 # Pass dest_path for path-specific queue promotion
                 print(f"🏁 Transfer {transfer_id} finished with status: {status}")
                 self.queue_manager.unregister_transfer(transfer_id, dest_path)
-                
+
                 # Update webhook notification status
                 self.webhook_service.update_webhook_transfer_status(transfer_id, status, self.transfer_model)
                 
@@ -274,6 +291,109 @@ class TransferCoordinator:
         
         return result
     
+    def pause_transfer(self, transfer_id: str) -> Tuple[bool, str]:
+        """
+        Pause a running transfer and release its queue slot.
+
+        The slot is released here rather than left to _post_transfer_completion,
+        which only polls every few seconds - a resume issued inside that window
+        would otherwise be told the queue is full and be needlessly queued.
+        Unregistering twice is harmless, so the watcher can still run.
+        """
+        transfer = self.transfer_model.get(transfer_id)
+        dest_path = transfer.get('dest_path') if transfer else None
+
+        success, message = self.transfer_service.pause_transfer(transfer_id)
+
+        if success:
+            self.queue_manager.unregister_transfer(transfer_id, dest_path)
+
+        return success, message
+
+    def resume_transfer(self, transfer_id: str) -> Tuple[bool, str]:
+        """
+        Resume a paused transfer.
+
+        Goes back through the queue manager rather than starting rsync directly,
+        so a resume respects the concurrency limit and cannot collide with a
+        transfer that claimed the same destination while this one was paused.
+        """
+        transfer = self.transfer_model.get(transfer_id)
+        if not transfer:
+            return False, 'Transfer not found'
+
+        if transfer['status'] != 'paused':
+            return False, f"Only paused transfers can be resumed (currently {transfer['status']})"
+
+        can_start, queue_status = self.queue_manager.register_transfer(
+            transfer_id, transfer['dest_path']
+        )
+
+        if queue_status == 'duplicate':
+            return False, 'Another transfer is already syncing to this destination'
+
+        if queue_status == 'queued':
+            self.transfer_model.update(transfer_id, {
+                'status': 'queued',
+                'progress': 'Resumed - waiting in queue...',
+                'queue_reason': 'slot',
+                'paused_at': None
+            })
+            print(f"⏳ Resumed transfer {transfer_id} added to queue")
+
+            if self.socketio:
+                self.socketio.emit('transfer_queued', {
+                    'transfer_id': transfer_id,
+                    'message': 'Resumed transfer added to queue'
+                })
+
+            return True, 'Transfer resumed and queued'
+
+        if not can_start:
+            return False, f'Could not resume transfer ({queue_status})'
+
+        self.transfer_model.update(transfer_id, {
+            'status': 'pending',
+            'progress': 'Resuming transfer...',
+            'paused_at': None,
+            'end_time': None
+        })
+
+        transfer = self.transfer_model.get(transfer_id)
+        backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
+
+        success = self.transfer_service.start_rsync_process(
+            transfer_id,
+            transfer['source_path'],
+            transfer['dest_path'],
+            transfer['operation_type'],
+            backup_dir
+        )
+
+        if not success:
+            # The row was set to 'pending' above. Leaving it there strands the
+            # transfer: no monitor was started, the queue slot is about to be
+            # released, and 'pending' counts as active - so it sits in Activity
+            # forever, and cancel_transfer has no branch for it. Put it back to
+            # paused, which is both true and retryable: the partial files are
+            # still on disk and resume can be tried again.
+            self.transfer_model.update(transfer_id, {
+                'status': 'paused',
+                'progress': 'Resume failed - partial files kept, try again',
+                'paused_at': datetime.now().isoformat()
+            })
+            self.queue_manager.unregister_transfer(transfer_id)
+            return False, 'Failed to resume transfer'
+
+        import threading
+        threading.Thread(
+            target=self._post_transfer_completion,
+            args=(transfer_id,),
+            daemon=True
+        ).start()
+
+        return True, 'Transfer resumed'
+
     def restart_transfer(self, transfer_id: str) -> bool:
         """Restart a failed or cancelled transfer"""
         transfer = self.transfer_model.get(transfer_id)
@@ -286,14 +406,29 @@ class TransferCoordinator:
         """Get transfer status from database"""
         return self.transfer_model.get(transfer_id)
     
-    def get_all_transfers(self, limit: int = 50) -> List[Dict]:
-        """Get all transfers from database"""
-        return self.transfer_model.get_all(limit=limit)
+    def get_all_transfers(self, limit: int = 50, status_filter: str = None,
+                          search: str = None, offset: int = 0,
+                          statuses: List[str] = None) -> List[Dict]:
+        """Get all transfers from database (listing only - no log bodies)"""
+        return self.transfer_model.get_all(
+            limit=limit, status_filter=status_filter, include_logs=False,
+            search=search, offset=offset, statuses=statuses
+        )
+
+    def count_transfers(self, status_filter: str = None, search: str = None,
+                        statuses: List[str] = None) -> int:
+        """How many transfers match a filter, ignoring the page window."""
+        return self.transfer_model.count(
+            status_filter=status_filter, search=search, statuses=statuses
+        )
     
+    ACTIVE_STATUSES = ['running', 'pending', 'queued', 'paused']
+
     def get_active_transfers(self) -> List[Dict]:
-        """Get active transfers (running/pending/queued)"""
-        all_transfers = self.transfer_model.get_all()
-        return [t for t in all_transfers if t['status'] in ['running', 'pending', 'queued']]
+        """Get active transfers (running/pending/queued/paused)"""
+        return self.transfer_model.get_all(
+            statuses=self.ACTIVE_STATUSES, include_logs=False
+        )
     
     def start_queued_transfer(self, transfer_id: str) -> bool:
         """
@@ -334,10 +469,10 @@ class TransferCoordinator:
         
         # Refresh transfer data after update
         transfer = self.transfer_model.get(transfer_id)
-        
+
         # Calculate dynamic backup directory
         backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
-        
+
         # Start the transfer
         success = self.transfer_service.start_rsync_process(
             transfer_id,

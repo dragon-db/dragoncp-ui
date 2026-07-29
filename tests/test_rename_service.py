@@ -69,6 +69,35 @@ class RenameServiceTests(unittest.TestCase):
             ],
         }
 
+    def test_test_mode_does_not_touch_the_file(self):
+        """
+        Renaming is an irreversible change to someone's media library, so it is
+        gated like every other write. It was not: the rename service had no
+        notion of test mode at all, and a Sonarr rename webhook arriving at a
+        test installation renamed real files while the UI said test mode.
+        """
+        with patch.dict(os.environ, {'TEST_MODE': '1'}):
+            success, result = self.service.process_rename_webhook(self.webhook_data, 'anime')
+
+        self.assertTrue(success)
+        self.assertTrue(os.path.exists(self.previous_local_path),
+                        "the original file must still be there")
+        self.assertFalse(os.path.exists(self.new_local_path),
+                         "no renamed file should have appeared")
+        self.assertEqual(result.get('success_count'), 1,
+                         "the flow still reports a success, the way a skipped delete does")
+        self.assertIn('dry run', str(result.get('files', result)).lower())
+
+    def test_without_test_mode_the_file_is_actually_renamed(self):
+        """The counterpart, so the gate cannot pass by doing nothing at all."""
+        with patch.dict(os.environ, {'TEST_MODE': '0'}):
+            success, result = self.service.process_rename_webhook(self.webhook_data, 'anime')
+
+        self.assertTrue(success)
+        self.assertFalse(os.path.exists(self.previous_local_path))
+        self.assertTrue(os.path.exists(self.new_local_path))
+        self.assertEqual(result.get('success_count'), 1)
+
     def test_process_rename_webhook_persists_completed_at(self):
         success, result = self.service.process_rename_webhook(self.webhook_data, 'anime')
 

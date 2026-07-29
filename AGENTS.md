@@ -48,17 +48,32 @@
 - Prefer clear diagnostics around Socket.IO mode, reconnect behavior, and fallback transport state.
 - Protect unattended operation: backend restarts, token refresh, websocket reconnect, and transfer monitoring should degrade gracefully.
 
+## Task Tracking
+
+- `TASKS.md` at the repository root is the current task tracker. Read it before
+  starting work.
+- If the work matches an existing task, use it. Otherwise add one.
+- Record decisions as they are made, not reconstructed at the end.
+- Before finishing a session, leave a `Handoff:` line on the task saying where
+  you stopped and what comes next. Work here spans separate sessions that share
+  no memory, so that line is how the next one starts anywhere other than blind.
+- Point a task's `Docs:` at the relevant page under `docs/` rather than
+  restating it.
+- A database-backed replacement is designed in `docs/plans/task-manager.md`.
+
 ## Documentation Lookup
 
 - Use `docs/README.md` as the primary documentation index before searching individual docs.
 - `docs/README.md` maps feature areas to the most relevant implementation/reference docs.
 - When working on a feature, check the matching section in `docs/README.md` first, then open the targeted doc file.
 - Useful common entry points:
-  - runtime and deployment: `docs/runtime-stability/RUNTIME_STABILITY_IMPLEMENTATION.md`
-  - transfer flow and architecture: `docs/SYNC_APPLICATION_ANALYSIS.md`
-  - queue behavior: `docs/queue-management/QUEUE_MANAGEMENT_IMPLEMENTATION.md`
-  - frontend React details: `docs/frontend/FRONTEND_REFERENCE.md`
-  - API endpoints: `docs/api/API_REFERENCE.md`
+  - runtime and deployment: `docs/operations/runtime-and-deployment.md`
+  - transfer flow and architecture: `docs/architecture/system-overview.md`
+  - queue behavior: `docs/features/queue/README.md`
+  - frontend React details: `docs/reference/frontend.md`
+  - API endpoints: `docs/reference/api.md`
+  - database schema: `docs/reference/database-schema.md`
+  - testing transfers without touching media: `docs/features/simulation/README.md`
 
 ## Attribution Policy
 

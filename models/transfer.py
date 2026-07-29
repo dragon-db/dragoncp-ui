@@ -15,11 +15,34 @@ from datetime import datetime
 from typing import List, Dict, Optional
 
 
+# Backstop for a pathological log (a sync spanning tens of thousands of files).
+# Progress lines are collapsed before they get here, so reaching this cap means
+# the transfer genuinely produced that many distinct lines.
+LOG_MAX_LINES = 5000
+
+# SQLite allows 999 bound variables per statement by default; a batch well under
+# that keeps a large bulk delete to a handful of statements.
+DELETE_BATCH = 400
+
+
+def escape_like(term: str) -> str:
+    """
+    Neutralise LIKE wildcards in a user's search text.
+
+    Without this a search for `%` matches every row, and `_` matches any single
+    character. That is merely confusing in a listing, but these filters also
+    drive bulk delete, where "select all matching" on an unescaped `%` means
+    every record.
+    """
+    return term.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+
 class Transfer:
     """Transfer model for database operations"""
     
     def __init__(self, db_manager):
         self.db = db_manager
+        self._list_columns = None
     
     def create(self, transfer_data: Dict) -> str:
         """Create a new transfer record"""
@@ -41,8 +64,9 @@ class Transfer:
                     INSERT INTO transfers (
                         transfer_id, media_type, folder_name, season_name,
                         source_path, dest_path, operation_type, status, progress,
-                        queue_reason, rsync_process_id, parsed_title, parsed_season, start_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        queue_reason, rsync_process_id, parsed_title, parsed_season, start_time,
+                        is_simulation, simulation_bwlimit
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     transfer_data['transfer_id'],
                     transfer_data['media_type'],
@@ -57,7 +81,9 @@ class Transfer:
                     transfer_data.get('rsync_process_id'),
                     parsed_data['title'],
                     parsed_data['season'],
-                    transfer_data.get('start_time', datetime.now().isoformat())
+                    transfer_data.get('start_time', datetime.now().isoformat()),
+                    1 if transfer_data.get('is_simulation') else 0,
+                    transfer_data.get('simulation_bwlimit')
                 ))
                 conn.commit()
                 print(f"✅ Transfer record created successfully for {transfer_data['transfer_id']}")
@@ -113,39 +139,183 @@ class Transfer:
                 return transfer
             return None
     
-    def get_all(self, status_filter: str = None, limit: int = None) -> List[Dict]:
-        """Get all transfers with optional filtering"""
-        query = "SELECT * FROM transfers"
-        params = []
-        
+    def _columns_except_logs(self, conn) -> List[str]:
+        """Column names for a listing query, cached per process."""
+        if self._list_columns is None:
+            self._list_columns = [
+                row[1] for row in conn.execute("PRAGMA table_info(transfers)").fetchall()
+                if row[1] != 'logs'
+            ]
+        return self._list_columns
+
+    def _filter_sql(self, status_filter=None, statuses=None, search=None):
+        """Shared WHERE clause for listing and counting, so they cannot drift."""
+        conditions, params = [], []
         if status_filter:
-            query += " WHERE status = ?"
+            conditions.append("status = ?")
             params.append(status_filter)
-        
-        query += " ORDER BY created_at DESC"
-        
+        if statuses:
+            conditions.append(f"status IN ({', '.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        if search:
+            # Matches what a person would remember about a transfer: what it was
+            # called, which season, or where it went.
+            term = f"%{escape_like(search.strip())}%"
+            conditions.append(
+                "(parsed_title LIKE ? ESCAPE '\\' OR folder_name LIKE ? ESCAPE '\\'"
+                " OR season_name LIKE ? ESCAPE '\\' OR dest_path LIKE ? ESCAPE '\\'"
+                " OR source_path LIKE ? ESCAPE '\\' OR transfer_id LIKE ? ESCAPE '\\')"
+            )
+            params.extend([term] * 6)
+        return (" WHERE " + " AND ".join(conditions)) if conditions else "", params
+
+    def count(self, status_filter: str = None, statuses: List[str] = None,
+              search: str = None) -> int:
+        """
+        How many transfers match, ignoring limit and offset.
+
+        Pagination needs the real total, not the size of the page it just
+        fetched - the previous listing reported the latter, so the UI could not
+        tell a full page from the end of the results.
+        """
+        where, params = self._filter_sql(status_filter, statuses, search)
+        with self.db.get_connection() as conn:
+            return conn.execute(f"SELECT COUNT(*) AS n FROM transfers{where}", params).fetchone()['n']
+
+    def status_counts(self, search: str = None, statuses: List[str] = None) -> Dict[str, int]:
+        """
+        How many transfers sit in each status, so the filter controls can show
+        their own counts without fetching a page per filter.
+
+        `statuses` narrows the set being counted - History counts only finished
+        runs, because that is all it lists.
+        """
+        where, params = self._filter_sql(statuses=statuses, search=search)
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT status, COUNT(*) AS n FROM transfers{where} GROUP BY status", params
+            ).fetchall()
+        return {row['status']: row['n'] for row in rows}
+
+    def delete_many(self, transfer_ids: List[str]) -> tuple:
+        """
+        Delete several transfers, refusing any that are still running.
+
+        Returns (deleted_count, skipped_ids). A running transfer has a live
+        rsync process behind it; deleting the row would leave that process with
+        nowhere to report, so it is left alone and named in the result.
+        """
+        if not transfer_ids:
+            return 0, []
+
+        deleted, skipped = 0, []
+        with self.db.get_connection() as conn:
+            for start in range(0, len(transfer_ids), DELETE_BATCH):
+                batch = transfer_ids[start:start + DELETE_BATCH]
+                placeholders = ', '.join('?' for _ in batch)
+
+                # The exclusion is part of the DELETE, not just the SELECT
+                # before it: a transfer can be restarted between the two, and a
+                # row deleted out from under a live rsync process leaves that
+                # process with nowhere to report.
+                deleted += conn.execute(
+                    f"DELETE FROM transfers"
+                    f" WHERE transfer_id IN ({placeholders}) AND status != 'running'", batch
+                ).rowcount
+
+                # Read back what survived, so the caller is told what actually
+                # stayed rather than what looked running a moment ago.
+                skipped.extend(
+                    row['transfer_id'] for row in conn.execute(
+                        f"SELECT transfer_id FROM transfers"
+                        f" WHERE transfer_id IN ({placeholders})", batch
+                    ).fetchall()
+                )
+            conn.commit()
+        return deleted, skipped
+
+    def delete_matching(self, status_filter: str = None, statuses: List[str] = None,
+                        search: str = None) -> tuple:
+        """
+        Delete every transfer matching a filter, sparing any still running.
+
+        This is what "select all" performs. The filter is re-evaluated here, in
+        one statement, rather than the caller listing every id it wants gone -
+        which would mean reading the whole matching set back just to name it,
+        and would miss anything that arrived in between.
+        """
+        where, params = self._filter_sql(status_filter, statuses, search)
+        joiner = " AND" if where else " WHERE"
+
+        with self.db.get_connection() as conn:
+            running = [
+                row['transfer_id'] for row in conn.execute(
+                    f"SELECT transfer_id FROM transfers{where}{joiner} status = 'running'",
+                    params,
+                ).fetchall()
+            ]
+            deleted = conn.execute(
+                f"DELETE FROM transfers{where}{joiner} status != 'running'", params
+            ).rowcount
+            conn.commit()
+
+        return deleted, running
+
+    def get_all(self, status_filter: str = None, limit: int = None,
+                statuses: List[str] = None, include_logs: bool = True,
+                search: str = None, offset: int = None) -> List[Dict]:
+        """
+        Get all transfers with optional filtering.
+
+        include_logs=False leaves the logs column out of the query entirely and
+        returns a log_count instead. A transfer's log is by far the largest
+        thing on the row, and no listing shows it - only how many lines there
+        are - so selecting it meant reading and JSON-parsing megabytes per
+        request to render counts.
+
+        statuses filters in SQL rather than in the caller, so a listing of the
+        few active transfers no longer walks the whole table to find them.
+        """
+        if include_logs:
+            select = "*"
+        else:
+            with self.db.get_connection() as conn:
+                columns = self._columns_except_logs(conn)
+            # json_valid guards rows written before the column held JSON
+            select = ", ".join(columns) + (
+                ", CASE WHEN json_valid(logs) THEN json_array_length(logs) ELSE 0 END AS log_count"
+            )
+
+        where, params = self._filter_sql(status_filter, statuses, search)
+        query = f"SELECT {select} FROM transfers{where} ORDER BY created_at DESC"
+
         if limit:
             query += " LIMIT ?"
             params.append(limit)
-        
+            # OFFSET is only meaningful with a LIMIT in SQLite
+            if offset:
+                query += " OFFSET ?"
+                params.append(offset)
+
         with self.db.get_connection() as conn:
             cursor = conn.execute(query, params)
             transfers = []
-            
+
             for row in cursor.fetchall():
                 transfer = dict(row)
-                # Parse logs from JSON
-                if transfer['logs']:
-                    try:
-                        transfer['logs'] = json.loads(transfer['logs'])
-                    except json.JSONDecodeError:
+                if include_logs:
+                    # Parse logs from JSON
+                    if transfer['logs']:
+                        try:
+                            transfer['logs'] = json.loads(transfer['logs'])
+                        except json.JSONDecodeError:
+                            transfer['logs'] = []
+                    else:
                         transfer['logs'] = []
-                else:
-                    transfer['logs'] = []
                 transfers.append(transfer)
-            
+
             return transfers
-    
+
     def get_active(self) -> List[Dict]:
         """Get all active (running/pending) transfers"""
         return self.get_all(status_filter=None)  # We'll filter in memory for multiple statuses
@@ -218,19 +388,47 @@ class Transfer:
             conn.commit()
             return total_deleted
     
-    def add_log(self, transfer_id: str, log_line: str) -> bool:
-        """Add a log line to transfer"""
+    def add_log(self, transfer_id: str, log_line: str, extra_updates: Dict = None,
+                replace_last: bool = False, max_lines: int = LOG_MAX_LINES) -> bool:
+        """
+        Add a log line to transfer
+
+        extra_updates lets callers fold parsed progress stats (percent, speed,
+        ETA, byte counts) into the same UPDATE, so streaming rsync output does
+        not cost an extra write per line.
+
+        replace_last overwrites the final line instead of appending. rsync
+        emits a progress line several times a second, each one superseding the
+        last; appending them all would store tens of thousands of lines that
+        say nothing the newest one does not. Callers that recognise a
+        superseding line pass replace_last so only the latest is kept.
+
+        max_lines caps the stored log, dropping the oldest lines. The end of an
+        rsync log is the part worth keeping - it holds the --stats summary and
+        any errors - so the tail is what survives.
+        """
         transfer = self.get(transfer_id)
         if not transfer:
             return False
-        
+
         logs = transfer.get('logs', [])
-        logs.append(log_line)
-        
-        return self.update(transfer_id, {
+
+        if replace_last and logs:
+            logs[-1] = log_line
+        else:
+            logs.append(log_line)
+
+        if max_lines and len(logs) > max_lines:
+            del logs[:len(logs) - max_lines]
+
+        updates = {
             'logs': logs,
             'progress': log_line
-        })
+        }
+        if extra_updates:
+            updates.update(extra_updates)
+
+        return self.update(transfer_id, updates)
     
     def _parse_metadata(self, folder_name: str, season_name: str = None, 
                        media_type: str = '') -> Dict[str, str]:

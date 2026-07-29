@@ -23,7 +23,7 @@ function Cell({
 export function SystemTicker() {
   const { disks } = useDisks();
   const activeQuery = useActiveTransfers();
-  const webhooksQuery = useWebhookNotifications(undefined, 10);
+  const webhooksQuery = useWebhookNotifications({ limit: 10 });
 
   const peak = disks.reduce((m, d) => Math.max(m, d.pct), 0);
   const nearFull = disks.filter((d) => d.pct >= 78).length;

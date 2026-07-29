@@ -13,6 +13,11 @@ import time
 from flask import Blueprint, jsonify, request
 from auth import require_auth
 from security import validate_path_component, assert_path_within_bounds, PathTraversalError
+from services.transfer_service import build_progress_stats
+
+# A page the UI would never render is a payload nobody reads; cap it so a
+# hand-written limit cannot pull the whole table back.
+MAX_PAGE_SIZE = 200
 
 transfers_bp = Blueprint('transfers', __name__)
 
@@ -192,6 +197,7 @@ def api_transfer_status(transfer_id):
                 "log_count": len(transfer["logs"]),
                 "start_time": transfer["start_time"],
                 "end_time": transfer.get("end_time"),
+                "paused_at": transfer.get("paused_at"),
                 "media_type": transfer["media_type"],
                 "folder_name": transfer["folder_name"],
                 "season_name": transfer.get("season_name"),
@@ -199,7 +205,8 @@ def api_transfer_status(transfer_id):
                 "parsed_season": transfer.get("parsed_season"),
                 "operation_type": transfer["operation_type"],
                 "source_path": transfer["source_path"],
-                "dest_path": transfer["dest_path"]
+                "dest_path": transfer["dest_path"],
+                **build_progress_stats(transfer)
             }
         })
     else:
@@ -215,6 +222,39 @@ def api_cancel_transfer(transfer_id):
         return jsonify({"status": "success", "message": "Transfer cancelled"})
     else:
         return jsonify({"status": "error", "message": "Failed to cancel transfer"})
+
+
+@transfers_bp.route('/transfer/<transfer_id>/pause', methods=['POST'])
+@require_auth
+def api_pause_transfer(transfer_id):
+    """
+    Pause a running transfer
+
+    Stops rsync but keeps the partially transferred files, so /resume continues
+    from where it stopped instead of starting over.
+    """
+    try:
+        success, message = transfer_coordinator.pause_transfer(transfer_id)
+        if success:
+            return jsonify({"status": "success", "message": message})
+        return jsonify({"status": "error", "message": message}), 400
+    except Exception as e:
+        print(f"❌ Error pausing transfer {transfer_id}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to pause transfer: {str(e)}"}), 500
+
+
+@transfers_bp.route('/transfer/<transfer_id>/resume', methods=['POST'])
+@require_auth
+def api_resume_transfer(transfer_id):
+    """Resume a paused transfer (may queue if no slot is free)"""
+    try:
+        success, message = transfer_coordinator.resume_transfer(transfer_id)
+        if success:
+            return jsonify({"status": "success", "message": message})
+        return jsonify({"status": "error", "message": message}), 400
+    except Exception as e:
+        print(f"❌ Error resuming transfer {transfer_id}: {e}")
+        return jsonify({"status": "error", "message": f"Failed to resume transfer: {str(e)}"}), 500
 
 
 @transfers_bp.route('/transfer/<transfer_id>/logs')
@@ -238,14 +278,24 @@ def api_transfer_logs(transfer_id):
 def api_all_transfers():
     """Get all transfers with optional filtering"""
     try:
-        limit = request.args.get('limit', 50, type=int)
+        limit = max(1, min(request.args.get('limit', 50, type=int), MAX_PAGE_SIZE))
+        offset = max(0, request.args.get('offset', 0, type=int))
         status_filter = request.args.get('status')
-        
-        transfers = transfer_coordinator.get_all_transfers(limit=limit)
-        
-        # Apply status filter if provided
-        if status_filter:
-            transfers = [t for t in transfers if t['status'] == status_filter]
+        search = (request.args.get('search') or '').strip() or None
+        # History wants every finished run and no live ones, which is a set of
+        # statuses rather than one - hence a list alongside the single filter.
+        statuses = [s for s in (request.args.get('statuses') or '').split(',') if s] or None
+
+        # Filtering, searching and paging all happen in SQL: pulling every row
+        # back to drop most of them made the limit meaningless, and a client
+        # cannot filter what it was never sent.
+        transfers = transfer_coordinator.get_all_transfers(
+            limit=limit, status_filter=status_filter, search=search, offset=offset,
+            statuses=statuses
+        )
+        total = transfer_coordinator.count_transfers(
+            status_filter=status_filter, search=search, statuses=statuses
+        )
         
         # Format transfers for response
         formatted_transfers = []
@@ -264,15 +314,30 @@ def api_all_transfers():
                 "dest_path": transfer["dest_path"],
                 "start_time": transfer["start_time"],
                 "end_time": transfer.get("end_time"),
+                "paused_at": transfer.get("paused_at"),
                 "created_at": transfer["created_at"],
-                "log_count": len(transfer["logs"])
+                "log_count": transfer["log_count"],
+                "is_simulation": bool(transfer.get("is_simulation")),
+                **build_progress_stats(transfer)
             }
             formatted_transfers.append(formatted_transfer)
         
         return jsonify({
             "status": "success",
             "transfers": formatted_transfers,
-            "total": len(formatted_transfers)
+            # `total` counts everything matching the filter; `count` is what
+            # this page holds. They were the same number before paging existed,
+            # which is why the UI could not tell it had more to show.
+            "total": total,
+            "count": len(formatted_transfers),
+            "limit": limit,
+            "offset": offset,
+            "status_counts": transfer_coordinator.transfer_model.status_counts(
+                search=search, statuses=statuses
+            ),
+            # Everything on record regardless of what is being asked for right
+            # now, so a tab badge does not count down as someone types.
+            "unfiltered_total": transfer_coordinator.count_transfers(statuses=statuses),
         })
         
     except Exception as e:
@@ -306,8 +371,16 @@ def api_active_transfers():
                 "source_path": transfer["source_path"],
                 "dest_path": transfer["dest_path"],
                 "start_time": transfer["start_time"],
+                "paused_at": transfer.get("paused_at"),
+                # created_at lets the UI show how long a transfer waited before
+                # it started, which is the difference between a slow copy and a
+                # backed-up queue.
+                "created_at": transfer["created_at"],
+                "queue_reason": transfer.get("queue_reason"),
                 "rsync_process_id": transfer.get("rsync_process_id"),
-                "log_count": len(transfer["logs"])
+                "log_count": transfer["log_count"],
+                "is_simulation": bool(transfer.get("is_simulation")),
+                **build_progress_stats(transfer)
             }
             formatted_transfers.append(formatted_transfer)
         
@@ -376,6 +449,57 @@ def api_delete_transfer(transfer_id):
     except Exception as e:
         print(f"❌ Error deleting transfer {transfer_id}: {e}")
         return jsonify({"status": "error", "message": f"Failed to delete transfer: {str(e)}"})
+
+
+@transfers_bp.route('/transfers/bulk-delete', methods=['POST'])
+@require_auth
+def api_bulk_delete_transfers():
+    """
+    Delete several transfer records at once.
+
+    Accepts either an explicit list of ids, or `all_matching` with the same
+    filter the list was showing. The filter form re-runs the query on the
+    server, so clearing a filtered view does not depend on the client having
+    loaded every row it is about to delete.
+
+    Transfers that are still running are never deleted - they are reported back
+    as skipped so the caller can say so rather than silently losing them.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        model = transfer_coordinator.transfer_model
+
+        if payload.get('all_matching'):
+            statuses = payload.get('statuses')
+            deleted, skipped = model.delete_matching(
+                status_filter=payload.get('status'),
+                statuses=statuses if isinstance(statuses, list) else None,
+                search=(payload.get('search') or '').strip() or None,
+            )
+        else:
+            transfer_ids = payload.get('ids') or []
+            if not isinstance(transfer_ids, list):
+                return jsonify({"status": "error", "message": "ids must be a list"}), 400
+            if not transfer_ids:
+                return jsonify({
+                    "status": "success", "deleted_count": 0, "skipped": [],
+                    "message": "Nothing to delete",
+                })
+            deleted, skipped = model.delete_many(transfer_ids)
+
+        message = f"Deleted {deleted} transfer{'s' if deleted != 1 else ''}"
+        if skipped:
+            message += f", skipped {len(skipped)} still running"
+
+        return jsonify({
+            "status": "success",
+            "deleted_count": deleted,
+            "skipped": skipped,
+            "message": message,
+        })
+    except Exception as e:
+        print(f"❌ Error bulk deleting transfers: {e}")
+        return jsonify({"status": "error", "message": f"Failed to delete transfers: {str(e)}"}), 500
 
 
 @transfers_bp.route('/transfers/cleanup', methods=['POST'])

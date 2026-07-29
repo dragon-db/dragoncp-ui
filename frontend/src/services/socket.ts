@@ -17,19 +17,44 @@ const SOCKET_OPTIONS = {
 };
 
 export interface TransferUpdate {
+  /** The only field every transfer event carries. */
   transfer_id: string;
-  status: string;
-  progress: string;
-  media_type: string;
-  folder_name: string;
+  // Optional because `transfer_queued` sends just an id and a message, and
+  // `transfer_promoted` little more. Marking these required described the
+  // progress events and quietly mis-described the rest, so any code that
+  // trusted the type would read undefined at runtime.
+  status?: string;
+  progress?: string;
+  media_type?: string;
+  folder_name?: string;
   season_name?: string;
   log?: string;
+  /**
+   * No longer sent on `transfer_progress` or `transfer_complete` - subscribe
+   * with `subscribeTransferLogs` and listen for `transfer_logs` instead.
+   */
   logs?: string[];
   log_count?: number;
   message?: string;
   queue_type?: "path" | "slot" | string;
   existing_transfer_id?: string;
   dest_path?: string;
+  /** Parsed rsync progress, so the UI can update live without a refetch. */
+  stats?: {
+    progress_percent?: number | null;
+    bytes_transferred?: number | null;
+    total_bytes?: number | null;
+    speed_bps?: number | null;
+    eta_seconds?: number | null;
+  };
+}
+
+/** Payload of `transfer_logs`, sent only to subscribers of that transfer. */
+export interface TransferLogsUpdate {
+  transfer_id: string;
+  logs: string[];
+  log_count: number;
+  status: string;
 }
 
 export interface WebhookNotification {
@@ -93,6 +118,12 @@ function ensureSocket(): Socket {
     bindTransportListeners(socket as Socket);
     const transport = socket?.io.engine?.transport?.name ?? "unknown";
     console.log(`🔌 Socket connected via ${transport}`);
+    // Rooms live on the server connection, so a reconnect starts with none.
+    // Replaying what the UI still wants keeps an open log panel live across a
+    // drop without the page having to know a drop happened.
+    for (const transferId of watchedTransfers) {
+      socket?.emit("transfer_logs_subscribe", { transfer_id: transferId });
+    }
   });
 
   socket.on("disconnect", (reason) => {
@@ -156,6 +187,41 @@ export function destroySocket(): void {
   }
 }
 
+/**
+ * Transfers whose log output this client wants.
+ *
+ * Held here rather than in the page so it survives a reconnect: the server
+ * forgets room membership when a socket drops, and this is what tells it again.
+ */
+const watchedTransfers = new Set<string>();
+
+/**
+ * Start receiving one transfer's rsync output.
+ *
+ * Log lines are the largest thing the backend pushes and only matter to
+ * whoever has that transfer open, so they are not broadcast - a client has to
+ * ask. Safe to call when the socket is off; the intent is remembered and sent
+ * if realtime is enabled later.
+ */
+export function subscribeTransferLogs(transferId: string): void {
+  if (!transferId || watchedTransfers.has(transferId)) return;
+  watchedTransfers.add(transferId);
+  socket?.emit("transfer_logs_subscribe", { transfer_id: transferId });
+}
+
+/** Stop receiving a transfer's output. */
+export function unsubscribeTransferLogs(transferId: string): void {
+  if (!transferId || !watchedTransfers.delete(transferId)) return;
+  socket?.emit("transfer_logs_unsubscribe", { transfer_id: transferId });
+}
+
+/** Log output for a transfer this client subscribed to. */
+export function onTransferLogs(callback: (data: TransferLogsUpdate) => void): () => void {
+  if (!socket) return () => {};
+  socket.on("transfer_logs", callback);
+  return () => socket?.off("transfer_logs", callback);
+}
+
 export function getSocket(): Socket | null {
   return socket;
 }
@@ -195,12 +261,10 @@ export function onTransferComplete(callback: (data: TransferUpdate) => void): ()
   return () => socket?.off("transfer_complete", callback);
 }
 
-export function onTransferError(callback: (data: TransferUpdate) => void): () => void {
-  if (!socket) return () => {};
-
-  socket.on("transfer_failed", callback);
-  return () => socket?.off("transfer_failed", callback);
-}
+// There is no `onTransferError`. The backend emits no `transfer_failed` event:
+// a failure arrives as `transfer_complete` carrying `status: "failed"`, which is
+// what the pages already listen for. A helper for an event nobody sends reads
+// like coverage that does not exist.
 
 export function onTransferQueued(callback: (data: TransferUpdate) => void): () => void {
   if (!socket) return () => {};

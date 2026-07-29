@@ -17,6 +17,8 @@ import tempfile
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
+from env_flags import test_mode_enabled
+
 from security import (
     assert_path_within_bounds,
     validate_relative_path,
@@ -164,7 +166,7 @@ class BackupService:
             if not os.path.exists(dest_path):
                 try:
                     # Check TEST_MODE before creating restore destination directory
-                    if os.environ.get('TEST_MODE', '0') == '1':
+                    if test_mode_enabled():
                         print(f"🧪 TEST_MODE: Would create restore destination directory: {dest_path}")
                     else:
                         os.makedirs(dest_path, exist_ok=True)
@@ -215,7 +217,7 @@ class BackupService:
                 if target and os.path.exists(target):
                     try:
                         # Check TEST_MODE before deleting files
-                        if os.environ.get('TEST_MODE', '0') == '1':
+                        if test_mode_enabled():
                             print(f"🧪 TEST_MODE: Would delete file: {target}")
                             ctx_disp = op.get('context_display') or op.get('backup_relative')
                             self.transfer_model.add_log(restore_transfer_id, f"[DRY-RUN] Would delete: {target}\nContext: {ctx_disp}")
@@ -234,7 +236,7 @@ class BackupService:
             ]
             
             # Add --dry-run flag when TEST_MODE is enabled
-            if os.environ.get('TEST_MODE', '0') == '1':
+            if test_mode_enabled():
                 rsync_cmd.append("--dry-run")
                 print("🧪 TEST_MODE enabled - rsync restore will run in dry-run mode (no actual file transfers)")
             temp_list_file = None
@@ -242,7 +244,7 @@ class BackupService:
             selected_relatives = [op['backup_relative'] for op in operations]
             if selected_relatives:
                 # Check TEST_MODE before creating temporary files
-                if os.environ.get('TEST_MODE', '0') == '1':
+                if test_mode_enabled():
                     print(f"🧪 TEST_MODE: Would create temporary file list with {len(selected_relatives)} files")
                     # In test mode, create a dummy path but don't create the actual file
                     temp_path = f"/tmp/test_mode_dummy_file_{len(selected_relatives)}.txt"
@@ -268,7 +270,7 @@ class BackupService:
             if temp_list_file and os.path.exists(temp_list_file):
                 try:
                     # Check TEST_MODE before removing temporary file
-                    if os.environ.get('TEST_MODE', '0') == '1':
+                    if test_mode_enabled():
                         print(f"🧪 TEST_MODE: Would remove temporary file: {temp_list_file}")
                     else:
                         os.remove(temp_list_file)
@@ -328,7 +330,7 @@ class BackupService:
                 if bpath and os.path.exists(bpath):
                     try:
                         # Check TEST_MODE before removing backup directory
-                        if os.environ.get('TEST_MODE', '0') == '1':
+                        if test_mode_enabled():
                             print(f"🧪 TEST_MODE: Would remove backup directory: {bpath}")
                         else:
                             shutil.rmtree(bpath)
@@ -353,7 +355,7 @@ class BackupService:
                 if bpath and os.path.exists(bpath):
                     try:
                         # Check TEST_MODE before removing backup directory
-                        if os.environ.get('TEST_MODE', '0') == '1':
+                        if test_mode_enabled():
                             print(f"🧪 TEST_MODE: Would remove backup directory: {bpath}")
                         else:
                             shutil.rmtree(bpath)

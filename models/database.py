@@ -261,6 +261,29 @@ class DatabaseManager:
             # Backward-compatible schema additions
             self._ensure_column(conn, 'transfers', 'queue_reason', "TEXT")
 
+            # Structured rsync progress, parsed from the --info=progress2 output
+            # so the UI can show speed/ETA/size without re-parsing log text.
+            self._ensure_column(conn, 'transfers', 'progress_percent', "INTEGER")
+            self._ensure_column(conn, 'transfers', 'bytes_transferred', "INTEGER")
+            self._ensure_column(conn, 'transfers', 'total_bytes', "INTEGER")
+            self._ensure_column(conn, 'transfers', 'speed_bps', "INTEGER")
+            self._ensure_column(conn, 'transfers', 'eta_seconds', "INTEGER")
+
+            # Pause/resume support
+            self._ensure_column(conn, 'transfers', 'paused_at', "DATETIME")
+
+            # Rehearsals: rows created by the simulation tool. They run through
+            # the real pipeline so they must live in the real tables, but they
+            # are flagged so they can be shown as rehearsals and removed
+            # afterwards without touching genuine history.
+            self._ensure_column(conn, 'transfers', 'is_simulation', "INTEGER DEFAULT 0")
+            # Speed ceiling in KB/s for a rehearsal, so a scenario can run slow
+            # enough to exercise pause and resume, or fast enough to fill the
+            # queue quickly. Survives a restart, unlike in-memory run state.
+            self._ensure_column(conn, 'transfers', 'simulation_bwlimit', "INTEGER")
+            self._ensure_column(conn, 'radarr_webhook', 'is_simulation', "INTEGER DEFAULT 0")
+            self._ensure_column(conn, 'sonarr_webhook', 'is_simulation', "INTEGER DEFAULT 0")
+
             conn.commit()
         
         print(f"✅ Database initialized: {self.db_path}")

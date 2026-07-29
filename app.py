@@ -21,21 +21,25 @@ from config import DragonCPConfig, APP_VERSION
 from ssh import SSHManager
 from websocket import register_websocket_handlers, start_cleanup_thread, websocket_connections
 from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT
-from auth import require_auth, test_mode_or_auth
+from auth import require_auth
 
 # Import models
 from models import DatabaseManager
 from models.webhook import RenameNotification
 
+from env_flags import env_flag, test_mode_enabled
+
 # Import services
 from services import TransferCoordinator
 from services.rename_service import RenameService
+from services.simulation_service import SimulationService
 
 # Import routes
 from routes import (
     auth_bp, media_bp, transfers_bp, backups_bp, webhooks_bp, debug_bp, logs_bp,
+    simulation_bp,
     init_media_routes, init_transfer_routes, init_backup_routes,
-    init_webhook_routes, init_debug_routes
+    init_webhook_routes, init_debug_routes, init_simulation_routes
 )
 
 
@@ -98,17 +102,14 @@ def get_cors_origins():
     return origins if origins else '*'
 
 
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        raw_value = _early_config.get(name)
-    if raw_value is None:
-        return default
-    return str(raw_value).strip().lower() in {'1', 'true', 'yes', 'on'}
+# No local env_flag here. Every key in the env file is pushed into os.environ by
+# the loop above before any flag is read, so a _early_config fallback would be
+# unreachable - and a second parser is exactly the divergence that let
+# TEST_MODE=true mean two different things. env_flags.env_flag is the reader.
 
 
 def _socketio_verbose_logging_enabled() -> bool:
-    return _env_flag('SOCKETIO_VERBOSE_LOGGING', default=False) or _env_flag('TEST_MODE', default=False) or _env_flag('FLASK_DEBUG', default=False)
+    return env_flag('SOCKETIO_VERBOSE_LOGGING', default=False) or env_flag('TEST_MODE', default=False) or env_flag('FLASK_DEBUG', default=False)
 
 
 def _is_simple_websocket_available() -> bool:
@@ -175,8 +176,8 @@ SOCKETIO_PING_INTERVAL_SECONDS = 25
 SOCKETIO_PING_TIMEOUT_SECONDS = 60
 SOCKETIO_VERBOSE_LOGGING = _socketio_verbose_logging_enabled()
 SOCKETIO_WEBSOCKET_TRANSPORT_READY = _is_simple_websocket_available()
-TEST_MODE_ENABLED = _env_flag('TEST_MODE', default=False)
-FLASK_DEBUG_ENABLED = _env_flag('FLASK_DEBUG', default=False)
+TEST_MODE_ENABLED = env_flag('TEST_MODE', default=False)
+FLASK_DEBUG_ENABLED = env_flag('FLASK_DEBUG', default=False)
 
 # Initialize SocketIO with CORS configuration
 socketio = SocketIO(
@@ -253,6 +254,12 @@ init_backup_routes(transfer_coordinator)
 init_webhook_routes(config, transfer_coordinator, rename_service)
 init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
 
+# Simulations run the real transfer pipeline against throwaway local files.
+# Anything a previous process left behind is cleared before serving.
+simulation_service = SimulationService(config, transfer_coordinator, socketio)
+simulation_service.purge_leftovers()
+init_simulation_routes(simulation_service)
+
 # Register route blueprints
 app.register_blueprint(auth_bp, url_prefix='/api')
 app.register_blueprint(media_bp, url_prefix='/api')
@@ -261,6 +268,7 @@ app.register_blueprint(backups_bp, url_prefix='/api')
 app.register_blueprint(webhooks_bp, url_prefix='/api')
 app.register_blueprint(debug_bp, url_prefix='/api')
 app.register_blueprint(logs_bp, url_prefix='/api')
+app.register_blueprint(simulation_bp, url_prefix='/api')
 
 logger.info('Backend logging file: %s', LOG_FILE_PATH)
 
@@ -472,58 +480,6 @@ def api_env_config():
     return jsonify(sanitize_config_response(config.env_config))
 
 
-# ===== TEST SIMULATION ENDPOINTS =====
-
-@app.route('/api/test/simulate', methods=['POST'])
-@test_mode_or_auth
-def api_start_simulation():
-    """Start simulated transfers for UI testing (no rsync). Controlled by TEST_MODE env."""
-    if os.environ.get('TEST_MODE', '0') != '1':
-        return jsonify({"status": "error", "message": "Simulation disabled. Set TEST_MODE=1 to enable."}), 403
-
-    try:
-        from simulator import TransferSimulator
-        simulator = TransferSimulator(transfer_coordinator, socketio)
-        
-        payload = request.json or {}
-        count = int(payload.get('count', 3))
-        steps = int(payload.get('steps', 40))
-        interval = float(payload.get('interval', 0.5))
-        failure_rate = float(payload.get('failure_rate', 0.0))
-
-        started = simulator.start_simulations(
-            count=count,
-            steps=steps,
-            interval_seconds=interval,
-            failure_rate=failure_rate,
-        )
-        return jsonify({
-            "status": "success",
-            "message": f"Started {len(started)} simulated transfers",
-            "transfer_ids": started,
-        })
-    except Exception as e:
-        print(f"❌ Error starting simulation: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-@app.route('/api/test/simulate/stop', methods=['POST'])
-@test_mode_or_auth
-def api_stop_simulation():
-    """Signal all running simulations to stop."""
-    if os.environ.get('TEST_MODE', '0') != '1':
-        return jsonify({"status": "error", "message": "Simulation disabled. Set TEST_MODE=1 to enable."}), 403
-
-    try:
-        from simulator import TransferSimulator
-        # Note: We'd need to maintain a global simulator instance for this to work properly
-        # For now, just return success
-        return jsonify({"status": "success", "message": "Stop signal sent"})
-    except Exception as e:
-        print(f"❌ Error stopping simulation: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
 # ===== MAIN ENTRY POINT =====
 
 def _get_runtime_port() -> int:
@@ -543,7 +499,7 @@ def _get_runtime_port() -> int:
 if __name__ == '__main__':
     # Create templates and static directories if they don't exist
     # Check TEST_MODE before creating app directories
-    if os.environ.get('TEST_MODE', '0') == '1':
+    if test_mode_enabled():
         logger.info('TEST_MODE enabled: skipping template/static directory creation')
     else:
         os.makedirs('templates', exist_ok=True)
@@ -551,7 +507,7 @@ if __name__ == '__main__':
     
     runtime_port = _get_runtime_port()
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
-    test_mode = os.environ.get('TEST_MODE', '0') == '1'
+    test_mode = test_mode_enabled()
     allow_unsafe_werkzeug = debug_mode or test_mode
 
     logger.info('DragonCP Web UI starting on port %s (debug=%s)', runtime_port, debug_mode)

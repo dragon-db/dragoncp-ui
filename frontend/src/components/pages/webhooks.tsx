@@ -11,6 +11,7 @@ import {
   useVerifyRenameNotification,
   useWebhookDryRun,
   useWebhookNotificationJson,
+  useBulkDeleteNotifications,
   useWebhookNotifications,
   type RenameNotification,
   type RenameVerificationResult,
@@ -45,7 +46,6 @@ import {
   IconUser,
   IconWebhook,
 } from "@tabler/icons-react";
-import { cn } from "@/lib/utils";
 import {
   formatSize,
   groupNotifications,
@@ -72,7 +72,16 @@ import { RenameVerifyDialog } from "@/components/webhooks/rename-verify-report";
 import { episodeTagOf } from "@/lib/rename-diff";
 import { DryRunDialog } from "@/components/dry-run/dry-run-report";
 import { PageTabsList } from "@/components/layout/page-tabs";
+import { ConfirmDialog } from "@/components/transfers/confirm-dialog";
 import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
+import {
+  FilterChips,
+  ListPagination,
+  ListSearch,
+  RowCheckbox,
+  SelectionBar,
+} from "@/components/layout/list-controls";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { StatTiles } from "@/components/layout/stat-tiles";
 
 // Status / media chips and relative time come from the shared webhook helpers so
@@ -134,6 +143,11 @@ interface NotificationRowProps {
   onViewDryRun: (notification: WebhookNotification) => void;
   onJson: (notification: WebhookNotification) => void;
   onDelete: (notification: WebhookNotification) => void;
+  /** Selection state, present only where rows can be picked for a bulk action. */
+  selection?: {
+    selected: boolean;
+    onSelectedChange: (selected: boolean) => void;
+  };
 }
 
 /**
@@ -150,6 +164,7 @@ function NotificationRow({
   onViewDryRun,
   onJson,
   onDelete,
+  selection,
 }: NotificationRowProps) {
   const status = groupStatus(item.notifications);
   const single = item.notifications[0];
@@ -169,40 +184,52 @@ function NotificationRow({
   return (
     <AccordionItem value={item.key} className="border-b border-border last:border-b-0">
       <div className="flex flex-col items-stretch sm:flex-row">
-        <AccordionTrigger className="min-w-0 flex-1 items-start gap-3 px-4 py-3 no-underline hover:bg-muted/40 hover:no-underline sm:items-center">
-          <span className="flex min-w-0 flex-1 items-start gap-3 sm:items-center sm:gap-4">
-            <WebhookPoster
-              item={item}
-              className="h-[62px] w-[44px] shrink-0"
-              iconClassName="size-4"
+        {/* The tick stays beside the row at every width. On phones the outer
+            stack turns vertical, which would otherwise strand it on a line of
+            its own above the title. */}
+        <div className="flex min-w-0 flex-1 items-center">
+          {selection && (
+            <RowCheckbox
+              checked={selection.selected}
+              onCheckedChange={selection.onSelectedChange}
+              label={`Select ${item.title}`}
             />
-            <span className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="text-sm font-semibold break-words text-foreground">
-                  {item.title}
-                  {item.year ? (
-                    <span className="font-normal text-muted-foreground"> ({item.year})</span>
-                  ) : null}
-                </span>
-                <MediaBadge mediaType={item.mediaType} />
-                {/* On phones the status reads with the title; on desktop it keeps
-                    its column at the end of the row. */}
-                <StatusBadge status={status} className="sm:hidden" />
-              </span>
-              <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11px] text-muted-foreground">
-                <IconUser className="size-3 shrink-0 opacity-80" />
-                {facts.map((fact, index) => (
-                  // Separator trails its fact so a wrapped line never opens with a dot.
-                  <span key={fact} className="flex items-center gap-1.5">
-                    {fact}
-                    {index < facts.length - 1 && <span className="opacity-50">·</span>}
+          )}
+          <AccordionTrigger className="min-w-0 flex-1 items-start gap-3 px-4 py-3 no-underline hover:bg-muted/40 hover:no-underline sm:items-center">
+            <span className="flex min-w-0 flex-1 items-start gap-3 sm:items-center sm:gap-4">
+              <WebhookPoster
+                item={item}
+                className="h-[62px] w-[44px] shrink-0"
+                iconClassName="size-4"
+              />
+              <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+                <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-sm font-semibold break-words text-foreground">
+                    {item.title}
+                    {item.year ? (
+                      <span className="font-normal text-muted-foreground"> ({item.year})</span>
+                    ) : null}
                   </span>
-                ))}
+                  <MediaBadge mediaType={item.mediaType} />
+                  {/* On phones the status reads with the title; on desktop it keeps
+                    its column at the end of the row. */}
+                  <StatusBadge status={status} className="sm:hidden" />
+                </span>
+                <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11px] text-muted-foreground">
+                  <IconUser className="size-3 shrink-0 opacity-80" />
+                  {facts.map((fact, index) => (
+                    // Separator trails its fact so a wrapped line never opens with a dot.
+                    <span key={fact} className="flex items-center gap-1.5">
+                      {fact}
+                      {index < facts.length - 1 && <span className="opacity-50">·</span>}
+                    </span>
+                  ))}
+                </span>
               </span>
+              <StatusBadge status={status} className="hidden sm:inline-flex" />
             </span>
-            <StatusBadge status={status} className="hidden sm:inline-flex" />
-          </span>
-        </AccordionTrigger>
+          </AccordionTrigger>
+        </div>
 
         {canSync && (
           <div className="flex items-center px-4 pb-3 sm:p-0 sm:pr-4">
@@ -236,9 +263,23 @@ function NotificationRow({
   );
 }
 
+const NOTIFICATION_PAGE_SIZE = 50;
+
 export function WebhooksPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [notificationSearch, setNotificationSearch] = useState("");
+  const [notificationOffset, setNotificationOffset] = useState(0);
+  const [notificationLimit, setNotificationLimit] = useState(NOTIFICATION_PAGE_SIZE);
   const [activeTab, setActiveTab] = useState("media-sync");
+
+  // Rows picked for deletion, held by group key. `selectAllMatching` means
+  // every arrival the filter finds, which the server re-evaluates at delete
+  // time rather than the browser enumerating thousands of ids.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(() => new Set());
+  const [selectAllMatching, setSelectAllMatching] = useState(false);
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+
+  const debouncedSearch = useDebouncedValue(notificationSearch, 300);
 
   const [jsonId, setJsonId] = useState<string | null>(null);
   const [dryRunView, setDryRunView] = useState<{
@@ -253,10 +294,12 @@ export function WebhooksPage() {
   );
   const [verifyingRenameId, setVerifyingRenameId] = useState<string | null>(null);
 
-  const notificationsQuery = useWebhookNotifications(
-    statusFilter === "all" ? undefined : statusFilter,
-    100
-  );
+  const notificationsQuery = useWebhookNotifications({
+    limit: notificationLimit,
+    offset: notificationOffset,
+    status: statusFilter === "all" ? undefined : statusFilter,
+    search: debouncedSearch || undefined,
+  });
   const renameQuery = useRenameNotifications(100);
 
   const jsonQuery = useWebhookNotificationJson(jsonId ?? "");
@@ -267,6 +310,7 @@ export function WebhooksPage() {
   const deleteMutation = useDeleteWebhookNotification();
   const dryRunMutation = useWebhookDryRun();
   const deleteRenameMutation = useDeleteRenameNotification();
+  const bulkDeleteMutation = useBulkDeleteNotifications();
   const verifyRenameMutation = useVerifyRenameNotification();
 
   useEffect(() => {
@@ -297,21 +341,118 @@ export function WebhooksPage() {
     () => notificationsQuery.data?.notifications ?? [],
     [notificationsQuery.data?.notifications]
   );
+  // Arrivals are grouped by season for display. A season whose episodes fall
+  // either side of a page boundary shows as a group on each page - the page is
+  // a window on the arrivals, and grouping is what happens inside it.
   const items = useMemo(() => groupNotifications(notifications), [notifications]);
 
-  // Counted per grouped item so the stats agree with the rows on screen.
-  const groupCounts = useMemo(() => {
-    let completed = 0;
-    let inProgress = 0;
-    let failed = 0;
-    for (const item of items) {
-      const status = groupStatus(item.notifications);
-      if (status === "completed") completed += 1;
-      else if (status === "failed") failed += 1;
-      else inProgress += 1;
+  const notificationTotal = notificationsQuery.data?.total ?? 0;
+  // Memoised so the derived counts are not rebuilt on every render.
+  const notificationStatusCounts = useMemo(
+    () => notificationsQuery.data?.status_counts ?? {},
+    [notificationsQuery.data?.status_counts]
+  );
+
+  // Return to the first page whenever the question changes - page 4 of the old
+  // results is not page 4 of the new ones.
+  useEffect(() => {
+    setNotificationOffset(0);
+    setSelectedKeys(new Set());
+    setSelectAllMatching(false);
+  }, [statusFilter, debouncedSearch, notificationLimit]);
+
+  // Manual is not a stored status - it is the `requires_manual_sync` flag on an
+  // arrival that is still pending - so it carries its own count rather than one
+  // read out of status_counts, where it would never have appeared.
+  const manualSyncCount = notificationsQuery.data?.manual_sync_count ?? 0;
+
+  const statusChoices = useMemo(
+    () =>
+      STATUS_FILTERS.map((filter) => ({
+        ...filter,
+        count:
+          filter.value === "all"
+            ? Object.values(notificationStatusCounts).reduce((sum, n) => sum + n, 0)
+            : filter.value === "MANUAL_SYNC_REQUIRED"
+              ? manualSyncCount
+              : (notificationStatusCounts[filter.value] ?? 0),
+      })),
+    [notificationStatusCounts, manualSyncCount]
+  );
+
+  const pageKeys = items.map((item) => item.key);
+  const allPageSelected = pageKeys.length > 0 && pageKeys.every((key) => selectedKeys.has(key));
+
+  const toggleSelected = (key: string, selected: boolean) => {
+    // Picking rows by hand contradicts "everything matching".
+    setSelectAllMatching(false);
+    setSelectedKeys((current) => {
+      const next = new Set(current);
+      if (selected) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  const togglePageSelection = () => {
+    setSelectAllMatching(false);
+    setSelectedKeys((current) => {
+      const next = new Set(current);
+      if (allPageSelected) pageKeys.forEach((key) => next.delete(key));
+      else pageKeys.forEach((key) => next.add(key));
+      return next;
+    });
+  };
+
+  const clearSelection = () => {
+    setSelectedKeys(new Set());
+    setSelectAllMatching(false);
+  };
+
+  // A picked row is a season, which may stand for several arrivals; deleting it
+  // means deleting all of them.
+  const selectedNotificationIds = useMemo(
+    () =>
+      items
+        .filter((item) => selectedKeys.has(item.key))
+        .flatMap((item) => item.notifications.map((n) => n.notification_id)),
+    [items, selectedKeys]
+  );
+
+  const selectedCount = selectAllMatching ? notificationTotal : selectedNotificationIds.length;
+
+  const runBulkDelete = async () => {
+    try {
+      const result = await bulkDeleteMutation.mutateAsync(
+        selectAllMatching
+          ? {
+              all_matching: true,
+              status: statusFilter === "all" ? undefined : statusFilter,
+              search: debouncedSearch || undefined,
+            }
+          : { ids: selectedNotificationIds }
+      );
+      toast.success(result.message);
+      clearSelection();
+      setNotificationOffset(0);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) ?? "Could not delete arrivals");
+    } finally {
+      setConfirmBulkDelete(false);
     }
+  };
+
+  // Counted across everything on record by the server, so the tiles and the
+  // filter chips agree - they used to disagree, because the tiles counted
+  // groups on the current page while the filters counted arrivals in the table.
+  const arrivalTotals = useMemo(() => {
+    const completed = notificationStatusCounts.completed ?? 0;
+    const failed = notificationStatusCounts.failed ?? 0;
+    const inProgress = Object.entries(notificationStatusCounts)
+      .filter(([status]) => status !== "completed" && status !== "failed")
+      .reduce((sum, [, n]) => sum + n, 0);
     return { completed, inProgress, failed };
-  }, [items]);
+  }, [notificationStatusCounts]);
 
   // Rename runs summarised the same way: files, not webhooks, are what people
   // count when they ask "did the rename land?".
@@ -495,7 +636,8 @@ export function WebhooksPage() {
               value: "media-sync",
               label: "Media sync",
               icon: IconTransfer,
-              count: notifications.length,
+              // Everything on record, not just the page in view.
+              count: notificationsQuery.data?.unfiltered_total ?? 0,
             },
             {
               value: "renames",
@@ -512,17 +654,22 @@ export function WebhooksPage() {
             items={[
               {
                 label: "Media syncs",
-                value: notifications.length,
-                unit: `in ${items.length} group${items.length === 1 ? "" : "s"}`,
+                value: notificationTotal,
+                unit: `${items.length} group${items.length === 1 ? "" : "s"} on this page`,
               },
-              { label: "Completed", value: groupCounts.completed, unit: "synced", tone: "ok" },
+              { label: "Completed", value: arrivalTotals.completed, unit: "synced", tone: "ok" },
               {
                 label: "In progress",
-                value: groupCounts.inProgress,
+                value: arrivalTotals.inProgress,
                 unit: "pending",
                 tone: "warn",
               },
-              { label: "Failed", value: groupCounts.failed, unit: "needs retry", tone: "crit" },
+              {
+                label: "Failed",
+                value: arrivalTotals.failed,
+                unit: "needs retry",
+                tone: arrivalTotals.failed ? "crit" : "default",
+              },
             ]}
           />
 
@@ -531,27 +678,43 @@ export function WebhooksPage() {
             description="Grouped by season"
             toolbar={
               <>
-                {STATUS_FILTERS.map((filter) => (
-                  <button
-                    key={filter.value}
-                    type="button"
-                    onClick={() => setStatusFilter(filter.value)}
-                    className={cn(
-                      "rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors",
-                      statusFilter === filter.value
-                        ? "border-brand/35 bg-brand/15 text-brand-foreground"
-                        : "border-transparent text-muted-foreground hover:bg-muted/60 hover:text-foreground"
-                    )}
-                  >
-                    {filter.label}
-                  </button>
-                ))}
-                <span className="ml-auto font-mono text-[11px] text-muted-foreground">
-                  {items.length} shown
-                </span>
+                <FilterChips
+                  choices={statusChoices}
+                  value={statusFilter}
+                  onChange={setStatusFilter}
+                />
+                <ListSearch
+                  value={notificationSearch}
+                  onChange={setNotificationSearch}
+                  placeholder="Search title, path or requester"
+                  className="ml-auto"
+                />
               </>
             }
           >
+            {items.length > 0 && (
+              <SelectionBar
+                selectedCount={selectedCount}
+                // Counted in arrivals, not groups, so it can be compared with
+                // the total - a group may stand for several arrivals.
+                pageCount={notifications.length}
+                total={notificationTotal}
+                allPageSelected={allPageSelected}
+                allMatchingSelected={selectAllMatching}
+                onTogglePage={togglePageSelection}
+                onSelectAllMatching={() => setSelectAllMatching(true)}
+                onClear={clearSelection}
+                onDelete={() => setConfirmBulkDelete(true)}
+                busy={bulkDeleteMutation.isPending}
+                noun="arrivals"
+                filterLabel={
+                  statusFilter === "all"
+                    ? undefined
+                    : STATUS_FILTERS.find((f) => f.value === statusFilter)?.label.toLowerCase()
+                }
+              />
+            )}
+
             {notificationsQuery.isLoading ? (
               <div className="flex flex-col gap-3 p-4">
                 {[1, 2, 3, 4].map((idx) => (
@@ -571,27 +734,54 @@ export function WebhooksPage() {
                     onViewDryRun={showStoredDryRun}
                     onJson={(notification) => setJsonId(notification.notification_id)}
                     onDelete={runDelete}
+                    selection={{
+                      selected: selectAllMatching || selectedKeys.has(item.key),
+                      onSelectedChange: (selected) => toggleSelected(item.key, selected),
+                    }}
                   />
                 ))}
               </Accordion>
             ) : (
               <SectionEmpty
                 icon={IconWebhook}
-                title={statusFilter === "all" ? "No arrivals yet" : "Nothing matches this filter"}
+                title={
+                  notificationSearch
+                    ? `Nothing matches "${notificationSearch}"`
+                    : statusFilter === "all"
+                      ? "No arrivals yet"
+                      : "Nothing matches this filter"
+                }
                 hint={
-                  statusFilter === "all"
+                  statusFilter === "all" && !notificationSearch
                     ? "Imports show up here once Radarr or Sonarr points at this app."
                     : undefined
                 }
                 action={
-                  statusFilter !== "all" ? (
-                    <Button variant="outline" size="sm" onClick={() => setStatusFilter("all")}>
+                  statusFilter !== "all" || notificationSearch ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setStatusFilter("all");
+                        setNotificationSearch("");
+                      }}
+                    >
                       Show all
                     </Button>
                   ) : undefined
                 }
               />
             )}
+
+            <ListPagination
+              offset={notificationOffset}
+              limit={notificationLimit}
+              total={notificationTotal}
+              count={notifications.length}
+              onOffsetChange={setNotificationOffset}
+              onLimitChange={setNotificationLimit}
+              noun="arrivals"
+            />
           </SectionCard>
         </TabsContent>
 
@@ -847,6 +1037,25 @@ export function WebhooksPage() {
           )}
         </DialogContent>
       </Dialog>
+
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        onOpenChange={setConfirmBulkDelete}
+        icon={<IconTrash />}
+        title={selectedCount === 1 ? "Delete this arrival?" : `Delete ${selectedCount} arrivals?`}
+        description={
+          <>
+            {selectAllMatching
+              ? `Every arrival this filter finds — all ${notificationTotal} of them — is removed, including any on pages you have not opened. `
+              : `The selected arrivals are removed from this list. `}
+            Media already copied is not touched, and neither are the transfers that copied it.
+            Deleting a pending arrival means it can no longer be synced from here.
+          </>
+        }
+        confirmLabel={selectedCount === 1 ? "Delete arrival" : `Delete ${selectedCount} arrivals`}
+        pending={bulkDeleteMutation.isPending}
+        onConfirm={runBulkDelete}
+      />
 
       <RenameVerifyDialog
         result={renameVerifyPayload}

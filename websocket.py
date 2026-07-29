@@ -11,7 +11,9 @@ import threading
 from datetime import datetime, timedelta
 from typing import Any
 from flask import request, session
+from flask_socketio import join_room, leave_room
 from auth import validate_websocket_token
+from env_flags import env_flag
 
 
 # WebSocket timeout configuration
@@ -23,20 +25,57 @@ WEBSOCKET_TIMEOUT_DEFAULT = 35 * 60  # 35 minutes default
 # WebSocket connection tracking
 websocket_connections = {}
 websocket_connections_lock = threading.RLock()
+
+# Which clients are watching which transfer's log output:
+#   {transfer_id: {sid, sid, ...}}
+#
+# rsync output is by far the largest thing this app pushes - a progress event
+# carrying the log tail is roughly fifteen times the size of the same event
+# without it - and it is only of interest to whoever has that transfer's row
+# open. Rooms keep it off everyone else's socket, and this registry lets the
+# producer skip building the payload at all when nobody is listening.
+transfer_log_subscribers: dict[str, set[str]] = {}
+transfer_log_subscribers_lock = threading.RLock()
+
+
+def transfer_log_room(transfer_id: str) -> str:
+    """Room name for one transfer's log stream."""
+    return f"transfer_logs:{transfer_id}"
+
+
+def has_log_subscribers(transfer_id: str) -> bool:
+    """
+    Whether anyone is watching this transfer's output.
+
+    Callers check this before assembling a log payload, so an unwatched
+    transfer costs nothing beyond the small progress broadcast.
+    """
+    with transfer_log_subscribers_lock:
+        return bool(transfer_log_subscribers.get(transfer_id))
+
+
+def _drop_subscriber(session_id: str, transfer_id: str = None):
+    """Remove one subscription, or every subscription held by a session."""
+    with transfer_log_subscribers_lock:
+        targets = [transfer_id] if transfer_id else list(transfer_log_subscribers)
+        for key in targets:
+            watchers = transfer_log_subscribers.get(key)
+            if not watchers:
+                continue
+            watchers.discard(session_id)
+            if not watchers:
+                transfer_log_subscribers.pop(key, None)
+
+
 cleanup_thread = None
 cleanup_thread_lock = threading.Lock()
 
 logger = logging.getLogger('dragoncp.websocket')
 
 
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    return str(raw_value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
-ALLOW_QUERY_TOKEN_AUTH = _env_flag('ALLOW_QUERY_TOKEN_AUTH', default=False)
+ALLOW_QUERY_TOKEN_AUTH = env_flag('ALLOW_QUERY_TOKEN_AUTH', default=False)
 
 
 def get_websocket_connection_count():
@@ -142,6 +181,10 @@ def register_websocket_handlers(socketio):
         with websocket_connections_lock:
             connection_info = websocket_connections.pop(session_id, {})
             active_connections = len(websocket_connections)
+        # Rooms are torn down with the socket, but this registry is ours to
+        # clear - otherwise a dropped client keeps a transfer looking watched
+        # and the producer keeps building payloads for nobody.
+        _drop_subscriber(session_id)
         username = connection_info.get('username', 'unknown')
         transport = connection_info.get('transport', 'unknown')
         logger.info(
@@ -159,6 +202,39 @@ def register_websocket_handlers(socketio):
         with websocket_connections_lock:
             if session_id in websocket_connections:
                 websocket_connections[session_id]['last_activity'] = datetime.now()
+
+    @socketio.on('transfer_logs_subscribe')
+    def handle_transfer_logs_subscribe(data):
+        """
+        Start receiving one transfer's log output.
+
+        The connect handler rejects unauthenticated sockets outright, so a
+        session that reaches here is already authenticated; the membership
+        check only guards against a socket that has since been reaped.
+        """
+        session_id = str(getattr(request, 'sid', ''))
+        transfer_id = (data or {}).get('transfer_id')
+        if not transfer_id:
+            return
+        with websocket_connections_lock:
+            if session_id not in websocket_connections:
+                return
+
+        join_room(transfer_log_room(transfer_id))
+        with transfer_log_subscribers_lock:
+            transfer_log_subscribers.setdefault(transfer_id, set()).add(session_id)
+        logger.debug('Log subscribe: sid=%s transfer=%s', session_id[:8], transfer_id)
+
+    @socketio.on('transfer_logs_unsubscribe')
+    def handle_transfer_logs_unsubscribe(data):
+        """Stop receiving a transfer's log output."""
+        session_id = str(getattr(request, 'sid', ''))
+        transfer_id = (data or {}).get('transfer_id')
+        if not transfer_id:
+            return
+        leave_room(transfer_log_room(transfer_id))
+        _drop_subscriber(session_id, transfer_id)
+        logger.debug('Log unsubscribe: sid=%s transfer=%s', session_id[:8], transfer_id)
 
     @socketio.on('authenticate')
     def handle_authenticate(data):

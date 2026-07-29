@@ -12,8 +12,12 @@ import requests
 import json
 from auth import require_auth
 from webhook_auth import require_webhook_auth
+from models.webhook import NotificationCatalog
 
 webhooks_bp = Blueprint('webhooks', __name__)
+
+# A page the UI would never render is a payload nobody reads.
+MAX_PAGE_SIZE = 200
 
 # Global references to be set by app.py
 config = None
@@ -48,6 +52,21 @@ def init_webhook_routes(app_config, app_transfer_coordinator, app_rename_service
     config = app_config
     transfer_coordinator = app_transfer_coordinator
     rename_service = app_rename_service
+
+
+_notification_catalog = None
+
+
+def notification_catalog():
+    """The movie + series notification list, built once the models exist."""
+    global _notification_catalog
+    if _notification_catalog is None:
+        _notification_catalog = NotificationCatalog(
+            transfer_coordinator.db,
+            transfer_coordinator.webhook_model,
+            transfer_coordinator.series_webhook_model,
+        )
+    return _notification_catalog
 
 
 # ===== WEBHOOK RECEIVER ENDPOINTS =====
@@ -422,43 +441,44 @@ def api_webhook_anime_receiver():
 @webhooks_bp.route('/webhook/notifications')
 @require_auth
 def api_webhook_notifications():
-    """Get all webhook notifications (movies, series, and anime)"""
+    """
+    Movie, series and anime notifications as one paged list.
+
+    Ordering and paging run across both tables in SQL. Reading each table with
+    the same limit and merging afterwards - what this used to do - returned the
+    newest N of each source rather than the newest N overall, so once one source
+    outpaced the other the older source's recent rows fell off the list.
+    """
     try:
         status_filter = request.args.get('status')
-        limit = request.args.get('limit', 50, type=int)
-        
-        # Get movie notifications
-        movie_notifications = transfer_coordinator.webhook_model.get_all(status_filter=status_filter, limit=limit)
-        
-        # Get series/anime notifications
-        series_notifications = transfer_coordinator.series_webhook_model.get_all(status_filter=status_filter, limit=limit)
-        
-        # Format notifications for consistent display
-        all_notifications = []
-        
-        # Add movie notifications with type indicator
-        for notification in movie_notifications:
-            notification['media_type'] = 'movie'
-            notification['display_title'] = notification['title']
-            all_notifications.append(notification)
-        
-        # Add series/anime notifications with type indicator
-        for notification in series_notifications:
-            season_text = f" Season {notification['season_number']}" if notification.get('season_number') else ""
-            notification['display_title'] = f"{notification['series_title']}{season_text}"
-            all_notifications.append(notification)
-        
-        # Sort by creation date (most recent first)
-        all_notifications.sort(key=lambda x: x['created_at'], reverse=True)
-        
-        # Apply limit to combined results
-        if limit:
-            all_notifications = all_notifications[:limit]
-        
+        media_type = request.args.get('media_type')
+        search = (request.args.get('search') or '').strip() or None
+        limit = max(1, min(request.args.get('limit', 50, type=int), MAX_PAGE_SIZE))
+        offset = max(0, request.args.get('offset', 0, type=int))
+
+        catalog = notification_catalog()
+        notifications = catalog.page(
+            status=status_filter, media_type=media_type, search=search,
+            limit=limit, offset=offset,
+        )
+
         return jsonify({
             "status": "success",
-            "notifications": all_notifications,
-            "total": len(all_notifications)
+            "notifications": notifications,
+            # `total` counts every match; `count` is what this page holds.
+            "total": catalog.count(status=status_filter, media_type=media_type, search=search),
+            "count": len(notifications),
+            "limit": limit,
+            "offset": offset,
+            "status_counts": catalog.status_counts(media_type=media_type, search=search),
+            # Separate from status_counts: a flagged arrival keeps its real
+            # status, so counting it as one would double it in any total.
+            "manual_sync_count": catalog.manual_sync_count(
+                media_type=media_type, search=search
+            ),
+            # Everything on record regardless of the current question, so a tab
+            # badge does not count down as someone types.
+            "unfiltered_total": catalog.count(media_type=media_type),
         })
         
     except Exception as e:
@@ -467,6 +487,43 @@ def api_webhook_notifications():
             "status": "error",
             "message": f"Failed to get notifications: {str(e)}"
         }), 500
+
+
+@webhooks_bp.route('/webhook/notifications/bulk-delete', methods=['POST'])
+@require_auth
+def api_bulk_delete_notifications():
+    """
+    Delete several webhook notifications at once.
+
+    Accepts either an explicit list of ids, or `all_matching` with the same
+    filter the list was showing, in which case the filter is re-run here. That
+    is what makes "select all" mean every match rather than every row the client
+    happened to have loaded.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        catalog = notification_catalog()
+
+        if payload.get('all_matching'):
+            deleted = catalog.delete_matching(
+                status=payload.get('status'),
+                media_type=payload.get('media_type'),
+                search=(payload.get('search') or '').strip() or None,
+            )
+        else:
+            notification_ids = payload.get('ids') or []
+            if not isinstance(notification_ids, list):
+                return jsonify({"status": "error", "message": "ids must be a list"}), 400
+            deleted = catalog.delete(notification_ids)
+
+        return jsonify({
+            "status": "success",
+            "deleted_count": deleted,
+            "message": f"Deleted {deleted} notification{'s' if deleted != 1 else ''}",
+        })
+    except Exception as e:
+        print(f"❌ Error bulk deleting notifications: {e}")
+        return jsonify({"status": "error", "message": f"Failed to delete notifications: {str(e)}"}), 500
 
 
 @webhooks_bp.route('/webhook/series/notifications')
