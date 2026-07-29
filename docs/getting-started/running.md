@@ -10,6 +10,10 @@ There are two halves to running DragonCP locally: the Python backend, started by
 `frontend/`. This page describes what the launcher actually does, defines the
 `TEST_MODE` flag, and lists the frontend commands.
 
+For the audited, path-by-path guarantee — every place that can write to a media
+library and what test mode does to each — see
+[../reference/test-mode.md](../reference/test-mode.md).
+
 For production - gunicorn, systemd, the served frontend build - see
 [../operations/runtime-and-deployment.md](../operations/runtime-and-deployment.md).
 
@@ -122,6 +126,10 @@ the rsync command, so no bytes move. Simulation transfers are explicitly exempt
 - they copy their own local fixture files and have to actually move data for the
 progress figures to mean anything.
 
+**Renames are not performed.** A Sonarr rename webhook reports what it would
+rename and leaves the file alone. Until 2026-07-29 the rename service had no
+notion of test mode at all and renamed real media whatever the flag said.
+
 **Directories are not created.** The destination directory, the dynamic backup
 directory and its `.rsync-partial` subdirectory are printed rather than created.
 `app.py` also skips creating `templates/` and `static/` on direct startup.
@@ -158,15 +166,16 @@ whatever the flag is set to - they are protected by `@require_auth`, not by
 **Authentication is not bypassed.** Neither `auth.py` nor `webhook_auth.py`
 mentions `TEST_MODE`.
 
-### Use `1`, not `true`
+### Writing the value
 
-The two readers disagree on what counts as "on". The startup flag in `app.py`
-accepts `1`, `true`, `yes` or `on`; every behavioural check in `config.py`,
-`services/transfer_service.py`, `services/backup_service.py` and the
-`__main__` block compares against the exact string `"1"`.
+`1`, `true`, `yes` and `on` all turn it on, in any case. Anything else — including
+leaving it unset — is off.
 
-So `TEST_MODE=true` produces the development banner and verbose logging while
-rsync still runs for real. Always set it to `1`.
+There is one reader, `env_flags.test_mode_enabled()`, and every gate uses it.
+Until 2026-07-29 there were two that disagreed, and `TEST_MODE=true` produced the
+development banner while rsync still ran for real; that is fixed, and a test
+fails the build if a second reader appears. The history is in
+[../operations/known-issues.md](../operations/known-issues.md).
 
 ### When to use it
 

@@ -103,3 +103,9 @@ because this code deletes files and runs in production: paths outside the
 simulation root are refused, cleanup removes only flagged rows, every scenario
 stays inside the size ceiling, and real transfers are never mistaken for
 simulated ones.
+
+## Related
+
+- [../../reference/test-mode.md](../../reference/test-mode.md) — why simulations stay safe despite being exempt from the dry run
+- [../transfers/README.md](../transfers/README.md) — the pipeline a simulation exercises
+- [../queue/README.md](../queue/README.md) — the admission rules the scenarios test

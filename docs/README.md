@@ -47,7 +47,8 @@ map; `INDEX.md` is the catalogue.
 | Setting the app up locally | `getting-started/installation.md` | `../AGENTS.md` |
 | Starting the backend and the frontend dev server, or using `TEST_MODE` | `getting-started/running.md` | `getting-started/installation.md` |
 | Running or adding automated tests | `getting-started/testing.md` | The owning feature doc |
-| Testing a transfer end to end without touching real media | `features/simulation/README.md` | — |
+| Testing a transfer end to end without touching real media | `features/simulation/README.md` | `reference/test-mode.md` |
+| Whether a test instance can touch real media, and which paths are gated | `reference/test-mode.md` | `getting-started/running.md` |
 | Something that does not exist yet | `plans/` | — |
 
 Operator conventions and runtime rules that are not documentation (single

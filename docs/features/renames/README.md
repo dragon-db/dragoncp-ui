@@ -137,3 +137,4 @@ Socket events: `rename_webhook_received` (before work starts) and `rename_comple
 - [System overview](../../architecture/system-overview.md)
 - [API reference](../../reference/api.md)
 - [Database schema](../../reference/database-schema.md)
+- [../../reference/test-mode.md](../../reference/test-mode.md) — renames are skipped under `TEST_MODE`, reported as a dry run

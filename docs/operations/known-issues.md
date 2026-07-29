@@ -73,23 +73,11 @@ with test mode on, and must actually move with it off.
 
 ### Every path that can write to a media library
 
-Audited on 2026-07-29. Nothing outside this list touches media.
-
-| Path | Behaviour under test mode |
-|---|---|
-| Transfer rsync (copies, and `--delete` on the destination) | `--dry-run` |
-| Backup restore rsync | `--dry-run` |
-| Backup restore file deletes | skipped, logged as `[DRY-RUN]` |
-| Backup directory removal (two call sites) | skipped |
-| Rename webhook `os.rename` | skipped, reported as a dry run |
-| Destination and backup directory creation | skipped |
-| Config file writes | skipped |
-| Media validation rsync | always `--dry-run`, in every mode |
-| Simulation copies | **exempt by design** — confined to `.simulations/` under the app directory, with `_assert_inside_root()` on every path it writes or deletes, so it moves its own fixture bytes and cannot reach real media |
-| `df -h`, `which rsync`, `rsync --version` | read-only |
-
-No code path deletes anything on the remote server: the only remote access is
-paramiko for browsing and rsync pulling *from* the remote.
+Audited 2026-07-29 while fixing the two defects above. The result is a contract
+rather than a defect, so it lives in
+[../reference/test-mode.md](../reference/test-mode.md) — a table of every path
+that can write to, rename or delete a media file and what test mode does to
+each, plus why simulations are safe despite being exempt from the dry run.
 
 ## Configuration that silently does nothing
 

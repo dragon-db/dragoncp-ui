@@ -427,3 +427,4 @@ feature: `transfer_progress` and `transfer_complete` (`transfer_service.py`),
 - [../../architecture/system-overview.md](../../architecture/system-overview.md) — where transfers sit in the system
 - [../../reference/api.md](../../reference/api.md) — full endpoint contracts
 - [../../reference/database-schema.md](../../reference/database-schema.md) — the `transfers` table
+- [../../reference/test-mode.md](../../reference/test-mode.md) — what `TEST_MODE` guarantees, path by path

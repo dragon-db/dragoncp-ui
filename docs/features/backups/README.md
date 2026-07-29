@@ -237,3 +237,4 @@ The reconstruction rules and their limits are in "Reindexing folders found on di
 - [../../architecture/system-overview.md](../../architecture/system-overview.md)
 - [../../reference/database-schema.md](../../reference/database-schema.md)
 - [../../reference/api.md](../../reference/api.md)
+- [../../reference/test-mode.md](../../reference/test-mode.md) — what `TEST_MODE` guarantees, and why restore is not a usable rehearsal
