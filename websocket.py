@@ -13,6 +13,7 @@ from typing import Any
 from flask import request, session
 from flask_socketio import join_room, leave_room
 from auth import validate_websocket_token
+from env_flags import env_flag
 
 
 # WebSocket timeout configuration
@@ -72,14 +73,9 @@ cleanup_thread_lock = threading.Lock()
 logger = logging.getLogger('dragoncp.websocket')
 
 
-def _env_flag(name: str, default: bool = False) -> bool:
-    raw_value = os.environ.get(name)
-    if raw_value is None:
-        return default
-    return str(raw_value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
-ALLOW_QUERY_TOKEN_AUTH = _env_flag('ALLOW_QUERY_TOKEN_AUTH', default=False)
+ALLOW_QUERY_TOKEN_AUTH = env_flag('ALLOW_QUERY_TOKEN_AUTH', default=False)
 
 
 def get_websocket_connection_count():

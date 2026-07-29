@@ -10,6 +10,10 @@ lines are reduced to the newest one, and every other line is left untouched.
 Nothing else about a transfer is modified. Progress figures are already held in
 their own columns, so no information is lost that the UI reads.
 
+Each row is rewritten only if its log is still exactly what was read, so a
+transfer that writes while this runs keeps its new lines and is reported as
+skipped rather than silently rolled back.
+
 Usage:
     python scripts/compact_transfer_logs.py                 # report only
     python scripts/compact_transfer_logs.py --apply         # rewrite the rows
@@ -54,30 +58,14 @@ def human(num_bytes):
         num_bytes /= 1024
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--db", default=os.path.join(REPO_ROOT, "dragoncp.db"),
-                        help="path to dragoncp.db (default: this checkout's)")
-    parser.add_argument("--apply", action="store_true",
-                        help="write the compacted logs back (default is a report only)")
-    parser.add_argument("--backup", action="store_true",
-                        help="copy the database aside before writing")
-    args = parser.parse_args()
+def plan(conn):
+    """
+    Read every transfer's log and work out what compacting it would leave.
 
-    if not os.path.exists(args.db):
-        print(f"Database not found: {args.db}")
-        return 1
-
-    if args.apply and args.backup:
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        destination = f"{args.db}.pre_log_compaction_{stamp}"
-        shutil.copy2(args.db, destination)
-        print(f"Backup written: {destination}")
-
-    conn = sqlite3.connect(args.db)
-    conn.row_factory = sqlite3.Row
-
+    Returns the rows read, the before/after totals, and the rows that would
+    change - each carrying the log as it was read, so the write can tell whether
+    the row has moved since.
+    """
     rows = conn.execute("SELECT transfer_id, folder_name, logs FROM transfers").fetchall()
 
     lines_before = lines_after = bytes_before = bytes_after = 0
@@ -101,8 +89,64 @@ def main():
         bytes_after += len(new_raw)
 
         if len(kept) != len(logs):
+            # The log we read is kept so the write can check the row has not
+            # moved underneath us.
             changed.append((row["transfer_id"], row["folder_name"],
-                            len(logs), len(kept), new_raw))
+                            len(logs), len(kept), new_raw, raw))
+
+    return rows, lines_before, lines_after, bytes_before, bytes_after, changed
+
+
+def apply_changes(conn, changed):
+    """
+    Rewrite the compacted logs, and return the ids that were left alone.
+
+    Each row is rewritten only if its log is still exactly what `plan` read. A
+    transfer running alongside this script appends lines as it goes, and an
+    unconditional write would replace them with a copy taken before they
+    existed - the lines would be gone with nothing to show for it.
+    """
+    skipped = []
+    with conn:
+        for transfer_id, _folder, _before, _after, new_raw, original_raw in changed:
+            updated = conn.execute(
+                "UPDATE transfers SET logs = ? WHERE transfer_id = ? AND logs = ?",
+                (new_raw, transfer_id, original_raw),
+            ).rowcount
+            if not updated:
+                skipped.append(transfer_id)
+    return skipped
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--db", default=os.path.join(REPO_ROOT, "dragoncp.db"),
+                        help="path to dragoncp.db (default: this checkout's)")
+    parser.add_argument("--apply", action="store_true",
+                        help="write the compacted logs back (default is a report only)")
+    parser.add_argument("--backup", action="store_true",
+                        help="copy the database aside before writing")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.db):
+        print(f"Database not found: {args.db}")
+        return 1
+
+    if args.backup and not args.apply:
+        print("--backup has no effect without --apply: a report does not write, "
+              "so there is nothing to back up.")
+
+    if args.apply and args.backup:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        destination = f"{args.db}.pre_log_compaction_{stamp}"
+        shutil.copy2(args.db, destination)
+        print(f"Backup written: {destination}")
+
+    conn = sqlite3.connect(args.db)
+    conn.row_factory = sqlite3.Row
+
+    rows, lines_before, lines_after, bytes_before, bytes_after, changed = plan(conn)
 
     print(f"transfers scanned : {len(rows):,}")
     print(f"rows to compact   : {len(changed):,}")
@@ -120,10 +164,15 @@ def main():
         conn.close()
         return 0
 
-    with conn:
-        for transfer_id, _folder, _before, _after, new_raw in changed:
-            conn.execute("UPDATE transfers SET logs = ? WHERE transfer_id = ?",
-                         (new_raw, transfer_id))
+    skipped = apply_changes(conn, changed)
+
+    if skipped:
+        print(f"\nskipped {len(skipped)} row(s) that changed while this ran; "
+              f"re-run to compact them:")
+        for transfer_id in skipped[:10]:
+            print(f"  {transfer_id}")
+        if len(skipped) > 10:
+            print(f"  ... and {len(skipped) - 10} more")
 
     # Reclaim the freed pages, otherwise the file stays the same size
     print("\nRunning VACUUM to reclaim space...")

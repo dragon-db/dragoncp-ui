@@ -92,10 +92,35 @@ Notes:
 
 ---
 
+### TASK-008 — Compact the stored transfer logs on production
+Status: planned      Priority: medium
+Tags: operations, database
+Docs: [docs/plans/rsync-log-streaming.md](docs/plans/rsync-log-streaming.md)
+
+Plan: new transfers collapse rsync progress lines as they are written, but rows
+created before that still hold every tick. Run the compaction over what is
+already stored, once this branch is deployed.
+
+Measured against a snapshot of production: 150,870 lines across 521 transfers,
+5.5 MB of log occupying 38% of a 15.4 MB database, going to 13,842 lines and
+574 KB — the file drops from 14.7 MB to 8.8 MB after `VACUUM`.
+
+Steps:
+- [ ] deploy this branch to production
+- [ ] `python scripts/compact_transfer_logs.py` — report first, confirm the figures
+- [ ] `python scripts/compact_transfer_logs.py --apply --backup`
+- [ ] check the reported skip list is empty, or re-run for those rows
+
+Notes:
+- Safe to run while transfers are in flight: each row is rewritten only if its
+  log is still exactly what was read, and any row that moved is named so it can
+  be re-run.
+- Handoff: this is the only follow-up left from the rsync log storage work.
+
 ## Backlog
 
 ### TASK-004 — Triage the known issues
-Status: backlog      Priority: high
+Status: in progress      Priority: high
 Tags: backend, correctness
 Docs: [docs/operations/known-issues.md](docs/operations/known-issues.md)
 
@@ -107,9 +132,12 @@ Steps:
       them — backups appear to work and cannot be restored
 - [ ] `migrate_v1_to_v2.py` has no v1 check and drops `transfers` and
       `app_settings` regardless, erasing history on a live v2 install
-- [ ] `TEST_MODE=true` shows the development banner while rsync still runs for
-      real, because the banner accepts `1/true/yes/on` and every safety check
-      compares against exactly `'1'`
+- [x] `TEST_MODE=true` shows the development banner while rsync still runs for
+      real — every reader now goes through `env_flags.test_mode_enabled()`
+- [x] `transfer_failed` listener with no emitter — helper deleted
+- [x] `TransferUpdate` overstated its payload — only `transfer_id` is required
+- [x] `compact_transfer_logs.py` lost-update window — compare-and-set on the log
+- [x] `--backup` silently ignored without `--apply` — it now says so
 - [ ] work through the remaining findings by section
 
 ### TASK-005 — Close the remaining documentation gaps

@@ -27,6 +27,8 @@ from auth import require_auth
 from models import DatabaseManager
 from models.webhook import RenameNotification
 
+from env_flags import env_flag, test_mode_enabled
+
 # Import services
 from services import TransferCoordinator
 from services.rename_service import RenameService
@@ -100,7 +102,7 @@ def get_cors_origins():
     return origins if origins else '*'
 
 
-def _env_flag(name: str, default: bool = False) -> bool:
+def env_flag(name: str, default: bool = False) -> bool:
     raw_value = os.environ.get(name)
     if raw_value is None:
         raw_value = _early_config.get(name)
@@ -110,7 +112,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def _socketio_verbose_logging_enabled() -> bool:
-    return _env_flag('SOCKETIO_VERBOSE_LOGGING', default=False) or _env_flag('TEST_MODE', default=False) or _env_flag('FLASK_DEBUG', default=False)
+    return env_flag('SOCKETIO_VERBOSE_LOGGING', default=False) or env_flag('TEST_MODE', default=False) or env_flag('FLASK_DEBUG', default=False)
 
 
 def _is_simple_websocket_available() -> bool:
@@ -177,8 +179,8 @@ SOCKETIO_PING_INTERVAL_SECONDS = 25
 SOCKETIO_PING_TIMEOUT_SECONDS = 60
 SOCKETIO_VERBOSE_LOGGING = _socketio_verbose_logging_enabled()
 SOCKETIO_WEBSOCKET_TRANSPORT_READY = _is_simple_websocket_available()
-TEST_MODE_ENABLED = _env_flag('TEST_MODE', default=False)
-FLASK_DEBUG_ENABLED = _env_flag('FLASK_DEBUG', default=False)
+TEST_MODE_ENABLED = env_flag('TEST_MODE', default=False)
+FLASK_DEBUG_ENABLED = env_flag('FLASK_DEBUG', default=False)
 
 # Initialize SocketIO with CORS configuration
 socketio = SocketIO(
@@ -500,7 +502,7 @@ def _get_runtime_port() -> int:
 if __name__ == '__main__':
     # Create templates and static directories if they don't exist
     # Check TEST_MODE before creating app directories
-    if os.environ.get('TEST_MODE', '0') == '1':
+    if test_mode_enabled():
         logger.info('TEST_MODE enabled: skipping template/static directory creation')
     else:
         os.makedirs('templates', exist_ok=True)
@@ -508,7 +510,7 @@ if __name__ == '__main__':
     
     runtime_port = _get_runtime_port()
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
-    test_mode = os.environ.get('TEST_MODE', '0') == '1'
+    test_mode = test_mode_enabled()
     allow_unsafe_werkzeug = debug_mode or test_mode
 
     logger.info('DragonCP Web UI starting on port %s (debug=%s)', runtime_port, debug_mode)

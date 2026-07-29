@@ -40,20 +40,23 @@ Related: the script always exits `0` even when its own validation fails, and it
 swallows extraction errors — a `--migrate-data` run can warn, report success,
 and have carried nothing across.
 
-### `TEST_MODE=true` runs real transfers — **verified**
+### ~~`TEST_MODE=true` runs real transfers~~ — **fixed**
 
-Two readers disagree on what counts as enabled. `app.py:_env_flag` accepts
-`1`, `true`, `yes` or `on` (`app.py:109`), and drives the development banner,
-verbose Socket.IO logging and `allow_unsafe_werkzeug`. Every behavioural check
-compares against the exact string `'1'` (`services/transfer_service.py:470`,
-`:528`, and throughout `services/backup_service.py`).
+Two readings of one variable: the startup banner and the runtime profile
+accepted `1`, `true`, `yes` and `on`, while every gate that puts rsync into
+`--dry-run`, skips a delete or skips a directory creation compared against the
+exact string `'1'`. `TEST_MODE=true` therefore produced an installation that
+announced itself as test mode, logged itself as test mode, and copied and
+deleted files for real — including during a backup restore.
 
-So `TEST_MODE=true` produces a UI and logs that say test mode while rsync runs
-for real and moves files. The flag that looks safest is the one that isn't.
+Nothing had changed the dry-run behaviour; the strict gates date from the v1.8.1
+modular refactor (Oct 2025) and the permissive banner was added a year later
+with the v2.1.0 runtime-profile logging, which is when the two diverged.
 
-Only `TEST_MODE=1` is safe. Both readers should use the same predicate.
-
----
+Both now read `env_flags.test_mode_enabled()`. The permissive reading won
+deliberately: of the two possible mistakes, only reading a truthy value as *off*
+loses data. `tests/test_test_mode_and_compaction.py` fails the build if any
+module compares `TEST_MODE` against a literal again.
 
 ## Configuration that silently does nothing
 
@@ -112,11 +115,10 @@ Only `TEST_MODE=1` is safe. Both readers should use the same predicate.
 
 ## Realtime
 
-- **`transfer_failed` has a listener and no emitter.**
-  `frontend/src/services/socket.ts:206-211` exposes `onTransferError()` bound to
-  `transfer_failed`; no backend code emits it. Currently latent because nothing
-  imports that helper — failures arrive as `transfer_complete` with
-  `status: "failed"`.
+- ~~**`transfer_failed` has a listener and no emitter.**~~ Fixed by deleting the
+  helper. Failures arrive as `transfer_complete` carrying `status: "failed"`,
+  which the pages already listen for; a subscriber for an event nobody sends
+  read like coverage that did not exist.
 - **`rename_completed` is skipped when persistence fails.**
   `services/rename_service.py` returns early if `rename_model.update()` fails,
   so the files are renamed on disk and the UI never hears about it.
@@ -126,9 +128,10 @@ Only `TEST_MODE=1` is safe. Both readers should use the same predicate.
 - **Emits are swallowed.** `services/backup_service.py` wraps them in bare
   `try/except: pass`, and `routes/webhooks.py` routes them through
   `emit_socketio_event()`, which does the same.
-- **`TransferUpdate` overstates its payload.** The TypeScript interface marks
-  `status`, `progress`, `media_type` and `folder_name` required, but
-  `transfer_queued` sends only `transfer_id` and `message`.
+- ~~**`TransferUpdate` overstates its payload.**~~ Fixed. Only `transfer_id` is
+  required now; the rest are optional, because `transfer_queued` sends just an
+  id and a message. The consumers were already defensive, so nothing behaved
+  differently — the type was the only thing lying.
 
 ---
 
@@ -163,11 +166,13 @@ Only `TEST_MODE=1` is safe. Both readers should use the same predicate.
 
 ## Scripts and tests
 
-- **`compact_transfer_logs.py` has a lost-update window.** It reads every row up
-  front and writes back after the whole scan, so lines appended by a running
-  transfer in between are silently discarded. Stop the app or wait for an idle
-  queue.
-- **`--backup` is ignored unless `--apply` is also passed.**
+- ~~**`compact_transfer_logs.py` has a lost-update window.**~~ Fixed. Each row is
+  now rewritten only if its log is still exactly what was read; a row that moved
+  is skipped and named so it can be re-run. The script is safe to run against a
+  live database.
+- ~~**`--backup` is ignored unless `--apply` is also passed.**~~ Fixed: it now
+  says so rather than passing silently. A report writes nothing, so there is
+  genuinely nothing to back up.
 - **`verify_v2_schema.py` always exits 0**, even when checks print ✗, and it
   never inspects `sonarr_webhook` or `rename_webhook`.
 - **`pytest` is not in `requirements.txt`**, so a virtualenv built by

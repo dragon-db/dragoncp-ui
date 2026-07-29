@@ -12,12 +12,32 @@
 > output now goes only to clients that asked for that transfer, and the producer
 > skips building the payload when nobody is listening.
 >
-> Still outstanding from this document: per-transfer log files on disk with a
-> read offset for restart-safe continuity (section 4), the `transfer_runtime`
-> table (section 5.2), and retention cleanup for those files (phase 4). Until
-> those land, acceptance criterion 3 — "full raw logs are not stored in DB" — is
-> not met: logs still live in the `transfers.logs` column, capped at 5,000 lines
-> and with progress ticks collapsed, but in the database all the same.
+> **Acceptance criterion 3 is superseded, not outstanding.** It asked that full
+> raw logs not be stored in the database, because at the time the only proposed
+> way to stop the bloat was to move them to files on disk. Collapsing progress
+> lines at write time reaches the same goal by a cheaper route: what remains in
+> `transfers.logs` is the useful part, and the ticks that made up 91% of it are
+> never written. Keeping it in the database also keeps the log available to the
+> existing endpoints, survives a file-retention policy nobody has to write, and
+> avoids a second source of truth to keep in step with the row.
+>
+> Measured on production: 150,870 stored lines across 521 transfers, 5.5 MB of
+> log occupying 38% of a 15.4 MB database. Applying the same rule to what is
+> already stored takes that to 13,842 lines and 574 KB — the file goes from
+> 14.7 MB to 8.8 MB after `VACUUM`. No transfer on record exceeds the 5,000-line
+> cap, so the cap has never truncated anything.
+>
+> That leaves one deliberate follow-up rather than a gap: run
+> `scripts/compact_transfer_logs.py --apply --backup` against production once
+> this branch is deployed, to compact the rows written before the rule existed.
+> The script is safe to run against a live database — each row is rewritten only
+> if its log is still exactly what was read.
+>
+> Genuinely not done, and now optional rather than required: per-transfer log
+> files with a read offset for restart-safe continuity (section 4) and the
+> `transfer_runtime` table (section 5.2). Both were means to the storage end
+> that has now been met another way. They would still buy restart-safe log
+> continuity, which is the only thing left that files would give us.
 
 ## 1. Purpose
 

@@ -17,11 +17,16 @@ const SOCKET_OPTIONS = {
 };
 
 export interface TransferUpdate {
+  /** The only field every transfer event carries. */
   transfer_id: string;
-  status: string;
-  progress: string;
-  media_type: string;
-  folder_name: string;
+  // Optional because `transfer_queued` sends just an id and a message, and
+  // `transfer_promoted` little more. Marking these required described the
+  // progress events and quietly mis-described the rest, so any code that
+  // trusted the type would read undefined at runtime.
+  status?: string;
+  progress?: string;
+  media_type?: string;
+  folder_name?: string;
   season_name?: string;
   log?: string;
   /**
@@ -256,12 +261,10 @@ export function onTransferComplete(callback: (data: TransferUpdate) => void): ()
   return () => socket?.off("transfer_complete", callback);
 }
 
-export function onTransferError(callback: (data: TransferUpdate) => void): () => void {
-  if (!socket) return () => {};
-
-  socket.on("transfer_failed", callback);
-  return () => socket?.off("transfer_failed", callback);
-}
+// There is no `onTransferError`. The backend emits no `transfer_failed` event:
+// a failure arrives as `transfer_complete` carrying `status: "failed"`, which is
+// what the pages already listen for. A helper for an event nobody sends reads
+// like coverage that does not exist.
 
 export function onTransferQueued(callback: (data: TransferUpdate) => void): () => void {
   if (!socket) return () => {};

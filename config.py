@@ -8,6 +8,7 @@ import os
 from datetime import datetime
 from typing import Dict, List
 from flask import session, has_request_context
+from env_flags import test_mode_enabled
 
 
 # Application version for cache busting
@@ -120,7 +121,7 @@ class DragonCPConfig:
         """Save configuration to .env file (legacy method - use update_session_config instead)"""
         try:
             # Check TEST_MODE before writing configuration file
-            if os.environ.get('TEST_MODE', '0') == '1':
+            if test_mode_enabled():
                 print(f"🧪 TEST_MODE: Would write configuration to: {self.env_file}")
                 print(f"🧪 TEST_MODE: Configuration would contain {len(config_data)} settings")
             else:

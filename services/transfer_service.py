@@ -11,6 +11,7 @@ import re
 import time
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
+from env_flags import test_mode_enabled
 
 
 # How often a superseding progress line is allowed to reach the database. The
@@ -493,7 +494,7 @@ class TransferService:
             # Create destination directory
             try:
                 # Check TEST_MODE before creating destination directory
-                if os.environ.get('TEST_MODE', '0') == '1':
+                if test_mode_enabled():
                     print(f"🧪 TEST_MODE: Would create destination directory: {dest_path}")
                 else:
                     os.makedirs(dest_path, exist_ok=True)
@@ -551,7 +552,7 @@ class TransferService:
             # Ensure backup directory exists
             try:
                 # Check TEST_MODE before creating backup directories
-                if os.environ.get('TEST_MODE', '0') == '1':
+                if test_mode_enabled():
                     print(f"🧪 TEST_MODE: Would create backup directories: {backup_dir}")
                 else:
                     os.makedirs(backup_dir, exist_ok=True)
@@ -595,7 +596,7 @@ class TransferService:
             # Add --dry-run flag when TEST_MODE is enabled. A simulation is
             # exempt: it copies its own fixture files, so it has to actually
             # move bytes for the progress figures to mean anything.
-            if os.environ.get('TEST_MODE', '0') == '1' and not is_simulation:
+            if test_mode_enabled() and not is_simulation:
                 rsync_cmd.append("--dry-run")
                 print("🧪 TEST_MODE enabled - rsync will run in dry-run mode (no actual file transfers)")
 
