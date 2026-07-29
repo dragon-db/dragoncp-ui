@@ -58,6 +58,39 @@ deliberately: of the two possible mistakes, only reading a truthy value as *off*
 loses data. `tests/test_test_mode_and_compaction.py` fails the build if any
 module compares `TEST_MODE` against a literal again.
 
+### ~~Rename webhooks ignored test mode entirely~~ — **fixed**
+
+Found while auditing every path that writes to a media library. `RenameService`
+had no notion of test mode at all: a Sonarr rename webhook arriving at a test
+installation called `os.rename()` on real files while the banner said test mode.
+Unlike the `TEST_MODE=true` defect above this was not a spelling problem — the
+gate was simply never written, so even `TEST_MODE=1` renamed real media.
+
+Renames are now gated like every other write, reporting what they would rename
+so the webhook flow can still be exercised end to end.
+`tests/test_rename_service.py` covers both directions: the file must survive
+with test mode on, and must actually move with it off.
+
+### Every path that can write to a media library
+
+Audited on 2026-07-29. Nothing outside this list touches media.
+
+| Path | Behaviour under test mode |
+|---|---|
+| Transfer rsync (copies, and `--delete` on the destination) | `--dry-run` |
+| Backup restore rsync | `--dry-run` |
+| Backup restore file deletes | skipped, logged as `[DRY-RUN]` |
+| Backup directory removal (two call sites) | skipped |
+| Rename webhook `os.rename` | skipped, reported as a dry run |
+| Destination and backup directory creation | skipped |
+| Config file writes | skipped |
+| Media validation rsync | always `--dry-run`, in every mode |
+| Simulation copies | **exempt by design** — confined to `.simulations/` under the app directory, with `_assert_inside_root()` on every path it writes or deletes, so it moves its own fixture bytes and cannot reach real media |
+| `df -h`, `which rsync`, `rsync --version` | read-only |
+
+No code path deletes anything on the remote server: the only remote access is
+paramiko for browsing and rsync pulling *from* the remote.
+
 ## Configuration that silently does nothing
 
 - **`AUTO_SYNC_SERIES` and `AUTO_SYNC_ANIME` are read by nothing.**

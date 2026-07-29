@@ -20,6 +20,7 @@ import json
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
+from env_flags import test_mode_enabled
 from services.path_service import PathService
 from security import assert_path_within_bounds, validate_relative_path, PathTraversalError
 
@@ -336,6 +337,19 @@ class RenameService:
                         result['message'] = 'Target file already exists'
                         result['error'] = f"Target file already exists: {local_new_path}"
                         log_msg = f"❌ Target exists: {result['new_name']}"
+                        print(f"   {log_msg}")
+                        operation_logs.append(log_msg)
+                    elif test_mode_enabled():
+                        # Renaming is a real, irreversible change to someone's
+                        # media library, so it is gated like every other write.
+                        # Reported as a success, the way TEST_MODE reports a
+                        # skipped delete, so the whole webhook flow can still be
+                        # exercised end to end.
+                        result['status'] = 'success'
+                        result['message'] = 'Renamed successfully (dry run)'
+                        result['error'] = None
+                        log_msg = (f"🧪 [DRY-RUN] Would rename: {result['previous_name']} "
+                                   f"→ {result['new_name']}")
                         print(f"   {log_msg}")
                         operation_logs.append(log_msg)
                     else:
