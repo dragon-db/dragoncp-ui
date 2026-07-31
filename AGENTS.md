@@ -80,3 +80,19 @@
 - Do not add any AI/Claude attribution to commit messages, PR descriptions, or code comments.
 - No `Co-Authored-By`, no "Generated with Claude Code", no similar attribution lines.
 - This applies across all projects.
+
+## Commit and PR Rules
+
+- **Keep commit messages short.** One line for the subject, then at most 2-3
+  lines or 1-5 bullet points saying what is covered. Nothing more.
+- Reasoning, background, measurements and design notes belong in `docs/` or
+  `TASKS.md` — not in the commit. There is already a place for them.
+- **Never put real media titles in anything that leaves this machine.** Commit
+  messages, PR titles and descriptions, code comments, docs, tests and test
+  fixtures are all public. The library's contents are private.
+- Use synthetic stand-ins that keep the shape being demonstrated: `Example
+  Show - S01E01 - ...`, `A.B.C.` for a dotted name, `Alpha - Bravo, Charlie of
+  the Delta` for a title that itself contains " - ". Never a real series,
+  anime, or film name, and never a real episode title.
+- The same goes for absolute paths under the user's home directory, hostnames
+  and IPs.

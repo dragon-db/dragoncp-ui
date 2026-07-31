@@ -4,7 +4,7 @@
  * Sonarr and Radarr write a predictable shape, and the library holds ~4,300
  * files in it:
  *
- *   Series - S01E03 - Power Broker [WEBRip-1080p][TAoE-Dragon DB].mkv
+ *   Series - S01E03 - Third Episode [WEBRip-1080p][TAoE-Dragon DB].mkv
  *   Series (2025) - S02E04 - 016 - The Title [Anime Dual-Audio WEBDL-1080p][JA+EN][VARYG-Dragon DB].mkv
  *   Title (2025) WEBDL-1080p [HI+ML] [ViSTA-Dragon DB].mkv
  *
@@ -14,7 +14,7 @@
  *    middle and the format is at the very end, so a name that truncates loses
  *    the format entirely. Pulling the format out means it survives.
  * 2. **The title slot is not always a title.** 48 files in the library are
- *    named `Money Heist - S01E01 - 1080p x265.mkv`, where the slot holds
+ *    named `Example Show - S01E01 - 1080p x265.mkv`, where the slot holds
  *    quality instead. Printing that as a title makes twenty-two episodes look
  *    identical. It is recognised and reported as format, not as a name.
  */

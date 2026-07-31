@@ -208,7 +208,7 @@ class ExploreStore:
         Matched on the backup's `folder_name`, which is the series folder the
         transfer ran against — NOT on `context_series_title`. That column is
         parsed from the filename by splitting at the first " - ", so a series
-        called "Re - ZERO, Starting Life in Another World" is stored as "Re" and
+        called "Alpha - Bravo, Charlie of the Delta" is stored as "Alpha" and
         would never match itself.
 
         Narrowing to a season uses each file's own `context_season`, because one

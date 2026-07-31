@@ -17,12 +17,12 @@ The rules here were derived from the real library, not from a spec. Four things
 in that library would break a naive parser:
 
   * the series title sometimes carries the year and sometimes does not
-      C.I.D. - S02E03 - Body In The Red Suitcase [WEBDL-1080p][DUS-Dragon DB].mkv
-      Dark Matter (2024) - S01E03 - The Box [WEBDL-1080p][HONE].mkv
+      A.B.C. - S02E03 - An Episode Title [WEBDL-1080p][DUS-Dragon DB].mkv
+      Another Series (2024) - S01E03 - A Third Episode [WEBDL-1080p][HONE].mkv
     -> never parse the title; anchor on the SxxExx code.
 
   * anime adds an absolute number after the code
-      DARLING in the FRANXX (2018) - S01E24 - 024 - Never Let Me Go [...].mkv
+      Example Anime (2018) - S01E24 - 024 - Another Episode Title [...].mkv
     -> the code still leads, the absolute number is extra.
 
   * season folders are not consistently padded ("Season 01" vs "Season 1"),
@@ -30,7 +30,7 @@ in that library would break a naive parser:
     -> compare season *numbers*, never folder strings.
 
   * some files predate the current naming
-      Money Heist - S01E15 - 1080p x265.mkv
+      Example Show - S01E15 - 1080p x265.mkv
     -> the code anchor still works, which is why we anchor on it.
 """
 

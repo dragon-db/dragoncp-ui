@@ -25,7 +25,7 @@ from services.explore.identity import (
 class SeasonFolderTests(unittest.TestCase):
     def test_padded_and_unpadded_are_the_same_season(self):
         # Both spellings exist in the library; matching on the string would
-        # leave "Money Heist/Season 1" permanently unpaired.
+        # leave "Example Show/Season 1" permanently unpaired.
         self.assertEqual(season_number_from_folder('Season 01'), 1)
         self.assertEqual(season_number_from_folder('Season 1'), 1)
         self.assertEqual(season_number_from_folder('season 2'), 2)
@@ -44,29 +44,29 @@ class SeasonFolderTests(unittest.TestCase):
 class EpisodeKeyTests(unittest.TestCase):
     def test_tv_with_and_without_year_in_title(self):
         self.assertEqual(
-            parse_episode_keys('C.I.D. - S02E03 - Body In The Red Suitcase [WEBDL-1080p][DUS-Dragon DB].mkv'),
+            parse_episode_keys('A.B.C. - S02E03 - An Episode Title [WEBDL-1080p][DUS-Dragon DB].mkv'),
             (EpisodeKey(2, 3),),
         )
         self.assertEqual(
-            parse_episode_keys('Dark Matter (2024) - S01E03 - The Box [WEBDL-1080p][HONE].mkv'),
+            parse_episode_keys('Another Series (2024) - S01E03 - A Third Episode [WEBDL-1080p][HONE].mkv'),
             (EpisodeKey(1, 3),),
         )
 
     def test_anime_absolute_number_is_not_a_second_episode(self):
         # "- S01E24 - 024 -" must be one episode, not S01E24 plus S01E024.
-        name = ('DARLING in the FRANXX (2018) - S01E24 - 024 - Never Let Me Go '
+        name = ('Example Anime (2018) - S01E24 - 024 - Another Episode Title '
                 '[Anime Dual-Audio Bluray-1080p][JA+EN][Chotab-Dragon DB].mkv')
         self.assertEqual(parse_episode_keys(name), (EpisodeKey(1, 24),))
         self.assertEqual(parse_absolute_number(name), 24)
 
     def test_high_season_and_absolute_number(self):
-        name = 'Bleach (2004) - S17E22 - 388 - MARCHING OUT THE ZOMBIES [Anime].mkv'
+        name = 'Long Anime (2004) - S17E22 - 388 - AN EPISODE IN CAPS [Anime].mkv'
         self.assertEqual(parse_episode_keys(name), (EpisodeKey(17, 22),))
         self.assertEqual(parse_absolute_number(name), 388)
 
     def test_legacy_name_without_sonarr_tags(self):
         self.assertEqual(
-            parse_episode_keys('Money Heist - S01E15 - 1080p x265.mkv'),
+            parse_episode_keys('Example Show - S01E15 - 1080p x265.mkv'),
             (EpisodeKey(1, 15),),
         )
 
@@ -89,12 +89,12 @@ class EpisodeKeyTests(unittest.TestCase):
 
     def test_movie_has_no_episode_identity(self):
         self.assertEqual(
-            parse_episode_keys('How to Train Your Dragon (2025) Bluray-1080p [PSA-Dragon DB].mkv'),
+            parse_episode_keys('A Movie (2025) Bluray-1080p [PSA-Dragon DB].mkv'),
             (),
         )
 
     def test_v2_release_tag_does_not_confuse_the_parser(self):
-        name = ('Re - ZERO, Starting Life in Another World (2016) - S01E16 - 016 - '
+        name = ('Alpha - Bravo, Charlie of the Delta (2016) - S01E16 - 016 - '
                 'The Greed of a Pig [v2 (anime) Bluray-1080p v2][EN+JA][SCY-Dragon DB].mkv')
         self.assertEqual(parse_episode_keys(name), (EpisodeKey(1, 16),))
 

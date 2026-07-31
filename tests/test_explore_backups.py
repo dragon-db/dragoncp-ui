@@ -5,8 +5,8 @@ Scoping backups to the series and season you are looking at.
 Two traps here, both from real data in the production library:
 
   * `context_series_title` is parsed by splitting the filename at the first
-    " - ", so "Re - ZERO, Starting Life in Another World (2016)" is stored as
-    "Re". Matching on it would hide that series' backups from itself.
+    " - ", so "Alpha - Bravo, Charlie of the Delta (2016)" is stored as
+    "Alpha". Matching on it would hide that series' backups from itself.
   * `context_season` and `context_episode` are stored zero-padded as TEXT
     ('03', not 3), so comparing them to a season number needs a conversion.
 """
@@ -76,20 +76,20 @@ class BackupScopeTests(unittest.TestCase):
         self.store = ExploreStore(self.db)
 
     def test_a_series_whose_title_the_parser_mangles_still_finds_its_backups(self):
-        # The context columns say "Re"; the folder says the real name.
-        self.db.add_backup('b1', 'Re - ZERO, Starting Life in Another World (2016)',
+        # The context columns say "Alpha"; the folder says the real name.
+        self.db.add_backup('b1', 'Alpha - Bravo, Charlie of the Delta (2016)',
                            season_name='Season 04')
-        self.db.add_file('b1', 'Re - ZERO ... - S04E04 - 070.mkv', season='04', episode='04')
+        self.db.add_file('b1', 'Alpha - Bravo ... - S04E04 - 070.mkv', season='04', episode='04')
 
-        runs = self.store.backups('anime', 'Re - ZERO, Starting Life in Another World (2016)')
+        runs = self.store.backups('anime', 'Alpha - Bravo, Charlie of the Delta (2016)')
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]['files'][0]['code'], 'S04E04')
 
     def test_another_series_backups_are_not_shown(self):
-        self.db.add_backup('b1', 'Dr. STONE (2019)', season_name='Season 04')
-        self.db.add_file('b1', 'Dr. STONE - S04E29.mkv', season='04', episode='29')
+        self.db.add_backup('b1', 'Other Show (2019)', season_name='Season 04')
+        self.db.add_file('b1', 'Other Show - S04E29.mkv', season='04', episode='29')
 
-        self.assertEqual(self.store.backups('anime', 'Oshi no Ko (2023)'), [])
+        self.assertEqual(self.store.backups('anime', 'Another Show (2023)'), [])
 
     def test_the_same_folder_in_another_library_is_not_shown(self):
         self.db.add_backup('b1', 'Show', media_type='anime')

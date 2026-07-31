@@ -88,25 +88,25 @@ I did not have to guess — I read your library. Everything is Sonarr-renamed an
 every file carries the `S01E07` anchor:
 
 ```
-TV     C.I.D. - S02E03 - Body In The Red Suitcase [WEBDL-1080p][DUS-Dragon DB].mkv
-TV     Dark Matter (2024) - S01E03 - The Box [WEBDL-1080p][HONE].mkv
-Anime  DARLING in the FRANXX (2018) - S01E24 - 024 - Never Let Me Go [Anime Dual-Audio Bluray-1080p][JA+EN][Chotab-Dragon DB].mkv
-Anime  Bleach (2004) - S17E22 - 388 - MARCHING OUT THE ZOMBIES [...].mkv
-Movie  How to Train Your Dragon (2025) Bluray-1080p [PSA-Dragon DB].mkv
+TV     A.B.C. - S02E03 - An Episode Title [WEBDL-1080p][DUS-Dragon DB].mkv
+TV     Another Series (2024) - S01E03 - A Third Episode [WEBDL-1080p][HONE].mkv
+Anime  Example Anime (2018) - S01E24 - 024 - Another Episode Title [Anime Dual-Audio Bluray-1080p][JA+EN][Chotab-Dragon DB].mkv
+Anime  Long Anime (2004) - S17E22 - 388 - AN EPISODE IN CAPS [...].mkv
+Movie  A Movie (2025) Bluray-1080p [PSA-Dragon DB].mkv
 ```
 
 Four things that came out of the real files and would have caused bugs:
 
 1. **The season/episode code is the only reliable anchor.** The series title
-   sometimes carries the year (`Dark Matter (2024) - S01E03`) and sometimes not
-   (`C.I.D. - S02E03`). Anime adds an absolute number (`- 024 -`) after the code.
+   sometimes carries the year (`Another Series (2024) - S01E03`) and sometimes not
+   (`A.B.C. - S02E03`). Anime adds an absolute number (`- 024 -`) after the code.
    Never parse the title; parse `S(\d+)E(\d+)`.
 2. **Season folders are not consistently padded.** Most are `Season 01`, but
-   `Money Heist/Season 1` exists. Matching remote and local season folders by
+   `Example Show/Season 1` exists. Matching remote and local season folders by
    *string* would fail there. We match on the season **number**.
 3. **`Specials` folders exist** — that is season 0, and it has to be handled or
    specials will read as an unmatched folder forever.
-4. **Some files predate the current naming** (`Money Heist - S01E15 - 1080p
+4. **Some files predate the current naming** (`Example Show - S01E15 - 1080p
    x265.mkv`). The code anchor still works, which is why we anchor on it.
 
 Your library right now: 4206 `.mkv`, 102 `.mp4` — and 1920 `.nfo`, 616 `.jpg`,

@@ -133,7 +133,7 @@ Sonarr and Radarr write a predictable shape, and the library holds ~4,300 files
 in it:
 
 ```
-Series - S01E03 - Power Broker [WEBRip-1080p][TAoE-Dragon DB].mkv
+Series - S01E03 - Third Episode [WEBRip-1080p][TAoE-Dragon DB].mkv
 Series (2025) - S02E04 - 016 - The Title [Anime Dual-Audio WEBDL-1080p][JA+EN][VARYG-Dragon DB].mkv
 Title (2025) WEBDL-1080p [HI+ML] [ViSTA-Dragon DB].mkv
 ```
@@ -156,12 +156,12 @@ the point is to fit more on screen, which is what the density switch is for. On
 a wide window a name fits on one line and rows keep their normal height.
 
 **The title slot is not always a title.** 48 files are named
-`Money Heist - S01E01 - 1080p x265.mkv`, where the slot holds quality. Printing
+`Example Show - S01E01 - 1080p x265.mkv`, where the slot holds quality. Printing
 that made twenty-two episodes read identically and look broken. Those rows now
 show an em dash for the title and `1080p` `x265` as format, which is what the
 filename actually says.
 
-The distinction is narrow on purpose: `Lucifer - S01E01 - Pilot Bluray-1080p.mkv`
+The distinction is narrow on purpose: `Sample Series - S01E01 - Pilot Bluray-1080p.mkv`
 *does* have a title. The quality is lifted out of the slot and `Pilot` is kept —
 an earlier attempt discarded the whole slot and lost real titles with it.
 
@@ -226,7 +226,7 @@ replaced; the Backups page already owns that, and the Restore button links to it
 Matched on the backup's **`folder_name`**, which is the series folder the
 transfer ran against. Deliberately **not** on `context_series_title`: that column
 is parsed by splitting the filename at the first `" - "`, so the production
-library stores "Re - ZERO, Starting Life in Another World (2016)" as just `Re`,
+library stores "Alpha - Bravo, Charlie of the Delta (2016)" as just `Re`,
 and matching on it would hide that series' backups from itself.
 
 Narrowing to a season uses each **file's own** `context_season`, not the backup's
@@ -379,7 +379,7 @@ with the plan, scoping backups to a series and season, an end-to-end run with th
 ssh boundary faked, and the HTTP layer.
 
 The backup scoping was additionally checked against the 160 real backups in the
-production database — including "Re - ZERO", the series whose stored context
+production database — including "Alpha - Bravo", the series whose stored context
 title is wrong.
 
 ## Related

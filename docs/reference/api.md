@@ -1995,7 +1995,7 @@ Output JSON (abridged):
   "stale": false,
   "series": [
     {
-      "name": "The Boys (2019)",
+      "name": "Example Series (2019)",
       "status": "PARTIAL_SYNC",
       "season_count": 5,
       "exists_locally": true,
@@ -2030,7 +2030,7 @@ Output JSON (abridged):
 {
   "status": "success",
   "season": {
-    "series": "The Boys (2019)",
+    "series": "Example Series (2019)",
     "season": 5,
     "name": "Season 05",
     "status": "PARTIAL_SYNC",
@@ -2042,7 +2042,7 @@ Output JSON (abridged):
         "season": 5,
         "episode": 6,
         "renamed": false,
-        "remote_name": "The Boys - S05E06 - ... .mkv",
+        "remote_name": "Example Series - S05E06 - ... .mkv",
         "remote_size": 2051014656,
         "local_name": null,
         "local_size": null
@@ -2080,7 +2080,7 @@ Output JSON (abridged):
     {
       "backup_id": "transfer_1756549539",
       "media_type": "tvshows",
-      "folder_name": "The Boys (2019)",
+      "folder_name": "Example Series (2019)",
       "season_name": "Season 05",
       "status": "ready",
       "created_at": "2026-05-20T09:23:11.000000Z",
@@ -2089,8 +2089,8 @@ Output JSON (abridged):
       "shown_size": 2165283996,
       "files": [
         {
-          "relative_path": "The Boys - S05E05 - One-Shots ... .mkv",
-          "original_path": "/mnt/media/tv_shows/The Boys (2019)/Season 05/...",
+          "relative_path": "Example Series - S05E05 - Some Episode ... .mkv",
+          "original_path": "/mnt/media/tv_shows/Example Series (2019)/Season 05/...",
           "file_size": 2165283996,
           "season": 5,
           "episode": 5,
@@ -2119,7 +2119,7 @@ Input JSON:
 {
   "media_type": "tvshows",
   "operation": "sync_season",
-  "folder": "The Boys (2019)",
+  "folder": "Example Series (2019)",
   "season": "Season 05",
   "seasons": ["Season 04", "Season 05"],
   "codes": ["S05E06"],
@@ -2226,7 +2226,7 @@ Output JSON:
   "transfer_ids": ["explore_4b91cd77a0e2", "explore_9f21ab0c73de", "explore_2c04e8b1a9f7"],
   "transfer_id": null,
   "operation": "sync_series",
-  "series": "The Boys (2019)"
+  "series": "Example Series (2019)"
 }
 ```
 

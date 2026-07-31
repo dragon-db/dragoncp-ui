@@ -132,7 +132,7 @@ The directory is walked exactly as finalization walks it, `created_at` is taken 
   confirmation live here — and links across instead. Matching is on the backup's
   `folder_name` and each **file's** own `context_season`, never on
   `context_series_title`: that column is parsed by splitting the filename at the
-  first `" - "`, so "Re - ZERO, Starting Life in Another World (2016)" is stored
+  first `" - "`, so "Alpha - Bravo, Charlie of the Delta (2016)" is stored
   as `Re`. See [../explore/README.md](../explore/README.md).
 
 - **An Explore run that only removes files still produces a backup record.** It

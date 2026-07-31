@@ -119,9 +119,9 @@ Notes:
   becomes a warning.
 - 2026-07-31 (claude): backups are matched to a series by the backup's
   `folder_name`, NEVER by `context_series_title`. That column is parsed by
-  splitting the filename at the first " - ", so prod stores "Re - ZERO, Starting
-  Life in Another World (2016)" as "Re" — matching on it hides a series' backups
-  from itself. Season narrowing uses each FILE's `context_season` (stored padded
+  splitting the filename at the first " - ", so a series whose own name contains
+  " - " is stored as just its first word — matching on it hides that series'
+  backups from itself. Season narrowing uses each FILE's `context_season` (stored padded
   and as text), because one series sync makes one backup spanning many seasons.
   Verified against the 160 real backups in the prod database, read-only.
 - 2026-07-31 (claude): the plan dialog never clipped its own list — `ScrollArea`
@@ -158,7 +158,7 @@ Steps:
 - [ ] Same treatment for the Radarr/movie path, which has the identical shape
 
 Notes:
-- 2026-07-30 (claude): found in prod on "The Falcon and The Winter Soldier"
+- 2026-07-30 (claude): found in prod on "Example Series"
   S01 — 7 transfers, ONE distinct dest path. The first moved 7.14 GB; the other
   six were serialised on the path conflict and moved 0 bytes each (rsync
   reported `speedup is 13,133,675`). No data damage, just six junk rows. Live

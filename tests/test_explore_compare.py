@@ -35,10 +35,10 @@ class SeasonPairingTests(unittest.TestCase):
         # "Season 01" remote against "Season 1" local is one season, not two.
         diff = build(
             'tvshows',
-            [(ep('Money Heist', 'Season 01', 'S01E15'), 2 * GB, 100)],
-            [(ep('Money Heist', 'Season 1', 'S01E15'), 2 * GB, 90)],
+            [(ep('Example Show', 'Season 01', 'S01E15'), 2 * GB, 100)],
+            [(ep('Example Show', 'Season 1', 'S01E15'), 2 * GB, 90)],
         )
-        series = diff.find('Money Heist')
+        series = diff.find('Example Show')
         self.assertEqual(len(series.seasons), 1)
         self.assertEqual(series.status, SYNCED)
         self.assertEqual(series.seasons[0].remote_folder, 'Season 01')
@@ -150,9 +150,9 @@ class MovieTests(unittest.TestCase):
     def test_movie_main_file_swap_is_an_upgrade(self):
         season = build(
             'movies',
-            [('Superman (2025)/Superman (2025) Bluray-2160p [NEW-Dragon DB].mkv', 20 * GB, 200)],
-            [('Superman (2025)/Superman (2025) Bluray-1080p [PSA-Dragon DB].mkv', 8 * GB, 100)],
-        ).find('Superman (2025)').seasons[0]
+            [('Example Movie (2025)/Example Movie (2025) Bluray-2160p [NEW-Dragon DB].mkv', 20 * GB, 200)],
+            [('Example Movie (2025)/Example Movie (2025) Bluray-1080p [PSA-Dragon DB].mkv', 8 * GB, 100)],
+        ).find('Example Movie (2025)').seasons[0]
 
         self.assertEqual(season.counts.upgraded, 1)
         self.assertEqual(season.counts.missing, 0)
@@ -161,10 +161,10 @@ class MovieTests(unittest.TestCase):
     def test_missing_movie_is_a_download(self):
         diff = build(
             'movies',
-            [('Thrash (2026)/Thrash (2026) WEBDL-1080p [FLUX-Dragon DB].mkv', 6 * GB, 100)],
+            [('Sample Movie (2026)/Sample Movie (2026) WEBDL-1080p [FLUX-Dragon DB].mkv', 6 * GB, 100)],
             [],
         )
-        series = diff.find('Thrash (2026)')
+        series = diff.find('Sample Movie (2026)')
         self.assertEqual(series.status, OUT_OF_SYNC)
         self.assertEqual(series.counts.missing, 1)
         self.assertFalse(series.exists_locally)
@@ -174,12 +174,12 @@ class MisplacedTests(unittest.TestCase):
     def test_file_nested_inside_a_directory_named_after_it_is_flagged(self):
         # Exactly the damage the old single-episode download left behind:
         # "Season 01/ep.mkv/ep.mkv", invisible to a media server.
-        name = 'Shiki (2010) - S01E18 - 018 - Eighteenth Night [Bluray-1080p][X-Dragon DB].mkv'
+        name = 'Short Anime (2010) - S01E18 - 018 - Eighteenth Night [Bluray-1080p][X-Dragon DB].mkv'
         season = build(
             'anime',
-            [(f'Shiki (2010)/Season 01/{name}', 2 * GB, 100)],
-            [(f'Shiki (2010)/Season 01/{name}/{name}', 2 * GB, 100)],
-        ).find('Shiki (2010)').seasons[0]
+            [(f'Short Anime (2010)/Season 01/{name}', 2 * GB, 100)],
+            [(f'Short Anime (2010)/Season 01/{name}/{name}', 2 * GB, 100)],
+        ).find('Short Anime (2010)').seasons[0]
 
         self.assertEqual(len(season.misplaced), 1)
         self.assertTrue(season.misplaced[0].endswith(f'{name}/{name}'))
