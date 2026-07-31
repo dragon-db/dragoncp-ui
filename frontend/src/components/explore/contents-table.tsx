@@ -261,10 +261,13 @@ export function EpisodeRows({
                 onToggle={() => onToggle(episode.code, index, false)}
               />
               <Td className={cn(NAME_COL, NAME_CELL)}>
-                <div className="flex min-w-0 items-start gap-2">
+                {/* Centred, not top-aligned: the tick box in the gutter sits in
+                    the middle of the row, so an icon pinned to the first line of
+                    a wrapped name left the two visibly out of step. */}
+                <div className="flex min-w-0 items-center gap-2">
                   <IconVideo
                     className={cn(
-                      "mt-px size-4 flex-none",
+                      "size-4 flex-none",
                       isSelected ? "text-brand-hover" : "text-muted-foreground"
                     )}
                   />
