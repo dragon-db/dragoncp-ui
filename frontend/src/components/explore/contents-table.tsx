@@ -5,7 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { EpisodeLabel, StatusBadge } from "./explore-bits";
 import { formatBytes } from "@/lib/explore-format";
-import { parseFilename } from "@/lib/media-filename";
+import { EPISODE_CODE, containerOf, parseFilename } from "@/lib/media-filename";
 import type { ExploreEpisode, ExploreSeason } from "@/lib/explore-types";
 
 /**
@@ -30,6 +30,18 @@ export type Density = "comfortable" | "compact";
 const SELECT_COL = "w-8 overflow-visible pl-2 sm:w-9 sm:pl-3";
 /** The name sits flush against that gutter on a phone, indented on a desktop. */
 const NAME_COL = "pl-0 sm:pl-3";
+/**
+ * The file-name cell, which is the one place a row is allowed to grow.
+ *
+ * Every other cell is a fixed-height single line. This one carries names that
+ * run past a hundred characters, so it drops the table's `whitespace-nowrap`
+ * and its fixed height and lets the row take the space it needs. Compact rows
+ * put both back — see `FileName`.
+ */
+const NAME_CELL =
+  "h-auto min-h-[38px] overflow-visible py-2 whitespace-normal " +
+  "group-data-[density=compact]/row:h-[27px] group-data-[density=compact]/row:py-0 " +
+  "group-data-[density=compact]/row:whitespace-nowrap";
 
 /**
  * Base UI puts the tick box's hidden `input` beside it rather than inside it,
@@ -248,20 +260,15 @@ export function EpisodeRows({
                 label={`Select ${episode.code}`}
                 onToggle={() => onToggle(episode.code, index, false)}
               />
-              <Td className={NAME_COL}>
-                <div className="flex min-w-0 items-center gap-2">
+              <Td className={cn(NAME_COL, NAME_CELL)}>
+                <div className="flex min-w-0 items-start gap-2">
                   <IconVideo
                     className={cn(
-                      "size-4 flex-none",
+                      "mt-px size-4 flex-none",
                       isSelected ? "text-brand-hover" : "text-muted-foreground"
                     )}
                   />
-                  {episode.episode !== null && (
-                    <span className="flex-none font-mono text-[10.5px] font-semibold text-brand-hover">
-                      {episode.code}
-                    </span>
-                  )}
-                  <FileName episode={episode} />
+                  <FileName episode={episode} density={density} />
                   {episode.renamed && (
                     <span className="flex-none font-mono text-[9.5px] text-muted-foreground">
                       renamed
@@ -289,28 +296,46 @@ export function EpisodeRows({
 /**
  * A file's name and what it is.
  *
- * The format lives at the very end of a Sonarr filename, which is exactly what
- * a truncating cell throws away — so it is lifted out and shown separately,
- * where it survives. The full filename is on the element itself, one hover
- * away, because nothing here should be the only place a fact exists.
+ * The whole filename is shown, with the episode code picked out inside it — the
+ * name is the thing being looked at, and abbreviating it hid which of two
+ * copies of an episode a row referred to.
  *
- * Some files carry no title at all: `Money Heist - S01E01 - 1080p x265.mkv`
- * puts the quality where the title goes. Printing that would make twenty-two
- * episodes read identically, so the slot shows an em dash and the quality moves
- * to where quality belongs.
+ * The format is pulled out into chips beside it. A Sonarr filename carries the
+ * container, quality, languages and group at its very end, which is precisely
+ * what a truncating cell cuts off, so the facts most needed to tell two files
+ * apart were the ones guaranteed to disappear.
  */
-function FileName({ episode }: { episode: ExploreEpisode }) {
+function FileName({ episode, density }: { episode: ExploreEpisode; density: Density }) {
   const name = episode.remote_name ?? episode.local_name ?? "";
   const parsed = parseFilename(name, episode.episode === null);
+  const container = containerOf(name);
+  const chips = container ? [container, ...parsed.format] : parsed.format;
 
   return (
     <>
-      <span className="min-w-0 flex-1 truncate text-foreground" title={name}>
-        {parsed.title || <span className="text-muted-foreground">—</span>}
+      {/* These names run to a hundred characters and past two hundred at the
+          extreme, and the pane holding them is under three hundred pixels
+          wide. On one line the episode code itself was being cut off, so
+          comfortable rows wrap and show the name whole, however many lines it
+          takes. Compact keeps it to one line for when the point is to fit more
+          rows on screen — that is what the density switch is for.
+
+          Three lines is the ceiling. On a wide window a name fits on one and
+          rows stay at their normal height; the wrap only appears when the pane
+          is genuinely too narrow, and the cap stops one long name turning a
+          row into a paragraph. The whole name is on the element either way. */}
+      <span
+        className={cn(
+          "min-w-0 flex-1 text-foreground",
+          density === "compact" ? "truncate" : "line-clamp-3 break-words"
+        )}
+        title={name}
+      >
+        <CodeInName name={name} />
       </span>
-      {parsed.format.length > 0 && (
+      {chips.length > 0 && (
         <span className="hidden flex-none items-center gap-1 md:inline-flex">
-          {parsed.format.map((part) => (
+          {chips.map((part) => (
             <span
               key={part}
               className="rounded border border-border/70 px-1 py-px font-mono text-[9.5px] leading-[13px] text-foreground-3"
@@ -320,6 +345,19 @@ function FileName({ episode }: { episode: ExploreEpisode }) {
           ))}
         </span>
       )}
+    </>
+  );
+}
+
+/** The filename, with `S01E02` in the accent colour so it can be found fast. */
+function CodeInName({ name }: { name: string }) {
+  const match = name.match(EPISODE_CODE);
+  if (!match || match.index === undefined) return <>{name}</>;
+  return (
+    <>
+      {name.slice(0, match.index)}
+      <span className="font-semibold text-brand-hover">{match[0]}</span>
+      {name.slice(match.index + match[0].length)}
     </>
   );
 }

@@ -119,10 +119,20 @@ Title (2025) WEBDL-1080p [HI+ML] [ViSTA-Dragon DB].mkv
 
 Two things follow, and both shape how a row reads:
 
-**The interesting parts sit at both ends.** The title is in the middle and the
-format is at the very end, so a name that truncates loses the format entirely.
-It is lifted out and shown as its own chips, where truncation cannot reach it.
-The full filename is on the element, one hover away.
+**The whole filename is shown**, with the episode code picked out inside it.
+Abbreviating it hid which of two copies of an episode a row referred to.
+
+**The interesting parts sit at both ends.** The container, quality, languages
+and group are at the very end, which is the first thing a truncating cell loses
+— so exactly the facts needed to tell two files apart were the ones guaranteed
+to disappear. They are lifted out into chips beside the name, where truncation
+cannot reach them.
+
+Names run to 102 characters at the median and 248 at the extreme, so on a narrow
+pane one line is not enough — the episode code itself was being cut off.
+Comfortable rows wrap, up to three lines; compact rows keep one line for when
+the point is to fit more on screen, which is what the density switch is for. On
+a wide window a name fits on one line and rows keep their normal height.
 
 **The title slot is not always a title.** 48 files are named
 `Money Heist - S01E01 - 1080p x265.mkv`, where the slot holds quality. Printing

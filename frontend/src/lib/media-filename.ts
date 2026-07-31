@@ -43,6 +43,21 @@ export interface ParsedFilename {
   format: string[];
 }
 
+/**
+ * The container, from the extension: `MKV`, `MP4`, `SRT`.
+ *
+ * Worth its own chip because it sits at the very end of the name, which is the
+ * first thing a truncating cell loses — and because it is the one fact about a
+ * file that never appears anywhere else on the row.
+ */
+export function containerOf(name: string): string | null {
+  const match = name.match(/\.([A-Za-z0-9]{2,4})$/);
+  return match ? match[1].toUpperCase() : null;
+}
+
+/** The episode code inside a filename, so it can be picked out when shown. */
+export const EPISODE_CODE = /S\d{1,3}E\d{1,4}/i;
+
 /** Strips the extension, and a `.eng` / `.forced` tag from a subtitle. */
 function stem(name: string): string {
   let out = name.replace(/\.[^.]+$/, "");
