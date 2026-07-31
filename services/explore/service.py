@@ -283,7 +283,12 @@ class ExploreService:
 
     def dry_run(self, plan_id: str) -> Dict:
         """
-        Run the plan's own rsync command with `--dry-run` and report it back.
+        Run the plan's own rsync commands with `--dry-run` and report them back.
+
+        A plan is carried out as one transfer per season, so a series plan is
+        rehearsed the same way — rsync is asked once per season, against that
+        season's own pair of folders. The answers are merged into one report,
+        because the plan is one review however many runs it becomes.
 
         The plan stays executable afterwards: rehearsing an operation must not
         be the thing that stops you performing it. Removals and backups never
@@ -295,48 +300,86 @@ class ExploreService:
             raise ExploreError(
                 'That plan has expired or was already used. Re-check and try again.', 409)
 
-        spec = record['exec']
+        units = record['exec'].get('units') or []
         report = dryrun.DryRunReport()
-        report.backups = [b for b in spec.get('backups', []) if b.get('action') == 'supersede']
-        report.removals = [b for b in spec.get('backups', []) if b.get('action') == 'remove']
+        # Several seasons can hold a file of the same name, so the season is
+        # kept on each path once there is more than one of them.
+        label_paths = len(units) > 1
+        tails: List[str] = []
+        ran_any = False
 
-        rels = spec.get('transfers', [])
-        if not rels:
+        transfer_service = getattr(self.coordinator, 'transfer_service', None)
+
+        for index, unit in enumerate(units):
+            backups = unit.get('backups', [])
+            season = unit.get('season_label') or ''
+            report.backups.extend(b for b in backups if b.get('action') == 'supersede')
+            report.removals.extend(b for b in backups if b.get('action') == 'remove')
+
+            rels = unit.get('transfers', [])
+            if not rels:
+                continue
+
+            if transfer_service is None or not hasattr(transfer_service, 'run_explore_dry_run'):
+                raise ExploreError('Dry run is not available on this server', 503)
+
+            files_from = self._files_from(plan_id, rels, index)
+            ok, exit_code, output, error = transfer_service.run_explore_dry_run(
+                unit['source_root'], unit['dest_root'], files_from,
+                unit.get('mode', 'sync'),
+            )
+            ran_any = True
+
+            # Reconcile each season against its own plan before merging: the
+            # file lists are relative to that season's folder, so comparing
+            # them across seasons would pair up unrelated names.
+            sizes = unit.get('sizes', {})
+            part = dryrun.DryRunReport(
+                ok=ok, exit_code=exit_code, error=error,
+                files=dryrun.parse(output),
+            )
+            if ok:
+                superseded = {b['rel']: int(sizes.get(b['rel'], 0))
+                              for b in backups
+                              if b.get('action') == 'supersede' and b.get('rel')}
+                dryrun.reconcile(
+                    part,
+                    planned={rel: int(sizes.get(rel, 0)) for rel in rels},
+                    superseded=superseded,
+                )
+            else:
+                report.ok = False
+                report.exit_code = exit_code or report.exit_code
+                report.error = '; '.join(x for x in (report.error, error) if x)
+
+            for file in part.files:
+                if label_paths and season:
+                    file.rel = f"{season}/{file.rel}"
+                report.files.append(file)
+            for warning in part.warnings:
+                report.warnings.append(f"{season}: {warning}" if label_paths and season else warning)
+
+            tail = dryrun.tail(output)
+            if tail:
+                tails.append(f"— {season} —\n{tail}" if label_paths and season else tail)
+
+        if not ran_any:
             # Removals only. There is nothing for rsync to be asked about, and
             # saying "rsync found nothing" would read as "nothing happens".
             report.ran = False
             report.warnings.append(
                 'No files would be transferred, so rsync was not run. '
                 'The local changes below are made by DragonCP itself.')
-            return self._dry_run_payload(record, report)
 
-        files_from = self._files_from(plan_id, rels)
-        transfer_service = getattr(self.coordinator, 'transfer_service', None)
-        if transfer_service is None or not hasattr(transfer_service, 'run_explore_dry_run'):
-            raise ExploreError('Dry run is not available on this server', 503)
-
-        ok, exit_code, output, error = transfer_service.run_explore_dry_run(
-            spec['source_root'], spec['dest_root'], files_from, spec.get('mode', 'sync'))
-
-        report.ok = ok
-        report.exit_code = exit_code
-        report.error = error
-        report.files = dryrun.parse(output)
-        report.raw_tail = dryrun.tail(output)
-
-        if ok:
-            sizes = spec.get('sizes', {})
-            dryrun.reconcile(
-                report,
-                planned={rel: int(sizes.get(rel, 0)) for rel in rels},
-                superseded={b['rel']: int(sizes.get(b['rel'], 0))
-                            for b in report.backups if b.get('rel')},
-            )
+        report.raw_tail = '\n\n'.join(tails)
         return self._dry_run_payload(record, report)
 
-    def _files_from(self, plan_id: str, rels: Sequence[str]) -> str:
+    def _files_from(self, plan_id: str, rels: Sequence[str], index: int = 0) -> str:
         """
-        Write the plan's file list somewhere rsync can read it.
+        Write one season's file list somewhere rsync can read it.
+
+        Numbered per season, because a series plan asks rsync once for each and
+        a shared name would have every run reading the last season's list.
 
         Separate from the executor's copy: a dry run must not leave anything
         behind that a later real run could pick up by accident.
@@ -344,7 +387,7 @@ class ExploreService:
         base = self.config.get('BACKUP_PATH') or '/tmp'
         work_dir = os.path.join(base, '.explore-plans', 'dryrun')
         os.makedirs(work_dir, exist_ok=True)
-        path = os.path.join(work_dir, f"{plan_id}.txt")
+        path = os.path.join(work_dir, f"{plan_id}-{index}.txt")
         with open(path, 'w', encoding='utf-8') as handle:
             for rel in rels:
                 if not validate_relative_path(rel):
@@ -359,8 +402,11 @@ class ExploreService:
             'operation': record['operation'],
             'series': record['series'],
             'season_label': record['season_label'],
-            'source_root': record['exec']['source_root'],
-            'dest_root': record['exec']['dest_root'],
+            # The plan's own roots describe its scope. The work happens against
+            # each season's pair of folders, which the units carry.
+            'source_root': record['plan'].get('source_root'),
+            'dest_root': record['plan'].get('dest_root'),
+            'seasons': [u.get('season_label') for u in record['exec'].get('units') or []],
             'report': report.to_dict(),
         }
 

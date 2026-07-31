@@ -435,5 +435,127 @@ class _FakePlan:
     def to_dict(self):
         return {}
 
+
+class FakeTransferService:
+    """Stands in for rsync. Records what it was asked, answers what it is told."""
+
+    def __init__(self, output='', ok=True, exit_code=0, error=None):
+        self.calls = []
+        self.output = output
+        self.ok = ok
+        self.exit_code = exit_code
+        self.error = error
+
+    def run_explore_dry_run(self, source_root, dest_root, files_from, mode, timeout=120):
+        with open(files_from, encoding='utf-8') as handle:
+            listed = [line.strip() for line in handle if line.strip()]
+        self.calls.append({'source_root': source_root, 'dest_root': dest_root,
+                           'mode': mode, 'files_from': files_from, 'listed': listed})
+        out = self.output(len(self.calls)) if callable(self.output) else self.output
+        return self.ok, self.exit_code, out, self.error
+
+
+class DryRunTests(unittest.TestCase):
+    """
+    A plan runs as one transfer per season, so it is rehearsed the same way —
+    rsync asked once per season, against that season's own pair of folders.
+    """
+
+    SERIES = 'Show'
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.local_root = os.path.join(self.tmp.name, 'tv_shows')
+        self.backup_root = os.path.join(self.tmp.name, 'backup')
+        os.makedirs(self.local_root)
+        os.makedirs(self.backup_root)
+        self.config = FakeConfig({
+            'TVSHOW_PATH': '/remote/TV Shows',
+            'TVSHOW_DEST_PATH': self.local_root,
+            'BACKUP_PATH': self.backup_root,
+        })
+        self.db = DatabaseManager(os.path.join(self.tmp.name, 'dryrun.db'))
+        self.coordinator = FakeCoordinator(self.backup_root)
+        self.rsync = FakeTransferService()
+        self.coordinator.transfer_service = self.rsync
+
+        remote = [
+            (ep(self.SERIES, 'Season 01', 'S01E01'), 10 * MB, 100),
+            (ep(self.SERIES, 'Season 02', 'S02E01'), 20 * MB, 100),
+        ]
+        self.service = ExploreService(self.config, self.db, self.coordinator,
+                                      FakeSSH(remote))
+
+    def _plan(self, operation, **kw):
+        return self.service.plan(media_type='tvshows', operation=operation,
+                                 folder=self.SERIES, **kw)['plan_id']
+
+    def test_a_series_plan_asks_rsync_once_per_season(self):
+        result = self.service.dry_run(self._plan('sync_series'))
+
+        self.assertEqual(len(self.rsync.calls), 2)
+        self.assertEqual([c['source_root'].split('/')[-1] for c in self.rsync.calls],
+                         ['Season 01', 'Season 02'])
+        self.assertTrue(result['report']['ok'])
+
+    def test_each_season_gets_its_own_file_list(self):
+        self.service.dry_run(self._plan('sync_series'))
+
+        lists = [c['files_from'] for c in self.rsync.calls]
+        self.assertEqual(len(set(lists)), 2, 'a shared name would reuse one season list')
+        for call in self.rsync.calls:
+            self.assertTrue(all('/' not in rel for rel in call['listed']),
+                            'paths are relative to the season folder')
+
+    def test_a_single_season_plan_asks_once(self):
+        self.service.dry_run(self._plan('sync_season', season_label='Season 01'))
+
+        self.assertEqual(len(self.rsync.calls), 1)
+        self.assertTrue(self.rsync.calls[0]['dest_root'].endswith('Season 01'))
+
+    def test_the_season_is_kept_on_each_path_when_there_is_more_than_one(self):
+        self.rsync.output = lambda n: f'>f+++++++++|100|file{n}.mkv'
+        result = self.service.dry_run(self._plan('sync_series'))
+
+        rels = [f['rel'] for f in result['report']['files']]
+        self.assertTrue(any(r.startswith('Season 01/') for r in rels), rels)
+        self.assertTrue(any(r.startswith('Season 02/') for r in rels), rels)
+
+    def test_one_season_failing_fails_the_whole_report(self):
+        self.rsync.ok = False
+        self.rsync.exit_code = 23
+        self.rsync.error = 'rsync exited with code 23'
+
+        report = self.service.dry_run(self._plan('sync_series'))['report']
+
+        self.assertFalse(report['ok'])
+        self.assertIn('23', report['error'])
+
+    def test_rehearsing_does_not_spend_the_plan(self):
+        plan_id = self._plan('sync_series')
+        self.service.dry_run(plan_id)
+        self.service.dry_run(plan_id)
+
+        self.assertEqual(len(self.rsync.calls), 4, 'both rehearsals ran')
+        self.assertIsNotNone(self.service.store.peek_plan(plan_id),
+                             'and the plan is still there to approve')
+
+    def test_a_removals_only_plan_never_reaches_rsync(self):
+        local = os.path.join(self.local_root, ep(self.SERIES, 'Season 03', 'S03E01'))
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        with open(local, 'wb') as handle:
+            handle.write(b'\0' * MB)
+
+        plan_id = self.service.plan(media_type='tvshows', operation='sync_season',
+                                    folder=self.SERIES, season_label='Season 03')['plan_id']
+        report = self.service.dry_run(plan_id)['report']
+
+        self.assertEqual(self.rsync.calls, [])
+        self.assertFalse(report['ran'])
+        self.assertIn('rsync was not run', ' '.join(report['warnings']))
+        self.assertEqual(len(report['removals']), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
