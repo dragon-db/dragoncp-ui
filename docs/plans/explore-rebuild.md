@@ -244,9 +244,20 @@ Out of sync. Never compared → Not checked. **A series' status is the roll-up o
 all its seasons**, not the newest one.
 
 **Size, not checksum.** Checksumming a season over SSH is minutes of remote CPU.
-Size plus episode identity catches every real case, since any re-encode changes
-size. A "verify this file with a checksum" action is available on a single file
-when you genuinely doubt a match.
+Size plus episode identity is a heuristic, and a good one: a re-encode almost
+always changes the byte count, so in practice it separates "same file" from
+"different file" reliably enough to drive the labels.
+
+It is not proof. Two different encodes can land on the same size, and a
+truncated or corrupt copy of the right length reads as a match. So `IN_SYNC`
+means "nothing here suggests these differ", not "these are identical". When you
+genuinely doubt a match, the way to settle it today is **Replace** on that file,
+which backs the local copy up and fetches the remote one again.
+
+> **Not built:** this document originally promised a "verify this file with a
+> checksum" action. There is no checksum verification anywhere in the codebase —
+> the transfer rsync even runs with `--no-checksum`. Treat it as an open idea,
+> not an available feature.
 
 **Cached and timestamped.** Results are stored, the UI reads them instantly and
 shows "checked 6 minutes ago", and Re-check forces a fresh pass. This is what

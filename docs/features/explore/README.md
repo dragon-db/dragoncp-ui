@@ -71,6 +71,16 @@ candidates. It does **not** use `rsync --delete` — the plan owns removals, whi
 is what makes the preview honest and keeps artwork and subtitles out of the
 danger zone.
 
+**A series-wide sync refuses when the two sides spell a season differently.**
+"Season 01" remotely and "Season 1" locally are the same season, and the
+comparison pairs them by number. But a series-wide run addresses every file
+relative to the *series* folder, so one rsync writes each file back at the path
+it read it from — which would create "Season 01" beside the "Season 1" you
+already have and split the season across two folders. Rather than do that
+quietly, the plan is refused (409) and names the season. Syncing that season on
+its own works: it roots itself at the local folder and copies bare filenames
+into it.
+
 **Ticking several seasons produces one plan, not one per season.** Paths hang off
 the series folder, so a single rsync covers them all — the same reason a webhook
 group syncs as one transfer rather than one per episode.
@@ -200,6 +210,13 @@ the media server is not something to guess at — see the plan's follow-ups.
 
 **One browse session is shared by everyone.** Unchanged from before, and a
 deliberate single-operator assumption.
+
+**A plan is only spent when it actually runs.** `execute` checks the safety
+verdict and the typed confirmation *before* claiming the plan, so a rejected
+request leaves it usable — mistyping the confirmation used to consume it, and
+the corrected retry then met "expired or already used". The claim itself is a
+single `UPDATE ... WHERE consumed = 0`, so two callers racing each other cannot
+both run the same destructive plan.
 
 **Rate limiting is per user and only on the expensive endpoints.** Twelve
 comparisons a minute; cached reads are unlimited.
