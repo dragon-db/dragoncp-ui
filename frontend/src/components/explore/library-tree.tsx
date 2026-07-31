@@ -38,6 +38,31 @@ interface LibraryTreeProps {
   emptyMessage: string;
 }
 
+/**
+ * What to count on a row.
+ *
+ * Normally that is what the remote holds, because the remote is what the local
+ * copy is measured against. When the remote holds nothing, counting it says
+ * "0 eps · —" about a series you have twenty-two episodes of — so those rows
+ * report your own copy instead, and say so.
+ */
+function tally(
+  counts: { remote_total: number; local_only: number },
+  bytes: {
+    remote_bytes: number;
+    local_bytes: number;
+  },
+  unit: string
+) {
+  if (counts.remote_total > 0) {
+    return { count: `${counts.remote_total} ${unit}`, size: bytes.remote_bytes };
+  }
+  if (counts.local_only > 0) {
+    return { count: `${counts.local_only} local`, size: bytes.local_bytes };
+  }
+  return { count: `0 ${unit}`, size: bytes.remote_bytes };
+}
+
 export function LibraryTree({
   className,
   flat = false,
@@ -174,19 +199,19 @@ export function LibraryTree({
                       <div className="flex items-baseline gap-2.5 font-mono text-[10px] text-foreground-3">
                         <span className="min-w-0 flex-1 truncate">
                           {flat ? (
-                            `${entry.counts.remote_total} file${entry.counts.remote_total === 1 ? "" : "s"}`
+                            tally(entry.counts, entry, "files").count
                           ) : (
                             <>
                               {entry.season_count} season{entry.season_count === 1 ? "" : "s"}
                               <span className="px-1 opacity-40">·</span>
-                              {entry.counts.remote_total} eps
+                              {tally(entry.counts, entry, "eps").count}
                             </>
                           )}
                           <span className="px-1 opacity-40">·</span>
                           {formatAge(entry.remote_mtime)}
                         </span>
                         <span className="flex-none text-foreground-2">
-                          {formatBytes(entry.remote_bytes)}
+                          {formatBytes(tally(entry.counts, entry, "eps").size)}
                         </span>
                       </div>
                     </div>
@@ -245,12 +270,12 @@ export function LibraryTree({
                                   </div>
                                   <div className="flex items-baseline gap-2.5 font-mono text-[10px] text-foreground-3">
                                     <span className="min-w-0 flex-1 truncate">
-                                      {season.counts.remote_total} eps
+                                      {tally(season.counts, season, "eps").count}
                                       <span className="px-1 opacity-40">·</span>
                                       {formatAge(season.remote_mtime)}
                                     </span>
                                     <span className="flex-none text-foreground-2">
-                                      {formatBytes(season.remote_bytes)}
+                                      {formatBytes(tally(season.counts, season, "eps").size)}
                                     </span>
                                   </div>
                                 </div>

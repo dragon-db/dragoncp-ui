@@ -1,10 +1,15 @@
-import { IconAlertTriangle, IconCheck, IconClock, IconStack2 } from "@tabler/icons-react";
+import { IconAlertTriangle, IconCheck, IconCloudOff, IconStack2 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 import type { ExploreCounts, ExploreLabel, ExploreStatus } from "@/lib/explore-types";
 
 /**
  * The shared vocabulary. Every badge and count on the Explore page comes from
  * a comparison label, so they are defined once here rather than per component.
+ *
+ * `NO_INFO` reads "Not on remote", not "Not checked". The comparison did run —
+ * it found the remote holds no episodes for this title, either because the
+ * folder is not there or because it is there and empty. "Not checked" said the
+ * opposite of what happened and sent people looking for a button to press.
  */
 
 const STATUS_META: Record<ExploreStatus, { label: string; tone: string; Icon: typeof IconCheck }> =
@@ -25,9 +30,9 @@ const STATUS_META: Record<ExploreStatus, { label: string; tone: string; Icon: ty
       Icon: IconStack2,
     },
     NO_INFO: {
-      label: "Not checked",
+      label: "Not on remote",
       tone: "border-transparent bg-transparent text-muted-foreground",
-      Icon: IconClock,
+      Icon: IconCloudOff,
     },
   };
 

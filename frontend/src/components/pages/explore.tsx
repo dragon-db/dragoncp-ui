@@ -57,6 +57,7 @@ import { CountChips, StatusBadge } from "@/components/explore/explore-bits";
 import { formatBytes, formatWhen } from "@/lib/explore-format";
 import type {
   ExploreBackupRun,
+  ExploreCounts,
   ExploreDryRunReport,
   ExplorePlan,
   ExploreSeason,
@@ -75,7 +76,7 @@ const STATUS_FILTERS: Array<{ id: "all" | ExploreStatus; label: string }> = [
   { id: "OUT_OF_SYNC", label: "Out of sync" },
   { id: "PARTIAL_SYNC", label: "Partial" },
   { id: "SYNCED", label: "Synced" },
-  { id: "NO_INFO", label: "Not checked" },
+  { id: "NO_INFO", label: "Not on remote" },
 ];
 
 type Pane = "tree" | "table";
@@ -1056,14 +1057,26 @@ function Inspector({
             />
           ) : (
             <>
-              <Facts
-                items={[
-                  [isMovies ? "Files" : "Episodes", `${scope.counts.remote_total}`],
-                  ["Size", formatBytes(scope.remote_bytes)],
-                  ["Missing", `${scope.counts.missing}`],
-                  ["Upgraded", `${scope.counts.upgraded}`],
-                ]}
-              />
+              {/* With nothing on the remote every one of these reads zero,
+                  which says "empty" about a series you hold in full. Report
+                  your own copy instead — that is the only side there is. */}
+              {scope.status === "NO_INFO" ? (
+                <Facts
+                  items={[
+                    [isMovies ? "Your files" : "Your episodes", `${scope.counts.local_only}`],
+                    ["Size", formatBytes(scope.local_bytes)],
+                  ]}
+                />
+              ) : (
+                <Facts
+                  items={[
+                    [isMovies ? "Files" : "Episodes", `${scope.counts.remote_total}`],
+                    ["Size", formatBytes(scope.remote_bytes)],
+                    ["Missing", `${scope.counts.missing}`],
+                    ["Upgraded", `${scope.counts.upgraded}`],
+                  ]}
+                />
+              )}
               <CountChips counts={scope.counts} className="flex-wrap" />
             </>
           )}
@@ -1079,6 +1092,8 @@ function Inspector({
             folders={season ? season.odd_folders : series.odd_folders}
             expected={season?.standard_name ?? null}
           />
+
+          {scope.status === "NO_INFO" && <NotOnRemoteNote counts={scope.counts} />}
 
           <section className="flex flex-col gap-2">
             <p className="font-mono text-[10px] tracking-[0.14em] text-foreground-3 uppercase">
@@ -1409,6 +1424,34 @@ function MisplacedWarning({ count }: { count: number }) {
       <p className="mt-1 text-[11px] text-amber-50/75">
         Nested one level too deep, so your media server cannot see them. Left alone here — they need
         moving back by hand.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Why a title shows "Not on remote".
+ *
+ * The badge is easy to misread as "we have not looked yet", and the natural
+ * next move is to hunt for a button that re-checks it. There is nothing to
+ * re-check: the comparison ran and the remote had no episodes. Saying so here
+ * is the difference between a dead end and an answer.
+ */
+function NotOnRemoteNote({ counts }: { counts: ExploreCounts }) {
+  return (
+    <div className="rounded-md border border-border bg-muted/30 p-2.5">
+      <p className="text-[12px] font-medium text-foreground">Nothing to compare</p>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        {counts.local_only > 0 ? (
+          <>
+            The remote holds no episodes here, so there is nothing to measure your copy against. The{" "}
+            {counts.local_only} file{counts.local_only === 1 ? "" : "s"} below are yours alone —
+            either the remote never had them, or it has since dropped them. Re-checking will report
+            the same thing.
+          </>
+        ) : (
+          <>Neither side holds any episodes here. The folder exists but is empty of media.</>
+        )}
       </p>
     </div>
   );

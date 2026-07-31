@@ -46,6 +46,27 @@ badge, count and action on the page comes from those four labels.
    some present is Partial; none present is Out of sync. **A series' status
    covers all its seasons**, not just the newest.
 
+### "Not on remote" is an answer, not a gap
+
+The fourth status is the one that confuses people. It does **not** mean the
+comparison has not run — it means the comparison ran and found the remote holds
+no episodes for that title. There is nothing to measure the local copy against,
+so it can be neither Synced nor Out of sync, and re-checking will say the same.
+
+Two ways to get there: the title is not on the remote at all, or its folder is
+there and holds no media. Both are real — one library has a season folder on the
+remote containing a single `folder.jpg`.
+
+It is a common state, not an edge case: in the current library it covers 165 of
+202 movies, 74 of 85 TV series and 64 of 82 anime, because the local library is
+far larger than the remote. Rows in that state report **your** file count and
+size rather than the remote's zeroes, and the actions panel explains why there
+is nothing to compare.
+
+The wire value is still `NO_INFO`; only what it is called on screen changed. It
+used to read "Not checked", which said the opposite of what had happened and
+sent people looking for a button to press.
+
 Results are cached and timestamped. The page reads the cache instantly and shows
 "checked …"; **Re-check** forces a fresh pass.
 

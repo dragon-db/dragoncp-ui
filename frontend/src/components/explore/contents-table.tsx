@@ -134,7 +134,7 @@ export function SeasonRows({
           <Th className="w-[60px] text-right">Items</Th>
           <Th className="hidden w-[72px] text-right sm:table-cell">Size</Th>
           <Th className="hidden w-[96px] md:table-cell">Modified</Th>
-          <Th className="w-[104px]">Sync</Th>
+          <Th className="w-[124px]">Sync</Th>
           <Th className="hidden w-[54px] sm:table-cell" />
         </tr>
       </thead>
@@ -168,10 +168,12 @@ export function SeasonRows({
                 </div>
               </Td>
               <Td className="text-right font-mono text-[11px] text-foreground-3">
-                {season.counts.remote_total}
+                {season.counts.remote_total || season.counts.local_only || 0}
               </Td>
               <Td className="hidden text-right font-mono text-[11px] text-foreground-3 sm:table-cell">
-                {formatBytes(season.remote_bytes)}
+                {formatBytes(
+                  season.counts.remote_total > 0 ? season.remote_bytes : season.local_bytes
+                )}
               </Td>
               <Td className="hidden text-[11px] text-foreground-3 md:table-cell">
                 {relativeDate(season.remote_mtime)}
@@ -237,7 +239,7 @@ export function EpisodeRows({
           <Th className={NAME_COL}>Name</Th>
           <Th className="hidden w-[72px] text-right sm:table-cell">Size</Th>
           <Th className="hidden w-[96px] md:table-cell">Modified</Th>
-          <Th className="w-[104px]">Sync</Th>
+          <Th className="w-[124px]">Sync</Th>
         </tr>
       </thead>
       <tbody className={density === "compact" ? "compact" : undefined}>
