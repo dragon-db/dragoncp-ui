@@ -65,8 +65,9 @@ class Transfer:
                         transfer_id, media_type, folder_name, season_name,
                         source_path, dest_path, operation_type, status, progress,
                         queue_reason, rsync_process_id, parsed_title, parsed_season, start_time,
-                        is_simulation, simulation_bwlimit
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_simulation, simulation_bwlimit,
+                        explore_files_from, explore_mode, explore_plan_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     transfer_data['transfer_id'],
                     transfer_data['media_type'],
@@ -83,7 +84,12 @@ class Transfer:
                     parsed_data['season'],
                     transfer_data.get('start_time', datetime.now().isoformat()),
                     1 if transfer_data.get('is_simulation') else 0,
-                    transfer_data.get('simulation_bwlimit')
+                    transfer_data.get('simulation_bwlimit'),
+                    # Explore runs carry the approved file list so a queued or
+                    # restarted run rebuilds the same command.
+                    transfer_data.get('explore_files_from'),
+                    transfer_data.get('explore_mode'),
+                    transfer_data.get('explore_plan_id')
                 ))
                 conn.commit()
                 print(f"✅ Transfer record created successfully for {transfer_data['transfer_id']}")

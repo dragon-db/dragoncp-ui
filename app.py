@@ -33,12 +33,14 @@ from env_flags import env_flag, test_mode_enabled
 from services import TransferCoordinator
 from services.rename_service import RenameService
 from services.simulation_service import SimulationService
+from services.explore.service import ExploreService
 
 # Import routes
 from routes import (
     auth_bp, media_bp, transfers_bp, backups_bp, webhooks_bp, debug_bp, logs_bp,
     simulation_bp,
     init_media_routes, init_transfer_routes, init_backup_routes,
+    explore_bp, init_explore_routes,
     init_webhook_routes, init_debug_routes, init_simulation_routes
 )
 
@@ -260,6 +262,12 @@ simulation_service = SimulationService(config, transfer_coordinator, socketio)
 simulation_service.purge_leftovers()
 init_simulation_routes(simulation_service)
 
+# Explore compares the remote library against the local one and turns the
+# difference into a reviewable plan. It holds its own pointer to the browse
+# session because that session is rebuilt on every connect.
+explore_service = ExploreService(config, db_manager, transfer_coordinator, ssh_manager)
+init_explore_routes(explore_service)
+
 # Register route blueprints
 app.register_blueprint(auth_bp, url_prefix='/api')
 app.register_blueprint(media_bp, url_prefix='/api')
@@ -269,6 +277,7 @@ app.register_blueprint(webhooks_bp, url_prefix='/api')
 app.register_blueprint(debug_bp, url_prefix='/api')
 app.register_blueprint(logs_bp, url_prefix='/api')
 app.register_blueprint(simulation_bp, url_prefix='/api')
+app.register_blueprint(explore_bp, url_prefix='/api')
 
 logger.info('Backend logging file: %s', LOG_FILE_PATH)
 
@@ -384,6 +393,7 @@ def api_connect():
         
         # Update route dependencies with new ssh_manager
         init_media_routes(config, ssh_manager, transfer_coordinator)
+        explore_service.set_ssh_manager(ssh_manager)
         init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
         
         return jsonify({"status": "success", "message": "Connected successfully"})
@@ -406,6 +416,7 @@ def api_disconnect():
     
     # Update route dependencies
     init_media_routes(config, ssh_manager, transfer_coordinator)
+    explore_service.set_ssh_manager(ssh_manager)
     init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
     
     return jsonify({"status": "success", "message": "Disconnected"})
@@ -442,6 +453,7 @@ def api_auto_connect():
         
         # Update route dependencies with new ssh_manager
         init_media_routes(config, ssh_manager, transfer_coordinator)
+        explore_service.set_ssh_manager(ssh_manager)
         init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
         
         return jsonify({"status": "success", "message": "Auto-connected successfully"})
