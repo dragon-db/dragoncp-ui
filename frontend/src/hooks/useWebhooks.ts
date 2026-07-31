@@ -205,6 +205,31 @@ export function useWebhookNotificationJson(notificationId: string) {
   });
 }
 
+/**
+ * Sync a whole group in one request.
+ *
+ * A series transfer is scoped to the season folder, so a season's episode
+ * notifications need exactly one transfer between them. Posting them
+ * individually created one transfer per episode, all aimed at the same
+ * destination; the queue then serialised them and all but the first moved
+ * nothing. The server re-derives the grouping, so this only nominates which
+ * notifications to consider.
+ */
+export function useTriggerWebhookGroupSync() {
+  return useMutation({
+    mutationFn: async (notificationIds: string[]) => {
+      const response = await api.post<{
+        status: string;
+        message: string;
+        transfer_ids: string[];
+      }>("/webhook/series/notifications/sync-batch", {
+        notification_ids: notificationIds,
+      });
+      return response.data;
+    },
+  });
+}
+
 export function useTriggerWebhookSync() {
   const queryClient = useQueryClient();
 

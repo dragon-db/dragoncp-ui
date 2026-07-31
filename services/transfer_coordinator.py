@@ -534,6 +534,10 @@ class TransferCoordinator:
         """Trigger sync for a webhook notification (movies)"""
         return self.webhook_service.trigger_webhook_sync(notification_id)
     
+    def sync_notification_group(self, notification_ids: List[str]) -> Tuple[bool, str, List[str]]:
+        """Sync a group of episode notifications as one transfer per season."""
+        return self.webhook_service.sync_notification_group(notification_ids)
+
     def trigger_series_webhook_sync(self, notification_id: str, batched_notification_ids: List[str] = None) -> Tuple[bool, str]:
         """Trigger sync for a series/anime webhook notification"""
         return self.webhook_service.trigger_series_webhook_sync(notification_id, batched_notification_ids)

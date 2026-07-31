@@ -714,6 +714,53 @@ def api_series_webhook_sync(notification_id):
         }), 500
 
 
+@webhooks_bp.route('/webhook/series/notifications/sync-batch', methods=['POST'])
+@require_auth
+def api_series_webhook_sync_batch():
+    """
+    Sync a group of series/anime notifications as one transfer per season.
+
+    The UI groups a season's episode webhooks into a single row; this is the
+    endpoint behind that row's "Sync all". The server re-derives the grouping
+    from the notifications themselves, so the request cannot decide which
+    folder gets synced — it only says which notifications to consider.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        notification_ids = data.get('notification_ids') or []
+
+        if not isinstance(notification_ids, list) or not notification_ids:
+            return jsonify({
+                "status": "error",
+                "message": "notification_ids must be a non-empty list"
+            }), 400
+
+        if not all(isinstance(n, str) and n for n in notification_ids):
+            return jsonify({
+                "status": "error",
+                "message": "notification_ids must be strings"
+            }), 400
+
+        success, message, transfer_ids = transfer_coordinator.sync_notification_group(
+            notification_ids
+        )
+
+        return jsonify({
+            "status": "success" if success else "error",
+            "message": message,
+            "transfer_ids": transfer_ids,
+        }), (200 if success else 400)
+
+    except Exception as e:
+        print(f"❌ Error in batch webhook sync: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to start batch sync: {str(e)}"
+        }), 500
+
+
 @webhooks_bp.route('/webhook/anime/notifications/<notification_id>/sync', methods=['POST'])
 @require_auth
 def api_anime_webhook_sync(notification_id):

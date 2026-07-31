@@ -133,6 +133,24 @@ Movie rows only ever hold `pending`, `syncing`, `completed` or `failed` from thi
 
 ## Behaviour worth knowing
 
+- **"Sync all" on a group is one transfer, not one per episode.** Sonarr sends a
+  webhook per episode, so a six-episode grab arrives as six notifications for the
+  same season. A series transfer is scoped to the season *folder*
+  (`operation_type='folder'`), so one run brings the whole season down — the
+  right unit for a group is one transfer, with every notification in it linked
+  to that transfer. `WebhookService.sync_notification_group` does this: it
+  re-derives the grouping from `(media_type, series_title_slug, season_number)`
+  and calls `trigger_series_webhook_sync(primary, all_ids)` once per season.
+  The **grouping is re-derived server-side on purpose** — the client groups for
+  display, but it must not get to decide which folder is synced, since the
+  resulting rsync runs with `--delete`. Ids that disagree are split into separate
+  transfers, never merged. The whole group is submitted, including
+  already-completed episodes, so they end up linked to the run that actually
+  fetched them; the primary is chosen from those that still need syncing.
+  Until 2026-07-30 the page posted one sync per notification instead, which
+  produced N transfers against a single destination — the queue serialised them
+  on the path conflict and every run after the first moved zero bytes. See
+  `tests/test_webhook_group_sync.py`.
 - **`MANUAL_SYNC_REQUIRED` is not a stored status.** `TransferCoordinator.mark_for_manual_sync` writes `status='pending'`, `requires_manual_sync=1` and `manual_sync_reason`. The string `MANUAL_SYNC_REQUIRED` appears in the model docstring, in `frontend/src/lib/webhook-grouping.ts`, in the filter dropdown on the Webhooks page and in `docs/reference/api.md`, but nothing in the backend ever sets it. Filtering the notification list by that status therefore returns nothing; the real signal is the `requires_manual_sync` flag.
 - **Movie notifications say `syncing` even when the transfer is only queued.** `trigger_webhook_sync` sets `status='syncing'` before calling `start_transfer` and then ignores the returned `queue_type`. A movie waiting behind the concurrency cap looks like it is transferring. The series/anime path does not have this problem because it maps `queue_type` explicitly.
 - **`completed_at` is not only a completion time.** Both `trigger_webhook_sync` and the `running`→`syncing` mapping stamp `completed_at` with the current time when a sync *starts*. Treat it as "time of last significant state change" rather than "time it finished".
@@ -178,6 +196,7 @@ Management (all behind `require_auth`):
 
 - `GET /api/webhook/notifications` — one page of movies + series + anime, newest first; `status`, `media_type`, `search`, `limit` and `offset` query params
 - `POST /api/webhook/notifications/bulk-delete` — delete many notifications by id, or every notification a filter finds
+- `POST /api/webhook/series/notifications/sync-batch` — sync one UI group as a single transfer per season; body is `{"notification_ids": [...]}`
 - `GET /api/webhook/series/notifications`, `GET /api/webhook/anime/notifications`
 - `GET /api/webhook/notifications/<id>` — tries the movie table, then the series table
 - `GET /api/webhook/notifications/<id>/json` — the stored raw payload
