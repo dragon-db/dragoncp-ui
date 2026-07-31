@@ -45,7 +45,7 @@ export function AppNavbar() {
   ).length;
 
   return (
-    <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:px-6">
+    <header className="flex h-[58px] shrink-0 items-center gap-3 border-b border-border px-4 md:px-6">
       {/* Breadcrumb — context, left. Below md the bottom nav owns the sidebar
           toggle, so the header keeps no trigger of its own. */}
       <nav className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
