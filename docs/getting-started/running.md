@@ -200,6 +200,7 @@ npm install
 ```bash
 npm run dev        # DRAGONCP_BACKEND=dev  vite --host 0.0.0.0
 npm run dev:prod   # DRAGONCP_BACKEND=prod vite --host 0.0.0.0 --port 5181 --strictPort
+npm run serve:prod # build once, then serve the built files on 5181 - no dev client
 ```
 
 Vite serves on port **5173** by default (set in `vite.config.ts`); `dev:prod`
@@ -208,6 +209,31 @@ and the prod-pointed one always sits on a known port instead of silently
 shifting. `--host 0.0.0.0` exposes it on the LAN. `allowedHosts` additionally
 permits the machine's short hostname and any `.ts.net` name, so the dev server
 can be opened over Tailscale MagicDNS.
+
+### Do not open the dev server on a phone
+
+A dev server page reloads itself every time you switch away from the browser and
+back. That is Vite, not the app. The dev client keeps a websocket open to the
+server; a phone drops that socket when the tab goes to the background, and the
+client's answer to a dropped socket is to poll until the server answers and then
+call `location.reload()` — it waits for the tab to be visible again first, so the
+reload lands exactly as you return. Firefox on Android suspends background
+sockets sooner than Chrome, which is why it happens there almost every time.
+
+Nothing in the app reloads the page. `refetchOnWindowFocus` is off, the socket
+reconnects in place, and the only redirect is the 401 handler, which sends you to
+the login screen rather than back where you were.
+
+Serve the built files instead, and the dev client is not there at all:
+
+| Where                                | What it serves                          | Backend                  |
+| ------------------------------------ | --------------------------------------- | ------------------------ |
+| `npm run serve:prod` → **5181**       | `vite preview` over `dist/`             | prod, via the vite proxy |
+| `./deploy-frontend.sh` → **5002**     | nginx over `dist/` in a container       | prod, via nginx          |
+
+Both need a rebuild to pick up code changes — that is the trade for a page that
+stays where you left it. `preview` does not inherit `server.proxy`, so
+`vite.config.ts` declares the same proxy twice on purpose.
 
 ### The two proxy targets
 
