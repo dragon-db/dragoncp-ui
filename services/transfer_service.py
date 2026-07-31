@@ -560,6 +560,19 @@ class TransferService:
             except Exception as e:
                 print(f"⚠️  Could not prepare dynamic backup directory: {e}")
             
+            # An Explore run carries an explicit file list. It is a different
+            # command shape entirely — no --delete (the plan already decided
+            # what goes, and those files were moved to backup before rsync
+            # started), and no --update/--size-only, which would silently skip
+            # an upgrade whose local copy is newer or the same size.
+            explore_files_from = transfer_row.get('explore_files_from')
+            if explore_files_from:
+                return self._start_explore_rsync(
+                    transfer_id, source_path, dest_path, backup_dir,
+                    explore_files_from, transfer_row.get('explore_mode') or 'sync',
+                    ssh_user, ssh_host, ssh_key_path,
+                )
+
             # Build rsync command with SSH connection
             rsync_cmd = [
                 "rsync", "-av",
@@ -682,6 +695,199 @@ class TransferService:
             })
             return False
     
+    def build_explore_rsync_command(self, source_path: str, dest_path: str,
+                                    backup_dir: str, files_from: str, mode: str,
+                                    ssh_user: str, ssh_host: str,
+                                    ssh_key_path: str) -> List[str]:
+        """
+        The command an Explore plan runs as.
+
+        Built in one place so a dry run can be the same command with
+        `--dry-run` in front of it. A rehearsal that differs from the run it is
+        rehearsing is worse than no rehearsal.
+        """
+        rsync_cmd = [
+            "rsync", "-av",
+            "--progress",
+            "--info=progress2",
+            "--files-from", files_from,
+            "--backup",
+            "--backup-dir", backup_dir,
+            "--stats",
+            "--human-readable",
+            "--partial",
+            "--partial-dir", f"{backup_dir}/.rsync-partial",
+            "--timeout=300",
+            "--no-perms",
+            "--no-owner",
+            "--no-group",
+            "--whole-file",
+            "--no-motd",
+        ]
+
+        if mode == 'download':
+            rsync_cmd.append("--ignore-existing")
+
+        ssh_options = self._build_ssh_host_key_options() + ["-o", "Compression=no"]
+        if ssh_key_path and os.path.exists(ssh_key_path):
+            ssh_options.extend(["-i", ssh_key_path])
+        rsync_cmd.extend(["-e", f"ssh {' '.join(ssh_options)}"])
+
+        # With --files-from the source is the ROOT the list is relative to.
+        rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
+        return rsync_cmd
+
+    def run_explore_dry_run(self, source_path: str, dest_path: str,
+                            files_from: str, mode: str,
+                            timeout: int = 120) -> Tuple[bool, int, str, Optional[str]]:
+        """
+        Ask rsync what this plan would do, without doing any of it.
+
+        Runs to completion and returns its output, so the caller can turn it
+        into a report. Returns (ok, exit_code, output, error).
+
+        `--itemize-changes` via `--out-format` replaces the progress output: a
+        dry run has no progress worth streaming, and one line per file is what
+        the report is built from.
+        """
+        ssh_user = self.config.get("REMOTE_USER")
+        ssh_host = self.config.get("REMOTE_IP")
+        ssh_key_path = self.config.get("SSH_KEY_PATH", "")
+        if not ssh_user or not ssh_host:
+            return False, -1, '', 'No remote host is configured'
+
+        if ssh_key_path and not os.path.isabs(ssh_key_path):
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            ssh_key_path = os.path.join(os.path.dirname(script_dir), ssh_key_path)
+        if ssh_key_path and not os.path.exists(ssh_key_path):
+            ssh_key_path = ""
+
+        if not os.path.exists(files_from):
+            return False, -1, '', 'The file list for this plan is no longer available'
+
+        # The backup directory is never written during a dry run; it only has to
+        # be a path rsync will accept.
+        backup_dir = os.path.join(self.config.get('BACKUP_PATH') or '/tmp', '.explore-dryrun')
+
+        cmd = self.build_explore_rsync_command(
+            source_path, dest_path, backup_dir, files_from, mode,
+            ssh_user, ssh_host, ssh_key_path,
+        )
+        # Drop the progress flags — they fight with a per-file report — and put
+        # --dry-run first so it is impossible to miss when reading a log.
+        cmd = [arg for arg in cmd if arg not in ("--progress", "--info=progress2")]
+        cmd.insert(1, "--dry-run")
+        cmd.insert(2, "--out-format=%i|%l|%n")
+
+        print(f"🧪 Explore dry run ({mode}): {' '.join(cmd)}")
+        started = time.time()
+        try:
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                timeout=timeout,
+                env=os.environ.copy(),
+            )
+        except subprocess.TimeoutExpired:
+            return False, -1, '', f"The dry run took longer than {timeout}s and was stopped"
+        except OSError as error:
+            return False, -1, '', f"Could not run rsync: {error}"
+
+        elapsed = int((time.time() - started) * 1000)
+        print(f"🧪 Explore dry run finished in {elapsed}ms with code {result.returncode}")
+        output = result.stdout or ''
+        if result.returncode != 0:
+            return False, result.returncode, output, f"rsync exited with code {result.returncode}"
+        return True, 0, output, None
+
+    def _start_explore_rsync(self, transfer_id: str, source_path: str, dest_path: str,
+                             backup_dir: str, files_from: str, mode: str,
+                             ssh_user: str, ssh_host: str, ssh_key_path: str) -> bool:
+        """
+        Run one Explore plan.
+
+        The plan already decided exactly which files move, and anything being
+        superseded or removed was moved into the backup directory before this
+        was called. So rsync is handed a literal file list and is deliberately
+        NOT given:
+
+          --delete       the plan owns removals; rsync must not invent any
+          --update       an upgrade whose local copy has a newer mtime would
+                         otherwise be silently skipped
+          --size-only    a same-size re-encode would otherwise be skipped
+
+        `download` mode adds --ignore-existing so it can never overwrite a file
+        that is already there — replacing is a separate, explicit operation.
+        """
+        try:
+            if not os.path.exists(files_from):
+                print(f"❌ Explore file list is missing: {files_from}")
+                self.transfer_model.update(transfer_id, {
+                    'status': 'failed',
+                    'progress': 'The approved file list is no longer available',
+                    'end_time': datetime.now().isoformat(),
+                })
+                return False
+
+            rsync_cmd = self.build_explore_rsync_command(
+                source_path, dest_path, backup_dir, files_from, mode,
+                ssh_user, ssh_host, ssh_key_path,
+            )
+
+            if test_mode_enabled():
+                rsync_cmd.insert(1, "--dry-run")
+                print("🧪 TEST_MODE enabled - Explore rsync runs as a dry-run")
+
+            print(f"🔄 Starting Explore rsync ({mode}): {' '.join(rsync_cmd)}")
+
+            process = subprocess.Popen(
+                rsync_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                bufsize=1,
+                env=os.environ.copy(),
+            )
+
+            if process.poll() is not None:
+                self.transfer_model.update(transfer_id, {
+                    'status': 'failed',
+                    'progress': f'rsync failed to start (code {process.poll()})',
+                    'end_time': datetime.now().isoformat(),
+                })
+                return False
+
+            self.transfers[transfer_id] = process
+            self.transfer_model.update(transfer_id, {
+                'status': 'running',
+                'rsync_process_id': process.pid,
+                'progress': 'Transfer started...',
+                'progress_percent': 0,
+                'bytes_transferred': 0,
+                'total_bytes': None,
+                'speed_bps': 0,
+                'eta_seconds': None,
+                'paused_at': None,
+            })
+
+            threading.Thread(
+                target=self._monitor_transfer, args=(transfer_id, process), daemon=True
+            ).start()
+            return True
+
+        except Exception as e:
+            print(f"❌ Explore transfer start failed: {e}")
+            import traceback
+            traceback.print_exc()
+            self.transfer_model.update(transfer_id, {
+                'status': 'failed',
+                'progress': f'Transfer start failed: {e}',
+                'end_time': datetime.now().isoformat(),
+            })
+            return False
+
     def _monitor_transfer(self, transfer_id: str, process):
         """Monitor transfer progress with database updates"""
         print(f"🔍 Starting monitoring for transfer {transfer_id} (PID: {process.pid})")

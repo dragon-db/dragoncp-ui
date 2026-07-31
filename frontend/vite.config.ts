@@ -26,6 +26,22 @@ console.log(
       : "  [2m(local dev backend)[0m\n"),
 )
 
+// Allow opening the server via Tailscale MagicDNS hostnames: the machine's
+// short name (e.g. "dragondb") and full .ts.net names.
+const allowedHosts = [hostname().toLowerCase(), ".ts.net"]
+
+const proxy = {
+  "/api": {
+    target: backendUrl,
+    changeOrigin: true,
+  },
+  "/socket.io": {
+    target: backendUrl,
+    changeOrigin: true,
+    ws: true,
+  },
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -40,19 +56,17 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    // Allow opening the dev server via Tailscale MagicDNS hostnames:
-    // the machine's short name (e.g. "dragondb") and full .ts.net names
-    allowedHosts: [hostname().toLowerCase(), ".ts.net"],
-    proxy: {
-      "/api": {
-        target: backendUrl,
-        changeOrigin: true,
-      },
-      "/socket.io": {
-        target: backendUrl,
-        changeOrigin: true,
-        ws: true,
-      },
-    },
+    allowedHosts,
+    proxy,
+  },
+  // `vite preview` serves the built files, so it carries no dev client and
+  // never reloads the page by itself. That matters on a phone: backgrounding
+  // the tab drops the dev server's websocket, and the dev client answers that
+  // by reloading the whole page the moment you switch back. Preview does not
+  // inherit the server proxy, hence the repeat above.
+  preview: {
+    port: 5181,
+    allowedHosts,
+    proxy,
   },
 })

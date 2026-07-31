@@ -5,7 +5,9 @@ import { AppSidebar } from "@/components/layout/app-sidebar";
 import { AppNavbar } from "@/components/layout/app-navbar";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { BackendUnavailableOverlay } from "@/components/layout/backend-unavailable-overlay";
+import { useLocation } from "@tanstack/react-router";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import { cn } from "@/lib/utils";
 
 interface AppLayoutProps {
   children: ReactNode;
@@ -31,17 +33,36 @@ export function AppLayout({ children }: AppLayoutProps) {
     }
   };
 
+  const location = useLocation();
+
+  // Explore is a three-pane console with its own status bar: it fills the inset
+  // card edge to edge instead of sitting in the usual page padding.
+  const fullBleed = location.pathname.startsWith("/media/");
+
   return (
     <SidebarProvider
-      className="app-ambient"
-      style={{ "--sidebar-width": "15rem" } as CSSProperties}
+      className="app-ambient h-svh overflow-hidden"
+      style={{ "--sidebar-width": "14.125rem" } as CSSProperties}
     >
       <AppSidebar />
 
-      <SidebarInset className="border border-border shadow-[0_24px_60px_-30px_rgba(0,0,0,0.85)]">
+      <SidebarInset className="min-w-0 border border-border shadow-[0_24px_60px_-30px_rgba(0,0,0,0.85)]">
         <AppNavbar />
-        <main className="flex-1 overflow-auto">
-          <div className="mx-auto w-full max-w-[1920px] p-4 sm:p-6 xl:px-8 xl:py-7">{children}</div>
+        {/* The scroll container is the padded wrapper rather than <main>, and it
+            is a flex column — so a page that wants to fill the viewport (Explore
+            pins a status bar to the bottom) can do it with flex-1, while normal
+            pages stack and scroll exactly as before. */}
+        <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div
+            className={cn(
+              "flex min-h-0 w-full flex-1 flex-col",
+              fullBleed
+                ? "overflow-hidden"
+                : "mx-auto max-w-[1920px] overflow-auto p-4 sm:p-6 xl:px-8 xl:py-7"
+            )}
+          >
+            {children}
+          </div>
         </main>
         <MobileNav />
       </SidebarInset>

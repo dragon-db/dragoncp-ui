@@ -79,12 +79,19 @@ class TransferCoordinator:
                       operation_type: str = "folder", media_type: str = "",
                       folder_name: str = "", season_name: str = None,
                       is_simulation: bool = False,
-                      simulation_bwlimit: int = None) -> Tuple[bool, str]:
+                      simulation_bwlimit: int = None,
+                      extra_fields: Dict = None) -> Tuple[bool, str]:
         """
         Start a new transfer with database persistence and queue management
-        
+
+        extra_fields is merged into the transfer row on whichever path it takes
+        (running, path-queued or slot-queued). Explore uses it to attach the
+        approved file list, so a promoted or restarted run rebuilds the same
+        command instead of falling back to a whole-directory mirror.
+
         Returns tuple of (success, status_code)
         """
+        extra_fields = extra_fields or {}
         
         log_sync("TransferCoordinator", f"start_transfer() called", 
                 icon="🎯", transfer_id=transfer_id)
@@ -132,6 +139,7 @@ class TransferCoordinator:
                 'simulation_bwlimit': simulation_bwlimit
             }
             
+            transfer_data.update(extra_fields)
             self.transfer_model.create(transfer_data)
             
             # Update webhook notification status to QUEUED_PATH if this is from a webhook
@@ -174,6 +182,7 @@ class TransferCoordinator:
                 'simulation_bwlimit': simulation_bwlimit
             }
             
+            transfer_data.update(extra_fields)
             self.transfer_model.create(transfer_data)
             print(f"⏳ Transfer {transfer_id} added to queue")
             
@@ -203,6 +212,7 @@ class TransferCoordinator:
                 'simulation_bwlimit': simulation_bwlimit
             }
             
+            transfer_data.update(extra_fields)
             self.transfer_model.create(transfer_data)
             print(f"✅ Transfer record created with status 'pending'")
             
@@ -534,6 +544,10 @@ class TransferCoordinator:
         """Trigger sync for a webhook notification (movies)"""
         return self.webhook_service.trigger_webhook_sync(notification_id)
     
+    def sync_notification_group(self, notification_ids: List[str]) -> Tuple[bool, str, List[str]]:
+        """Sync a group of episode notifications as one transfer per season."""
+        return self.webhook_service.sync_notification_group(notification_ids)
+
     def trigger_series_webhook_sync(self, notification_id: str, batched_notification_ids: List[str] = None) -> Tuple[bool, str]:
         """Trigger sync for a series/anime webhook notification"""
         return self.webhook_service.trigger_series_webhook_sync(notification_id, batched_notification_ids)

@@ -284,6 +284,71 @@ class DatabaseManager:
             self._ensure_column(conn, 'radarr_webhook', 'is_simulation', "INTEGER DEFAULT 0")
             self._ensure_column(conn, 'sonarr_webhook', 'is_simulation', "INTEGER DEFAULT 0")
 
+            # Explore runs carry an explicit file list instead of mirroring a
+            # whole directory, so rsync is given --files-from and never
+            # --delete. Stored on the row so a queued, promoted, resumed or
+            # restarted run rebuilds the same command.
+            self._ensure_column(conn, 'transfers', 'explore_files_from', "TEXT")
+            self._ensure_column(conn, 'transfers', 'explore_mode', "TEXT")
+            self._ensure_column(conn, 'transfers', 'explore_plan_id', "TEXT")
+
+            # ==========================================
+            # Table: explore_snapshot — a cached comparison of one scope
+            # ==========================================
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS explore_snapshot (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    media_type TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    remote_ok INTEGER DEFAULT 1,
+                    local_ok INTEGER DEFAULT 1,
+                    error TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(media_type, scope)
+                )
+            ''')
+
+            # ==========================================
+            # Table: explore_plan — an evaluated operation awaiting approval
+            # ==========================================
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS explore_plan (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    plan_id TEXT UNIQUE NOT NULL,
+                    media_type TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    series TEXT NOT NULL,
+                    season_label TEXT,
+                    payload TEXT NOT NULL,
+                    safe INTEGER DEFAULT 0,
+                    consumed INTEGER DEFAULT 0,
+                    created_by TEXT,
+                    expires_at DATETIME NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # ==========================================
+            # Table: transfer_file — what a run actually did, file by file
+            # ==========================================
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS transfer_file (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transfer_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    rel_path TEXT NOT NULL,
+                    size INTEGER DEFAULT 0,
+                    code TEXT,
+                    season_label TEXT,
+                    backup_path TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_transfer_file_transfer ON transfer_file(transfer_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_explore_plan_expiry ON explore_plan(expires_at)')
+
             conn.commit()
         
         print(f"✅ Database initialized: {self.db_path}")

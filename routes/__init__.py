@@ -11,6 +11,7 @@ from .webhooks import webhooks_bp, init_webhook_routes
 from .debug import debug_bp, init_debug_routes
 from .logs import logs_bp
 from .simulation import simulation_bp, init_simulation_routes
+from .explore import explore_bp, init_explore_routes
 
 __all__ = [
     'auth_bp',
@@ -21,10 +22,12 @@ __all__ = [
     'debug_bp',
     'logs_bp',
     'simulation_bp',
+    'explore_bp',
     'init_media_routes',
     'init_transfer_routes',
     'init_backup_routes',
     'init_webhook_routes',
     'init_debug_routes',
-    'init_simulation_routes'
+    'init_simulation_routes',
+    'init_explore_routes'
 ]

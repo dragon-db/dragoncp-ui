@@ -125,6 +125,23 @@ The directory is walked exactly as finalization walks it, `created_at` is taken 
 
 - **TEST_MODE does not produce a working dry run for restore.** With `TEST_MODE=1` the deletions are only printed, but the code builds a `--files-from=/tmp/test_mode_dummy_file_<n>.txt` path and deliberately does not create that file. rsync then exits non-zero, so a TEST_MODE restore reports failure. Simulation runs are a separate mechanism - see [../simulation/README.md](../simulation/README.md).
 
+- **Explore shows these backups too, read-only.** The Explore actions panel
+  lists what an earlier sync moved aside for the series or season you are
+  looking at, so you can see a replaced episode is still recoverable without
+  leaving the page. It never restores — the destination matching and the
+  confirmation live here — and links across instead. Matching is on the backup's
+  `folder_name` and each **file's** own `context_season`, never on
+  `context_series_title`: that column is parsed by splitting the filename at the
+  first `" - "`, so "Alpha - Bravo, Charlie of the Delta (2016)" is stored
+  as `Re`. See [../explore/README.md](../explore/README.md).
+
+- **An Explore run that only removes files still produces a backup record.** It
+  starts no rsync, so nothing in the normal pipeline would finalize one. It
+  writes a completed transfer row with `operation_type='explore_prune'` and
+  calls `finalize_backup_for_transfer` itself, the same way restore creates its
+  own synthetic run. Before this, a pure removal left files in the backup
+  directory with no record pointing at them.
+
 - **Restoring a backup does not remove it.** The record stays listed with `status='restored'` and the files stay in `BACKUP_PATH` until someone deletes them.
 
 - **Timestamps are not consistent.** `created_at` is written as explicit UTC with a `Z` suffix by both finalization and reindex, but `Backup.update` writes `updated_at` and `restored_at` from `datetime.now()` - local time, no marker. The list is ordered by `created_at DESC` as a string.
@@ -145,6 +162,7 @@ Both tables are created in `models/database.py` and accessed through `models/bac
 | --- | --- |
 | `backup_id` | Unique; equals the transfer ID for finalized backups, and the reconstructed `transfer_<suffix>` for reindexed ones |
 | `transfer_id` | Indexed (`idx_backup_transfer_id`) |
+| | Explore runs appear here too: `explore_<hex>` for a normal run, and the same id with `operation_type='explore_prune'` for one that only removed files |
 | `media_type`, `folder_name`, `season_name` | Copied from the transfer |
 | `source_path`, `dest_path` | Copied from the transfer; `dest_path` may be empty for a reindexed unknown transfer |
 | `backup_path` | The `<safe_folder>_<transfer_id>` directory under `BACKUP_PATH` |

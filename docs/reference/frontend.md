@@ -77,7 +77,7 @@ frontend/
 │   │   │                   #   page-header, page-tabs, section-card,
 │   │   │                   #   stat-tiles, realtime-status,
 │   │   │                   #   backend-unavailable-overlay
-│   │   ├── pages/          # dashboard, transfers, webhooks, media-browser,
+│   │   ├── pages/          # dashboard, transfers, webhooks, explore,
 │   │   │                   #   backups, settings
 │   │   ├── transfers/      # transfer-bits, transfer-detail, transfer-logs,
 │   │   │                   #   simulation-panel, confirm-dialog
@@ -118,7 +118,7 @@ routes/
     ├── settings.tsx        → components/pages/settings.tsx
     └── media/
         ├── index.tsx       # redirects to /media/movies
-        └── $type.tsx       → components/pages/media-browser.tsx (movies, tvshows, anime)
+        └── $type.tsx       → components/pages/explore.tsx (movies, tvshows, anime)
 ```
 
 `_authenticated.tsx` reads the auth store in `beforeLoad` and redirects to
@@ -139,7 +139,8 @@ pair wraps TanStack Query around the Axios client in `lib/api.ts`.
 | `useAuth.ts` | `useLogin`, `useLogout`, `useVerifyAuth`, `useAuthStatus` |
 | `useBackups.ts` | `useBackups`, `useBackupDetails`, `useBackupFiles`, `useRestoreBackup`, `useDeleteBackup`, `usePlanRestoreBackup`, `useReindexBackups` |
 | `useConfig.ts` | `useAppConfig`, `useUpdateConfig`, `useResetConfig`, `useEnvOnlyConfig`, `useSSHConfig`, `useSSHStatus`, `useRuntimeStatus`, `useSSHConnect`, `useSSHAutoConnect`, `useSSHDisconnect`, `useLocalDiskUsage`, `useRemoteDiskUsage`, `useDebugInfo`, `useWebSocketStatus` |
-| `useMedia.ts` | `useMediaTypes`, `useFolders`, `useSeasons`, `useEpisodes`, `useSyncStatus`, `useFolderSyncStatus`, `useMediaDryRun` |
+| `useExplore.ts` | `useExploreTree`, `useExploreRefresh`, `useExploreSeason`, `useExploreHistory`, `useExploreBackups`, `useExplorePlan`, `useExploreDryRun`, `useExploreExecute`, `useExploreLibraries` |
+| `use-media-query.ts` | `useMediaQuery` — follows any CSS media query, no network |
 | `use-mobile.ts` | `useIsMobile` — viewport breakpoint check, no network |
 | `useRuntime.ts` | `useRuntimeController`, `useRuntimeConnection` |
 | `useSimulation.ts` | `useSimulationStatus`, `useStartSimulation`, `useStopSimulation`, `useCleanupSimulation` (plus the `busyConflictFrom` helper) |
@@ -259,6 +260,44 @@ store says the backend is unreachable, with a retry that refetches.
 | `section-card.tsx` | `SectionCard` (bordered card with a label row, optional toolbar) and `SectionEmpty` |
 | `stat-tiles.tsx` | `StatTiles` — the four-numbers row a page opens with |
 | `backend-unavailable-overlay.tsx` | Full-screen "backend is down" state with retry |
+
+## Explore Page
+
+`components/pages/explore.tsx`, served at `/media/$type`. It replaced the old
+`media-browser.tsx`, which is gone; the endpoints it used still exist but
+nothing in the app calls them.
+
+Unlike every other page it is **full-bleed**: `AppLayout` detects a `/media/`
+route and drops the page padding and the max-width cap, because the layout is a
+three-pane console that should reach the window edges.
+
+| Pane | Component | Holds |
+|---|---|---|
+| Library | `explore/library-tree.tsx` | Series with their seasons on a thread line; badges align to the right edge at every depth |
+| Contents | `explore/contents-table.tsx` | `SeasonRows` when a series is open, `EpisodeRows` when a season is |
+| Actions | `Inspector` (in `explore.tsx`) | What is selected, what can be done to it, History and Backups |
+
+Below `lg` the panes become one at a time; below `xl` the actions pane becomes a
+`Sheet`, and a floating bar above the status line carries the current selection
+because the pane holding its actions is off screen. `useMediaQuery` is used —
+rather than CSS alone — only where behaviour differs, i.e. whether showing
+actions means opening the sheet.
+
+Supporting modules:
+
+| File | Purpose |
+|---|---|
+| `explore/explore-bits.tsx` | `StatusBadge`, `EpisodeLabel`, `CountChips` |
+| `explore/plan-dialog.tsx` | The review step, the dry-run card, the typed override |
+| `lib/explore-types.ts` | Every shape the endpoints return |
+| `lib/explore-format.ts` | `formatBytes`, `formatWhen`, `formatAge` |
+| `index.css` | `.explore-*` thread-line geometry for the tree |
+
+The page is keyed on the media type in `routes/_authenticated/media/$type.tsx`,
+so switching library discards the open series, season, expanded rows and ticks
+rather than carrying a TV series into Anime.
+
+Behaviour and endpoints: [`../features/explore/README.md`](../features/explore/README.md).
 
 ## Transfers Page
 

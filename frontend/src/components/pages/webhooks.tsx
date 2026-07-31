@@ -7,6 +7,7 @@ import {
   useMarkWebhookComplete,
   useRenameNotificationDetails,
   useRenameNotifications,
+  useTriggerWebhookGroupSync,
   useTriggerWebhookSync,
   useVerifyRenameNotification,
   useWebhookDryRun,
@@ -306,6 +307,7 @@ export function WebhooksPage() {
   const renameDetailsQuery = useRenameNotificationDetails(renameDetailsId ?? "");
 
   const syncMutation = useTriggerWebhookSync();
+  const groupSyncMutation = useTriggerWebhookGroupSync();
   const completeMutation = useMarkWebhookComplete();
   const deleteMutation = useDeleteWebhookNotification();
   const dryRunMutation = useWebhookDryRun();
@@ -559,19 +561,21 @@ export function WebhooksPage() {
       return;
     }
 
-    // One message for the batch instead of one per episode.
-    const results = await Promise.all(
-      candidates.map((notification) => runSync(notification, { silent: true }))
-    );
-    notificationsQuery.refetch();
-
-    const failures = results.filter((started) => !started).length;
-    if (failures === 0) {
-      toast.success(`Sync started for ${candidates.length} item(s)`);
-    } else if (failures === candidates.length) {
-      toast.error(`Could not start any of the ${candidates.length} syncs`);
-    } else {
-      toast.warning(`Started ${candidates.length - failures}, failed ${failures}`);
+    // ONE request for the group. A series transfer syncs the whole season
+    // folder, so the group needs a single transfer between them — posting one
+    // sync per episode created a transfer per episode against the same
+    // destination, and every one after the first moved nothing.
+    // Every notification in the group is sent, including already-completed
+    // ones, so they all end up linked to the run that actually fetched them.
+    try {
+      const result = await groupSyncMutation.mutateAsync(
+        group.notifications.map((notification) => notification.notification_id)
+      );
+      toast.success(result.message);
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) || "Could not start the sync");
+    } finally {
+      notificationsQuery.refetch();
     }
   };
 

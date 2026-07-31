@@ -343,6 +343,100 @@ class WebhookService:
             })
             return False, f"Sync failed: {str(e)}"
     
+    # Statuses a manual sync is allowed to act on.
+    SYNCABLE_STATUSES = ('pending', 'failed', 'MANUAL_SYNC_REQUIRED', 'manual_sync_required')
+
+    # Statuses whose notification is already tied to a transfer that has not
+    # finished. Relinking one of these would repoint it at the new run and
+    # leave the in-flight transfer with nothing tracking its outcome.
+    IN_FLIGHT_STATUSES = ('syncing', 'QUEUED_SLOT', 'QUEUED_PATH',
+                          'queued_slot', 'queued_path', 'paused')
+
+    def sync_notification_group(self, notification_ids: List[str]) -> Tuple[bool, str, List[str]]:
+        """
+        Sync a group of series/anime notifications as ONE transfer per season.
+
+        Sonarr sends one webhook per episode, so a six-episode grab produces six
+        notifications for the same season. A series transfer is scoped to the
+        SEASON FOLDER, not to an episode — one run brings the whole season — so
+        syncing them individually produced six transfers against one destination.
+        The queue serialised them on the path conflict and five did nothing.
+
+        The grouping is re-derived here from (media_type, series slug, season)
+        rather than trusting the caller's list: the client groups for display,
+        but it must not be able to decide which folder gets synced. Ids that
+        disagree are split into their own transfers, never merged.
+
+        Returns (success, message, transfer_ids).
+        """
+        if not notification_ids:
+            return False, "No notifications given", []
+
+        groups: Dict[Tuple, List[Dict]] = {}
+        missing: List[str] = []
+
+        for notification_id in notification_ids:
+            notification = self.series_webhook_model.get(notification_id)
+            if not notification:
+                missing.append(notification_id)
+                continue
+            key = (
+                notification.get('media_type'),
+                notification.get('series_title_slug') or notification.get('series_title'),
+                notification.get('season_number'),
+            )
+            groups.setdefault(key, []).append(notification)
+
+        if not groups:
+            return False, "None of those notifications exist", []
+
+        transfer_ids: List[str] = []
+        messages: List[str] = []
+        started = 0
+
+        # Groups that produced no transfer, reported even when others succeed —
+        # a partial failure that only shows up as a success message is worse
+        # than no message at all.
+        problems: List[str] = []
+        episodes = 0
+
+        for key, notifications in groups.items():
+            label = f"{key[1]} S{key[2]}"
+            actionable = [n for n in notifications
+                          if (n.get('status') or '') in self.SYNCABLE_STATUSES]
+            if not actionable:
+                problems.append(f"{label}: nothing to sync")
+                continue
+
+            primary = actionable[0]['notification_id']
+            # Every id in the group rides on the one transfer, so each episode's
+            # notification tracks the run that fetched it — except any already
+            # attached to a transfer still in flight, which keeps its own.
+            group_ids = [n['notification_id'] for n in notifications
+                         if (n.get('status') or '') not in self.IN_FLIGHT_STATUSES]
+
+            success, message = self.trigger_series_webhook_sync(primary, group_ids)
+            messages.append(message)
+            if success:
+                started += 1
+                episodes += len(actionable)
+                transfer = self.series_webhook_model.get(primary)
+                if transfer and transfer.get('transfer_id'):
+                    transfer_ids.append(transfer['transfer_id'])
+            else:
+                problems.append(f"{label}: {message}")
+
+        if not started:
+            return False, "; ".join(messages + problems) or "Nothing to sync", []
+
+        seasons = "season" if started == 1 else "seasons"
+        summary = f"Started {started} {seasons} sync for {episodes} episode(s)"
+        if problems:
+            summary += " — " + "; ".join(problems)
+        if missing:
+            summary += f" — {len(missing)} notification(s) no longer exist"
+        return True, summary, transfer_ids
+
     def trigger_series_webhook_sync(self, notification_id: str, batched_notification_ids: List[str] = None) -> Tuple[bool, str]:
         """
         Trigger sync for a series/anime webhook notification
