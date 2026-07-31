@@ -380,8 +380,6 @@ class ExploreServiceTests(unittest.TestCase):
         self.assertTrue(all(f['action'] == 'fetch' for f in files))
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class PlanHousekeepingTests(unittest.TestCase):
@@ -436,3 +434,6 @@ class _FakePlan:
 
     def to_dict(self):
         return {}
+
+if __name__ == '__main__':
+    unittest.main()

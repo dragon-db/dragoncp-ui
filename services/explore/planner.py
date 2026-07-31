@@ -50,6 +50,15 @@ REMOVE = 'remove'    # move a local file to backup, nothing replaces it
 DEFAULT_REMOVAL_SHARE = 0.20
 
 
+class PlanNotPossible(Exception):
+    """
+    The requested scope cannot be carried out as one rsync run.
+
+    Raised rather than returning a plan that would do the wrong thing quietly.
+    The message is written for the operator and names the way forward.
+    """
+
+
 @dataclass
 class PlanAction:
     action: str
@@ -390,20 +399,25 @@ def _multi_season_plan(operation: str, media_type: str, series_diff: SeriesDiff,
     )
 
     for season in seasons:
-        # Files are addressed relative to the series folder, and land in the
-        # local season folder when its spelling differs from the remote's.
+        # Files are addressed relative to the SERIES folder, which means one
+        # rsync run writes each file back at the same relative path it was read
+        # from. That only works while both sides spell the season the same way.
         prefix = season.remote_folder or ''
-        actions = _episode_actions(season, prefix, include_removals)
-        if prefix and _season_dest_folder(season) != prefix:
-            # The local folder is spelled differently; retarget the fetches.
-            local_prefix = _season_dest_folder(season)
-            for action in actions:
-                if action.action in (FETCH, SUPERSEDE):
-                    plan.warnings.append(
-                        f"'{prefix}' is spelled '{local_prefix}' locally — new files go there."
-                    )
-                    break
-        plan.actions.extend(actions)
+        local_prefix = _season_dest_folder(season)
+        if prefix and local_prefix and local_prefix != prefix:
+            # "Season 01" remotely, "Season 1" locally: one run cannot read from
+            # one and write to the other, and carrying on would create the
+            # remote spelling beside the local folder and split the season in
+            # two. A season-scoped sync roots itself at the local folder and
+            # handles this correctly, so send them there rather than guessing.
+            raise PlanNotPossible(
+                f"'{season.display_name}' is called '{prefix}' on the remote and "
+                f"'{local_prefix}' locally. Syncing the whole series would create "
+                f"'{prefix}' next to it and split the season across two folders. "
+                f"Sync that season on its own instead — it copies into the folder "
+                f"you already have."
+            )
+        plan.actions.extend(_episode_actions(season, prefix, include_removals))
 
     return plan
 

@@ -119,24 +119,34 @@ class ExploreStore:
 
     def take_plan(self, plan_id: str) -> Optional[Dict]:
         """
-        Fetch a plan and mark it used, in one transaction.
+        Claim a plan for execution, or return None if it is already spent.
 
-        Single-use by construction: a replayed id finds `consumed = 1` and gets
-        nothing back, so an approved plan cannot be executed twice.
+        The claim IS the UPDATE: reading the row first and then updating it lets
+        two callers both see `consumed = 0` and both go on to run the same
+        destructive plan. Putting both conditions in the statement's WHERE
+        clause means the database decides, and exactly one caller sees a row
+        change.
+
+        `expires_at` is written by save_plan with `datetime.isoformat()`, so
+        every row shares one format and comparing as text is chronological.
         """
+        now = datetime.now().isoformat()
         with self.db.get_connection() as conn:
+            cursor = conn.execute(
+                '''UPDATE explore_plan SET consumed = 1
+                   WHERE plan_id = ? AND consumed = 0 AND expires_at > ?''',
+                (plan_id, now),
+            )
+            if not cursor.rowcount:
+                # Unknown, already claimed, or expired — all the same answer.
+                conn.commit()
+                return None
             row = conn.execute(
-                'SELECT * FROM explore_plan WHERE plan_id = ? AND consumed = 0',
-                (plan_id,),
+                'SELECT * FROM explore_plan WHERE plan_id = ?', (plan_id,)
             ).fetchone()
-            if not row:
-                return None
-            if datetime.fromisoformat(row['expires_at']) < datetime.now():
-                return None
-            conn.execute('UPDATE explore_plan SET consumed = 1 WHERE plan_id = ?', (plan_id,))
             conn.commit()
 
-        return self._plan_record(row)
+        return self._plan_record(row) if row else None
 
     @staticmethod
     def _plan_record(row) -> Dict:

@@ -346,6 +346,12 @@ class WebhookService:
     # Statuses a manual sync is allowed to act on.
     SYNCABLE_STATUSES = ('pending', 'failed', 'MANUAL_SYNC_REQUIRED', 'manual_sync_required')
 
+    # Statuses whose notification is already tied to a transfer that has not
+    # finished. Relinking one of these would repoint it at the new run and
+    # leave the in-flight transfer with nothing tracking its outcome.
+    IN_FLIGHT_STATUSES = ('syncing', 'QUEUED_SLOT', 'QUEUED_PATH',
+                          'queued_slot', 'queued_path', 'paused')
+
     def sync_notification_group(self, notification_ids: List[str]) -> Tuple[bool, str, List[str]]:
         """
         Sync a group of series/anime notifications as ONE transfer per season.
@@ -388,35 +394,45 @@ class WebhookService:
         messages: List[str] = []
         started = 0
 
+        # Groups that produced no transfer, reported even when others succeed —
+        # a partial failure that only shows up as a success message is worse
+        # than no message at all.
+        problems: List[str] = []
+        episodes = 0
+
         for key, notifications in groups.items():
+            label = f"{key[1]} S{key[2]}"
             actionable = [n for n in notifications
                           if (n.get('status') or '') in self.SYNCABLE_STATUSES]
             if not actionable:
-                messages.append(f"{key[1]} S{key[2]}: nothing to sync")
+                problems.append(f"{label}: nothing to sync")
                 continue
 
             primary = actionable[0]['notification_id']
             # Every id in the group rides on the one transfer, so each episode's
-            # notification tracks the run that actually fetched it.
-            group_ids = [n['notification_id'] for n in notifications]
+            # notification tracks the run that fetched it — except any already
+            # attached to a transfer still in flight, which keeps its own.
+            group_ids = [n['notification_id'] for n in notifications
+                         if (n.get('status') or '') not in self.IN_FLIGHT_STATUSES]
 
             success, message = self.trigger_series_webhook_sync(primary, group_ids)
             messages.append(message)
             if success:
                 started += 1
+                episodes += len(actionable)
                 transfer = self.series_webhook_model.get(primary)
                 if transfer and transfer.get('transfer_id'):
                     transfer_ids.append(transfer['transfer_id'])
-
-        if missing:
-            messages.append(f"{len(missing)} notification(s) no longer exist")
+            else:
+                problems.append(f"{label}: {message}")
 
         if not started:
-            return False, "; ".join(messages) or "Nothing to sync", []
+            return False, "; ".join(messages + problems) or "Nothing to sync", []
 
-        episodes = sum(len(v) for v in groups.values())
         seasons = "season" if started == 1 else "seasons"
         summary = f"Started {started} {seasons} sync for {episodes} episode(s)"
+        if problems:
+            summary += " — " + "; ".join(problems)
         if missing:
             summary += f" — {len(missing)} notification(s) no longer exist"
         return True, summary, transfer_ids

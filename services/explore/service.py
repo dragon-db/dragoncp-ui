@@ -191,6 +191,18 @@ class ExploreService:
         remote_root, local_root = self._roots(media_type)
         series = self._series_diff(media_type, folder)
 
+        try:
+            return self._build_plan(media_type, operation, folder, season_label, codes,
+                                    include_removals, created_by, season_labels,
+                                    series, remote_root, local_root)
+        except planner.PlanNotPossible as error:
+            # Not a failure to compute — a refusal to compute something that
+            # would misplace files. 409: the library has to change first.
+            raise ExploreError(str(error), 409)
+
+    def _build_plan(self, media_type, operation, folder, season_label, codes,
+                    include_removals, created_by, season_labels,
+                    series, remote_root, local_root) -> Dict:
         if operation == planner.SYNC_SERIES:
             plan = planner.plan_series_sync(
                 media_type, series, remote_root, local_root, include_removals)
@@ -259,7 +271,12 @@ class ExploreService:
     @staticmethod
     def _duplicate_codes(scope) -> List[str]:
         """Episodes that match more than one local file — never guessed at."""
-        seasons = getattr(scope, 'seasons', None) or [scope]
+        # A season has no `seasons` attribute and stands in for itself. A series
+        # with an empty season list is still a series: falling back to [scope]
+        # there would look for episodes on an object that has none.
+        seasons = getattr(scope, 'seasons', None)
+        if seasons is None:
+            seasons = [scope]
         seen: Dict[str, int] = {}
         for season in seasons:
             for episode in season.episodes:
@@ -356,7 +373,10 @@ class ExploreService:
 
     def execute(self, plan_id: str, override: bool = False,
                 confirm_text: Optional[str] = None) -> Dict:
-        record = self.store.take_plan(plan_id)
+        # Check first, claim second. Claiming up front spent the plan on every
+        # rejected request, so mistyping the confirmation left nothing to
+        # confirm — the retry met "expired or already used" instead.
+        record = self.store.peek_plan(plan_id)
         if not record:
             raise ExploreError(
                 'That plan has expired or was already used. Re-check and try again.', 409)
@@ -371,6 +391,13 @@ class ExploreService:
             if (confirm_text or '').strip() != expected:
                 raise ExploreError(
                     f"Type '{expected}' to confirm an operation that failed its checks.", 422)
+
+        # Now spend it. The claim is atomic, so a second caller racing this one
+        # loses here rather than running the same plan twice.
+        record = self.store.take_plan(plan_id)
+        if not record:
+            raise ExploreError(
+                'That plan has expired or was already used. Re-check and try again.', 409)
 
         started, message, transfer_id = self.executor.execute(record)
         if not started:

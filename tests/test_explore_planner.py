@@ -14,6 +14,7 @@ from services.explore.compare import compare_library
 from services.explore.inventory import StaticInventory
 from services.explore.planner import (
     FETCH, REMOVE, SUPERSEDE,
+    PlanNotPossible,
     evaluate, plan_download, plan_replace, plan_season_sync, plan_seasons_sync,
     plan_series_sync,
 )
@@ -199,8 +200,6 @@ class FreeSpaceTests(unittest.TestCase):
         self.assertEqual(len(space), 1)
 
 
-if __name__ == '__main__':
-    unittest.main()
 
 
 class SelectedSeasonsTests(unittest.TestCase):
@@ -266,3 +265,50 @@ class ReplaceAnInSyncFileTests(unittest.TestCase):
     def test_a_season_sync_never_re_fetches_a_matching_file(self):
         plan = plan_season_sync('tvshows', self.series, self.season, REMOTE_ROOT, LOCAL_ROOT)
         self.assertTrue(plan.is_empty, 'in-sync files are only re-fetched when asked for')
+
+class SeasonSpellingMismatchTests(unittest.TestCase):
+    """
+    A series-wide run addresses files relative to the SERIES folder, so rsync
+    writes each one back at the path it read it from. When the two sides spell
+    the season differently that would create the remote's spelling next to the
+    local folder and split the season in two.
+    """
+
+    def _series(self, remote_folder, local_folder):
+        return diff_for(
+            [(ep('Show', remote_folder, 'S01E01'), 2 * GB, 100)],
+            [(ep('Show', local_folder, 'S01E02'), 2 * GB, 100)],
+        ).find('Show')
+
+    def test_a_series_sync_refuses_rather_than_splitting_the_season(self):
+        series = self._series('Season 01', 'Season 1')
+        with self.assertRaises(PlanNotPossible) as caught:
+            plan_series_sync('tvshows', series, REMOTE_ROOT, LOCAL_ROOT)
+        message = str(caught.exception)
+        self.assertIn('Season 01', message)
+        self.assertIn('Season 1', message)
+        self.assertIn('on its own', message, 'the operator is told what to do instead')
+
+    def test_ticked_seasons_refuse_on_the_same_grounds(self):
+        series = self._series('Season 01', 'Season 1')
+        with self.assertRaises(PlanNotPossible):
+            plan_seasons_sync('tvshows', series, series.seasons, REMOTE_ROOT, LOCAL_ROOT)
+
+    def test_the_season_scoped_sync_handles_it_and_writes_into_the_local_folder(self):
+        series = self._series('Season 01', 'Season 1')
+        plan = plan_season_sync('tvshows', series, series.seasons[0], REMOTE_ROOT, LOCAL_ROOT)
+
+        self.assertTrue(plan.source_root.endswith('Season 01'), 'reads from the remote name')
+        self.assertTrue(plan.dest_root.endswith('Season 1'), 'writes into the local one')
+        self.assertTrue(all('/' not in rel for rel in plan.transfer_rels),
+                        'bare filenames, so nothing recreates a folder')
+
+    def test_matching_spellings_still_plan_normally(self):
+        series = self._series('Season 01', 'Season 01')
+        plan = plan_series_sync('tvshows', series, REMOTE_ROOT, LOCAL_ROOT)
+        self.assertEqual(len(plan.fetches), 1)
+        self.assertTrue(plan.transfer_rels[0].startswith('Season 01/'))
+
+
+if __name__ == '__main__':
+    unittest.main()
