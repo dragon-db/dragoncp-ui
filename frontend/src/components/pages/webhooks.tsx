@@ -573,7 +573,7 @@ export function WebhooksPage() {
       );
       toast.success(result.message);
     } catch (error) {
-      toast.error(messageFromError(error, "Could not start the sync"));
+      toast.error(getApiErrorMessage(error) || "Could not start the sync");
     } finally {
       notificationsQuery.refetch();
     }
@@ -1068,9 +1068,4 @@ export function WebhooksPage() {
       />
     </div>
   );
-}
-
-function messageFromError(error: unknown, fallback: string): string {
-  const response = (error as { response?: { data?: { message?: string } } })?.response;
-  return response?.data?.message ?? fallback;
 }

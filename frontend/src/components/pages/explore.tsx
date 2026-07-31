@@ -87,6 +87,25 @@ type Pane = "tree" | "table";
 const SCROLL_X =
   "overflow-x-auto overscroll-x-contain whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
 
+/**
+ * Whether the focused element answers Space or Enter itself.
+ *
+ * Covers native controls, anything given a button/link/checkbox role — Base UI
+ * renders its tick box as a `span` with `role="checkbox"` — and anything inside
+ * a dialog or sheet, whose contents are never the page's to drive.
+ */
+function isInteractive(element: HTMLElement | null): boolean {
+  if (!element) return false;
+  if (element.closest("[role=dialog]")) return true;
+  return Boolean(
+    element.closest(
+      'button, a[href], select, [contenteditable=""], [contenteditable="true"], ' +
+        '[role="button"], [role="link"], [role="checkbox"], [role="switch"], ' +
+        '[role="tab"], [role="menuitem"], [role="option"]'
+    )
+  );
+}
+
 export function ExplorePage({ mediaType }: { mediaType: string }) {
   const navigate = useNavigate();
   // A movie folder holds files, not seasons — the season layer is skipped
@@ -393,7 +412,13 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
     function onKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       if (target && ["INPUT", "TEXTAREA"].includes(target.tagName)) return;
-      if (planOpen || isMobile) return;
+      // Space and Enter belong to whatever is focused. Swallowing them here
+      // meant tabbing to a button and pressing Enter moved the page's cursor
+      // instead of pressing the button.
+      if ((event.key === " " || event.key === "Enter") && isInteractive(target)) return;
+      // The actions sheet covers the console below xl; the shortcuts underneath
+      // it are not what the keyboard is aimed at while it is open.
+      if (planOpen || inspectorOpen || isMobile) return;
       if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", " ", "Enter"].includes(event.key))
         return;
       event.preventDefault();
@@ -445,6 +470,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
     togglePick,
     treeOrder,
     isMobile,
+    inspectorOpen,
   ]);
 
   // --- the live remote path ------------------------------------------------

@@ -216,6 +216,8 @@ export function useWebhookNotificationJson(notificationId: string) {
  * notifications to consider.
  */
 export function useTriggerWebhookGroupSync() {
+  const queryClient = useQueryClient();
+
   return useMutation({
     mutationFn: async (notificationIds: string[]) => {
       const response = await api.post<{
@@ -226,6 +228,12 @@ export function useTriggerWebhookGroupSync() {
         notification_ids: notificationIds,
       });
       return response.data;
+    },
+    // Same refresh as a single sync: the group's rows and the transfer list
+    // both change the moment this returns.
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["webhooks"] });
+      queryClient.invalidateQueries({ queryKey: ["transfers"] });
     },
   });
 }
