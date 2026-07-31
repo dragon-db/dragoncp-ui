@@ -11,24 +11,47 @@ A walkthrough of the main operator flows. Moved here from the repository README.
 - The interface will load available folders from your configured paths
 
 ### 3. Browse and Select
-- Navigate through folders and seasons using the breadcrumb navigation
-- For TV Shows and Anime, you'll see season folders
-- For Movies, you'll see movie folders directly
+The Explore page is a three-pane console: the library on the left, what is
+inside the selected item in the middle, and what you can do with it on the
+right. On a phone you see one pane at a time and the actions open as a sheet.
+
+- Pick a series to see its seasons; pick a season to see its episodes
+- Movies have no season layer — picking one shows its files straight away
+- Every episode carries a label from a real comparison of both libraries:
+  **In sync**, **Missing**, **Upgraded** (the remote has a different file) or
+  **Local only** (the remote no longer has it)
+- Tick boxes select seasons or files; ticking is allowed whether or not
+  something is already in sync
 
 ### 4. Transfer Options
 
-#### Sync Entire Folder
-- Transfers all content from the selected folder/season
-- Uses optimized rsync settings for large media files
+Nothing that can overwrite or remove a local file runs without a review step.
+Whichever action you choose, you get a plan first: what would be downloaded,
+what would be replaced, what would be moved to backup, and a set of safety
+checks. A plan that fails its checks needs you to type the season or series
+name before it will run.
 
-#### Manual Episode Sync
-- Browse available episodes in a season
-- Select specific episodes to download
-- Useful for updating individual episodes
+#### Sync
+- **Sync the whole series** — one plan, grouped by season, removals listed first
+- **Sync seasons** — tick several seasons; still one plan and one transfer
+- **Sync this season** — download what is missing, replace what changed
+- **Download & replace only** — the same, but leaves local files the remote no
+  longer has
 
-#### Download Single Episode
-- Direct download of a specific episode
-- Creates necessary directories automatically
+#### Pick individual files
+- Tick episodes and choose **Download** (adds only what is missing, never
+  overwrites) or **Replace** (backs up the local copy, then brings the remote one)
+- Replacing a file that already matches is how you re-fetch a damaged copy
+
+#### Dry run
+- Available for a series, a set of seasons, one season, or ticked files
+- Runs the plan's own rsync command with `--dry-run` and reports what rsync
+  says, without moving anything — and leaves the plan runnable afterwards
+
+#### Backups
+- The actions panel lists what earlier syncs moved aside for whatever you are
+  looking at, so you can see a replaced episode is still recoverable
+- Read-only here; restoring is done on the Backups page
 
 ### 5. Monitor Transfers
 - Real-time progress updates via WebSocket
@@ -41,5 +64,6 @@ A walkthrough of the main operator flows. Moved here from the repository README.
 ## Related
 
 - [Installation](installation.md)
-- [Media browsing](../features/media-browser/README.md)
+- [Explore](../features/explore/README.md) — browsing, comparing and planning a sync
+- [Backups and restore](../features/backups/README.md)
 - [Transfers](../features/transfers/README.md)

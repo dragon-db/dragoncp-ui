@@ -1,5 +1,23 @@
 # Media Browsing
 
+> **Superseded by Explore.** The screen described here no longer exists:
+> `/media/$type` now renders the Explore page, and
+> `frontend/src/components/pages/media-browser.tsx` and `src/hooks/useMedia.ts`
+> were deleted along with the route change. Read
+> [`../explore/README.md`](../explore/README.md) for how browsing works today.
+>
+> **The backend described here is still live.** `routes/media.py` still serves
+> `/media-types`, `/folders`, `/seasons`, `/episodes`, `/sync-status` and the
+> dry-run endpoint, and `ssh.py` still owns the browse session that Explore also
+> uses. They are kept until Explore is proven in production — see TASK-010 — so
+> this document remains accurate about the server side and is the reference for
+> anything still calling those routes.
+>
+> What Explore changed, and why: one `find` over the remote instead of a listing
+> call per folder; per-episode labels from a real comparison of both libraries
+> instead of a badge derived from mtimes; and an approved plan between you and
+> anything destructive.
+
 Media browsing is the part of DragonCP that lets you walk your remote library
 from the web UI: pick a library (Movies, TV Shows, Anime), see the folders on
 the remote server with a badge saying whether that title looks synced, drill
@@ -10,7 +28,7 @@ cached in the database. The sync badge is the one piece of local knowledge: it
 comes from comparing the newest file on the remote against the last completed
 transfer DragonCP recorded for that folder or season.
 
-Last updated: 2026-07-28
+Last updated: 2026-07-28 (superseded 2026-07-31)
 
 ## Where it lives
 

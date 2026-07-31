@@ -18,7 +18,7 @@ info:
     `GET /` is not listed: it renders the legacy HTML page and is not an API
     route.
 
-    Endpoint count: 83 method+path operations.
+    Endpoint count: 95 method+path operations.
 
     ## Authentication
 
@@ -69,6 +69,8 @@ tags:
     description: Backend log reading and download
   - name: Simulation
     description: Run the real transfer pipeline against throwaway files
+  - name: Explore
+    description: Compare the remote library with the local one and plan a sync
 
 security:
   - bearerAuth: []
@@ -2574,5 +2576,292 @@ paths:
                     type: integer
                   files_removed:
                     type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /explore/libraries:
+    get:
+      tags: [Explore]
+      summary: The three libraries, their configured paths and when each was last compared
+      responses:
+        '200':
+          description: Library list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  libraries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, enum: [movies, tvshows, anime] }
+                        label: { type: string }
+                        remote_path: { type: string }
+                        local_path: { type: string }
+                        configured: { type: boolean }
+                        local_exists: { type: boolean }
+                        checked_at: { type: string, nullable: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /explore/tree/{media_type}:
+    get:
+      tags: [Explore]
+      summary: Every series in one library with rolled-up status and its seasons
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [movies, tvshows, anime] }
+        - name: refresh
+          in: query
+          required: false
+          description: "1 forces a fresh comparison; rate limited"
+          schema: { type: string }
+      responses:
+        '200':
+          description: Series list, with `stale` true when served from cache
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: No remote browse session
+        '429':
+          description: Rate limited (12 comparisons per minute per user)
+
+  /explore/series/{media_type}/{folder}:
+    get:
+      tags: [Explore]
+      summary: One series with its seasons, from a fresh comparison
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Series with seasons
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown library or series
+        '429':
+          description: Rate limited
+
+  /explore/season/{media_type}/{folder}/{season}:
+    get:
+      tags: [Explore]
+      summary: One season's episodes, each labelled IN_SYNC / MISSING / UPGRADED / LOCAL_ONLY
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+        - name: season
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Season with episodes
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown library, series or season
+        '429':
+          description: Rate limited
+
+  /explore/history/{media_type}/{folder}:
+    get:
+      tags: [Explore]
+      summary: Past Explore runs for this series, with per-file records
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+        - name: season
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Runs, newest first
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /explore/backups/{media_type}/{folder}:
+    get:
+      tags: [Explore]
+      summary: Copies an earlier sync moved aside for this series or season (read-only)
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+        - name: season
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: "Backup runs; shown_count/shown_size describe what survives the season filter"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /explore/plan:
+    post:
+      tags: [Explore]
+      summary: Evaluate an operation and store it for approval; writes nothing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [media_type, operation, folder]
+              properties:
+                media_type: { type: string, enum: [movies, tvshows, anime] }
+                operation:
+                  type: string
+                  enum: [sync_series, sync_seasons, sync_season, download, replace]
+                folder: { type: string }
+                season: { type: string, nullable: true }
+                seasons:
+                  type: array
+                  items: { type: string }
+                codes:
+                  type: array
+                  items: { type: string }
+                include_removals: { type: boolean, default: true }
+      responses:
+        '200':
+          description: The plan, its verdict, safety checks and plan_id
+        '400':
+          description: Unknown operation or invalid folder name
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown library, series or season
+        '409':
+          description: No remote browse session
+        '429':
+          description: Rate limited
+        '502':
+          description: The remote listing failed
+
+  /explore/dry-run:
+    post:
+      tags: [Explore]
+      summary: Rehearse a plan with rsync --dry-run; leaves the plan runnable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id]
+              properties:
+                plan_id: { type: string }
+      responses:
+        '200':
+          description: "What rsync says, reconciled against the plan"
+        '400':
+          description: plan_id missing
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The plan expired or was already used
+        '429':
+          description: Rate limited
+        '503':
+          description: Dry run unavailable on this server
+
+  /explore/transfer:
+    post:
+      tags: [Explore]
+      summary: Execute a stored plan; consumes it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id]
+              properties:
+                plan_id: { type: string }
+                override:
+                  type: boolean
+                  description: Required when the plan failed its safety checks
+                confirm_text:
+                  type: string
+                  description: Must equal the season label, or the series name when there is none
+      responses:
+        '200':
+          description: "Started or queued; transfer_id is null for a removals-only plan"
+        '400':
+          description: plan_id missing
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The plan expired or was already used
+        '422':
+          description: Failed its checks and needs an override plus the typed confirmation
+        '500':
+          description: The run could not be started; any moved files were rolled back
+
+  /webhook/series/notifications/sync-batch:
+    post:
+      tags: [Webhooks - Management]
+      summary: Sync a group of series/anime notifications as one transfer per season
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [notification_ids]
+              properties:
+                notification_ids:
+                  type: array
+                  items: { type: integer }
+      responses:
+        '200':
+          description: One entry per season started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  message: { type: string }
+                  transfers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        season: { type: integer, nullable: true }
+                        notification_id: { type: integer }
+                        transfer_id: { type: string, nullable: true }
+        '400':
+          description: Empty or non-list notification_ids
         '401':
           $ref: '#/components/responses/Unauthorized'

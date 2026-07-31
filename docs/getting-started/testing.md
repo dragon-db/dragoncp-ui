@@ -1,7 +1,7 @@
 # Automated Tests
 
 Last updated: 2026-07-28
-Primary files: `tests/test_transfer_logging.py`, `tests/test_transfer_listing.py`, `tests/test_simulation_service.py`, `tests/test_rename_service.py`
+Primary files: everything under `tests/` — fourteen modules, 169 tests
 
 ## Purpose
 
@@ -52,7 +52,7 @@ why the tests work from any working directory without an installed package.
 ### Why the tests hand the database a relative path
 
 `DatabaseManager.__init__` joins whatever path it is given onto the repository
-root. Three of the four modules therefore pass
+root. The modules that need a scratch database therefore pass
 `os.path.relpath(db_path, REPO_ROOT)` for a database inside a temporary
 directory, so that the join resolves back out to the temp dir. Nothing is
 written into the checkout and no test touches `dragoncp.db`.
@@ -62,7 +62,7 @@ run. That is the application's own logging, not a failure.
 
 ## What each module covers
 
-### `tests/test_transfer_logging.py` - rsync output storage (6 tests)
+### `tests/test_transfer_logging.py` - rsync output storage (9 tests)
 
 This is the regression suite for the log-throttling work. rsync prints a
 progress line several times a second, each one superseding the last; storing
@@ -151,7 +151,7 @@ for the feature itself.
 The transfer coordinator is a `MagicMock` here, and `service.root` is redirected
 into a temporary directory so nothing is written into the checkout.
 
-### `tests/test_rename_service.py` - the rename webhook (3 tests)
+### `tests/test_rename_service.py` - the rename webhook (5 tests)
 
 Exercises `RenameService.process_rename_webhook` against a real temporary media
 tree, using a realistic Sonarr-style `Rename` payload with a
@@ -171,9 +171,44 @@ tree, using a realistic Sonarr-style `Rename` payload with a
   then asserts the files were still moved - so the operator gets a failure they
   can act on rather than a silent divergence between disk and database.
 
+### `tests/test_listing_pagination.py` - paging the arrivals and transfer lists (19 tests)
+
+Pins that filtering, searching and paging all happen in SQL rather than in
+Python after the fact, that a page boundary cannot drop or duplicate a row, and
+that bulk clear refuses what it should.
+
+### `tests/test_test_mode_and_compaction.py` - the test-mode flag and log compaction (8 tests)
+
+Pins that `TEST_MODE` is read in exactly one place and only accepts the values
+documented in [`../reference/test-mode.md`](../reference/test-mode.md), and that
+compacting a stored transfer log never discards a real log line.
+
+### `tests/test_webhook_group_sync.py` - "Sync all" on a webhook group (8 tests)
+
+Pins the rule that a group syncs as **one transfer per season**: six episode
+notifications for one season must not produce six transfers, two seasons must
+not be merged into one folder sync, two series stay apart, the same season
+number in different libraries stays apart, and an already-completed episode
+still rides along so it links to the run that fetched it.
+
+### The Explore suite (7 modules, 105 tests)
+
+| Module | Tests | Pins |
+|---|---|---|
+| `test_explore_identity.py` | 15 | Filename → episode identity, checked against the real filename shapes in the library, including anime absolute numbering and `Specials` as season 0 |
+| `test_explore_compare.py` | 15 | The four labels, seasons paired by **number** not folder spelling, and local-only files not breaking a "Synced" verdict |
+| `test_explore_planner.py` | 16 | What a plan does and what the safety checks refuse; multi-season plans; that only an explicit replace re-fetches a file that already matches |
+| `test_explore_service.py` | 17 | An end-to-end run with the SSH boundary faked, and that approved plans are single-use, expire, and get purged |
+| `test_explore_routes.py` | 9 | The HTTP layer: real status codes, rate limiting, and that a plan id is the only thing the client may quote |
+| `test_explore_dryrun.py` | 24 | Reading rsync's itemised `--dry-run` output, and reconciling it with the plan — in particular that a file rsync reports as unchanged is still shown as replaced when the plan backs its local copy up first |
+| `test_explore_backups.py` | 11 | Scoping backups to a series and season, including the two traps taken from real production data: a series title the parser mangles, and season numbers stored zero-padded as text |
+
+These are the only modules that test anything under `routes/`.
+
 ## What the tests deliberately do not cover
 
-Nothing under `routes/` is tested. There are no HTTP-level tests: no Flask test
+Nothing under `routes/` is tested **except `routes/explore.py`**, which has
+`test_explore_routes.py`. There are no HTTP-level tests elsewhere: no Flask test
 client, no request/response assertions, no authentication or webhook-signature
 tests. `auth.py`, `webhook_auth.py` and `security.py` have no test module.
 
@@ -183,11 +218,15 @@ logging tests bypass process launch entirely by feeding a fake process into the
 monitor loop.
 
 `services/queue_manager.py`, `services/transfer_coordinator.py`,
-`services/webhook_service.py`, `services/auto_sync_scheduler.py`,
-`services/backup_service.py` and `services/notification_service.py` have no
-module under `tests/`. Path-lock and slot-cap behaviour, queue promotion,
-restart recovery, auto-sync batching, backup restore and Discord notifications
-are all unverified by the suite.
+`services/auto_sync_scheduler.py`, `services/backup_service.py` and
+`services/notification_service.py` have no module under `tests/`. Path-lock and
+slot-cap behaviour, queue promotion, restart recovery, auto-sync batching,
+backup restore and Discord notifications are all unverified by the suite.
+`services/webhook_service.py` is covered only for group sync.
+
+The rsync command Explore builds is asserted on indirectly — the dry run runs
+the same command builder — but no test launches rsync or opens an SSH
+connection.
 
 There are no frontend tests at all - no component, routing or API-client tests.
 

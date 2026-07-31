@@ -34,6 +34,17 @@ up on startup without a migration script:
   (pause/resume); `is_simulation`, `simulation_bwlimit` (simulation tool)
 - `radarr_webhook.is_simulation`, `sonarr_webhook.is_simulation` - notifications
   created by the simulation tool, removed by its cleanup
+- `transfers`: `explore_files_from`, `explore_mode`, `explore_plan_id` - an
+  Explore run copies an approved list of files rather than a whole directory, so
+  rsync is given `--files-from` and never `--delete`. Stored on the row so a
+  queued, promoted, resumed or restarted run rebuilds the same command.
+
+### Explore Tables
+
+Added in the same startup path, created with `CREATE TABLE IF NOT EXISTS`:
+`explore_snapshot` (the cached comparison), `explore_plan` (an evaluated
+operation awaiting approval) and `transfer_file` (what a run did, file by file).
+Each is documented in full below.
 
 ### Queue-Related Additions/Changes
 - `transfers.queue_reason` stores whether a queued transfer is blocked by `path` or `slot`
@@ -521,6 +532,131 @@ CREATE TABLE backup_file (
 
 **Context Fields Purpose:**
 The `context_*` fields are used for intelligent restore operations. They store metadata about the file's context (media type, title, season, episode, etc.) to enable context-aware restore queries that can match files to their original locations even if paths have changed. These fields are essential for the restore functionality and are kept in v2.
+
+---
+
+## Table: `explore_snapshot`
+
+**Purpose:** The cached result of comparing one library's remote and local sides,
+so the Explore page paints instantly and can say when it last checked.
+
+**Schema:**
+```sql
+CREATE TABLE explore_snapshot (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    media_type TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    remote_ok INTEGER DEFAULT 1,
+    local_ok INTEGER DEFAULT 1,
+    error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(media_type, scope)
+)
+```
+
+**Column Descriptions:**
+- `media_type` - `movies`, `tvshows` or `anime`
+- `scope` - always `library` today; the column exists so a narrower cache can be
+  added without a migration
+- `payload` - the whole comparison as JSON: every series with its seasons
+- `remote_ok` / `local_ok` - whether each side could be read at all
+- `error` - why a side failed, when one did
+- `created_at` - when the comparison ran; surfaced as "last checked"
+
+One row per `(media_type, scope)`: `save_snapshot` upserts on that unique
+constraint rather than accumulating history, so this table never grows.
+
+**Model:** `ExploreStore` in `services/explore/store.py`
+
+---
+
+## Table: `explore_plan`
+
+**Purpose:** An evaluated operation awaiting approval. This table is the
+security boundary for destructive work — the client asks for a plan, the server
+computes and stores it here, and execution quotes only its id.
+
+**Schema:**
+```sql
+CREATE TABLE explore_plan (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id TEXT UNIQUE NOT NULL,
+    media_type TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    series TEXT NOT NULL,
+    season_label TEXT,
+    payload TEXT NOT NULL,
+    safe INTEGER DEFAULT 0,
+    consumed INTEGER DEFAULT 0,
+    created_by TEXT,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+**Column Descriptions:**
+- `plan_id` - `plan_<16 hex>`, the only handle the client ever holds
+- `operation` - `sync_series`, `sync_seasons`, `sync_season`, `download`, `replace`
+- `season_label` - the season the plan is scoped to; NULL for series-wide and
+  multi-season plans
+- `payload` - JSON holding both the reviewable plan and the frozen execution
+  spec, so the run cannot drift from what was approved
+- `safe` - whether every safety check passed; a `0` needs an explicit override
+  and a typed confirmation to execute
+- `consumed` - set to 1 by `take_plan` inside the same transaction that reads
+  the row, which is what makes a plan single-use
+- `created_by` - the authenticated user who asked for it
+- `expires_at` - 15 minutes after creation (`PLAN_TTL_MINUTES`)
+
+`peek_plan` reads a row **without** consuming it — used only by the dry run, so
+rehearsing an operation does not spend it. Expired rows are deleted on the next
+`save_plan`.
+
+**Indexes:**
+- `idx_explore_plan_expiry` on `expires_at` - purging expired plans
+
+**Model:** `ExploreStore` in `services/explore/store.py`
+
+---
+
+## Table: `transfer_file`
+
+**Purpose:** What one run did, file by file. Backs the per-series and per-season
+history that Explore shows.
+
+**Schema:**
+```sql
+CREATE TABLE transfer_file (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    transfer_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    rel_path TEXT NOT NULL,
+    size INTEGER DEFAULT 0,
+    code TEXT,
+    season_label TEXT,
+    backup_path TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+**Column Descriptions:**
+- `transfer_id` - the run these records belong to
+- `action` - `fetch` (copied in), `supersede` (local copy backed up, then
+  replaced) or `remove` (local copy backed up, nothing replaced it)
+- `rel_path` - path relative to the run's source or destination root
+- `code` - the episode identity, e.g. `S05E06`; NULL for files with no episode
+- `season_label` - which season the file belongs to, for grouping a series run
+- `backup_path` - where the displaced local copy was moved, for `supersede` and
+  `remove`
+
+**Indexes:**
+- `idx_transfer_file_transfer` on `transfer_id` - fetching a run's records
+
+**Model:** `ExploreStore` in `services/explore/store.py`
+
+Distinct from `backup_file`: this records what a run *did*, keyed by transfer;
+`backup_file` indexes what is *on disk* in a backup directory, keyed by backup.
 
 ---
 

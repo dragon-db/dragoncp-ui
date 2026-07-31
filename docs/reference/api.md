@@ -1099,6 +1099,42 @@ Path param:
 
 Output JSON: same shape as series sync endpoint.
 
+### POST `/webhook/series/notifications/sync-batch`
+What it does: syncs a whole group of series/anime notifications as **one
+transfer per season**, which is what "Sync all" on a group calls.
+
+Auth: required.
+
+A series transfer is scoped to the season *folder*, so one run brings the whole
+season down. Posting each notification separately produced one transfer per
+episode against a single destination — the queue serialised them on the path
+conflict and all but the first moved zero bytes.
+
+The grouping is re-derived on the server from each notification's
+`(media_type, series_title_slug, season_number)`. The client does not get to
+name the folder, because the resulting rsync runs with `--delete`. The whole
+group is submitted, including notifications that are already `completed`, so
+they end up linked to the run that actually fetched them.
+
+Input JSON:
+```json
+{"notification_ids": [12, 13, 14, 15, 16, 17]}
+```
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "message": "Started 1 transfer(s) for 6 episode(s)",
+  "transfers": [{"season": 1, "notification_id": 13, "transfer_id": "transfer_1757226652"}]
+}
+```
+
+Returns 400 for an empty list, and reports ids that no longer exist in
+`message` rather than failing the whole call. Notifications whose status is
+already terminal are skipped; if none of them can be synced the call returns
+`status: "error"` with `nothing to sync`.
+
 ### POST `/webhook/notifications/{notification_id}/complete`
 What it does: manually marks movie notification as completed.
 
@@ -1898,6 +1934,301 @@ Output JSON:
 
 ---
 
+## 12) Explore Endpoints
+
+Explore compares the remote library against the local one and turns the
+difference into a plan you approve before anything is written. It replaces the
+browsing half of section 3 in the UI; those endpoints still exist and are still
+served, but nothing in the React app calls them any more.
+
+Two rules apply across this whole section:
+
+- **The client never describes work.** It asks for a plan, the server computes
+  and stores it, and every later call quotes the plan's id. A plan is single-use
+  and expires 15 minutes after it is made.
+- **Real status codes.** 400 bad input, 401 no session, 404 unknown
+  library/series/season, 409 no remote browse session or an expired/used plan,
+  422 needs an explicit override, 429 rate limited, 502 the remote listing
+  failed. The `plan`, `dry-run`, `series` and `season` endpoints and
+  `tree?refresh=1` share a per-user allowance of **12 calls per minute**,
+  because each walks the remote library.
+
+### GET `/explore/libraries`
+What it does: the three libraries with both configured paths, whether each is
+usable, and when it was last compared.
+
+Auth: required.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "libraries": [
+    {
+      "id": "tvshows",
+      "label": "TV Shows",
+      "remote_path": "/home/user/media/TV Shows",
+      "local_path": "/mnt/media/tv_shows",
+      "configured": true,
+      "local_exists": true,
+      "checked_at": "2026-07-31T09:12:04.113402"
+    }
+  ]
+}
+```
+
+### GET `/explore/tree/{media_type}`
+What it does: every series in one library with its rolled-up status, plus each
+series' seasons so several can stay expanded at once.
+
+Query: `refresh=1` forces a fresh comparison (rate limited). Without it the
+cached snapshot is returned and `stale` is `true`.
+
+Auth: required.
+
+Output JSON (abridged):
+```json
+{
+  "status": "success",
+  "media_type": "tvshows",
+  "checked_at": "2026-07-31T09:12:04.113402",
+  "stale": false,
+  "series": [
+    {
+      "name": "The Boys (2019)",
+      "status": "PARTIAL_SYNC",
+      "season_count": 5,
+      "exists_locally": true,
+      "remote_bytes": 214748364800,
+      "misplaced_count": 0,
+      "counts": {"in_sync": 40, "missing": 2, "upgraded": 1, "local_only": 0,
+                 "remote_total": 43, "incoming_bytes": 6442450944,
+                 "removable_bytes": 0},
+      "seasons": [ ... ]
+    }
+  ]
+}
+```
+
+`status` is one of `SYNCED`, `PARTIAL_SYNC`, `OUT_OF_SYNC`, `NO_INFO`.
+
+### GET `/explore/series/{media_type}/{folder}`
+What it does: one series with its seasons, from a fresh comparison.
+
+Auth: required. Rate limited.
+
+Not called by the React app — the tree already carries seasons — but it is the
+middle step of the resource hierarchy and is covered by tests.
+
+### GET `/explore/season/{media_type}/{folder}/{season}`
+What it does: one season's episodes, each labelled.
+
+Auth: required. Rate limited.
+
+Output JSON (abridged):
+```json
+{
+  "status": "success",
+  "season": {
+    "series": "The Boys (2019)",
+    "season": 5,
+    "name": "Season 05",
+    "status": "PARTIAL_SYNC",
+    "misplaced": [],
+    "episodes": [
+      {
+        "label": "MISSING",
+        "code": "S05E06",
+        "season": 5,
+        "episode": 6,
+        "renamed": false,
+        "remote_name": "The Boys - S05E06 - ... .mkv",
+        "remote_size": 2051014656,
+        "local_name": null,
+        "local_size": null
+      }
+    ]
+  }
+}
+```
+
+`label` is one of `IN_SYNC`, `MISSING`, `UPGRADED`, `LOCAL_ONLY`.
+
+For `movies` the season layer is a single pseudo-season named `Files`.
+
+### GET `/explore/history/{media_type}/{folder}`
+What it does: past Explore runs for this series, newest first, each with the
+per-file records of what it did.
+
+Query: `season=<season folder>` narrows to one season.
+
+Auth: required.
+
+### GET `/explore/backups/{media_type}/{folder}`
+What it does: copies an earlier sync moved aside for this series, so they can be
+seen from the season you are looking at. **Read-only** — restoring is section 8.
+
+Query: `season=<season folder>` narrows to one season.
+
+Auth: required.
+
+Output JSON (abridged):
+```json
+{
+  "status": "success",
+  "backups": [
+    {
+      "backup_id": "transfer_1756549539",
+      "media_type": "tvshows",
+      "folder_name": "The Boys (2019)",
+      "season_name": "Season 05",
+      "status": "ready",
+      "created_at": "2026-05-20T09:23:11.000000Z",
+      "file_count": 3,
+      "shown_count": 1,
+      "shown_size": 2165283996,
+      "files": [
+        {
+          "relative_path": "The Boys - S05E05 - One-Shots ... .mkv",
+          "original_path": "/mnt/media/tv_shows/The Boys (2019)/Season 05/...",
+          "file_size": 2165283996,
+          "season": 5,
+          "episode": 5,
+          "code": "S05E05"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`file_count` is the whole run; `shown_count`/`shown_size` describe what is left
+after narrowing to the requested season. Matching is on the backup's
+`folder_name` and each **file's** own parsed season — see
+[`../features/explore/README.md`](../features/explore/README.md) for why neither
+`context_series_title` nor the run's `season_name` can be used.
+
+### POST `/explore/plan`
+What it does: evaluates an operation against a fresh comparison, stores it, and
+returns the plan with its verdict and safety checks. Nothing is written.
+
+Auth: required. Rate limited.
+
+Input JSON:
+```json
+{
+  "media_type": "tvshows",
+  "operation": "sync_season",
+  "folder": "The Boys (2019)",
+  "season": "Season 05",
+  "seasons": ["Season 04", "Season 05"],
+  "codes": ["S05E06"],
+  "include_removals": true
+}
+```
+
+| Field | Applies to | Notes |
+|---|---|---|
+| `operation` | all | `sync_series`, `sync_seasons`, `sync_season`, `download`, `replace` |
+| `season` | `sync_season`, `download`, `replace` | Season folder name; ignored for movies |
+| `seasons` | `sync_seasons` | Season folder names; one plan covers them all |
+| `codes` | `download`, `replace` | Episode codes such as `S05E06` |
+| `include_removals` | the sync operations | `false` leaves local-only files alone |
+
+Output JSON (abridged):
+```json
+{
+  "status": "success",
+  "plan": {
+    "plan_id": "plan_9f2c1ab34de5f678",
+    "operation": "sync_season",
+    "verdict": "This season sync downloads 2, replaces 1, removes nothing.",
+    "safe": true,
+    "is_destructive": true,
+    "is_empty": false,
+    "requires_override": false,
+    "counts": {"fetch": 2, "supersede": 1, "remove": 0,
+               "incoming_bytes": 6442450944, "backup_bytes": 2147483648},
+    "checks": [{"id": "free_space", "label": "The destination has room",
+                "passed": true, "detail": "6.0 GB incoming, 900.1 GB free"}],
+    "warnings": [],
+    "groups": [{"season_label": "Season 05", "fetch": 2, "supersede": 1,
+                "remove": 0, "actions": [ ... ]}]
+  }
+}
+```
+
+### POST `/explore/dry-run`
+What it does: runs the plan's own rsync command with `--dry-run` and reports
+what rsync says. Changes nothing, and **leaves the plan runnable** — rehearsing
+an operation must not be what stops you performing it.
+
+Auth: required. Rate limited.
+
+Input JSON: `{"plan_id": "plan_9f2c1ab34de5f678"}`
+
+Output JSON (abridged):
+```json
+{
+  "status": "success",
+  "plan_id": "plan_9f2c1ab34de5f678",
+  "report": {
+    "ok": true,
+    "ran": true,
+    "exit_code": 0,
+    "verdict": "rsync agrees: 2 file(s) would be downloaded, 1 would be replaced, with the current copy backed up first.",
+    "summary": {"new": 2, "replaced": 1, "unchanged": 0, "directories": 0,
+                "deleted": 0, "backed_up": 1, "removed": 0,
+                "incoming_bytes": 6442450944, "backup_bytes": 2147483648,
+                "removed_bytes": 0, "media_new": 2, "media_replaced": 1},
+    "files": [{"change": "new", "rel": "Season 05/...mkv", "size": 3221225472,
+               "itemize": ">f+++++++++", "is_media": true}],
+    "backups": [ ... ],
+    "removals": [ ... ],
+    "warnings": [],
+    "raw_tail": "Number of files: 3\n..."
+  }
+}
+```
+
+`ran` is `false` when the plan only removes files: there is nothing to transfer,
+so rsync is never invoked and the local changes are reported from the plan.
+`change` is one of `new`, `replaced`, `unchanged`, `deleted`, `directory`; an
+`itemize` of `after-backup` marks a file rsync could not see as changing because
+the plan moves its local copy aside first.
+
+### POST `/explore/transfer`
+What it does: executes a stored plan. Moves what the plan supersedes or removes
+into that run's backup directory, then hands the file list to the normal
+transfer pipeline. Consumes the plan.
+
+Auth: required.
+
+Input JSON:
+```json
+{"plan_id": "plan_9f2c1ab34de5f678", "override": false, "confirm_text": ""}
+```
+
+A plan that failed its safety checks needs `override: true` **and**
+`confirm_text` equal to the season label, or the series name when there is none;
+anything else returns 422.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "message": "Transfer started",
+  "transfer_id": "explore_4b91cd77a0e2",
+  "operation": "sync_season",
+  "series": "The Boys (2019)"
+}
+```
+
+`transfer_id` is `null` when the plan only removed files — nothing was queued,
+and the run is recorded as a completed `explore_prune` transfer instead.
+
+---
+
 ## Full Endpoint Coverage Checklist
 
 This document covers all `/api/*` routes currently implemented in backend Python route decorators:
@@ -1905,13 +2236,14 @@ This document covers all `/api/*` routes currently implemented in backend Python
 - 8 config/SSH endpoints
 - 8 media endpoints
 - 13 transfer endpoints (including `pause`, `resume` and `bulk-delete`)
-- 31 webhook-related endpoints (receivers, management, rename, settings, Discord)
+- 32 webhook-related endpoints (receivers, management, rename, settings, Discord)
 - 7 backup endpoints
 - 7 debug endpoints
 - 4 simulation endpoints
 - 2 server log endpoints
+- 9 explore endpoints
 
-Total covered: 85 method+path API endpoints.
+Total covered: 95 method+path API endpoints.
 
 Counts verified against the `@*_bp.route`/`@app.route` decorators in `routes/`
 and `app.py`, counting one per method+path. `GET /` is excluded: it serves the

@@ -39,7 +39,7 @@ file, but a file value still reaches every reader.
 
 ## Every path that can write to a media library
 
-Audited 2026-07-29 by reading every `os.rename`, `os.remove`, `os.unlink`,
+Audited 2026-07-31 by reading every `os.rename`, `os.remove`, `os.unlink`,
 `shutil.rmtree`, `shutil.move`, `os.makedirs` and `subprocess` call under
 `services/`, `routes/` and `config.py`. Nothing outside this table touches
 media.
@@ -55,6 +55,8 @@ media.
 | Restore destination directory creation | `services/backup_service.py:169` | Printed, not created |
 | Restore temporary file-list write and removal | `services/backup_service.py:247`, `:273` | Printed, not written |
 | Backup directory removal, two call sites | `services/backup_service.py:333`, `:358` | Skipped |
+| Explore — moving superseded/removed local files into backup before a run | `services/explore/executor.py:87` | Skipped, printed as `TEST_MODE: would move to backup`. **This gate is load-bearing:** the rsync is dry, so moving the local copies anyway would strand them — old copy gone, new one never fetched |
+| Explore transfer rsync | `services/transfer_service.py:838` | `--dry-run` inserted into the same command the real run uses |
 | Config file write | `config.py:124` | Printed; in-memory config still updates |
 | `templates/` and `static/` creation on direct startup | `app.py:505` | Skipped |
 
@@ -63,6 +65,8 @@ Two paths need no gate because they are never destructive:
 | What it does | Where | Why it is safe in every mode |
 |---|---|---|
 | Media validation rsync, behind `POST /api/media/dry-run` | `services/transfer_service.py:299` | `--dry-run` is hardcoded into the command, not conditional |
+| Explore dry run, behind `POST /api/explore/dry-run` | `services/transfer_service.py` (`run_explore_dry_run`) | `--dry-run` is inserted unconditionally; the plan is read without being consumed |
+| Explore plan and dry-run file lists | `services/explore/executor.py` (`_work_dir`), `services/explore/service.py` (`_files_from`) | Writes only a list of filenames under `BACKUP_PATH/.explore-plans/`; never touches a media directory |
 | Disk and tooling probes — `df -h`, `which rsync`, `rsync --version` | `routes/debug.py:134`, `:135`, `:288` | Read-only commands |
 
 Nothing deletes anything on the remote server. The only remote access is
@@ -99,7 +103,15 @@ dry. This is why simulations are safe to run against production — see
   its temporary file list, so rsync then exits non-zero and the restore reports
   failure. See [../features/backups/README.md](../features/backups/README.md).
 - **It does not stop the database being written.** Transfers, notifications and
-  logs are recorded exactly as normal. Test mode protects files, not rows.
+  logs are recorded exactly as normal. Test mode protects files, not rows. An
+  Explore run in test mode still creates its transfer row, its per-file records
+  and its history entry — they will say the run completed, because it did; it
+  simply moved no bytes.
+- **It does not stop Discord notifications.** `services/notification_service.py`
+  never reads the flag, so a completed test-mode transfer sends a real "transfer
+  finished" embed to the configured webhook. Repeated rehearsals will post
+  repeatedly. Turn the Discord webhook off in Settings while testing if that
+  matters.
 
 ## Confirming it from a running instance
 
