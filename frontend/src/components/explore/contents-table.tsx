@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { EpisodeLabel, StatusBadge } from "./explore-bits";
 import { formatBytes } from "@/lib/explore-format";
+import { parseFilename } from "@/lib/media-filename";
 import type { ExploreEpisode, ExploreSeason } from "@/lib/explore-types";
 
 /**
@@ -260,7 +261,7 @@ export function EpisodeRows({
                       {episode.code}
                     </span>
                   )}
-                  <span className="min-w-0 truncate text-foreground">{titleOf(episode)}</span>
+                  <FileName episode={episode} />
                   {episode.renamed && (
                     <span className="flex-none font-mono text-[9.5px] text-muted-foreground">
                       renamed
@@ -285,18 +286,42 @@ export function EpisodeRows({
   );
 }
 
-/** The episode title, without the series name and release tags around it. */
-function titleOf(episode: ExploreEpisode): string {
+/**
+ * A file's name and what it is.
+ *
+ * The format lives at the very end of a Sonarr filename, which is exactly what
+ * a truncating cell throws away — so it is lifted out and shown separately,
+ * where it survives. The full filename is on the element itself, one hover
+ * away, because nothing here should be the only place a fact exists.
+ *
+ * Some files carry no title at all: `Money Heist - S01E01 - 1080p x265.mkv`
+ * puts the quality where the title goes. Printing that would make twenty-two
+ * episodes read identically, so the slot shows an em dash and the quality moves
+ * to where quality belongs.
+ */
+function FileName({ episode }: { episode: ExploreEpisode }) {
   const name = episode.remote_name ?? episode.local_name ?? "";
-  const match = name.match(/-\s*S\d+E\d+\s*-\s*(?:\d{2,4}\s*-\s*)?(.*?)\s*[[.]/);
-  if (match?.[1]) return match[1];
-  // A movie file has no episode title — drop the extension and the trailing
-  // release tags so the cell reads as the title rather than the full filename.
-  return name
-    .replace(/\.[^.]+$/, "")
-    .replace(/\s*\[[^\]]*\]\s*/g, " ")
-    .replace(/\s+(Bluray|WEBRip|WEBDL|HDTV|DVD|Remux)[-\s].*$/i, "")
-    .trim();
+  const parsed = parseFilename(name, episode.episode === null);
+
+  return (
+    <>
+      <span className="min-w-0 flex-1 truncate text-foreground" title={name}>
+        {parsed.title || <span className="text-muted-foreground">—</span>}
+      </span>
+      {parsed.format.length > 0 && (
+        <span className="hidden flex-none items-center gap-1 md:inline-flex">
+          {parsed.format.map((part) => (
+            <span
+              key={part}
+              className="rounded border border-border/70 px-1 py-px font-mono text-[9.5px] leading-[13px] text-foreground-3"
+            >
+              {part}
+            </span>
+          ))}
+        </span>
+      )}
+    </>
+  );
 }
 
 export function TableShell({

@@ -106,6 +106,40 @@ and brings the remote one again — for when your copy is damaged. A *sync* neve
 does this: a matching file is left alone, because nothing about it needs doing.
 Download still refuses, because download is defined as "never overwrites".
 
+## Reading a filename
+
+Sonarr and Radarr write a predictable shape, and the library holds ~4,300 files
+in it:
+
+```
+Series - S01E03 - Power Broker [WEBRip-1080p][TAoE-Dragon DB].mkv
+Series (2025) - S02E04 - 016 - The Title [Anime Dual-Audio WEBDL-1080p][JA+EN][VARYG-Dragon DB].mkv
+Title (2025) WEBDL-1080p [HI+ML] [ViSTA-Dragon DB].mkv
+```
+
+Two things follow, and both shape how a row reads:
+
+**The interesting parts sit at both ends.** The title is in the middle and the
+format is at the very end, so a name that truncates loses the format entirely.
+It is lifted out and shown as its own chips, where truncation cannot reach it.
+The full filename is on the element, one hover away.
+
+**The title slot is not always a title.** 48 files are named
+`Money Heist - S01E01 - 1080p x265.mkv`, where the slot holds quality. Printing
+that made twenty-two episodes read identically and look broken. Those rows now
+show an em dash for the title and `1080p` `x265` as format, which is what the
+filename actually says.
+
+The distinction is narrow on purpose: `Lucifer - S01E01 - Pilot Bluray-1080p.mkv`
+*does* have a title. The quality is lifted out of the slot and `Pilot` is kept —
+an earlier attempt discarded the whole slot and lost real titles with it.
+
+`frontend/src/lib/media-filename.ts` was checked against every media file in the
+library: 4,316 of 4,316 yield a quality, and exactly the 48 known files yield no
+title. There is no frontend test runner, so that check was a one-off script
+rather than a committed test — see the gap noted in
+[`../../getting-started/testing.md`](../../getting-started/testing.md).
+
 ## The dry run
 
 Every operation can be rehearsed before it runs. "Dry run" builds the plan as
