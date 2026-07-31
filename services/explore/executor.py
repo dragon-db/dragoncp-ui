@@ -56,21 +56,60 @@ class ExploreExecutor:
 
     # ---- the run ----------------------------------------------------------
 
-    def execute(self, record: Dict) -> Tuple[bool, str, Optional[str]]:
+    def execute(self, record: Dict) -> Tuple[bool, str, List[Dict]]:
         """
-        Run one approved plan.
+        Run one approved plan as one transfer PER SEASON.
 
-        Returns (started, message, transfer_id).
+        A transfer is scoped to a season folder everywhere else in this
+        application — it is what the queue locks on, what a webhook produces,
+        and what history and backups are keyed by. So a series plan is not one
+        large transfer; it is several ordinary ones that land on distinct
+        destinations and run in parallel up to the queue's slot cap.
+
+        Returns (started_any, message, runs), where each run is
+        {season_label, transfer_id, state}.
         """
-        spec = record['exec']
-        source_root = spec['source_root']
-        dest_root = spec['dest_root']
-        mode = spec['mode']
-        media_type = record['media_type']
-        series = record['series']
-        season_name = spec.get('season_name')
+        units = record['exec'].get('units') or []
+        if not units:
+            return False, 'This plan has nothing to do', []
 
         allowed_local = self.config.get_destination_paths()
+        runs: List[Dict] = []
+        problems: List[str] = []
+
+        for unit in units:
+            ok, message, run = self._execute_unit(record, unit, allowed_local)
+            if ok:
+                runs.append(run)
+            else:
+                problems.append(f"{unit.get('season_label') or 'this folder'}: {message}")
+
+        if not runs:
+            return False, '; '.join(problems) or 'Nothing was started', []
+
+        queued = [r for r in runs if r['state'] not in ('running', 'done')]
+        started = len(runs)
+        noun = 'transfer' if started == 1 else 'transfers'
+        message = f"Started {started} {noun}"
+        if len(runs) > 1:
+            message += f" — one per season ({', '.join(r['season_label'] for r in runs)})"
+        if queued:
+            message += f"; {len(queued)} queued behind the running ones"
+        if problems:
+            message += ' — ' + '; '.join(problems)
+        return True, message, runs
+
+    def _execute_unit(self, record: Dict, unit: Dict,
+                      allowed_local) -> Tuple[bool, str, Optional[Dict]]:
+        """One season: back up what it displaces, then hand it to the queue."""
+        source_root = unit['source_root']
+        dest_root = unit['dest_root']
+        mode = unit['mode']
+        media_type = record['media_type']
+        series = record['series']
+        season_name = unit.get('season_name')
+        season_label = unit.get('season_label') or ''
+
         try:
             assert_path_within_bounds(dest_root, allowed_local)
         except PathTraversalError:
@@ -79,7 +118,7 @@ class ExploreExecutor:
         transfer_id = f"explore_{uuid.uuid4().hex[:12]}"
         backup_dir = self._backup_dir(series, transfer_id)
 
-        # --- 1. move what the plan supersedes or removes --------------------
+        # --- 1. move what this season supersedes or removes ------------------
         # TEST_MODE puts rsync into --dry-run, so nothing arrives. Moving the
         # local files anyway would strand them: the old copy gone, the new one
         # never fetched. Test mode has to skip the moves as well, or it is not
@@ -88,7 +127,7 @@ class ExploreExecutor:
         moved: List[Tuple[str, str]] = []
         records: List[Dict] = []
         try:
-            for item in spec.get('backups', []):
+            for item in unit.get('backups', []):
                 rel = item['local_rel']
                 if not validate_relative_path(rel):
                     raise PathTraversalError(f"Unsafe local path in plan: {rel!r}")
@@ -117,7 +156,7 @@ class ExploreExecutor:
             return False, f"Could not move files to backup: {error}", None
 
         # --- 2. the list rsync is held to -----------------------------------
-        rels = spec.get('transfers', [])
+        rels = unit.get('transfers', [])
         work_dir = self._work_dir(transfer_id)
         files_from = os.path.join(work_dir, 'files.txt')
         try:
@@ -136,12 +175,12 @@ class ExploreExecutor:
             records.append({
                 'action': 'fetch',
                 'rel_path': rel,
-                'size': spec.get('sizes', {}).get(rel, 0),
-                'code': spec.get('codes', {}).get(rel),
-                'season_label': spec.get('season_labels', {}).get(rel),
+                'size': unit.get('sizes', {}).get(rel, 0),
+                'code': unit.get('codes', {}).get(rel),
+                'season_label': unit.get('season_labels', {}).get(rel),
             })
 
-        # Nothing to transfer: the plan was removals only, which are already done.
+        # Nothing to transfer: this season was removals only, already done.
         #
         # This still has to be written down. A pure removal is the run you are
         # most likely to want to undo, and without a row here it appeared in no
@@ -153,7 +192,9 @@ class ExploreExecutor:
                 transfer_id, media_type, series, season_name,
                 source_root, dest_root, len(moved),
             )
-            return True, f"{len(moved)} file(s) moved to backup. Nothing to download.", None
+            return True, 'removals only', {
+                'season_label': season_label, 'transfer_id': transfer_id, 'state': 'done',
+            }
 
         # --- 3. hand it to the normal pipeline ------------------------------
         started, state = self.coordinator.start_transfer(
@@ -173,16 +214,12 @@ class ExploreExecutor:
 
         if not started:
             self._rollback(moved)
-            return False, f"Could not start the transfer ({state})", None
+            return False, f"could not start ({state})", None
 
         self.store.record_files(transfer_id, records)
-
-        message = {
-            'running': 'Transfer started',
-            'QUEUED_PATH': 'Queued — the destination is busy with another transfer',
-            'QUEUED_SLOT': 'Queued — waiting for a transfer slot',
-        }.get(state, f"Transfer {state}")
-        return True, message, transfer_id
+        return True, state, {
+            'season_label': season_label, 'transfer_id': transfer_id, 'state': state,
+        }
 
     def _record_removal_only_run(self, transfer_id: str, media_type: str, series: str,
                                  season_name: Optional[str], source_root: str,
@@ -243,46 +280,62 @@ class ExploreExecutor:
                 print(f"⚠️  Explore rollback failed for {target}: {error}")
 
 
-def build_execution_spec(plan, season_name: Optional[str]) -> Dict:
+MODES = {
+    'sync_series': 'sync', 'sync_seasons': 'sync', 'sync_season': 'sync',
+    'download': 'download', 'replace': 'replace',
+}
+
+
+def build_execution_spec(plan, season_name: Optional[str] = None) -> Dict:
     """
     Freeze a plan into the literal instructions the executor will follow.
 
     Everything the executor needs is captured here at approval time, so the run
     cannot drift from the report that was approved.
+
+    One entry per season, because one transfer is one season folder. A season
+    plan therefore has a single unit and a series plan has several — the shape
+    is the same either way, so the executor has one path to follow.
     """
-    sizes: Dict[str, int] = {}
-    codes: Dict[str, str] = {}
-    season_labels: Dict[str, str] = {}
-    backups: List[Dict] = []
+    mode = MODES.get(plan.operation, 'sync')
+    units = []
 
-    for action in plan.actions:
-        if action.rel:
-            sizes[action.rel] = action.size
-            if action.code:
-                codes[action.rel] = action.code
-            if action.season_label:
-                season_labels[action.rel] = action.season_label
-        if action.local_rel:
-            backups.append({
-                'action': action.action,
-                # The remote file that takes its place, so a dry run can tell
-                # "rsync skipped this" from "rsync has not seen it move yet".
-                'rel': action.rel,
-                'local_rel': action.local_rel,
-                'local_size': action.local_size,
-                'code': action.code,
-                'season_label': action.season_label,
-            })
+    for unit in plan.units:
+        sizes: Dict[str, int] = {}
+        codes: Dict[str, str] = {}
+        season_labels: Dict[str, str] = {}
+        backups: List[Dict] = []
 
-    return {
-        'source_root': plan.source_root,
-        'dest_root': plan.dest_root,
-        'mode': {'sync_series': 'sync', 'sync_season': 'sync',
-                 'download': 'download', 'replace': 'replace'}.get(plan.operation, 'sync'),
-        'season_name': season_name,
-        'transfers': plan.transfer_rels,
-        'backups': backups,
-        'sizes': sizes,
-        'codes': codes,
-        'season_labels': season_labels,
-    }
+        for action in unit.actions:
+            if action.rel:
+                sizes[action.rel] = action.size
+                if action.code:
+                    codes[action.rel] = action.code
+                if action.season_label:
+                    season_labels[action.rel] = action.season_label
+            if action.local_rel:
+                backups.append({
+                    'action': action.action,
+                    # The remote file that takes its place, so a dry run can
+                    # tell "rsync skipped this" from "it has not moved yet".
+                    'rel': action.rel,
+                    'local_rel': action.local_rel,
+                    'local_size': action.local_size,
+                    'code': action.code,
+                    'season_label': action.season_label,
+                })
+
+        units.append({
+            'season_label': unit.season_label,
+            'season_name': season_name if season_name is not None else unit.season_name,
+            'source_root': unit.source_root,
+            'dest_root': unit.dest_root,
+            'mode': mode,
+            'transfers': unit.transfer_rels,
+            'backups': backups,
+            'sizes': sizes,
+            'codes': codes,
+            'season_labels': season_labels,
+        })
+
+    return {'mode': mode, 'units': units}

@@ -144,10 +144,14 @@ export function useExploreExecute(mediaType: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (body: { plan_id: string; override?: boolean; confirm_text?: string }) => {
-      const response = await api.post<{ message: string; transfer_id: string | null }>(
-        "/explore/transfer",
-        body
-      );
+      // A series plan becomes one transfer per season, so this comes back
+      // plural. `transfer_id` is still set when there is exactly one.
+      const response = await api.post<{
+        message: string;
+        transfer_id: string | null;
+        transfer_ids: string[];
+        runs: Array<{ season_label: string; transfer_id: string; state: string }>;
+      }>("/explore/transfer", body);
       return response.data;
     },
     onSuccess: () => {

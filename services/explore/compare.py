@@ -167,8 +167,33 @@ class SeasonDiff:
             return f"Season {self.season:02d}"
         return 'Files'
 
+    @property
+    def standard_name(self) -> Optional[str]:
+        """What Sonarr would call this folder: `Season {season:00}`."""
+        if self.season is None:
+            return None
+        return 'Specials' if self.season == 0 else f"Season {self.season:02d}"
+
+    @property
+    def odd_folders(self) -> List[str]:
+        """
+        Folder names on either side that are not what Sonarr would write.
+
+        Nothing here is broken — seasons pair by NUMBER, so "Season 1" lines up
+        with "Season 01" and syncs correctly into whichever spelling is already
+        there. It is reported so the drift is visible and can be tidied up,
+        rather than being discovered later.
+        """
+        expected = self.standard_name
+        if expected is None:
+            return []
+        return sorted({folder for folder in (self.remote_folder, self.local_folder)
+                       if folder and folder != expected})
+
     def to_dict(self, include_episodes: bool = False) -> Dict:
         data = {
+            'standard_name': self.standard_name,
+            'odd_folders': self.odd_folders,
             'series': self.series,
             'season': self.season,
             'name': self.display_name,
@@ -216,6 +241,14 @@ class SeriesDiff:
             out.extend(season.misplaced)
         return out
 
+    @property
+    def odd_folders(self) -> List[str]:
+        """Season folders on either side that Sonarr would have named differently."""
+        out: List[str] = []
+        for season in self.seasons:
+            out.extend(season.odd_folders)
+        return sorted(set(out))
+
     def to_dict(self, include_seasons: bool = False) -> Dict:
         data = {
             'name': self.series,
@@ -228,6 +261,7 @@ class SeriesDiff:
             'local_bytes': self.local_bytes,
             'remote_mtime': self.remote_mtime,
             'misplaced_count': len(self.misplaced),
+            'odd_folders': self.odd_folders,
         }
         if include_seasons:
             data['seasons'] = [s.to_dict() for s in self.seasons]

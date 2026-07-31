@@ -191,14 +191,9 @@ class ExploreService:
         remote_root, local_root = self._roots(media_type)
         series = self._series_diff(media_type, folder)
 
-        try:
-            return self._build_plan(media_type, operation, folder, season_label, codes,
-                                    include_removals, created_by, season_labels,
-                                    series, remote_root, local_root)
-        except planner.PlanNotPossible as error:
-            # Not a failure to compute — a refusal to compute something that
-            # would misplace files. 409: the library has to change first.
-            raise ExploreError(str(error), 409)
+        return self._build_plan(media_type, operation, folder, season_label, codes,
+                                include_removals, created_by, season_labels,
+                                series, remote_root, local_root)
 
     def _build_plan(self, media_type, operation, folder, season_label, codes,
                     include_removals, created_by, season_labels,
@@ -258,7 +253,7 @@ class ExploreService:
 
         payload = plan.to_dict()
         plan_id = self.store.save_plan(
-            plan, build_execution_spec(plan, season_name), created_by)
+            plan, build_execution_spec(plan), created_by)
         payload['plan_id'] = plan_id
         payload['requires_override'] = not plan.safe
         return payload
@@ -399,12 +394,21 @@ class ExploreService:
             raise ExploreError(
                 'That plan has expired or was already used. Re-check and try again.', 409)
 
-        started, message, transfer_id = self.executor.execute(record)
+        started, message, runs = self.executor.execute(record)
         if not started:
             raise ExploreError(message, 500)
 
-        return {'message': message, 'transfer_id': transfer_id,
-                'operation': record['operation'], 'series': record['series']}
+        # A series plan becomes one transfer per season, so the id is plural.
+        # `transfer_id` stays for the single-season case, which is most of them.
+        transfer_ids = [r['transfer_id'] for r in runs if r.get('transfer_id')]
+        return {
+            'message': message,
+            'runs': runs,
+            'transfer_ids': transfer_ids,
+            'transfer_id': transfer_ids[0] if len(transfer_ids) == 1 else None,
+            'operation': record['operation'],
+            'series': record['series'],
+        }
 
     # ---- history ----------------------------------------------------------
 

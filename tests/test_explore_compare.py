@@ -217,5 +217,54 @@ class ErrorPropagationTests(unittest.TestCase):
         self.assertEqual(diff.remote_error, 'No remote browse session')
 
 
+
+
+class SeasonFolderNamingTests(unittest.TestCase):
+    """
+    Sonarr writes `Season {season:00}`. Anything else still works — seasons pair
+    by number, so "Season 1" lines up with "Season 01" — but the drift is worth
+    surfacing rather than leaving to be discovered.
+    """
+
+    def _series(self, remote_folder, local_folder):
+        return build(
+            'tvshows',
+            [(ep('Show', remote_folder, 'S01E01'), GB, 100)],
+            [(ep('Show', local_folder, 'S01E01'), GB, 100)],
+        ).find('Show')
+
+    def test_the_padded_form_is_not_flagged(self):
+        season = self._series('Season 01', 'Season 01').seasons[0]
+        self.assertEqual(season.odd_folders, [])
+        self.assertEqual(season.standard_name, 'Season 01')
+
+    def test_an_unpadded_folder_is_flagged_on_whichever_side_has_it(self):
+        season = self._series('Season 01', 'Season 1').seasons[0]
+        self.assertEqual(season.odd_folders, ['Season 1'])
+
+    def test_both_sides_using_the_same_odd_spelling_report_it_once(self):
+        season = self._series('Season 1', 'Season 1').seasons[0]
+        self.assertEqual(season.odd_folders, ['Season 1'])
+
+    def test_each_side_is_reported_when_they_differ(self):
+        season = self._series('Season 1', 'Season 001').seasons[0]
+        self.assertEqual(season.odd_folders, ['Season 001', 'Season 1'])
+
+    def test_specials_is_the_standard_name_for_season_zero(self):
+        season = self._series('Specials', 'Specials').seasons[0]
+        self.assertEqual(season.standard_name, 'Specials')
+        self.assertEqual(season.odd_folders, [])
+
+    def test_the_series_rolls_up_every_odd_folder_once(self):
+        remote = [(ep('Show', 'Season 1', 'S01E01'), GB, 100),
+                  (ep('Show', 'Season 2', 'S02E01'), GB, 100)]
+        series = build('tvshows', remote, remote).find('Show')
+        self.assertEqual(series.odd_folders, ['Season 1', 'Season 2'])
+
+    def test_a_flagged_season_still_compares_and_syncs_normally(self):
+        season = self._series('Season 01', 'Season 1').seasons[0]
+        self.assertEqual(season.counts.in_sync, 1, 'pairing is by number, not spelling')
+        self.assertEqual(season.status, 'SYNCED')
+
 if __name__ == '__main__':
     unittest.main()

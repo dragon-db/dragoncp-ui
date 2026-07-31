@@ -2217,15 +2217,28 @@ Output JSON:
 ```json
 {
   "status": "success",
-  "message": "Transfer started",
-  "transfer_id": "explore_4b91cd77a0e2",
-  "operation": "sync_season",
+  "message": "Started 3 transfers — one per season (Season 01, Season 02, Season 03)",
+  "runs": [
+    {"season_label": "Season 01", "transfer_id": "explore_4b91cd77a0e2", "state": "running"},
+    {"season_label": "Season 02", "transfer_id": "explore_9f21ab0c73de", "state": "running"},
+    {"season_label": "Season 03", "transfer_id": "explore_2c04e8b1a9f7", "state": "QUEUED_SLOT"}
+  ],
+  "transfer_ids": ["explore_4b91cd77a0e2", "explore_9f21ab0c73de", "explore_2c04e8b1a9f7"],
+  "transfer_id": null,
+  "operation": "sync_series",
   "series": "The Boys (2019)"
 }
 ```
 
-`transfer_id` is `null` when the plan only removed files — nothing was queued,
-and the run is recorded as a completed `explore_prune` transfer instead.
+**One transfer per season.** A transfer is scoped to a season folder everywhere
+in this application, so a plan spanning seasons produces one ordinary transfer
+for each. They land on distinct destinations and run in parallel up to the
+queue's slot cap.
+
+`transfer_id` is a convenience for the common single-season case and is `null`
+whenever there is not exactly one. A run with `state: "done"` moved files to
+backup and had nothing to download — it is recorded as a completed
+`explore_prune` transfer rather than queued.
 
 ---
 

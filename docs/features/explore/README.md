@@ -71,19 +71,34 @@ candidates. It does **not** use `rsync --delete` — the plan owns removals, whi
 is what makes the preview honest and keeps artwork and subtitles out of the
 danger zone.
 
-**A series-wide sync refuses when the two sides spell a season differently.**
-"Season 01" remotely and "Season 1" locally are the same season, and the
-comparison pairs them by number. But a series-wide run addresses every file
-relative to the *series* folder, so one rsync writes each file back at the path
-it read it from — which would create "Season 01" beside the "Season 1" you
-already have and split the season across two folders. Rather than do that
-quietly, the plan is refused (409) and names the season. Syncing that season on
-its own works: it roots itself at the local folder and copies bare filenames
-into it.
+**One review, one transfer per season.** A transfer in this application *is* a
+season folder: it is what the queue locks on, what a webhook produces, and what
+history and backups are keyed by. So a five-season series sync is not one large
+run — it is five ordinary ones. They land on distinct destinations, so the queue
+runs them in parallel up to `MAX_CONCURRENT_TRANSFERS` (3) instead of pushing
+one run through every season in turn, and each shows its own progress.
 
-**Ticking several seasons produces one plan, not one per season.** Paths hang off
-the series folder, so a single rsync covers them all — the same reason a webhook
-group syncs as one transfer rather than one per episode.
+The *plan* stays whole: one verdict, one set of safety checks, one review
+grouped by season with the removals at the top. Only the execution fans out.
+Ticking several seasons behaves the same way — the plan covers what you ticked,
+and each ticked season becomes its own transfer.
+
+A season with nothing to do produces no transfer at all. A season that only
+loses files still gets one, because those files have to be moved to backup and
+the run recorded.
+
+Because each transfer is rooted at its own pair of season folders, a season
+spelled `Season 01` on the remote and `Season 1` locally needs no special
+handling: the run reads from one and writes into the other, and the file list is
+bare filenames that cannot recreate a folder. See the naming note below.
+
+**Season folders that Sonarr would have named differently are flagged, not
+blocked.** Sonarr writes `Season {season:00}`, so `Season 01` and `Specials`.
+Anything else — `Season 1`, `Season 001` — still works, because seasons pair by
+number and new files go into whichever folder is already on disk. The comparison
+reports the drift (`odd_folders` on both the season and the series) and the
+actions panel shows it, so it can be tidied up deliberately rather than
+discovered later. Renaming the folders is not something Explore does.
 
 **Replace is the only way to re-fetch a file that already matches.** Any file can
 be ticked, in sync or not, and replacing an in-sync file backs the local copy up

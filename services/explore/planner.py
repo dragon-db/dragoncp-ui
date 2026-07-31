@@ -50,15 +50,6 @@ REMOVE = 'remove'    # move a local file to backup, nothing replaces it
 DEFAULT_REMOVAL_SHARE = 0.20
 
 
-class PlanNotPossible(Exception):
-    """
-    The requested scope cannot be carried out as one rsync run.
-
-    Raised rather than returning a plan that would do the wrong thing quietly.
-    The message is written for the operator and names the way forward.
-    """
-
-
 @dataclass
 class PlanAction:
     action: str
@@ -97,6 +88,32 @@ class SafetyCheck:
 
 
 @dataclass
+class PlanUnit:
+    """
+    One transfer's worth of work: a single season folder, both sides.
+
+    A transfer in this application is scoped to a season folder — that is what
+    the queue locks on, what a webhook produces, and what the backup and history
+    records are keyed by. A plan that spans seasons is therefore a plan for
+    SEVERAL transfers, one per season, and this is one of them.
+
+    Each unit carries its own pair of roots, which is why a season spelled
+    "Season 01" remotely and "Season 1" locally needs no special handling: the
+    run reads from one and writes into the other, and the file list is bare
+    filenames that cannot recreate a folder.
+    """
+    season_label: str
+    season_name: Optional[str]
+    source_root: str
+    dest_root: str
+    actions: List[PlanAction] = field(default_factory=list)
+
+    @property
+    def transfer_rels(self) -> List[str]:
+        return [a.rel for a in self.actions if a.action in (FETCH, SUPERSEDE)]
+
+
+@dataclass
 class Plan:
     media_type: str
     operation: str
@@ -108,6 +125,9 @@ class Plan:
     checks: List[SafetyCheck] = field(default_factory=list)
     include_removals: bool = True
     warnings: List[str] = field(default_factory=list)
+    # One per season. A season-scoped plan has exactly one; a series plan has
+    # one for every season it touches, and each becomes its own transfer.
+    units: List[PlanUnit] = field(default_factory=list)
 
     # ---- derived ----------------------------------------------------------
 
@@ -333,26 +353,57 @@ def _local_rel(prefix: str, dest_folder: str, entry) -> str:
 # builders
 # --------------------------------------------------------------------------
 
+def _build_unit(series: str, season: SeasonDiff, remote_root: str, local_root: str,
+                include_removals: bool,
+                only_codes: Optional[Sequence[str]] = None,
+                labels: Sequence[str] = (MISSING, UPGRADED)) -> PlanUnit:
+    """
+    One season, both sides, as a single transfer's worth of work.
+
+    The roots are the two season folders, so the file list is bare filenames.
+    That is what lets the remote and local spellings differ — rsync reads from
+    one folder and writes into the other, and no path in the list can recreate
+    a folder on the way.
+    """
+    remote_folder = season.remote_folder or season.local_folder or ''
+    dest_folder = _season_dest_folder(season)
+
+    return PlanUnit(
+        season_label=season.display_name,
+        season_name=dest_folder or None,
+        source_root=os.path.join(remote_root, series, remote_folder) if remote_folder
+        else os.path.join(remote_root, series),
+        dest_root=os.path.join(local_root, series, dest_folder) if dest_folder
+        else os.path.join(local_root, series),
+        actions=_episode_actions(season, '', include_removals,
+                                 only_codes=only_codes, labels=labels),
+    )
+
+
+def _single_unit_plan(operation: str, media_type: str, series_diff: SeriesDiff,
+                      unit: PlanUnit, include_removals: bool,
+                      season_label: Optional[str]) -> Plan:
+    plan = Plan(
+        media_type=media_type,
+        operation=operation,
+        series=series_diff.series,
+        season_label=season_label,
+        source_root=unit.source_root,
+        dest_root=unit.dest_root,
+        include_removals=include_removals,
+        units=[unit],
+    )
+    plan.actions = unit.actions
+    return plan
+
+
 def plan_season_sync(media_type: str, series_diff: SeriesDiff, season: SeasonDiff,
                      remote_root: str, local_root: str,
                      include_removals: bool = True) -> Plan:
     """Reconcile one season: download what is missing, replace what changed."""
-    remote_folder = season.remote_folder or season.local_folder or ''
-    dest_folder = _season_dest_folder(season)
-
-    plan = Plan(
-        media_type=media_type,
-        operation=SYNC_SEASON,
-        series=series_diff.series,
-        season_label=season.display_name,
-        source_root=os.path.join(remote_root, series_diff.series, remote_folder) if remote_folder
-        else os.path.join(remote_root, series_diff.series),
-        dest_root=os.path.join(local_root, series_diff.series, dest_folder) if dest_folder
-        else os.path.join(local_root, series_diff.series),
-        include_removals=include_removals,
-    )
-    plan.actions = _episode_actions(season, '', include_removals)
-    return plan
+    unit = _build_unit(series_diff.series, season, remote_root, local_root, include_removals)
+    return _single_unit_plan(SYNC_SEASON, media_type, series_diff, unit,
+                             include_removals, season.display_name)
 
 
 def plan_series_sync(media_type: str, series_diff: SeriesDiff,
@@ -388,36 +439,36 @@ def _multi_season_plan(operation: str, media_type: str, series_diff: SeriesDiff,
                        seasons: Sequence[SeasonDiff],
                        remote_root: str, local_root: str,
                        include_removals: bool) -> Plan:
-    """Series-relative plan over a set of seasons. Paths hang off the series."""
+    """
+    One review covering several seasons, carried out as one transfer EACH.
+
+    A transfer is scoped to a season folder everywhere else in the application —
+    it is what the queue locks on and what a webhook produces — so a series sync
+    is not one big transfer but several ordinary ones. They land on distinct
+    destinations, so the queue runs them in parallel up to its slot cap instead
+    of serialising a single run through every season.
+
+    The plan itself stays whole: one verdict, one set of safety checks, one
+    review grouped by season with the removals at the top.
+    """
     plan = Plan(
         media_type=media_type,
         operation=operation,
         series=series_diff.series,
+        # The series roots describe the plan's scope for display. The work is
+        # carried out against each unit's own pair of season folders.
         source_root=os.path.join(remote_root, series_diff.series),
         dest_root=os.path.join(local_root, series_diff.series),
         include_removals=include_removals,
     )
 
     for season in seasons:
-        # Files are addressed relative to the SERIES folder, which means one
-        # rsync run writes each file back at the same relative path it was read
-        # from. That only works while both sides spell the season the same way.
-        prefix = season.remote_folder or ''
-        local_prefix = _season_dest_folder(season)
-        if prefix and local_prefix and local_prefix != prefix:
-            # "Season 01" remotely, "Season 1" locally: one run cannot read from
-            # one and write to the other, and carrying on would create the
-            # remote spelling beside the local folder and split the season in
-            # two. A season-scoped sync roots itself at the local folder and
-            # handles this correctly, so send them there rather than guessing.
-            raise PlanNotPossible(
-                f"'{season.display_name}' is called '{prefix}' on the remote and "
-                f"'{local_prefix}' locally. Syncing the whole series would create "
-                f"'{prefix}' next to it and split the season across two folders. "
-                f"Sync that season on its own instead — it copies into the folder "
-                f"you already have."
-            )
-        plan.actions.extend(_episode_actions(season, prefix, include_removals))
+        unit = _build_unit(series_diff.series, season, remote_root, local_root,
+                           include_removals)
+        if not unit.actions:
+            continue
+        plan.units.append(unit)
+        plan.actions.extend(unit.actions)
 
     return plan
 
@@ -426,18 +477,16 @@ def plan_movie_sync(media_type: str, series_diff: SeriesDiff,
                     remote_root: str, local_root: str,
                     include_removals: bool = True) -> Plan:
     """A movie folder has no season layer; otherwise identical to a season."""
-    plan = Plan(
-        media_type=media_type,
-        operation=SYNC_SEASON,
-        series=series_diff.series,
-        season_label=None,
+    unit = PlanUnit(
+        season_label='Files',
+        season_name=None,
         source_root=os.path.join(remote_root, series_diff.series),
         dest_root=os.path.join(local_root, series_diff.series),
-        include_removals=include_removals,
     )
     for season in series_diff.seasons:
-        plan.actions.extend(_episode_actions(season, '', include_removals))
-    return plan
+        unit.actions.extend(_episode_actions(season, '', include_removals))
+    return _single_unit_plan(SYNC_SEASON, media_type, series_diff, unit,
+                             include_removals, None)
 
 
 def plan_download(media_type: str, series_diff: SeriesDiff, season: SeasonDiff,
@@ -447,24 +496,12 @@ def plan_download(media_type: str, series_diff: SeriesDiff, season: SeasonDiff,
     Copy the selected episodes and nothing else. Never replaces, never removes —
     an episode already present is simply skipped.
     """
-    remote_folder = season.remote_folder or ''
-    dest_folder = _season_dest_folder(season)
-
-    plan = Plan(
-        media_type=media_type,
-        operation=DOWNLOAD,
-        series=series_diff.series,
-        season_label=season.display_name,
-        source_root=os.path.join(remote_root, series_diff.series, remote_folder) if remote_folder
-        else os.path.join(remote_root, series_diff.series),
-        dest_root=os.path.join(local_root, series_diff.series, dest_folder) if dest_folder
-        else os.path.join(local_root, series_diff.series),
-        include_removals=False,
-    )
     # Only MISSING episodes are fetchable here: an UPGRADED one would need its
     # local counterpart moved aside first, which is the replace operation.
-    plan.actions = _episode_actions(season, '', False, only_codes=codes, labels=(MISSING,))
-    return plan
+    unit = _build_unit(series_diff.series, season, remote_root, local_root, False,
+                       only_codes=codes, labels=(MISSING,))
+    return _single_unit_plan(DOWNLOAD, media_type, series_diff, unit,
+                             False, season.display_name)
 
 
 def plan_replace(media_type: str, series_diff: SeriesDiff, season: SeasonDiff,
@@ -474,23 +511,10 @@ def plan_replace(media_type: str, series_diff: SeriesDiff, season: SeasonDiff,
     Swap the selected episodes: back up the local file, bring the remote one.
     Nothing else in the season is touched.
     """
-    remote_folder = season.remote_folder or ''
-    dest_folder = _season_dest_folder(season)
-
-    plan = Plan(
-        media_type=media_type,
-        operation=REPLACE,
-        series=series_diff.series,
-        season_label=season.display_name,
-        source_root=os.path.join(remote_root, series_diff.series, remote_folder) if remote_folder
-        else os.path.join(remote_root, series_diff.series),
-        dest_root=os.path.join(local_root, series_diff.series, dest_folder) if dest_folder
-        else os.path.join(local_root, series_diff.series),
-        include_removals=False,
-    )
-    plan.actions = _episode_actions(
-        season, '', False, only_codes=codes, labels=(MISSING, UPGRADED, IN_SYNC))
-    return plan
+    unit = _build_unit(series_diff.series, season, remote_root, local_root, False,
+                       only_codes=codes, labels=(MISSING, UPGRADED, IN_SYNC))
+    return _single_unit_plan(REPLACE, media_type, series_diff, unit,
+                             False, season.display_name)
 
 
 # --------------------------------------------------------------------------

@@ -29,6 +29,8 @@ export interface ExploreSeriesSummary {
   local_bytes: number;
   remote_mtime: number;
   misplaced_count: number;
+  /** Season folders Sonarr would have named differently, e.g. "Season 1". */
+  odd_folders: string[];
   /** Every season, sent with the tree so several series can stay expanded. */
   seasons?: ExploreSeason[];
 }
@@ -43,6 +45,10 @@ export interface ExploreSeason {
   counts: ExploreCounts;
   ancillary_missing: number;
   ancillary_local_only: number;
+  /** What Sonarr would call this folder, e.g. "Season 04". Null for movies. */
+  standard_name: string | null;
+  /** The folders on either side that differ from it. Empty when both match. */
+  odd_folders: string[];
   misplaced: string[];
   remote_bytes: number;
   local_bytes: number;

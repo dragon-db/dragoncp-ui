@@ -1075,6 +1075,11 @@ function Inspector({
             <MisplacedWarning count={series.misplaced_count} />
           )}
 
+          <NamingWarning
+            folders={season ? season.odd_folders : series.odd_folders}
+            expected={season?.standard_name ?? null}
+          />
+
           <section className="flex flex-col gap-2">
             <p className="font-mono text-[10px] tracking-[0.14em] text-foreground-3 uppercase">
               Transfer
@@ -1404,6 +1409,36 @@ function MisplacedWarning({ count }: { count: number }) {
       <p className="mt-1 text-[11px] text-amber-50/75">
         Nested one level too deep, so your media server cannot see them. Left alone here — they need
         moving back by hand.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * A season folder that is not named the way Sonarr names them.
+ *
+ * Nothing is broken: seasons pair by number, so "Season 1" lines up with
+ * "Season 01" and syncs into whichever spelling is already on disk. It is shown
+ * because the drift is worth knowing about before it spreads, not because it
+ * blocks anything.
+ */
+function NamingWarning({ folders, expected }: { folders?: string[]; expected: string | null }) {
+  if (!folders?.length) return null;
+  return (
+    <div className="rounded-md border border-amber-500/30 bg-amber-500/6 p-2.5">
+      <p className="flex items-center gap-2 text-[12px] font-medium text-amber-100">
+        <IconAlertTriangle className="size-3.5 flex-none" />
+        {folders.length === 1 ? "Season folder is" : "Season folders are"} named differently
+      </p>
+      <p className="mt-1 text-[11px] text-amber-50/75">
+        <span className="font-mono">{folders.join(", ")}</span>
+        {expected ? (
+          <>
+            {" "}
+            — Sonarr writes <span className="font-mono">{expected}</span>.
+          </>
+        ) : null}{" "}
+        Syncing works either way; new files go into the folder you already have.
       </p>
     </div>
   );
