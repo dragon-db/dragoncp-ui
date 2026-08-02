@@ -212,24 +212,64 @@ export interface RenameVerificationResult {
   }>;
 }
 
+/**
+ * Settings live in one of two stores, and the server says which on every row.
+ *
+ * `env` — set once when the installation was built: where the media lives, how
+ * to reach the remote, and everything that is a security boundary. Shown
+ * read-only; changing it means editing the file on the server.
+ * `db` — changed while running. Saved immediately, shared by every operator and
+ * every background job.
+ *
+ * There used to be a third store, a per-browser session, and it was a trap:
+ * background threads never read it, so sixteen settings looked editable and
+ * were ignored by the machinery that used them. It is gone.
+ */
+export type SettingStore = "env" | "db";
+
+export type SettingKind = "text" | "password" | "number" | "boolean" | "path";
+
+export interface SettingDescriptor {
+  key: string;
+  store: SettingStore;
+  group: string;
+  label: string;
+  description: string;
+  kind: SettingKind;
+  editable: boolean;
+  sensitive: boolean;
+  value: string | number | boolean;
+  minimum?: number;
+  maximum?: number;
+  /** DB settings only: nothing saved yet, so the built-in default applies. */
+  is_default?: boolean;
+}
+
+export interface SettingGroup {
+  id: string;
+  label: string;
+  settings: SettingDescriptor[];
+}
+
+export interface SettingsResponse {
+  status: string;
+  groups: SettingGroup[];
+  stores: Record<SettingStore, { label: string; description: string }>;
+  /** Present on a save: what was written, and what was refused as env-backed. */
+  saved?: string[];
+  refused?: string[];
+  message?: string;
+}
+
+/**
+ * The flat key -> value map.
+ *
+ * Still returned by `/api/config` alongside the grouped payload, because the
+ * legacy static UI reads it and that UI is what production serves. New code
+ * should use `SettingsResponse` — the flat shape cannot say which store a
+ * value came from or whether it can be written.
+ */
 export interface AppConfig {
-  REMOTE_IP?: string;
-  REMOTE_USER?: string;
-  REMOTE_PASSWORD?: string;
-  SSH_KEY_PATH?: string;
-  MOVIE_PATH?: string;
-  TVSHOW_PATH?: string;
-  ANIME_PATH?: string;
-  BACKUP_PATH?: string;
-  MOVIE_DEST_PATH?: string;
-  TVSHOW_DEST_PATH?: string;
-  ANIME_DEST_PATH?: string;
-  DISK_PATH_1?: string;
-  DISK_PATH_2?: string;
-  DISK_PATH_3?: string;
-  DISK_API_ENDPOINT?: string;
-  DISK_API_TOKEN?: string;
-  WEBSOCKET_TIMEOUT_MINUTES?: string | number;
   [key: string]: string | number | undefined;
 }
 

@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from datetime import datetime, timedelta
 
 from models.database import DatabaseManager
+from services.backups.layout import BackupLayout
 from services.explore.store import ExploreStore
 from services.explore.service import ExploreError, ExploreService
 
@@ -52,18 +53,39 @@ class FakeSSH:
         return 0, payload, ''
 
 
-class FakeBackupService:
+class _BackupPathConfig:
+    """The one setting BackupLayout reads."""
+
     def __init__(self, root):
         self.root = root
 
-    def _get_dynamic_backup_dir(self, transfer):
-        safe = ''.join(c if c.isalnum() else '_' for c in (transfer.get('folder_name') or 'x'))
-        return os.path.join(self.root, f"{safe}_{transfer['transfer_id']}")
+    def get(self, key, default=''):
+        return self.root if key == 'BACKUP_PATH' else default
+
+
+class FakeBackups:
+    """Stands in for BackupsService at the boundary the executor uses."""
+
+    def __init__(self, root):
+        self.root = root
+        self.sorted = []
+        # The real service exposes its layout, and Explore builds its plan
+        # directories through it so they land under BACKUP_PATH and fail closed
+        # with it. Using the real one keeps that path under test rather than
+        # letting a stub agree with whatever the code does.
+        self.layout = BackupLayout(_BackupPathConfig(root))
+
+    def staging_dir(self, transfer_id):
+        return os.path.join(self.root, '.staging', transfer_id)
+
+    def sort_after_transfer(self, transfer_id, reason='sync_replace'):
+        self.sorted.append((transfer_id, reason))
+        return {'captures': 0, 'files': 0, 'bytes': 0, 'unsorted': 0, 'errors': []}
 
 
 class FakeCoordinator:
     def __init__(self, backup_root, succeed=True):
-        self.backup_service = FakeBackupService(backup_root)
+        self.backups = FakeBackups(backup_root)
         self.calls = []
         self.succeed = succeed
 

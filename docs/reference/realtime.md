@@ -1,7 +1,7 @@
 # Realtime (Socket.IO) Reference
 
 Last updated: 2026-07-28
-Primary files: `websocket.py`, `app.py`, `services/transfer_service.py`, `services/transfer_coordinator.py`, `services/queue_manager.py`, `services/backup_service.py`, `services/rename_service.py`, `routes/webhooks.py`, `frontend/src/services/socket.ts`, `frontend/src/hooks/useRuntime.ts`
+Primary files: `websocket.py`, `app.py`, `services/transfer_service.py`, `services/transfer_coordinator.py`, `services/queue_manager.py`, `services/backups/service.py`, `services/rename_service.py`, `routes/webhooks.py`, `frontend/src/services/socket.ts`, `frontend/src/hooks/useRuntime.ts`
 
 ## Realtime is opt-in
 
@@ -14,7 +14,7 @@ What this means if you build on these events:
 - **Never treat a socket event as the only delivery of a fact.** A user with realtime off will never receive it. Anything that must be durable has to be written to the database and exposed through the REST API (see [`api.md`](api.md)); the event is a hint that the API has something new.
 - **Every listener needs a polling equivalent.** That is how the existing pages are written: the transfers page uses `transfer_progress` to patch the query cache in place and `transfer_complete`/`transfer_queued`/`transfer_promoted` to trigger a refetch, all of which the 2–5 second poll would eventually have done anyway.
 - **Events are broadcast to everyone.** No emit in the codebase passes a `room`, `to`, or `namespace` argument, so every connected client receives every event regardless of which user started the work. There is no per-user filtering to rely on.
-- **Emits are best-effort.** In `routes/webhooks.py` the emit is wrapped by `emit_socketio_event()`, which swallows and logs any exception so a failed emit never fails the webhook. In `services/backup_service.py` the emits sit inside bare `try/except: pass` blocks. If nobody is listening, nothing anywhere notices.
+- **Emits are best-effort.** In `routes/webhooks.py` the emit is wrapped by `emit_socketio_event()`, which swallows and logs any exception so a failed emit never fails the webhook. In `services/backups/service.py` they go through `_emit()`, which swallows and logs the same way. If nobody is listening, nothing anywhere notices.
 
 ## Server-emitted events
 
@@ -26,10 +26,10 @@ that asked for that transfer's output. See
 | Event | What triggers it | Emitted by | Payload fields |
 |---|---|---|---|
 | `transfer_progress` | Every line rsync writes while a transfer is running (the socket is *not* throttled; only the database writes are) | `services/transfer_service.py` | `transfer_id`, `progress` (the raw rsync line), `log_count`, `status` (always `"running"`), `stats`. **No log body** — see `transfer_logs` |
-| `transfer_progress` | Once, when a backup restore has built its plan and is about to start deleting/copying | `services/backup_service.py:198` | `transfer_id` (a synthetic `restore_<backup_id>_<timestamp>` id), `progress` (`"Planning restore: N item(s)"`), `logs` (up to 100 plan lines), `log_count`, `status` (`"running"`) |
+| `transfer_progress` | Per file, while a backup restore runs | `services/backups/service.py` (`_run_restore`) | `transfer_id` (a synthetic `restore_<epoch>_<hex>` id), `status` (`"running"`), `progress` (`"Restoring 2/5: <filename>"`), `folder_name` (the slot, e.g. `Example Show (2024) — S01E01`) |
 | `transfer_complete` | The rsync monitor thread has seen the process exit | `services/transfer_service.py` | `transfer_id`, `status` (`completed`, `failed`, `paused` or `cancelled`), `message`, `log_count`, `stats`. **No log body** |
 | `transfer_complete` | The rsync monitor thread itself raised — the transfer row is forced to `failed` | `services/transfer_service.py` | `transfer_id`, `status` (`"failed"`), `message`, `log_count` — **no** log body and **no** `stats` on this path |
-| `transfer_complete` | A backup restore finished, successfully or not | `services/backup_service.py:287` (success), `:306` (failure) | `transfer_id`, `status` (`completed` / `failed`), `message`, `logs` (last 100), `log_count` |
+| `transfer_complete` | A backup restore finished, successfully or not | `services/backups/service.py` (`_finish_restore`) | `transfer_id`, `status` (`completed` / `failed`), `message`, `folder_name` |
 | `transfer_queued` | A new transfer is held because another transfer already owns the destination path | `services/transfer_coordinator.py:144` | `transfer_id`, `status` (`"queued"`), `queue_type` (`"path"`), `existing_transfer_id`, `dest_path`, `message` |
 | `transfer_queued` | A new transfer is held because the concurrency cap is reached | `services/transfer_coordinator.py:182` | `transfer_id`, `message` (`"Transfer added to queue"`) |
 | `transfer_queued` | A paused transfer was resumed but had to go back into the queue | `services/transfer_coordinator.py:345` | `transfer_id`, `message` (`"Resumed transfer added to queue"`) |
@@ -140,7 +140,9 @@ Defined at the top of `websocket.py`:
 
 These are literals in the source. **There is no environment variable or setting that changes them** — the only tunable is the per-session value.
 
-`get_websocket_timeout_for_session()` computes that per-session value at handshake time. It reads `WEBSOCKET_TIMEOUT_MINUTES` out of the Flask session's `ui_config`, clamps it to 5–60 minutes, adds a 5-minute buffer, and caps the result at `WEBSOCKET_TIMEOUT_MAX`. With no value present it returns the 35-minute default. `ui_config` is written by `config.update_session_config()`, which is called from `POST /api/config` — that is the Settings page, which exposes `WEBSOCKET_TIMEOUT_MINUTES` as a number field with `min=5` and `max=60`. The setting lives in the Flask session, not in the env file (`dragoncp_env_sample.env` does not mention it) and not in the database.
+`get_websocket_timeout_for_session()` computes that value at handshake time. It reads `WEBSOCKET_TIMEOUT_MINUTES` through the settings resolver, clamps it to 5–60 minutes, adds a 5-minute buffer, and caps the result at `WEBSOCKET_TIMEOUT_MAX`. With no value present it returns the 35-minute default.
+
+The setting lives in the **database** (`app_settings`), written by `POST /api/config` from the Settings page. It used to be read out of the Flask session's `ui_config`, which meant the value an operator saved was visible only to their own browser: the server's own stale-connection sweeper never saw it and stayed on 35 minutes regardless. Reading it from the database removes the question of whether a session cookie accompanies the handshake — it does not need one.
 
 The buffer is deliberate: the server always waits five minutes longer than the client's own countdown, so the browser is the one that normally ends an idle session and the sweeper is the backstop for clients that vanished.
 
@@ -169,7 +171,6 @@ Two smaller mismatches found while checking the above:
 ## Not verified
 
 - **Not verified**: behaviour under multiple backend workers. The connection map, the sweeper thread and the queue manager's state are all process-local, and `socketio_runtime_info` names `gunicorn --config deploy/gunicorn.conf.py app:app` as the recommended production server, but I did not read that config or test a multi-worker run, so I cannot say how emits and idle cleanup behave across workers.
-- **Not verified**: whether the Flask session cookie is actually present during a Socket.IO handshake from the React frontend. `get_websocket_timeout_for_session()` reads `ui_config` off the Flask session; if the handshake carries no session cookie, every connection would silently get the 35-minute default regardless of the Settings value. I did not run this to confirm which way it falls.
 - **Not verified**: the legacy Jinja UI under `templates/` and `static/`. I only traced the React client in `frontend/`.
 
 ## Related documentation

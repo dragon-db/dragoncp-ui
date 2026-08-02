@@ -1,16 +1,13 @@
 import { PageHeader } from "@/components/layout/page-header";
-import { useEffect, useMemo, useState, type ComponentType } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
-  useAppConfig,
-  useEnvOnlyConfig,
-  useResetConfig,
   useSSHAutoConnect,
   useSSHDisconnect,
   useSSHStatus,
-  useUpdateConfig,
   useWebSocketStatus,
 } from "@/hooks/useConfig";
+import { SettingsPanel } from "@/components/settings/settings-panel";
 import {
   useDiscordSettings,
   useTestDiscord,
@@ -19,7 +16,6 @@ import {
   useWebhookSettings,
 } from "@/hooks/useWebhooks";
 import { useRuntimeStore } from "@/stores/runtime";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -29,11 +25,9 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  IconArchive,
   IconBolt,
   IconBrandDiscord,
   IconCheck,
-  IconClock,
   IconLink,
   IconPlayerPause,
   IconRefresh,
@@ -41,119 +35,13 @@ import {
   IconSettings,
   IconWebhook,
 } from "@tabler/icons-react";
-import type { AppConfig } from "@/lib/api-types";
-
-type AppConfigKey = Extract<keyof AppConfig, string>;
-type ConfigField = { key: AppConfigKey; label: string; type?: "password" | "number" };
-
-const configFields: ConfigField[] = [
-  { key: "REMOTE_IP", label: "Server Host/IP" },
-  { key: "REMOTE_USER", label: "SSH Username" },
-  { key: "REMOTE_PASSWORD", label: "SSH Password", type: "password" },
-  { key: "SSH_KEY_PATH", label: "SSH Key Path" },
-  { key: "MOVIE_PATH", label: "Movie Source Path" },
-  { key: "TVSHOW_PATH", label: "TV Show Source Path" },
-  { key: "ANIME_PATH", label: "Anime Source Path" },
-  { key: "BACKUP_PATH", label: "Backup Source Path" },
-  { key: "MOVIE_DEST_PATH", label: "Movie Destination Path" },
-  { key: "TVSHOW_DEST_PATH", label: "TV Show Destination Path" },
-  { key: "ANIME_DEST_PATH", label: "Anime Destination Path" },
-  { key: "DISK_PATH_1", label: "Disk Path 1" },
-  { key: "DISK_PATH_2", label: "Disk Path 2" },
-  { key: "DISK_PATH_3", label: "Disk Path 3" },
-  { key: "DISK_API_ENDPOINT", label: "Remote Disk API Endpoint" },
-  { key: "DISK_API_TOKEN", label: "Remote Disk API Token", type: "password" },
-  { key: "WEBSOCKET_TIMEOUT_MINUTES", label: "WebSocket Timeout (minutes)", type: "number" },
-];
-
-interface ConfigGroup {
-  id: string;
-  title: string;
-  description: string;
-  icon: ComponentType<{ className?: string }>;
-  keys: Array<AppConfigKey>;
-}
-
-const configFieldByKey = configFields.reduce(
-  (acc, field) => {
-    acc[field.key] = field;
-    return acc;
-  },
-  {} as Partial<Record<AppConfigKey, ConfigField>>
-);
-
-const configGroups: ConfigGroup[] = [
-  {
-    id: "connection",
-    title: "Connection & Access",
-    description: "Remote host credentials and session timeout behavior.",
-    icon: IconServer,
-    keys: [
-      "REMOTE_IP",
-      "REMOTE_USER",
-      "REMOTE_PASSWORD",
-      "SSH_KEY_PATH",
-      "WEBSOCKET_TIMEOUT_MINUTES",
-    ],
-  },
-  {
-    id: "sources",
-    title: "Source Paths",
-    description: "Primary media source locations watched by Dragon-CP.",
-    icon: IconLink,
-    keys: ["MOVIE_PATH", "TVSHOW_PATH", "ANIME_PATH", "BACKUP_PATH"],
-  },
-  {
-    id: "destinations",
-    title: "Destination Paths",
-    description: "Target folders where synced content is written.",
-    icon: IconArchive,
-    keys: ["MOVIE_DEST_PATH", "TVSHOW_DEST_PATH", "ANIME_DEST_PATH"],
-  },
-  {
-    id: "storage",
-    title: "Storage & Disk API",
-    description: "Disk mounts and remote usage endpoint configuration.",
-    icon: IconSettings,
-    keys: ["DISK_PATH_1", "DISK_PATH_2", "DISK_PATH_3", "DISK_API_ENDPOINT", "DISK_API_TOKEN"],
-  },
-];
-
-const criticalKeys: Array<AppConfigKey> = [
-  "REMOTE_IP",
-  "REMOTE_USER",
-  "REMOTE_PASSWORD",
-  "SSH_KEY_PATH",
-  "WEBSOCKET_TIMEOUT_MINUTES",
-];
-
-function normalizeValue(value: string | number | undefined) {
-  if (value === undefined || value === null) return "";
-  return String(value);
-}
-
-function wasCriticalConfigChanged(
-  baseConfig: AppConfig | undefined,
-  draft: Record<string, string | number>
-) {
-  if (!baseConfig) return false;
-  return criticalKeys.some((key) => normalizeValue(baseConfig[key]) !== normalizeValue(draft[key]));
-}
-
-function fieldValue(draft: Record<string, string>, key: AppConfigKey) {
-  return draft[key as string] ?? "";
-}
 
 export function SettingsPage() {
-  const configQuery = useAppConfig();
-  const envConfigQuery = useEnvOnlyConfig();
   const webhookSettingsQuery = useWebhookSettings();
   const discordSettingsQuery = useDiscordSettings();
   const sshStatusQuery = useSSHStatus();
   const wsStatusQuery = useWebSocketStatus();
 
-  const updateConfig = useUpdateConfig();
-  const resetConfig = useResetConfig();
   const updateWebhookSettings = useUpdateWebhookSettings();
   const updateDiscordSettings = useUpdateDiscordSettings();
   const testDiscord = useTestDiscord();
@@ -163,7 +51,6 @@ export function SettingsPage() {
 
   const setConfigChanged = useRuntimeStore((state) => state.setConfigChanged);
 
-  const [draftConfig, setDraftConfig] = useState<Record<string, string>>({});
   const [webhookDraft, setWebhookDraft] = useState({
     auto_sync_movies: false,
     auto_sync_series: false,
@@ -177,15 +64,6 @@ export function SettingsPage() {
     icon_url: "",
     manual_sync_thumbnail_url: "",
   });
-
-  useEffect(() => {
-    if (!configQuery.data) return;
-    const next: Record<string, string> = {};
-    for (const field of configFields) {
-      next[field.key as string] = normalizeValue(configQuery.data[field.key]);
-    }
-    setDraftConfig(next);
-  }, [configQuery.data]);
 
   useEffect(() => {
     const settings = webhookSettingsQuery.data?.settings;
@@ -210,31 +88,19 @@ export function SettingsPage() {
     });
   }, [discordSettingsQuery.data]);
 
-  const modifiedCount = useMemo(() => {
-    if (!envConfigQuery.data) return 0;
-    return configFields.reduce((count, field) => {
-      const key = field.key as string;
-      const envValue = normalizeValue(envConfigQuery.data?.[field.key]);
-      const currentValue = normalizeValue(draftConfig[key]);
-      return count + (envValue !== currentValue ? 1 : 0);
-    }, 0);
-  }, [draftConfig, envConfigQuery.data]);
-
   const connectionState = sshStatusQuery.data ? "Connected" : "Disconnected";
-  const timeoutCurrent = draftConfig.WEBSOCKET_TIMEOUT_MINUTES || "30";
 
-  const saveAllSettings = async () => {
+  /**
+   * Saves the Automation tab only. The Config tab saves itself — its settings
+   * are split across two stores and only one of them is writable, so a single
+   * "save everything" button would have to claim it wrote things it did not.
+   */
+  const saveAutomationSettings = async () => {
+    // Two requests, so say which one failed. "Failed to save settings" after
+    // the first succeeded left the screen and the database disagreeing with no
+    // clue which half was live.
+    let failed: string | null = null;
     try {
-      const configPayload: Record<string, string | number> = { ...draftConfig };
-      if (configPayload.WEBSOCKET_TIMEOUT_MINUTES !== undefined) {
-        const timeout = Number(configPayload.WEBSOCKET_TIMEOUT_MINUTES);
-        configPayload.WEBSOCKET_TIMEOUT_MINUTES = Number.isFinite(timeout)
-          ? Math.min(60, Math.max(5, timeout))
-          : 30;
-      }
-
-      await updateConfig.mutateAsync(configPayload as Partial<AppConfig>);
-
       await updateWebhookSettings.mutateAsync({
         auto_sync_movies: webhookDraft.auto_sync_movies,
         auto_sync_series: webhookDraft.auto_sync_series,
@@ -244,7 +110,11 @@ export function SettingsPage() {
           Number(webhookDraft.series_anime_sync_wait_time) || 60
         ),
       });
+    } catch {
+      failed = "auto-sync";
+    }
 
+    try {
       await updateDiscordSettings.mutateAsync({
         enabled: discordDraft.enabled,
         webhook_url: discordDraft.webhook_url,
@@ -252,42 +122,21 @@ export function SettingsPage() {
         icon_url: discordDraft.icon_url,
         manual_sync_thumbnail_url: discordDraft.manual_sync_thumbnail_url,
       });
-
-      // Compare what was saved, not what was typed: an out-of-range timeout is
-      // clamped on the way out, and clamping to the stored value is no change.
-      const criticalChanged = wasCriticalConfigChanged(configQuery.data, configPayload);
-      setConfigChanged(criticalChanged);
-
-      if (criticalChanged) {
-        toast.info("Critical configuration changed. Reconnect is required to apply updates.");
-      } else {
-        toast.success("Settings saved");
-      }
-
-      configQuery.refetch();
-      envConfigQuery.refetch();
-      webhookSettingsQuery.refetch();
-      discordSettingsQuery.refetch();
-      wsStatusQuery.refetch();
     } catch {
-      toast.error("Failed to save settings");
+      failed = failed ? "auto-sync and Discord" : "Discord";
     }
-  };
 
-  const resetToEnv = async () => {
-    try {
-      await resetConfig.mutateAsync();
-      await Promise.all([
-        configQuery.refetch(),
-        envConfigQuery.refetch(),
-        webhookSettingsQuery.refetch(),
-        discordSettingsQuery.refetch(),
-      ]);
-      setConfigChanged(false);
-      toast.success("Configuration reset to environment values");
-    } catch {
-      toast.error("Failed to reset configuration");
+    if (failed) {
+      toast.error(`Could not save the ${failed} settings`);
+    } else {
+      toast.success("Settings saved");
     }
+
+    // Refetched either way. After a partial save the screen has to show what
+    // the server actually holds, which is exactly when it differs from the form.
+    webhookSettingsQuery.refetch();
+    discordSettingsQuery.refetch();
+    wsStatusQuery.refetch();
   };
 
   const runAutoConnect = async () => {
@@ -313,23 +162,17 @@ export function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Settings" description="Connection, media paths, and automation">
-        <Button variant="outline" onClick={resetToEnv} disabled={resetConfig.isPending}>
-          <IconRefresh className={`mr-2 h-4 w-4 ${resetConfig.isPending ? "animate-spin" : ""}`} />
-          Reset to Env
-        </Button>
-        <Button
-          onClick={saveAllSettings}
-          disabled={
-            updateConfig.isPending ||
-            updateWebhookSettings.isPending ||
-            updateDiscordSettings.isPending
-          }
-        >
-          <IconCheck className="mr-2 h-4 w-4" />
-          Save All
-        </Button>
-      </PageHeader>
+      {/*
+        No save button up here any more. It used to be "Save All" and wrote
+        every tab at once, which stopped being true when the Config tab split
+        across two stores and gained its own save. A page-level button that
+        saves one tab is worse than no page-level button.
+
+        "Reset to Env" went with the per-browser session it reset: a setting now
+        either comes from the environment file, and is read-only, or from the
+        database, where it is the only value there is.
+      */}
+      <PageHeader title="Settings" description="Connection, media paths, and automation" />
 
       <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
@@ -338,24 +181,6 @@ export function SettingsPage() {
             SSH
           </div>
           <div className="mt-1 text-sm font-semibold text-foreground">{connectionState}</div>
-        </div>
-        <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
-          <div className="inline-flex items-center gap-2 text-xs tracking-[0.14em] text-muted-foreground uppercase">
-            <IconClock className="h-3.5 w-3.5" />
-            Timeout
-          </div>
-          <div className="mt-1 text-sm font-semibold text-foreground tabular-nums">
-            {timeoutCurrent} min
-          </div>
-        </div>
-        <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
-          <div className="inline-flex items-center gap-2 text-xs tracking-[0.14em] text-muted-foreground uppercase">
-            <IconSettings className="h-3.5 w-3.5" />
-            Modified
-          </div>
-          <div className="mt-1 text-sm font-semibold text-foreground tabular-nums">
-            {modifiedCount} fields
-          </div>
         </div>
         <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
           <div className="inline-flex items-center gap-2 text-xs tracking-[0.14em] text-muted-foreground uppercase">
@@ -385,94 +210,7 @@ export function SettingsPage() {
         </TabsList>
 
         <TabsContent value="config" className="mt-4 space-y-4">
-          <div className="grid gap-4 xl:grid-cols-2">
-            {configGroups.map((group) => {
-              const GroupIcon = group.icon;
-              const groupModifiedCount = group.keys.reduce((count, key) => {
-                const envValue = normalizeValue(envConfigQuery.data?.[key]);
-                const currentValue = normalizeValue(draftConfig[key as string]);
-                return count + (envValue !== currentValue ? 1 : 0);
-              }, 0);
-
-              return (
-                <Card key={group.id} className="border-border/70 bg-card/85">
-                  <CardHeader className="border-b border-border/60 pb-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3">
-                        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-primary/30 bg-primary/12 text-primary">
-                          <GroupIcon className="h-4 w-4" />
-                        </span>
-                        <div>
-                          <CardTitle className="text-base text-foreground">{group.title}</CardTitle>
-                          <CardDescription className="mt-1 text-muted-foreground">
-                            {group.description}
-                          </CardDescription>
-                        </div>
-                      </div>
-                      <Badge
-                        variant="outline"
-                        className="shrink-0 border-border/70 text-muted-foreground tabular-nums"
-                      >
-                        {groupModifiedCount} modified
-                      </Badge>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-3 pt-4">
-                    {group.keys.map((fieldKey) => {
-                      const field = configFieldByKey[fieldKey];
-                      if (!field) return null;
-
-                      const key = field.key as string;
-                      const envValue = normalizeValue(envConfigQuery.data?.[field.key]);
-                      const currentValue = normalizeValue(draftConfig[key]);
-                      const changed = envValue !== currentValue;
-
-                      return (
-                        <div
-                          key={key}
-                          className="space-y-2 rounded-xl border border-border/70 bg-background/45 p-3"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <Label className="text-foreground/90">{field.label}</Label>
-                            {changed && (
-                              <Badge
-                                variant="outline"
-                                className="border-amber-500/50 bg-amber-500/10 text-amber-300"
-                              >
-                                Modified
-                              </Badge>
-                            )}
-                          </div>
-                          <Input
-                            type={
-                              field.type === "password"
-                                ? "password"
-                                : field.type === "number"
-                                  ? "number"
-                                  : "text"
-                            }
-                            value={fieldValue(draftConfig, field.key)}
-                            onChange={(event) =>
-                              setDraftConfig((previous) => ({
-                                ...previous,
-                                [key]: event.target.value,
-                              }))
-                            }
-                            min={field.key === "WEBSOCKET_TIMEOUT_MINUTES" ? 5 : undefined}
-                            max={field.key === "WEBSOCKET_TIMEOUT_MINUTES" ? 60 : undefined}
-                            className="border-border/70 bg-background/70"
-                          />
-                          <div className="text-xs text-muted-foreground">
-                            Env: {envValue || "Not set"}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
+          <SettingsPanel />
         </TabsContent>
 
         <TabsContent value="automation" className="mt-4 space-y-4">
@@ -618,6 +356,22 @@ export function SettingsPage() {
               </Button>
             </CardContent>
           </Card>
+
+          {/* Saves this tab, next to what it saves. */}
+          <div className="flex items-center justify-end gap-2">
+            <span className="text-[12px] text-muted-foreground">
+              Auto-sync and Discord settings are stored in the database and take effect immediately.
+            </span>
+            <Button
+              onClick={saveAutomationSettings}
+              disabled={updateWebhookSettings.isPending || updateDiscordSettings.isPending}
+            >
+              <IconCheck className="mr-2 h-4 w-4" />
+              {updateWebhookSettings.isPending || updateDiscordSettings.isPending
+                ? "Saving…"
+                : "Save automation settings"}
+            </Button>
+          </div>
         </TabsContent>
 
         <TabsContent value="diagnostics" className="mt-4 space-y-4">

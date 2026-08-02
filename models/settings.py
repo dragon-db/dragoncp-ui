@@ -4,7 +4,7 @@ DragonCP AppSettings Model
 Key-value settings store in SQLite for dynamic configuration
 """
 
-from typing import Optional
+from typing import Dict, Optional
 
 
 class AppSettings:
@@ -26,6 +26,24 @@ class AppSettings:
                 INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
             ''', (key, value))
+            conn.commit()
+
+    def write_many(self, values: Dict[str, str]) -> None:
+        """
+        Write several settings in one transaction.
+
+        Saving a form is one decision, so it has to be one write. Committing
+        per key meant a payload that failed validation half way through left
+        the settings before the failure already applied, behind a response
+        that said the save had failed.
+        """
+        if not values:
+            return
+        with self.db.get_connection() as conn:
+            conn.executemany('''
+                INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            ''', list(values.items()))
             conn.commit()
 
     def get_bool(self, key: str, default: bool = False) -> bool:

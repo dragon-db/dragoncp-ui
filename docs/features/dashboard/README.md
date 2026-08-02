@@ -144,9 +144,9 @@ never renders. See [the API reference](../../reference/api.md).
 Local disks (`routes/debug.py`, `api_local_disk_usage`):
 
 - `DISK_PATH_1`, `DISK_PATH_2`, `DISK_PATH_3` - up to three paths to watch.
-  These are settable in the environment file (see `dragoncp_env_sample.env`)
-  and are also editable from the Settings page, where session overrides take
-  precedence over the environment (`config.py`).
+  Set in the environment file (see `dragoncp_env_sample.env`). The Settings
+  page shows them read-only: they are environment settings, so changing one
+  means editing the file on the server and restarting.
 - `DISK_PATH_1` defaults to `/home` when unset or empty. `DISK_PATH_2` and
   `DISK_PATH_3` have no default and are simply skipped.
 - Each path must exist as seen by the backend process. The endpoint shells out

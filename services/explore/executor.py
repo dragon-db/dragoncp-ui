@@ -31,6 +31,7 @@ from typing import Dict, List, Optional, Tuple
 
 from env_flags import test_mode_enabled
 from security import PathTraversalError, assert_path_within_bounds, validate_relative_path
+from services.backups.layout import BackupPathNotConfigured
 
 
 class ExploreExecutor:
@@ -41,16 +42,25 @@ class ExploreExecutor:
 
     # ---- helpers ----------------------------------------------------------
 
-    def _backup_dir(self, folder_name: str, transfer_id: str) -> str:
-        backup_service = self.coordinator.backup_service
-        return backup_service._get_dynamic_backup_dir({
-            'folder_name': folder_name,
-            'transfer_id': transfer_id,
-        })
+    def _backup_dir(self, transfer_id: str) -> str:
+        """
+        Staging for this run — the same folder rsync's --backup-dir uses, so
+        files moved aside here and files rsync displaces later are sorted into
+        the backup tree together, as one version of each slot.
+        """
+        return self.coordinator.backups.staging_dir(transfer_id)
 
     def _work_dir(self, transfer_id: str) -> str:
-        base = self.config.get('BACKUP_PATH') or '/tmp'
-        path = os.path.join(base, '.explore-plans', transfer_id)
+        """
+        Where this run's file list lives — under BACKUP_PATH, via the layout.
+
+        Built through the layout rather than by joining strings, so it fails
+        closed with the rest of the backup area. The old `BACKUP_PATH or '/tmp'`
+        meant an unconfigured install wrote the approved file list somewhere the
+        OS may clear, and rsync reading a missing --files-from is what turns a
+        reviewed transfer into a whole-directory mirror.
+        """
+        path = self.coordinator.backups.layout.plans_dir(transfer_id)
         os.makedirs(path, exist_ok=True)
         return path
 
@@ -116,7 +126,10 @@ class ExploreExecutor:
             return False, 'Destination is outside the configured local library', None
 
         transfer_id = f"explore_{uuid.uuid4().hex[:12]}"
-        backup_dir = self._backup_dir(series, transfer_id)
+        try:
+            backup_dir = self._backup_dir(transfer_id)
+        except BackupPathNotConfigured as error:
+            return False, str(error), None
 
         # --- 1. move what this season supersedes or removes ------------------
         # TEST_MODE puts rsync into --dry-run, so nothing arrives. Moving the
@@ -236,7 +249,7 @@ class ExploreExecutor:
         """
         coordinator = self.coordinator
         transfer_model = getattr(coordinator, 'transfer_model', None)
-        backup_service = getattr(coordinator, 'backup_service', None)
+        backups = getattr(coordinator, 'backups', None)
         if transfer_model is None:
             return
 
@@ -263,10 +276,11 @@ class ExploreExecutor:
             print(f"⚠️  Could not record the removal-only run {transfer_id}: {error}")
             return
 
-        # Index what was moved, so it is listed and restorable like any backup.
-        if backup_service is not None:
+        # File what was moved into the backup tree, so a pure removal is listed
+        # and restorable like anything else a transfer displaces.
+        if backups is not None:
             try:
-                backup_service.finalize_backup_for_transfer(transfer_id)
+                backups.sort_after_transfer(transfer_id, reason='explore_prune')
             except Exception as error:  # noqa: BLE001
                 print(f"⚠️  Could not index the backup for {transfer_id}: {error}")
 

@@ -32,7 +32,7 @@ app.py
 ├── services/
 │   ├── notification_service.py  (NotificationService)
 │   ├── webhook_service.py       (WebhookService)
-│   ├── backup_service.py        (BackupService)
+│   ├── backups/                 (BackupsService and friends)
 │   ├── transfer_service.py      (TransferService)
 │   └── transfer_coordinator.py  (TransferCoordinator)
 └── routes/
@@ -47,7 +47,7 @@ app.py
 
 **Models** — Data access only. Each model file owns one table domain and knows nothing about business rules or HTTP. Files: `database.py`, `settings.py`, `transfer.py`, `backup.py`, `webhook.py`.
 
-**Services** — Business logic only. Services receive their dependencies via constructor injection and orchestrate the actual work. They do not know about Flask or HTTP. Files: `transfer_coordinator.py`, `transfer_service.py`, `webhook_service.py`, `backup_service.py`, `notification_service.py`.
+**Services** — Business logic only. Services receive their dependencies via constructor injection and orchestrate the actual work. They do not know about Flask or HTTP. Files: `transfer_coordinator.py`, `transfer_service.py`, `webhook_service.py`, `backups/`, `notification_service.py`.
 
 **Routes** — Presentation only. Blueprint files handle HTTP request parsing, call the appropriate service, and return JSON responses. They contain no business logic. Files: `media.py`, `transfers.py`, `backups.py`, `webhooks.py`, `debug.py`.
 
@@ -85,7 +85,7 @@ app.py
 | `services/transfer_coordinator.py` | Main orchestrator — coordinates all sync workflows | 213 |
 | `services/transfer_service.py` | Rsync process execution and monitoring | 438 |
 | `services/webhook_service.py` | Webhook parsing, immediate sync triggering, status mapping | 445 |
-| `services/backup_service.py` | Backup scanning, recording, and restore planning | 585 |
+| `services/backups/` | Backups: identity, on-disk layout, sorting, index and rebuild, restore, retention, migration | 8 modules |
 | `services/notification_service.py` | Discord embed construction and delivery | 212 |
 
 ### Routes Layer

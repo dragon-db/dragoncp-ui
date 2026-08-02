@@ -299,10 +299,13 @@ bounds-check them; `services/path_service.py` is used by the webhook, auto-sync
 and rename services. For the shapes produced here (`base/folder[/season]`) the
 two agree, but a change to one does not change the other.
 
-**Source and destination bases are session-overridable.** `DragonCPConfig.get()`
-consults the current Flask session's `ui_config` before the env file, so
-`MOVIE_PATH` and friends - and therefore which remote tree you are browsing -
-can differ per browser session.
+**Source and destination bases come from the environment file only.**
+`MOVIE_PATH` and friends are read through `DragonCPConfig.get()`, which reads
+the env file as loaded at startup. They are the path-traversal boundary that
+every file operation is validated against, so they are read-only in the UI and
+identical for every operator. They used to be overridable per browser session,
+which meant the tree you were browsing could differ from the one a transfer
+would actually read.
 
 **Two buttons do the same thing.** On the options screen for a season, "Manual
 Episode Sync" and "Download Single Episode" both just switch the view to the

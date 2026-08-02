@@ -1,11 +1,66 @@
 # Configuration
 
-Last updated: 2026-07-28
-Primary files: `config.py`, `app.py`, `auth.py`, `webhook_auth.py`, `logging_setup.py`, `websocket.py`, `ssh.py`, `models/settings.py`, `deploy/gunicorn.conf.py`
+Last updated: 2026-08-02
+Primary files: `settings_registry.py`, `services/settings_service.py`, `config.py`, `app.py`, `auth.py`, `webhook_auth.py`, `logging_setup.py`, `websocket.py`, `ssh.py`, `models/settings.py`, `deploy/gunicorn.conf.py`
 
 Every setting DragonCP reads, where it comes from, and what an operator sees
 when it is wrong. This page is derived from the code, not from the sample env
 file — the code reads considerably more than the sample ships.
+
+## Where a setting lives
+
+Two stores, and only two. `settings_registry.py` is the list.
+
+| | **Environment file** (`dragoncp_env.env`) | **Application settings** (`app_settings` table) |
+|---|---|---|
+| Holds | What an installation is built with | What an operator changes while running it |
+| Changing it | Edit on the server, restart | Settings page, effective immediately |
+| At runtime | **Read-only.** The UI shows these and refuses to write them | Editable |
+| Visible to background threads | Yes | Yes |
+
+**Environment file:** the remote host and SSH key, the six media directories,
+`BACKUP_PATH`, the disk-reporting paths and API, `TEST_MODE`, and every
+credential, secret and security control.
+
+The seven path settings are there for a specific reason: `get_all_allowed_paths()`
+returns exactly those, and every path-traversal check validates against them.
+They are the only boundary stopping a crafted webhook writing outside the media
+directories, and it should not be possible to widen it from a browser. Secrets
+are there for a related reason — the database is not an encrypted store, and a
+key editable from a web form is editable by anyone who reaches that form, using
+a session minted by the very key they would be changing.
+
+**Application settings:** the three auto-sync toggles, the batch wait time, the
+five Discord settings, the three backup-retention settings, and the realtime
+idle timeout.
+
+### The store that used to exist
+
+A third store — a per-browser Flask session — was removed. `config.get()` only
+consulted it when an HTTP request was in flight, so every background thread (the
+transfer monitor, the auto-sync scheduler, the backup sorter) fell through to
+the env file regardless. Sixteen settings appeared editable in the Settings page
+and were ignored by the machinery that used them.
+
+`DragonCPConfig.save_config` went with it — it rewrote the whole env file from
+a dict, dropping every comment, and nothing called it.
+
+`POST /api/config/reset` and `GET /api/config/env-only` are **kept**, because
+the legacy static UI calls both and that UI is what production serves. They now
+mean what is left of what they meant: `env-only` returns the environment half,
+and `reset` answers honestly that there is nothing to reset. For the same
+reason `GET /api/config` returns the flat key -> value map **as well as** the
+grouped payload — the old page reads the flat one, the React page reads the
+groups.
+
+### Moving a setting across
+
+Adding a row to `settings_registry.py` is the whole change. On the next start,
+any database-eligible key still sitting in the env file is copied into the
+database once, so behaviour does not change on the way over. After that the
+database is authoritative and the env value is only a default for a fresh
+install.
+
 
 ## The env file
 
@@ -54,8 +109,8 @@ optional keys and is not on its own a fault.
 
 ## Connection
 
-Read through `config.get(...)`, so session overrides apply inside a request (see
-[Precedence](#the-three-stores-and-which-one-wins)).
+Read from the env file and read-only at runtime (see
+[Precedence](#the-two-stores-and-which-one-wins)).
 
 | Key | What it does | Default when unset | If wrong or missing |
 |---|---|---|---|
@@ -84,7 +139,10 @@ rename, backup and restore must resolve inside one of them
 | `MOVIE_DEST_PATH` | Local destination for movies (`services/path_service.py:145`). | empty | Transfers of that type fail the destination check. |
 | `TVSHOW_DEST_PATH` | Local destination for TV. Also serves the `series` alias (`services/path_service.py:148`). | empty | As above. |
 | `ANIME_DEST_PATH` | Local destination for anime. | empty | As above. |
-| `BACKUP_PATH` | Root under which each sync gets its own directory of overwritten and deleted files. | `/tmp/backup` when building or rescanning backup directories (`services/backup_service.py:546`, `:412`); no default on the restore path (`:142`) | The two paths disagree when it is unset: backups are written under `/tmp/backup`, but a restore refuses with "BACKUP_PATH is not configured; refusing restore". So backups appear to work and then cannot be restored — and `/tmp` may be cleared out from under them. See [Backups](../features/backups/README.md). |
+| `BACKUP_PATH` | Root of the backup tree: every movie and episode a sync has replaced, grouped by what it is. | **None. Required.** | Unset, transfers refuse to start, resume or restart, and say so. There is deliberately no fallback anywhere — writing to a temporary directory that a restore then refuses to read is what made backups look like they worked and be unrecoverable. See [Backups](../features/backups/README.md). |
+| `BACKUP_RETENTION_KEEP` | How many previous versions of each movie or episode to keep. Older ones are removed once a new one is stored. | `2` (clamped to 1–50) | Pinned versions are never removed, and neither is anything newer than the grace period. |
+| `BACKUP_RETENTION_GRACE_HOURS` | How long a newly stored version is protected from the rule above. | `24` | This is what stops an accidental sync immediately pushing the copy you wanted off the end of the list. |
+| `BACKUP_RETENTION_ENABLED` | Set falsey to keep every version forever. | `true` | The backup disk fills. Usage is shown on the Backups page but never acted on automatically. |
 
 ## Authentication and web session
 
@@ -115,7 +173,7 @@ password.
 |---|---|---|---|
 | `WEBHOOK_SECRET` | Shared secret for HMAC-SHA256 verification of the `X-DragonCP-Signature` header, format `sha256=<hex>` (`webhook_auth.py:188-224`). | unset | With neither this nor the IP list set, the three webhook receivers accept **anything** and log a startup warning that they are UNAUTHENTICATED. With it set and no IP list, an unsigned request gets 401 `WEBHOOK_SIGNATURE_MISSING` and a bad signature gets 401 `WEBHOOK_SIGNATURE_INVALID`. |
 | `WEBHOOK_ALLOWED_IPS` | Comma-separated IPs and CIDR ranges permitted to post webhooks (`webhook_auth.py:122-152`). IPv4 and IPv6. | unset | An unparseable entry is dropped with a warning and the rest still apply. A caller outside the list gets 403 `WEBHOOK_IP_REJECTED`. Behind a reverse proxy, `request.remote_addr` is the proxy's address unless ProxyFix is applied, so legitimate callers are rejected. |
-| `AUTO_SYNC_MOVIES` | Fallback only. Used as the default when the `app_settings` table has no `AUTO_SYNC_MOVIES` row (`routes/webhooks.py:113`, `:903-904`). Compared as the lowercase string `true`. | `false` | Once the toggle has ever been saved from the Settings screen, a database row exists and this key stops having any effect. Details in [Precedence](#the-three-stores-and-which-one-wins). |
+| `AUTO_SYNC_MOVIES` | Seed value only. Copied into `app_settings` at first start if no row exists, and used as the resolver's fallback until one does. | `false` | Once a row exists — which adoption creates on the first start after upgrading — this key stops having any effect. Details in [Precedence](#the-two-stores-and-which-one-wins). |
 
 When both `WEBHOOK_SECRET` and `WEBHOOK_ALLOWED_IPS` are set, a request passes
 if **either** check succeeds (`webhook_auth.py:384-411`). The config is cached
@@ -162,7 +220,7 @@ background scheduler are process-local. See
 
 | Key | What it does | Default when unset | If wrong or missing |
 |---|---|---|---|
-| `WEBSOCKET_TIMEOUT_MINUTES` | Idle timeout, in minutes. Server-side it is read **only from the browser session's overrides**, never from the env file (`websocket.py:63-81`): the value is clamped to 5-60, five minutes of slack is added, and the result is capped at 65 minutes. The client-side idle timer reads it from `GET /api/config` and defaults to 30 (`frontend/src/hooks/useRuntime.ts:170`). | server: 35 minutes; client: 30 minutes | Putting it in the env file changes the browser's idle timer but leaves the server's stale-connection reaper at 35 minutes. Set too low, the realtime connection drops while a long transfer is still running and the progress bar stops updating until you reload. The Settings screen clamps input to 5-60 before saving. |
+| `WEBSOCKET_TIMEOUT_MINUTES` *(an application setting, not env)* | Idle timeout, in minutes. Read from `app_settings` when a connection is established (`websocket.py`): the value is clamped to 5-60, five minutes of slack is added, and the result is capped at 65 minutes. The client-side idle timer reads the same key from `GET /api/config`. | server and client: 30 minutes, plus the server's 5-minute buffer | Set too low, the realtime connection drops while a long transfer is still running and the progress bar stops updating until you reload. It used to be read from the browser session, so the server's stale-connection reaper never saw a saved value and stayed at 35 minutes. |
 | `SOCKETIO_VERBOSE_LOGGING` | Turns on Socket.IO and Engine.IO internal logging (`app.py:112-113`, `:184-192`). Also switched on implicitly by `TEST_MODE` or `FLASK_DEBUG`. | off | Leaving it on in production floods the log with per-packet lines. |
 
 The Socket.IO ping interval (25s), ping timeout (60s) and async mode
@@ -186,7 +244,7 @@ Exactly three local paths are supported — the list is hard-coded.
 
 | Key | What it does | Default when unset | If wrong or missing |
 |---|---|---|---|
-| `TEST_MODE` | Set to `1`, `true`, `yes` or `on` and rsync runs with `--dry-run`, rename webhooks report what they would rename without touching the file (`services/rename_service.py:342`), destination and backup directories are described rather than created, and config writes are skipped (`services/transfer_service.py:497`, `:555`, `:599`; `services/rename_service.py:342`; `services/backup_service.py:169` and six others; `config.py:124`). Simulations are exempt from the dry-run so they still move their own fixture bytes. Also turns on verbose Socket.IO logging and permits the unsafe Werkzeug server. | off | Left on in production, every transfer reports success while **no files are actually copied**. The startup log warns `Runtime is using development/test flags`. Path-by-path guarantees are in [test-mode.md](test-mode.md). Every reader goes through `env_flags.test_mode_enabled()`; until this was unified the banner accepted `true` while every safety gate demanded exactly `'1'`, so `TEST_MODE=true` announced test mode and copied and deleted for real. |
+| `TEST_MODE` | Set to `1`, `true`, `yes` or `on` and rsync runs with `--dry-run`, rename webhooks report what they would rename without touching the file (`services/rename_service.py:342`), destination and backup directories are described rather than created, and config writes are skipped (`services/transfer_service.py:497`, `:555`, `:599`; `services/rename_service.py:342`; `services/backups/restore.py`; `config.py:124`). Simulations are exempt from the dry-run so they still move their own fixture bytes. Also turns on verbose Socket.IO logging and permits the unsafe Werkzeug server. | off | Left on in production, every transfer reports success while **no files are actually copied**. The startup log warns `Runtime is using development/test flags`. Path-by-path guarantees are in [test-mode.md](test-mode.md). Every reader goes through `env_flags.test_mode_enabled()`; until this was unified the banner accepted `true` while every safety gate demanded exactly `'1'`, so `TEST_MODE=true` announced test mode and copied and deleted for real. |
 | `FLASK_DEBUG` | Enables Flask debug mode on a direct `python app.py` start and permits the unsafe Werkzeug server (`app.py:510-512`). | off | Never appropriate in production; exposes the interactive debugger. Same startup warning as above. |
 | `DRAGONCP_DB` | Database path for `scripts/verify_v2_schema.py` only (`scripts/verify_v2_schema.py:6`). | `dragoncp.db` | The running application does not read this. `models/database.py:22-25` hard-codes `dragoncp.db` in the project root; there is no setting for it. |
 
@@ -203,139 +261,101 @@ These are read by tooling around the app rather than by the backend itself:
 
 ---
 
-## The three stores, and which one wins
+## The two stores, and which one wins
 
-Configuration lives in three places with different lifetimes and different
-reach.
+Configuration lives in two places, and the registry says which one owns each
+key. Nothing else in the application needs to know.
 
 ### 1. The env file, read once at startup
 
 `DragonCPConfig` reads `dragoncp_env.env` when the process starts and never
 re-reads it (`config.py:31`). Editing the file has no effect until you restart
 the service. This is the authoritative source for connection details, paths and
-credentials, and it is the only store that background work can see.
+credentials.
 
-`save_config()` exists on the config object and would rewrite the file, but no
-route calls it; it is marked legacy in the code (`config.py:119-135`).
+There is no path by which a setting changed in the UI is written back to
+`dragoncp_env.env`. `save_config()` was removed along with the session store —
+a route that rewrites the file the process only reads at startup can only
+produce a value that disagrees with the running service.
 
-### 2. Per-session overrides from the Settings screen
+### 2. The `app_settings` table
 
-`POST /api/config` writes into the Flask session cookie under `ui_config`
-(`config.py:77-82`), and `config.get()` consults that first — **but only when a
-request context is active** (`config.py:54-58`). `POST /api/config/reset`
-deletes the override map.
+A two-column key-value table in `dragoncp.db` (`models/database.py`,
+`models/settings.py`). Values persist across restarts and are visible to
+background work, because they are read straight from SQLite with no request
+context needed. That is the whole reason a setting lives here.
 
-This has a consequence that surprises people: transfers, the auto-sync
-scheduler and the queue all run on background threads
-(`services/transfer_service.py:643`, `services/transfer_coordinator.py:71` and
-others), where there is no request context. **Session overrides therefore do
-not affect any actual sync.** Changing a destination path in Settings changes
-what the API reports back to that one browser and nothing else. Restarting the
-backend, or simply opening the app in a different browser, discards them.
+Thirteen keys live here, all of them listed in `settings_registry.py`:
 
-The Settings screen submits only the seventeen fields it lists
-(`frontend/src/components/pages/settings.tsx:49-67`) — the connection keys, the
-six media paths, `BACKUP_PATH`, the disk keys, and `WEBSOCKET_TIMEOUT_MINUTES`.
-No other key can be overridden from the UI.
-
-`GET /api/config` returns the env file merged with the session overrides;
-`GET /api/config/env-only` returns the env file alone, which is what the
-Settings screen compares against to show its "modified" count.
-
-### 3. The `app_settings` table
-
-A two-column key-value table in `dragoncp.db` (`models/database.py:174-182`,
-`models/settings.py`). Values persist across restarts and — unlike session
-overrides — they *are* visible to background work, because they are read
-straight from SQLite with no request context needed.
-
-Nine keys legitimately live here. All nine are written by the Settings screen
-and by nothing else:
-
-| Key | Written by | Read default when the row is absent |
+| Key | Default when no row exists | Bounds |
 |---|---|---|
-| `AUTO_SYNC_MOVIES` | `POST /api/webhook/settings` (`routes/webhooks.py:928`) | the env file's `AUTO_SYNC_MOVIES`, else false |
-| `AUTO_SYNC_SERIES` | `:933` | `False` |
-| `AUTO_SYNC_ANIME` | `:938` | `False` |
-| `SERIES_ANIME_SYNC_WAIT_TIME` | `:948`, clamped to 30-900 seconds | `60` seconds |
-| `DISCORD_NOTIFICATIONS_ENABLED` | `POST /api/discord/settings` (`:997`) | `False` |
-| `DISCORD_WEBHOOK_URL` | `:1001` | none — notifications are skipped |
-| `DISCORD_APP_URL` | `:1005` | `http://localhost:5000` |
-| `DISCORD_MANUAL_SYNC_THUMBNAIL_URL` | `:1009` | empty |
-| `DISCORD_ICON_URL` | `:1013` | empty |
+| `AUTO_SYNC_MOVIES` | `false` | — |
+| `AUTO_SYNC_SERIES` | `false` | — |
+| `AUTO_SYNC_ANIME` | `false` | — |
+| `SERIES_ANIME_SYNC_WAIT_TIME` | `60` **seconds** | 30-900 |
+| `DISCORD_NOTIFICATIONS_ENABLED` | `false` | — |
+| `DISCORD_WEBHOOK_URL` | empty — notifications are skipped | — |
+| `DISCORD_APP_URL` | `http://localhost:5000` | — |
+| `DISCORD_ICON_URL` | empty | — |
+| `DISCORD_MANUAL_SYNC_THUMBNAIL_URL` | empty | — |
+| `BACKUP_RETENTION_ENABLED` | `true` | — |
+| `BACKUP_RETENTION_KEEP` | `2` | 1-50 |
+| `BACKUP_RETENTION_GRACE_HOURS` | `24` | 0-720 |
+| `WEBSOCKET_TIMEOUT_MINUTES` | `30` | 5-60 |
+
+Bounds are enforced in the registry, so they apply wherever the key is written
+rather than only in the one route that happened to check.
 
 Nothing else belongs in this table. In particular, none of the connection,
 path, auth, logging or runtime keys are read from it.
 
-### The movie auto-sync toggle is the odd one out
+### How a database setting resolves
 
-The three auto-sync toggles do not resolve the same way, and it is worth being
-precise about it because the difference is invisible in the UI.
+`SettingsService.get()` answers in this order:
 
-Movies (`routes/webhooks.py:113`):
+1. **The stored row, if there is one** — including a row holding an empty
+   string. An empty value is a deliberate choice (it is how a webhook URL is
+   cleared), not an absence, and treating it as missing meant a cleared Discord
+   webhook silently kept posting to the env file's old URL.
+2. **The env file**, as the default for a fresh or upgraded installation.
+3. **The registry default.**
 
-```python
-auto_sync_enabled = transfer_coordinator.settings.get_bool(
-    'AUTO_SYNC_MOVIES',
-    default=(config.get("AUTO_SYNC_MOVIES", "false").lower() == "true"))
-```
+At startup, `adopt_env_defaults()` copies env-file values for database keys
+into the table once, for keys with no row at all. Without it, moving a setting
+across the boundary would change behaviour on the way over: the env value would
+keep working as a fallback until someone saved something, then silently stop
+being the source of truth.
 
-Series (`:243`) and anime (`:368`):
+### Writes are all-or-nothing
 
-```python
-auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_SERIES', False)
-```
+`POST /api/config` validates the entire payload before writing any of it, and
+writes what survives in one transaction. A request that fails validation
+returns 400 and changes nothing.
 
-`get_bool` returns its default only when the database row is missing
-(`models/settings.py:31-36`). So:
-
-- **Movies.** Database row if one exists; otherwise the env file's
-  `AUTO_SYNC_MOVIES`; otherwise off. The env value is a genuine fallback — but
-  only until someone saves the Settings screen once. Saving writes a row for
-  all three toggles, and from that moment `AUTO_SYNC_MOVIES` in the env file is
-  permanently ignored. An operator who sets it in the file, toggles it in the
-  UI, then later edits the file again will see no effect and no error.
-- **Series and anime.** Database row if one exists; otherwise off, full stop.
-  `AUTO_SYNC_SERIES` and `AUTO_SYNC_ANIME` in the env file are read by nothing.
-
-One further wrinkle for movies: the default expression is evaluated eagerly on
-every webhook, so `config.get("AUTO_SYNC_MOVIES", ...)` runs even when the
-database row exists. Webhook requests carry no session cookie, so the session
-layer is empty and it reads the env file. The visible side effect is a routine
-`Configuration key 'AUTO_SYNC_MOVIES' not found` line in the log for anyone who
-never set the key.
-
-See [Auto-sync](../features/auto-sync/README.md) for what the toggles actually
-trigger.
+Environment keys in a payload are refused **by name** and reported in the
+response's `refused` list, so a client can say which fields it could not change
+rather than claiming a save that half happened.
 
 ### Summary of precedence
 
-For a key read through `config.get(...)`:
+For a key read through the settings resolver: the database row, then the env
+file, then the registry default.
 
-1. Session override, if one exists **and** a request is in flight
-2. The env file as loaded at startup
-3. The caller's default
-
-For the nine `app_settings` keys: the database row, then the caller's default —
-which for `AUTO_SYNC_MOVIES` alone is itself a `config.get(...)` lookup.
+For a key read through `config.get(...)` directly: the env file as loaded at
+startup, then the caller's default.
 
 For keys read through `os.environ` (logging, `TEST_MODE`, `FLASK_DEBUG`,
 `PORT`, `SOCKETIO_VERBOSE_LOGGING`): a real environment variable, then the env
 file's copy, then the caller's default — except `ALLOW_QUERY_TOKEN_AUTH` and
 the Gunicorn keys, which never see the env file at all.
 
-There is no path by which a setting changed in the UI is written back to
-`dragoncp_env.env`.
+See [Auto-sync](../features/auto-sync/README.md) for what the toggles actually
+trigger.
 
 ---
 
 ## Not verified
 
-- The exact behaviour of `WEBSOCKET_TIMEOUT_MINUTES` when a Socket.IO
-  connection is established without the Flask session cookie present. The code
-  reads `session.get('ui_config', {})` at connect time (`websocket.py:71`) and
-  falls back to 35 minutes on any error, but whether the cookie reliably
-  accompanies the upgrade in every deployment topology was not tested.
 - Whether `SSH_KEY_PATH` pointing at a non-RSA key produces a clear operator
   message. `ssh.py:155` calls `paramiko.RSAKey.from_private_key_file`, and the
   failure is caught by the broad handler at `ssh.py:199`, but the resulting

@@ -229,8 +229,82 @@ class DatabaseManager:
             ''')
             
             # ==========================================
+            # Table: backup_capture (one displaced copy, at one moment)
+            # ==========================================
+            # The tree under BACKUP_PATH is the source of truth for these three
+            # tables. They are an index over it and can be dropped and rebuilt
+            # by walking the disk — see services/backups/indexer.py.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS backup_capture (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    capture_id TEXT UNIQUE NOT NULL,
+                    library TEXT,
+                    title TEXT,
+                    season_number INTEGER,
+                    episode_number INTEGER,
+                    release_year TEXT,
+                    slot_key TEXT,
+                    capture_path TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    source_transfer_id TEXT,
+                    source_ref TEXT,
+                    reason TEXT,
+                    kind TEXT NOT NULL DEFAULT 'slot',
+                    file_count INTEGER DEFAULT 0,
+                    total_size INTEGER DEFAULT 0,
+                    pinned INTEGER NOT NULL DEFAULT 0,
+                    -- Whether the FILES are still there, and nothing else. A
+                    -- capture that has been restored still has its files and
+                    -- stays 'present', so it can be restored again and stays
+                    -- subject to retention; when it was restored is recorded
+                    -- separately in restored_at.
+                    status TEXT NOT NULL DEFAULT 'present',
+                    restored_at TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # ==========================================
+            # Table: backup_capture_file (files inside a capture)
+            # ==========================================
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS backup_capture_file (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    capture_id TEXT NOT NULL,
+                    relative_path TEXT NOT NULL,
+                    original_path TEXT NOT NULL,
+                    file_size INTEGER DEFAULT 0,
+                    modified_time INTEGER DEFAULT 0,
+                    is_media INTEGER NOT NULL DEFAULT 0
+                )
+            ''')
+
+            # ==========================================
+            # Table: backup_capture_key (which slots a capture belongs to)
+            # ==========================================
+            # Normally one row per capture. A double episode (S01E01E02) has
+            # two, so the one stored copy is reachable from both episodes
+            # instead of being duplicated or findable from only the first.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS backup_capture_key (
+                    capture_id TEXT NOT NULL,
+                    slot_key TEXT NOT NULL,
+                    PRIMARY KEY (capture_id, slot_key)
+                )
+            ''')
+
+            # ==========================================
             # Indexes
             # ==========================================
+            # Backup capture indexes
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_capture_slot ON backup_capture(slot_key)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_capture_library_title ON backup_capture(library, title)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_capture_captured_at ON backup_capture(captured_at)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_capture_kind ON backup_capture(kind)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_capture_transfer ON backup_capture(source_transfer_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_capture_file_capture ON backup_capture_file(capture_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_capture_key_slot ON backup_capture_key(slot_key)')
+
             # Transfer indexes
             conn.execute('CREATE INDEX IF NOT EXISTS idx_transfer_id ON transfers(transfer_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_status ON transfers(status)')
@@ -291,6 +365,17 @@ class DatabaseManager:
             self._ensure_column(conn, 'transfers', 'explore_files_from', "TEXT")
             self._ensure_column(conn, 'transfers', 'explore_mode', "TEXT")
             self._ensure_column(conn, 'transfers', 'explore_plan_id', "TEXT")
+
+            # When a backup was last restored. Split out from `status`, which
+            # briefly carried 'restored' as well as presence and so made a
+            # successful restore its own last: the planner refused to restore
+            # anything not marked 'present', and retention skipped it forever,
+            # filling the disk with copies it would never prune. `status` now
+            # answers only "are the files there".
+            self._ensure_column(conn, 'backup_capture', 'restored_at', "TEXT")
+            conn.execute(
+                "UPDATE backup_capture SET status = 'present' WHERE status = 'restored'"
+            )
 
             # ==========================================
             # Table: explore_snapshot — a cached comparison of one scope

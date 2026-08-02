@@ -1,5 +1,7 @@
 # DragonCP API Reference
 
+Last updated: 2026-08-01
+
 Purpose: human-friendly reference for every backend HTTP API endpoint implemented by the Python server.
 
 ## This File Is Authoritative
@@ -219,63 +221,90 @@ Output JSON:
 ## 2) Configuration and SSH Endpoints
 
 ### GET `/config`
-What it does: returns active runtime configuration (env + session overrides).
+What it does: returns every setting, in two shapes at once — grouped for the React
+Settings screen, and as a flat key -> value map for the legacy static UI.
+
+Each grouped setting carries `store` (`env` or `db`) and `editable`, so a client can
+show the environment-file half read-only instead of offering a field that silently does
+nothing. Environment secrets are omitted entirely; editable secrets come back as
+`<redacted>`.
 
 Auth: required.
 
 Input: none.
 
-Output: raw config object, for example:
+Output, abbreviated:
 ```json
 {
+  "status": "success",
   "REMOTE_IP": "192.168.1.10",
-  "REMOTE_USER": "root",
-  "MOVIE_PATH": "/data/movies",
-  "TVSHOW_PATH": "/data/tvshows",
-  "ANIME_PATH": "/data/anime",
-  "MOVIE_DEST_PATH": "/media/movies",
-  "TVSHOW_DEST_PATH": "/media/tvshows",
-  "ANIME_DEST_PATH": "/media/anime",
-  "BACKUP_PATH": "/backups"
+  "BACKUP_RETENTION_KEEP": "2",
+  "groups": [
+    {
+      "id": "backups",
+      "label": "Backups",
+      "settings": [
+        {
+          "key": "BACKUP_RETENTION_KEEP",
+          "store": "db",
+          "editable": true,
+          "kind": "number",
+          "label": "Versions to keep",
+          "description": "How many previous versions of each movie or episode to keep.",
+          "value": "2",
+          "minimum": 1,
+          "maximum": 50,
+          "is_default": true
+        }
+      ]
+    }
+  ],
+  "stores": {
+    "env": { "label": "Environment file", "description": "..." },
+    "db":  { "label": "Application settings", "description": "..." }
+  }
 }
 ```
 
 ### POST `/config`
-What it does: updates session-level config overrides (does not directly modify source code).
+What it does: writes the database-backed settings in the payload.
+
+Environment-owned keys are **refused by name** rather than ignored, and listed in
+`refused`. The whole payload is validated before anything is written, so a 400 means
+nothing changed.
 
 Auth: required.
 
-Input JSON: any config keys to override in current session.
+Input JSON: any editable settings keys. Sending `<redacted>` for a secret means
+"unchanged". Numbers outside a setting's bounds are clamped, not rejected.
 
-Output JSON:
+Output JSON (the full `GET` payload is returned alongside, so a client can refresh
+without a second request):
 ```json
 {
   "status": "success",
-  "message": "Configuration saved"
+  "message": "Saved 1 setting(s). 1 setting(s) come from the environment file and were not changed: REMOTE_IP",
+  "saved": ["BACKUP_RETENTION_KEEP"],
+  "refused": ["REMOTE_IP"]
 }
 ```
 
+Errors: `400` with `message` naming the invalid value. Nothing in the payload is
+written.
+
 ### POST `/config/reset`
-What it does: clears session overrides and resets runtime config back to env values.
+What it does: kept for the legacy static UI, which still calls it. There is no longer a
+per-browser override layer to clear, so it reports success and changes nothing.
 
 Auth: required.
 
 Input: none.
 
-Output JSON:
-```json
-{
-  "status": "success",
-  "message": "Configuration reset to environment values"
-}
-```
-
 ### GET `/config/env-only`
-What it does: returns only environment config, without session overrides.
+What it does: returns the environment-backed settings alone, which is what the legacy
+UI's comparison column shows. Secrets are redacted; hidden env secrets are omitted.
 
 Auth: required.
-
-Output: raw environment config object.
 
 ### POST `/connect`
 What it does: creates SSH connection to remote server and attaches it to active backend runtime.
@@ -1477,159 +1506,273 @@ Error behavior:
 
 ## 8) Backup Endpoints
 
-### GET `/backups`
-What it does: lists backups from backup model.
+Backups are organised by **slot** — one movie, or one episode — with a version
+history inside each. A **capture** is one stored version. See
+`../features/backups/README.md` for the model.
+
+### GET `/backups/overview`
+What it does: totals, backup-disk pressure, the retention rule, per-library
+counts, and how many old per-transfer folders are still awaiting migration.
 
 Auth: required.
-
-Query params:
-- `limit` (default `100`)
-- `include_deleted` (`1|true|True` to include deleted records)
 
 Output JSON:
 ```json
 {
   "status": "success",
-  "backups": [],
-  "total": 0
+  "configured": true,
+  "totals": {"capture_count": 0, "total_size": 0, "file_count": 0,
+             "pinned_count": 0, "unsorted_count": 0, "slot_count": 0},
+  "disk": {"total": 0, "used": 0, "free": 0, "percent_used": 0},
+  "retention": {"enabled": true, "keep": 2, "grace_hours": 24},
+  "libraries": [],
+  "legacy_folders": 0
 }
 ```
 
-### GET `/backups/{backup_id}`
-What it does: returns one backup record.
+`configured` is false when `BACKUP_PATH` is unset — in which case transfers
+refuse to start, because there is nowhere safe to put displaced files.
+
+### GET `/backups/titles`
+What it does: titles holding stored versions.
+
+Auth: required. Query params: `library` (`movies|shows|anime`, optional).
+
+### GET `/backups/seasons`
+What it does: seasons within one title.
+
+Auth: required. Query params: `library`, `title` (both required; `400` without).
+
+### GET `/backups/slots`
+What it does: one row per movie or episode with stored versions, with the
+version count and total size.
 
 Auth: required.
 
-Path param:
-- `backup_id`
+Query params: `library`, `title`, `season`, `search`, `limit` (max `1000`),
+`offset`, `sort` (`recent` — default — or `size`, biggest first, which is the
+order you want when the question is what to delete to get space back).
 
 Output JSON:
 ```json
 {
   "status": "success",
-  "backup": {}
+  "slots": [{"slot_key": "shows|example_show|S01E01", "library": "shows",
+             "title": "Example Show (2024)", "season_number": 1,
+             "episode_number": 1, "version_count": 2, "total_size": 0,
+             "latest_captured_at": "2026-07-30T14:22:05.311Z",
+             "has_pinned": 0, "display": "Example Show (2024) — S01E01"}],
+  "total": 1, "limit": 200, "offset": 0
 }
 ```
 
-Error behavior:
-- `404` if not found.
+### GET `/backups/slot`
+What it does: one slot's versions, newest first, plus what the library holds for
+it right now.
 
-### GET `/backups/{backup_id}/files`
-What it does: lists files contained in one backup.
+Auth: required. Query params: `slot_key` (required; `400` without, `404` when
+the slot has no versions).
+
+### GET `/backups/captures/{capture_id}`
+What it does: one version with its files and the slots it belongs to (more than
+one for a double episode). `404` when unknown.
 
 Auth: required.
 
-Path param:
-- `backup_id`
-
-Query params:
-- `limit` (optional)
-
-Output JSON:
-```json
-{
-  "status": "success",
-  "files": [],
-  "total": 0
-}
-```
-
-### POST `/backups/{backup_id}/restore`
-What it does: restores a backup fully or partially (selected relative file paths).
+### GET `/backups/unsorted`
+What it does: files kept but not identified. They cannot be restored — there is
+nowhere to put them back — but they are listed so they can be recovered by hand.
 
 Auth: required.
 
-Path param:
-- `backup_id`
-
-Input JSON (optional):
-```json
-{
-  "files": ["relative/path1.mkv", "relative/path2.srt"]
-}
-```
-
-Output JSON:
-```json
-{"status":"success","message":"Restore completed"}
-```
-
-Error behavior:
-- `400` for invalid `files` shape or restore failure.
-
-### POST `/backups/{backup_id}/delete`
-What it does: deletes backup record and optionally backup files.
+### POST `/backups/captures/{capture_id}/plan`
+What it does: previews a restore. Reads only; the same planner runs it.
 
 Auth: required.
 
-Path param:
-- `backup_id`
-
-Input JSON:
-```json
-{
-  "delete_record": true,
-  "delete_files": false
-}
-```
-
-Output JSON:
-```json
-{"status":"success","message":"..."}
-```
-
-### POST `/backups/{backup_id}/plan`
-What it does: returns restore plan preview without applying restore.
-
-Auth: required.
-
-Path param:
-- `backup_id`
-
-Input JSON (optional):
-```json
-{
-  "files": ["relative/path1.mkv"]
-}
-```
+Input JSON: `files` (optional list of paths inside the capture). Omit it to mean
+every file. An **empty list is rejected** with `400` — ticking nothing is not a
+request to restore everything.
 
 Output JSON:
 ```json
 {
   "status": "success",
   "plan": {
-    "operations": [
-      {
-        "backup_relative": "Season 01/Episode.mkv",
-        "backup_full": "/backups/<transfer_id>/Season 01/Episode.mkv",
-        "copy_to": "/media/tv/Show/Season 01/Episode.mkv",
-        "target_delete": null,
-        "context_display": "Show - S01E01"
-      }
-    ]
+    "capture_id": "20260730T142205.311Z__t1a2b3",
+    "slot_display": "Example Show (2024) — S01E01",
+    "target_dir": "/library/tv/Example Show (2024)/Season 01",
+    "operations": [{"relative_path": "...mkv", "target": "/library/...mkv",
+                    "replaces": "/library/...New.mkv", "replaces_size": 0,
+                    "file_size": 0, "is_media": true, "display": "..."}],
+    "warnings": [], "blocked": null, "total_size": 0, "replaces_count": 1
   }
 }
 ```
 
-Each entry is one file the restore would copy back, and `target_delete` names a
-file it would replace. See `../features/backups/README.md`.
+`replaces` is `null` when the slot is empty — the restore re-adds the file
+rather than replacing anything. `blocked` is set, with the reason, when the
+restore cannot run at all.
 
-### POST `/backups/reindex`
-What it does: scans backup directory and imports missing backup folders into DB.
+### POST `/backups/captures/{capture_id}/restore`
+What it does: starts a restore. Returns as soon as it is accepted; it runs as a
+queued transfer with progress and logs.
+
+Auth: required. Input: same `files` rule as `/plan`.
+
+Refuses with `400` when the destination is busy, when every transfer slot is
+taken, or when the same version is already being restored. It does not queue
+silently.
+
+The file each restored file replaces is stored as a new version of the same slot
+first, so the restore can itself be undone.
+
+### POST `/backups/captures/{capture_id}/pin`
+What it does: pinned versions are never removed by retention.
+
+Auth: required. Input JSON: `pinned` (bool, default `true`). `404` when unknown.
+
+### POST `/backups/captures/{capture_id}/delete`
+What it does: removes a version's files and its index entry, always together. The
+library is not touched.
+
+There is no record-only option. The index is derived from the backup tree, so removing
+a row on its own frees no space and the entry returns at the next rebuild. Any
+`delete_files` or `delete_record` flag in the body is ignored.
+
+Auth: required. Input: none.
+
+### POST `/backups/delete/preview`
+What it does: previews a deletion — the versions it would remove and the space
+it would free. Reads only.
 
 Auth: required.
 
-Input: none.
+Input JSON (at least one of):
+- `capture_ids` — specific versions
+- `slot_keys` — every version of those movies/episodes
+- `keep_newest` — with `slot_keys`, leave the most recent N of each
+- `include_pinned` — default false
 
 Output JSON:
 ```json
 {
   "status": "success",
-  "message": "Imported 2 backups, skipped 5.",
-  "imported": 2,
-  "skipped": 5
+  "captures": [{"capture_id": "...", "display": "...", "captured_at": "...",
+                "total_size": 0, "file_count": 1, "pinned": false}],
+  "count": 1, "total_size": 0, "skipped_pinned": 0
 }
 ```
+
+### POST `/backups/delete`
+What it does: removes several versions at once — the space-reclaiming action.
+
+Auth: required. Input: as `/delete/preview`.
+
+Pinned versions are held back unless `include_pinned` is set, and the number
+held back is reported rather than silently absorbed. Deleting removes the files
+and the index entry together, prunes the folders it emptied, and never touches
+the library. **This has no undo** — the files are the last copy of that version.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "message": "Deleted 3 version(s), reclaiming 12.40 GB",
+  "deleted": ["..."], "deleted_count": 3,
+  "reclaimed": 0, "skipped_pinned": 0, "errors": []
+}
+```
+
+### POST `/backups/unsorted/delete`
+What it does: throws away everything that could not be identified.
+
+Auth: required. Input JSON: `confirm` must be `true`; `400` without it.
+
+### POST `/backups/rebuild`
+What it does: regenerates the index by walking the backup tree. Writes no files
+and deletes no media. Idempotent. Pins, displacement reasons and transfer
+provenance are carried forward, because a path cannot hold them.
+
+Auth: required.
+
+Output JSON:
+```json
+{
+  "status": "success", "message": "Indexed 12 version(s), 15 file(s)",
+  "indexed": 12, "files": 15, "total_size": 0, "unsorted": 0,
+  "removed": 0, "errors": []
+}
+```
+
+### GET `/backups/retention`
+What it does: the current rule and backup-disk usage. `retention.editable` is
+false when there is no database store, in which case the rule can only be
+changed in the env file.
+
+Auth: required.
+
+### POST `/backups/retention`
+What it does: **saves** the rule.
+
+Auth: required. Input JSON: `keep`, `grace_hours`, `enabled` — all optional,
+only what is sent is written. `keep` is clamped to 1–50.
+
+Written to the `app_settings` table, not the env file. That is the only store
+that both survives a restart and is visible to the background thread that
+applies the rule after a transfer; a value in the Flask session would be
+invisible to it. `BACKUP_RETENTION_*` in the env file remains the default when
+nothing has been saved.
+
+### POST `/backups/retention/preview`
+What it does: which versions keep-N would remove. Reads only.
+
+Auth: required. Input JSON: `keep`, `grace_hours` (both optional, default to the
+configured rule).
+
+### POST `/backups/retention/apply`
+What it does: removes them, reporting what went and how much was reclaimed.
+
+Auth: required. Input: as `/preview`.
+
+### POST `/backups/migration/plan`
+What it does: previews adopting the old per-transfer folders. Moves nothing.
+
+Auth: required.
+
+Output includes `moves`, `unidentified`, `empty_folders` and `blocked` —
+the last set when a transfer is still running, because migration moves files
+across the whole backup disk.
+
+### POST `/backups/migration/apply`
+What it does: carries out the migration and rebuilds the index over the result.
+
+Auth: required. Input JSON: `confirm` must be `true`; `400` without it.
+
+**It re-derives its own plan** rather than redeeming the one `/migration/plan`
+returned, so a folder that appeared or changed since the preview is handled as
+it is now. That is safe here in a way it would not be for a deletion: migration
+only moves legacy folders into the tree and removes ones it has emptied, so a
+plan that has drifted costs accuracy, not files.
+
+Refusals come back `409` with `applied: false` and the reason in `message` — a
+transfer is active, or whether one is active could not be determined. A refusal
+is never reported as a success with a zero count.
+
+### Legacy endpoints
+
+Kept because the static UI is what production serves. They are backed by the
+same store, with a capture id in place of the old backup id.
+
+| Endpoint | Notes |
+|---|---|
+| `GET /backups` | Versions, newest first, in the old record shape |
+| `GET /backups/{id}` | One version in the old shape |
+| `GET /backups/{id}/files` | Its files |
+| `POST /backups/{id}/plan` | Old plan shape. `"files": []` means "everything" here, unlike the current API |
+| `POST /backups/{id}/restore` | As the current restore |
+| `POST /backups/{id}/delete` | Files and entry go together |
+| `POST /backups/reindex` | The index rebuild under its old name |
 
 ---
 

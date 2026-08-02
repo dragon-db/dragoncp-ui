@@ -8,11 +8,32 @@ export class ConfigManager {
         this.initializeConfigListeners();
     }
 
+    /**
+     * Which settings this form may actually change.
+     *
+     * The server owns the boundary: settings from the environment file are
+     * read-only at runtime, and it reports that per key in `/api/config`. The
+     * form used to present them all as editable, so saving one looked like it
+     * worked while the server had refused it.
+     *
+     * An older backend that does not send `groups` leaves this empty, and
+     * nothing is disabled — the save is simply refused server-side as before.
+     */
+    editableKeysFrom(config) {
+        const editable = new Set();
+        (config?.groups || []).forEach(group => {
+            (group.settings || []).forEach(setting => {
+                if (setting.editable) editable.add(setting.key);
+            });
+        });
+        return editable;
+    }
+
     async loadConfiguration() {
         try {
             this.app.ui.updateStatus('Loading configuration...', 'connecting');
-            
-            // Load all configuration (env + session overrides)
+
+            // Load all configuration (env + database-backed settings)
             const response = await this.app.api.fetch('/api/config');
             const config = await response.json();
             
@@ -71,12 +92,25 @@ export class ConfigManager {
             { id: 'discordManualSyncThumbnailUrl', name: 'DISCORD_MANUAL_SYNC_THUMBNAIL_URL', label: 'Alt Thumbnail URL', value: '', envValue: '', placeholder: 'https://example.com/thumbnail.png' }
         ];
         
+        const editable = this.editableKeysFrom(config);
+        // Whether the SERVER told us the boundary, not whether anything turned
+        // out to be editable. Keying on the set being non-empty meant an
+        // installation whose visible settings are all environment-owned looked
+        // exactly like an old backend, and every field was offered as editable.
+        const boundaryKnown = Array.isArray(config?.groups) && config.groups.length > 0;
+
+        // What each field held when the form was loaded, so a save can tell an
+        // edit from an untouched field. Reading `input.defaultValue` did not:
+        // the loader assigns the value *property*, which leaves defaultValue
+        // empty, so every field looked modified on every save.
+        this.loadedValues = {};
+
         // Populate each field
         configFields.forEach(field => {
             const input = document.getElementById(field.id);
             const indicator = document.getElementById(field.id + 'Indicator');
             const original = document.getElementById(field.id + 'Original');
-            
+
             if (input) {
                 if (field.type === 'checkbox') {
                     input.checked = field.value === true || field.value === 'true';
@@ -84,9 +118,27 @@ export class ConfigManager {
                     input.value = field.value || '';
                     input.placeholder = field.placeholder || '';
                 }
-                
-                // Update modification indicators
+                this.loadedValues[field.name] = String(field.value ?? '');
+
+                // Settings owned by the environment file are shown, not
+                // offered. Disabling also keeps them out of the submitted form,
+                // so the save reports only what it really changed.
+                const readOnly = boundaryKnown && !editable.has(field.name);
+                input.disabled = readOnly;
+                input.title = readOnly
+                    ? 'Set in dragoncp_env.env on the server. Change it there and restart.'
+                    : '';
+
                 if (indicator && original) {
+                    if (readOnly) {
+                        indicator.style.display = 'none';
+                        input.classList.remove('border-warning');
+                        original.textContent = 'From the environment file — read-only here';
+                        original.style.display = 'block';
+                        return;
+                    }
+
+                    // Update modification indicators
                     const isModified = field.value !== field.envValue;
                     if (isModified) {
                         indicator.style.display = 'block';
@@ -165,12 +217,17 @@ export class ConfigManager {
                 // Save webhook settings separately (stored in database)
                 await this.saveWebhookSettings();
                 
-                // Determine if critical config changes were made
-                const hasCriticalChanges = this.hasCriticalConfigChanges(config);
-                
+                // Only what the server actually wrote counts as a change. It
+                // refuses environment-owned settings, and treating an attempted
+                // edit as a real one dropped the realtime connection and
+                // announced a save that had not happened.
+                const savedKeys = new Set(result.saved || []);
+
+                const hasCriticalChanges = this.hasCriticalConfigChanges(config, savedKeys);
+
                 // Apply WebSocket timeout change
                 let timeoutChanged = false;
-                if (config.WEBSOCKET_TIMEOUT_MINUTES) {
+                if (savedKeys.has('WEBSOCKET_TIMEOUT_MINUTES') && config.WEBSOCKET_TIMEOUT_MINUTES) {
                     const newTimeoutMinutes = Math.min(60, Math.max(5, parseInt(config.WEBSOCKET_TIMEOUT_MINUTES)));
                     const newTimeoutMs = newTimeoutMinutes * 60 * 1000;
                     
@@ -180,7 +237,16 @@ export class ConfigManager {
                     }
                 }
                 
-                this.app.ui.showAlert('Configuration saved successfully!', 'success');
+                // The server reports which settings it could not change: the
+                // media paths, remote connection and secrets come from the
+                // environment file and are read-only at runtime. Saying so is
+                // the point — this form used to write them to a per-browser
+                // session that no background job ever read.
+                if (result.refused && result.refused.length) {
+                    this.app.ui.showAlert(result.message || 'Configuration saved', 'warning');
+                } else {
+                    this.app.ui.showAlert('Configuration saved successfully!', 'success');
+                }
                 
                 // If critical changes were made, disconnect and show reconnect UI
                 if (hasCriticalChanges || timeoutChanged) {
@@ -207,15 +273,18 @@ export class ConfigManager {
         }
     }
 
-    hasCriticalConfigChanges(newConfig) {
+    hasCriticalConfigChanges(newConfig, savedKeys) {
         // Define which config changes require reconnection
         const criticalFields = [
             'REMOTE_IP', 'REMOTE_USER', 'REMOTE_PASSWORD', 'SSH_KEY_PATH',
             'WEBSOCKET_TIMEOUT_MINUTES'
         ];
-        
-        // Check if any critical field was modified
+
+        // A field the server did not save did not change, whatever was typed
+        // into it. The connection fields come from the environment file, so in
+        // practice only the realtime timeout can reach this.
         return criticalFields.some(field => {
+            if (savedKeys && !savedKeys.has(field)) return false;
             const currentValue = this.getCurrentConfigValue(field);
             const newValue = newConfig[field];
             return currentValue !== newValue;
@@ -223,18 +292,8 @@ export class ConfigManager {
     }
 
     getCurrentConfigValue(fieldName) {
-        // Map field names to their corresponding input IDs
-        const fieldMap = {
-            'REMOTE_IP': 'remoteIp',
-            'REMOTE_USER': 'remoteUser', 
-            'REMOTE_PASSWORD': 'remotePassword',
-            'SSH_KEY_PATH': 'sshKeyPath',
-            'WEBSOCKET_TIMEOUT_MINUTES': 'websocketTimeout'
-        };
-        
-        const inputId = fieldMap[fieldName];
-        const input = document.getElementById(inputId);
-        return input ? input.defaultValue : '';
+        // The value this field was loaded with, recorded by populateConfigFields.
+        return (this.loadedValues || {})[fieldName] ?? '';
     }
 
     handleCriticalConfigChange() {

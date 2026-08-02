@@ -19,7 +19,12 @@ from logging_setup import configure_logging, get_log_file_path
 # Import configuration and managers
 from config import DragonCPConfig, APP_VERSION
 from ssh import SSHManager
-from websocket import register_websocket_handlers, start_cleanup_thread, websocket_connections
+from websocket import (
+    register_websocket_handlers,
+    set_settings_service as set_websocket_settings_service,
+    start_cleanup_thread,
+    websocket_connections,
+)
 from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT
 from auth import require_auth
 
@@ -118,47 +123,9 @@ def _is_simple_websocket_available() -> bool:
     return importlib.util.find_spec('simple_websocket') is not None
 
 
-REDACTED_VALUE = "<redacted>"
-SENSITIVE_CONFIG_KEY_MARKERS = ("SECRET", "PASSWORD", "API_KEY", "TOKEN", "CLIENT_SECRET")
-
-
-def _is_sensitive_config_key(key: str) -> bool:
-    if not isinstance(key, str):
-        return False
-    key_upper = key.upper()
-    return any(marker in key_upper for marker in SENSITIVE_CONFIG_KEY_MARKERS)
-
-
-def sanitize_config_response(config_map: dict) -> dict:
-    """
-    Return a config map safe for API responses by redacting sensitive keys.
-    """
-    if not isinstance(config_map, dict):
-        return {}
-
-    sanitized = {}
-    for key, value in config_map.items():
-        if _is_sensitive_config_key(key):
-            sanitized[key] = REDACTED_VALUE if value not in ("", None) else ""
-        else:
-            sanitized[key] = value
-    return sanitized
-
-
-def sanitize_config_update_payload(payload: dict, current_config: dict) -> dict:
-    """
-    Prevent redacted placeholders from being persisted back into config/session.
-    """
-    if not isinstance(payload, dict):
-        return {}
-
-    sanitized = {}
-    for key, value in payload.items():
-        if _is_sensitive_config_key(key) and value == REDACTED_VALUE:
-            sanitized[key] = current_config.get(key, "")
-        else:
-            sanitized[key] = value
-    return sanitized
+# Redaction and the constant/variable boundary both live in
+# `settings_registry.py` now, so there is one definition of "sensitive" rather
+# than a marker list here and a different judgement in each route.
 
 
 # Initialize Flask app
@@ -241,9 +208,43 @@ ssh_manager = None
 db_manager = DatabaseManager()
 transfer_coordinator = TransferCoordinator(config, db_manager, socketio)
 
+# Settings read across both stores — the env file for what an installation is
+# built with, the database for what an operator changes while running it. The
+# coordinator owns it so every background service reads through the same one.
+settings_service = transfer_coordinator.settings_service
+
+# Copy any database-eligible values still sitting in the env file into the
+# database, once. Without this, moving a setting across the boundary would
+# change behaviour on the way over: the env value keeps working as a fallback
+# until something is saved, then silently stops being the source of truth.
+#
+# A failure here must not stop the process starting. This runs at import time,
+# so a locked or briefly unavailable database would otherwise take the whole
+# application down over a one-off convenience — and the resolver already falls
+# back to the env file for any key with no row, which is exactly what adoption
+# would have written.
+try:
+    _adopted = settings_service.adopt_env_defaults()
+except Exception as error:  # noqa: BLE001 - startup must survive this
+    logger.warning(
+        'Could not adopt environment defaults into app settings (%s). '
+        'Startup continues; database-backed settings fall back to the env file '
+        'until this succeeds on a later start.', error,
+    )
+else:
+    if _adopted:
+        logger.info(
+            'Adopted %d setting(s) from the environment file into app settings: %s',
+            len(_adopted), ', '.join(_adopted),
+        )
+
 # Initialize rename service
 rename_model = RenameNotification(db_manager)
 rename_service = RenameService(config, rename_model, socketio, transfer_coordinator.notification_service)
+
+# The websocket cleanup thread enforces the idle timeout and has no request
+# context, so it needs the settings service directly.
+set_websocket_settings_service(settings_service)
 
 # Register WebSocket handlers (with auth support)
 register_websocket_handlers(socketio)
@@ -344,16 +345,50 @@ def index():
 @app.route('/api/config', methods=['GET', 'POST'])
 @require_auth
 def api_config():
-    """Configuration API - Protected"""
+    """
+    Settings, on both sides of the boundary.
+
+    GET returns every setting grouped, with `store` and `editable` on each, so
+    the UI can show the environment-file half read-only and say where it comes
+    from rather than offering a field that silently does nothing.
+
+    POST writes only the database-backed half. Environment keys are refused BY
+    NAME — the previous version accepted anything, wrote it to a per-browser
+    session, and reported success for settings no background thread would ever
+    read.
+    """
     if request.method == 'GET':
-        return jsonify(sanitize_config_response(config.get_all_config()))
-    else:
-        data = request.json or {}
-        if not isinstance(data, dict):
-            return jsonify({"status": "error", "message": "Invalid configuration payload"}), 400
-        current_config = config.get_all_config()
-        config.update_session_config(sanitize_config_update_payload(data, current_config))
-        return jsonify({"status": "success", "message": "Configuration saved"})
+        # The grouped payload for the React page, plus the flat key -> value map
+        # the legacy static UI reads. That UI is still what production serves,
+        # so it keeps working; it simply cannot change the env-backed half any
+        # more, which was already true and merely invisible before.
+        return jsonify({
+            "status": "success",
+            **settings_service.flat(),
+            **settings_service.describe(),
+        })
+
+    data = request.json or {}
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "Invalid configuration payload"}), 400
+
+    saved, refused, errors = settings_service.set_many(data)
+    if errors:
+        return jsonify({"status": "error", "message": "; ".join(errors)}), 400
+
+    message = f"Saved {len(saved)} setting(s)" if saved else "Nothing to save"
+    if refused:
+        message += (
+            f". {len(refused)} setting(s) come from the environment file and were "
+            f"not changed: {', '.join(sorted(refused))}"
+        )
+    return jsonify({
+        "status": "success",
+        "message": message,
+        "saved": sorted(saved),
+        "refused": sorted(refused),
+        **settings_service.describe(),
+    })
 
 
 @app.route('/api/connect', methods=['POST'])
@@ -476,20 +511,36 @@ def api_ssh_config():
     return jsonify(ssh_config)
 
 
-@app.route('/api/config/reset', methods=['POST'])
-@require_auth
-def api_reset_config():
-    """Reset session configuration to environment values - Protected"""
-    if 'ui_config' in session:
-        del session['ui_config']
-    return jsonify({"status": "success", "message": "Configuration reset to environment values"})
-
-
 @app.route('/api/config/env-only')
 @require_auth
 def api_env_config():
-    """Get only environment configuration (without session overrides) - Protected"""
-    return jsonify(sanitize_config_response(config.env_config))
+    """
+    The environment-file half, flat. Read by the legacy static UI's comparison
+    column, which contrasted the file against a per-browser overlay. There is no
+    overlay now, so this is just the env-backed settings — which is what that
+    column was showing all along.
+    """
+    return jsonify(settings_service.env_only())
+
+
+@app.route('/api/config/reset', methods=['POST'])
+@require_auth
+def api_reset_config():
+    """
+    Kept for the legacy static UI, which has a "Reset to Env" button.
+
+    There is nothing left to reset: the per-browser overlay it cleared is gone,
+    so environment settings already ARE the environment values. Answering 200
+    with an honest message keeps that page working without pretending an
+    overlay was discarded.
+    """
+    return jsonify({
+        "status": "success",
+        "message": (
+            "Environment settings are read directly from the file, so there is "
+            "nothing to reset. Application settings are unchanged."
+        ),
+    })
 
 
 # ===== MAIN ENTRY POINT =====

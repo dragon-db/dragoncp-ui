@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { toast } from "sonner";
-import { useAppConfig, useRuntimeStatus } from "@/hooks/useConfig";
+import { useRuntimeStatus, useSettings } from "@/hooks/useConfig";
+import type { SettingsResponse } from "@/lib/api-types";
 import {
   connectSocket,
   disconnectSocket,
@@ -60,12 +61,27 @@ export function useRuntimeController() {
     clearLiveActivity,
   } = useRuntimeStore();
 
+  /**
+   * Minutes left before the realtime connection idles out.
+   *
+   * Driven by a ticking clock rather than read from `Date.now()` while
+   * rendering. Computing it in a memo keyed on the last activity meant it only
+   * ever changed when activity happened — so the countdown in the status
+   * popover sat on the same number instead of counting down.
+   */
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!socketConnected) return;
+    const tick = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(tick);
+  }, [socketConnected]);
+
   const minutesRemaining = useMemo(() => {
     if (!socketConnected) return 0;
-    const elapsedMs = Date.now() - lastActivityAt;
-    const remainingMs = timeoutMinutes * 60 * 1000 - elapsedMs;
+    const remainingMs = timeoutMinutes * 60 * 1000 - (now - lastActivityAt);
     return Math.max(0, Math.floor(remainingMs / 60000));
-  }, [lastActivityAt, socketConnected, timeoutMinutes]);
+  }, [lastActivityAt, now, socketConnected, timeoutMinutes]);
 
   const enableRealtime = () => {
     if (socketConnected) return;
@@ -125,6 +141,33 @@ export function useRuntimeController() {
   };
 }
 
+/**
+ * The realtime idle timeout, from whichever shape the server answered with.
+ *
+ * Tolerates the grouped response, the flat map the previous backend returned,
+ * and anything else — returning undefined rather than throwing. A settings
+ * lookup is not worth crashing an application shell over.
+ */
+function readTimeoutSetting(settings: unknown): string | number | undefined {
+  if (!settings || typeof settings !== "object") return undefined;
+
+  const grouped = (settings as SettingsResponse).groups;
+  if (Array.isArray(grouped)) {
+    for (const group of grouped) {
+      const found = group?.settings?.find(
+        (setting) => setting?.key === "WEBSOCKET_TIMEOUT_MINUTES"
+      );
+      if (found && (typeof found.value === "string" || typeof found.value === "number")) {
+        return found.value;
+      }
+    }
+    return undefined;
+  }
+
+  const flat = (settings as Record<string, unknown>).WEBSOCKET_TIMEOUT_MINUTES;
+  return typeof flat === "string" || typeof flat === "number" ? flat : undefined;
+}
+
 export function useRuntimeConnection() {
   const queryClient = useQueryClient();
   const {
@@ -132,7 +175,7 @@ export function useRuntimeConnection() {
     error: runtimeStatusError,
     isError: runtimeStatusIsError,
   } = useRuntimeStatus();
-  const { data: config } = useAppConfig();
+  const { data: settings } = useSettings();
   const {
     realtimeRequested,
     socketConnected,
@@ -166,12 +209,23 @@ export function useRuntimeConnection() {
     setBackendReachable(false, message);
   }, [runtimeStatusError, runtimeStatusIsError, setBackendReachable]);
 
+  // The realtime idle timeout the server is enforcing. It is a database
+  // setting now, so both sides read the same number — it used to live in the
+  // browser session, where the server's own cleanup thread could not see it.
+  //
+  // This hook wraps every authenticated route, so it must survive a response
+  // it does not recognise rather than taking the whole app down with it. A
+  // backend still running the previous code answers /api/config with a flat
+  // map and no `groups` at all, which is exactly the shape that white-screened
+  // it during a partial deploy.
+  const configuredTimeout = readTimeoutSetting(settings);
+
   useEffect(() => {
-    const timeoutValue = Number(config?.WEBSOCKET_TIMEOUT_MINUTES ?? 30);
-    if (!Number.isNaN(timeoutValue)) {
+    const timeoutValue = Number(configuredTimeout ?? 30);
+    if (!Number.isNaN(timeoutValue) && timeoutValue > 0) {
       setTimeoutMinutes(timeoutValue);
     }
-  }, [config?.WEBSOCKET_TIMEOUT_MINUTES, setTimeoutMinutes]);
+  }, [configuredTimeout, setTimeoutMinutes]);
 
   useEffect(() => {
     if (!realtimeRequested) {

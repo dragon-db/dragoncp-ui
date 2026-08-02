@@ -18,6 +18,18 @@ from typing import Dict, List, Optional
 PLAN_TTL_MINUTES = 15
 
 
+def _capture_display(capture: Dict) -> str:
+    """'Example Show — S01E02', or 'Example Film (2024)'."""
+    title = capture.get('title') or ''
+    if capture.get('library') == 'movies':
+        year = capture.get('release_year')
+        return f"{title} ({year})" if year else title
+    season, episode = capture.get('season_number'), capture.get('episode_number')
+    if season is None or episode is None:
+        return title
+    return f"{title} — S{season:02d}E{episode:02d}"
+
+
 def _as_int(value) -> Optional[int]:
     """`context_season` is stored zero-padded and as text: '03', not 3."""
     if value is None or value == '':
@@ -203,61 +215,83 @@ class ExploreStore:
                 season_name: Optional[str] = None,
                 limit: int = 25) -> List[Dict]:
         """
-        Backed-up copies belonging to one series, newest first.
+        Stored versions belonging to one series, newest first.
 
-        Matched on the backup's `folder_name`, which is the series folder the
-        transfer ran against — NOT on `context_series_title`. That column is
-        parsed from the filename by splitting at the first " - ", so a series
-        called "Alpha - Bravo, Charlie of the Delta" is stored as "Alpha" and
-        would never match itself.
+        Read from the backup index by slot, so narrowing to a season is an
+        exact match on the season number rather than a filename guess. This
+        used to match on a `context_series_title` parsed by splitting the
+        filename at the first " - ", which stored "Alpha - Bravo, Charlie of
+        the Delta" as "Alpha" and hid that series' own backups from it.
 
-        Narrowing to a season uses each file's own `context_season`, because one
-        series-level sync produces a single backup holding files from several
-        seasons — filtering by the backup's `season_name` alone would show all
-        of them or none. Files with no parsed season fall back to the backup's
-        `season_name`, which is the folder the run was scoped to.
+        One row per version, which is also how the Backups page presents them —
+        the two screens now describe the same thing the same way.
         """
-        query = (
-            'SELECT backup_id, transfer_id, media_type, folder_name, season_name, '
-            'backup_path, dest_path, file_count, total_size, status, created_at, '
-            'restored_at FROM backup '
-            "WHERE media_type = ? AND folder_name = ? AND status != 'deleted' "
-            'ORDER BY created_at DESC LIMIT ?'
-        )
+        library = {'movies': 'movies', 'tvshows': 'shows',
+                   'series': 'shows', 'anime': 'anime'}.get(media_type)
+        if not library:
+            return []
+
+        where = ["c.kind = 'slot'", 'c.library = ?', 'c.title = ?', "c.status != 'files_removed'"]
+        params: List = [library, folder_name]
+        if season_number is not None:
+            where.append('c.season_number = ?')
+            params.append(season_number)
+        params.append(limit)
+
+        query = f'''
+            SELECT c.* FROM backup_capture c
+            WHERE {' AND '.join(where)}
+            ORDER BY c.captured_at DESC, c.capture_id DESC
+            LIMIT ?
+        '''
 
         with self.db.get_connection() as conn:
-            rows = conn.execute(query, (media_type, folder_name, limit)).fetchall()
+            rows = conn.execute(query, params).fetchall()
             runs = []
             for row in rows:
-                run = dict(row)
+                capture = dict(row)
                 files = conn.execute(
-                    'SELECT relative_path, original_path, file_size, modified_time, '
-                    'context_season, context_episode, context_absolute, context_display '
-                    'FROM backup_file WHERE backup_id = ? ORDER BY relative_path',
-                    (row['backup_id'],),
+                    'SELECT relative_path, original_path, file_size, modified_time '
+                    'FROM backup_capture_file WHERE capture_id = ? '
+                    'ORDER BY is_media DESC, relative_path',
+                    (capture['capture_id'],),
                 ).fetchall()
 
-                kept = []
+                season = capture.get('season_number')
+                episode = capture.get('episode_number')
+                shown = []
                 for entry in files:
                     file = dict(entry)
-                    file['season'] = _as_int(file.get('context_season'))
-                    file['episode'] = _as_int(file.get('context_episode'))
-                    file['code'] = _episode_code(file['season'], file['episode'])
-                    if season_number is not None:
-                        if file['season'] is not None:
-                            if file['season'] != season_number:
-                                continue
-                        elif (run.get('season_name') or None) != season_name:
-                            continue
-                    kept.append(file)
+                    file['season'] = season
+                    file['episode'] = episode
+                    file['code'] = _episode_code(season, episode)
+                    file['context_display'] = _capture_display(capture)
+                    shown.append(file)
 
-                if not kept:
+                if not shown:
                     continue
-                run['files'] = kept
-                # The counts describe what is being shown, not the whole run.
-                run['shown_count'] = len(kept)
-                run['shown_size'] = sum(int(f.get('file_size') or 0) for f in kept)
-                runs.append(run)
+
+                runs.append({
+                    'backup_id': capture['capture_id'],
+                    'transfer_id': capture.get('source_transfer_id') or '',
+                    'media_type': media_type,
+                    'folder_name': capture.get('title') or folder_name,
+                    'season_name': (
+                        None if season is None
+                        else ('Specials' if season == 0 else f"Season {season:02d}")
+                    ),
+                    'backup_path': capture.get('capture_path') or '',
+                    'dest_path': '',
+                    'status': 'restored' if capture.get('restored_at') else 'ready',
+                    'created_at': capture.get('captured_at'),
+                    'restored_at': capture.get('restored_at'),
+                    'pinned': bool(capture.get('pinned')),
+                    'file_count': capture.get('file_count') or len(shown),
+                    'total_size': capture.get('total_size') or 0,
+                    'shown_count': len(shown),
+                    'shown_size': sum(int(f.get('file_size') or 0) for f in shown),
+                    'files': shown,
+                })
         return runs
 
     def history(self, media_type: str, folder_name: str,

@@ -1,563 +1,668 @@
-import { PageHeader } from "@/components/layout/page-header";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
-  useBackupDetails,
-  useBackupFiles,
-  useBackups,
-  useDeleteBackup,
-  usePlanRestoreBackup,
-  useReindexBackups,
-  useRestoreBackup,
-  type Backup,
-} from "@/hooks/useBackups";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
-import {
+  IconAlertTriangle,
   IconArchive,
   IconArrowLeft,
-  IconCheck,
-  IconEye,
-  IconFileDownload,
-  IconRefresh,
-  IconRestore,
-  IconTrash,
+  IconChevronRight,
+  IconClockHour4,
+  IconDeviceTv,
+  IconFolder,
+  IconLayoutList,
+  IconMovie,
+  IconPinFilled,
+  IconSearch,
+  IconSortDescending2,
 } from "@tabler/icons-react";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { Skeleton } from "@/components/ui/skeleton";
+import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
+import { StatTiles } from "@/components/layout/stat-tiles";
+import { useMediaQuery } from "@/hooks/use-media-query";
+import { cn } from "@/lib/utils";
+import { formatBytes, formatWhen } from "@/lib/explore-format";
+import {
+  useBackupSlot,
+  useBackupSlots,
+  useBackupTitles,
+  useBackupsOverview,
+  useDeleteBackups,
+  useDeletePreview,
+  usePinCapture,
+  usePlanRestore,
+  useRebuildIndex,
+  useRestoreCapture,
+  useUnsortedBackups,
+  type DeleteSelection,
+} from "@/hooks/useBackups";
+import {
+  LIBRARY_LABELS,
+  seasonLabel,
+  type BackupLibrary,
+  type Capture,
+  type DeletePreview,
+  type RestorePlan,
+  type SlotSort,
+  type SlotSummary,
+} from "@/lib/backup-types";
+import { VersionList } from "@/components/backups/version-list";
+import { RestoreDialog } from "@/components/backups/restore-dialog";
+import {
+  ClearUnsortedButton,
+  DeleteDialog,
+  SelectionBar,
+} from "@/components/backups/delete-dialog";
+import {
+  DiskBar,
+  HousekeepingBar,
+  MigrationDialog,
+  RetentionDialog,
+} from "@/components/backups/housekeeping";
 
-type Stage = "list" | "files" | "plan" | "delete";
+/**
+ * Backups.
+ *
+ * Shaped like Explore on purpose — titles on the left, contents on the right,
+ * details in an inspector — because they are two views of the same library, and
+ * reading them the same way is most of what makes them one system.
+ *
+ * The unit here is a slot: one movie, or one episode. Versions stack inside it,
+ * newest first, and the library holds the current one.
+ */
 
-function humanBytes(value?: number) {
-  const bytes = value ?? 0;
-  if (bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / Math.pow(1024, idx)).toFixed(2)} ${units[idx]}`;
-}
+const LIBRARIES = [
+  { id: "movies", label: "Movies", Icon: IconMovie },
+  { id: "shows", label: "TV Shows", Icon: IconDeviceTv },
+  { id: "anime", label: "Anime", Icon: IconLayoutList },
+] as const;
 
-function statusBadge(status: string) {
-  switch (status) {
-    case "ready":
-      return <Badge className="border-green-500/50 bg-green-500/20 text-green-300">Ready</Badge>;
-    case "restored":
-      return <Badge className="border-blue-500/50 bg-blue-500/20 text-blue-300">Restored</Badge>;
-    case "deleted":
-      return (
-        <Badge className="border-neutral-500/50 bg-neutral-500/20 text-neutral-300">Deleted</Badge>
-      );
-    default:
-      return <Badge variant="outline">{status}</Badge>;
-  }
-}
+type Pane = "titles" | "slots";
 
 export function BackupsPage() {
-  const [stage, setStage] = useState<Stage>("list");
-  const [selectedBackupId, setSelectedBackupId] = useState<string | null>(null);
-  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
-  const [planPayloadFiles, setPlanPayloadFiles] = useState<string[] | undefined>(undefined);
-  const [restorePlan, setRestorePlan] = useState<{
-    operations?: Array<{
-      backup_relative: string;
-      context_display?: string;
-      target_delete?: string;
-      copy_to: string;
-    }>;
-    restore_targets?: Array<{ source: string; destination: string }>;
-  } | null>(null);
-  const [deleteRecord, setDeleteRecord] = useState(true);
-  const [deleteFiles, setDeleteFiles] = useState(false);
+  const [library, setLibrary] = useState<BackupLibrary>("shows");
+  const [title, setTitle] = useState<string | null>(null);
+  const [slotKey, setSlotKey] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [pane, setPane] = useState<Pane>("titles");
+  const [showRetention, setShowRetention] = useState(false);
+  const [showMigration, setShowMigration] = useState(false);
+  const [restoreTarget, setRestoreTarget] = useState<Capture | null>(null);
+  const [restorePlan, setRestorePlan] = useState<RestorePlan | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [sort, setSort] = useState<SlotSort>("recent");
 
-  const backupsQuery = useBackups(200);
-  const filesQuery = useBackupFiles(selectedBackupId ?? "");
-  const backupDetailsQuery = useBackupDetails(selectedBackupId ?? "");
+  // Two selections, kept apart on purpose: ticking items in the list means
+  // "every version of these", while ticking rows in the inspector means "these
+  // specific versions". Merging them would make one checkbox mean two things.
+  const [pickedSlots, setPickedSlots] = useState<Set<string>>(new Set());
+  const [pickedVersions, setPickedVersions] = useState<Set<string>>(new Set());
 
-  const planMutation = usePlanRestoreBackup();
-  const restoreMutation = useRestoreBackup();
-  const deleteMutation = useDeleteBackup();
-  const reindexMutation = useReindexBackups();
+  const [pendingDelete, setPendingDelete] = useState<DeleteSelection | null>(null);
+  const [deleteScope, setDeleteScope] = useState("");
+  const [deletePreview, setDeletePreview] = useState<DeletePreview | null>(null);
 
-  const selectedBackup = useMemo(
-    () =>
-      backupsQuery.data?.backups.find((backup) => backup.backup_id === selectedBackupId) ?? null,
-    [backupsQuery.data?.backups, selectedBackupId]
-  );
+  // Two panes side by side from lg up, one at a time below it — which is what
+  // makes this usable on a phone without a second layout to keep in step.
+  const isWide = useMediaQuery("(min-width: 1024px)");
 
-  const stageLabel = useMemo(() => {
-    switch (stage) {
-      case "files":
-        return ["Backups", "Files"];
-      case "plan":
-        return ["Backups", "Files", "Confirmation"];
-      case "delete":
-        return ["Backups", "Delete Backup"];
-      default:
-        return [];
-    }
-  }, [stage]);
+  const overview = useBackupsOverview();
+  const titles = useBackupTitles(library);
+  const slots = useBackupSlots({ library, title, search: search.trim() || undefined, sort });
+  const slot = useBackupSlot(slotKey);
+  const unsorted = useUnsortedBackups((overview.data?.totals.unsorted_count ?? 0) > 0);
 
-  const openFilesStage = (backupId: string) => {
-    setSelectedBackupId(backupId);
-    setSelectedFiles(new Set());
-    setRestorePlan(null);
-    setPlanPayloadFiles(undefined);
-    setStage("files");
-  };
-
-  const openDeleteStage = (backupId: string) => {
-    setSelectedBackupId(backupId);
-    setDeleteRecord(true);
-    setDeleteFiles(false);
-    setStage("delete");
-  };
-
-  const toggleFile = (relativePath: string, checked: boolean) => {
-    setSelectedFiles((previous) => {
-      const next = new Set(previous);
-      if (checked) next.add(relativePath);
-      else next.delete(relativePath);
-      return next;
-    });
-  };
-
-  const toggleAllFiles = (checked: boolean) => {
-    if (!checked) {
-      setSelectedFiles(new Set());
-      return;
-    }
-    const all = new Set((filesQuery.data?.files ?? []).map((file) => file.relative_path));
-    setSelectedFiles(all);
-  };
+  const planRestore = usePlanRestore();
+  const restore = useRestoreCapture();
+  const pin = usePinCapture();
+  const previewDelete = useDeletePreview();
+  const removeMany = useDeleteBackups();
+  const rebuild = useRebuildIndex();
 
   /**
-   * `backupId` is passed explicitly by the Restore shortcut on a list row: that
-   * click selects the backup and plans it in one go, and the selection is not
-   * readable yet at that point.
+   * A title selected under one library means nothing under another, so
+   * switching clears both selections. Done here rather than in an effect
+   * watching `library` — the reset is part of the click, not a reaction to it.
    */
-  const planRestore = async (files?: string[], backupId?: string) => {
-    const targetBackupId = backupId ?? selectedBackupId;
-    if (!targetBackupId) return;
+  function selectLibrary(next: BackupLibrary) {
+    if (next === library) return;
+    setLibrary(next);
+    setTitle(null);
+    setSlotKey(null);
+    setPane("titles");
+    clearSelection();
+  }
 
-    try {
-      const result = await planMutation.mutateAsync({ backupId: targetBackupId, files });
-      setRestorePlan(result.plan);
-      setPlanPayloadFiles(files);
-      setStage("plan");
-    } catch {
-      toast.error("Failed to plan restore");
-    }
-  };
+  function clearSelection() {
+    setPickedSlots(new Set());
+    setPickedVersions(new Set());
+  }
 
-  const applyRestore = async () => {
-    if (!selectedBackupId) return;
+  function toggleSlot(slotKeyToToggle: string) {
+    setPickedSlots((current) => {
+      const next = new Set(current);
+      if (!next.delete(slotKeyToToggle)) next.add(slotKeyToToggle);
+      return next;
+    });
+  }
 
-    try {
-      await restoreMutation.mutateAsync({ backupId: selectedBackupId, files: planPayloadFiles });
-      toast.success("Restore completed successfully");
-      setStage("list");
-      setRestorePlan(null);
-      backupsQuery.refetch();
-    } catch {
-      toast.error("Restore failed");
-    }
-  };
+  function toggleVersion(capture: Capture) {
+    setPickedVersions((current) => {
+      const next = new Set(current);
+      if (!next.delete(capture.capture_id)) next.add(capture.capture_id);
+      return next;
+    });
+  }
 
-  const executeDelete = async () => {
-    if (!selectedBackupId) return;
-    if (!deleteRecord && !deleteFiles) {
-      toast.warning("Select at least one delete option");
-      return;
-    }
-
-    try {
-      await deleteMutation.mutateAsync({
-        backupId: selectedBackupId,
-        deleteRecord,
-        deleteFiles,
-      });
-      toast.success("Backup delete completed");
-      setStage("list");
-      backupsQuery.refetch();
-    } catch {
-      toast.error("Delete failed");
-    }
-  };
-
-  const runReindex = async () => {
-    try {
-      const result = await reindexMutation.mutateAsync();
-      toast.success(result.message || `Imported ${result.imported} backups`);
-      backupsQuery.refetch();
-    } catch {
-      toast.error("Import/reindex failed");
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <PageHeader title="Backups" description="Restore or clean up saved backups">
-        <Button variant="outline" onClick={runReindex} disabled={reindexMutation.isPending}>
-          <IconArchive
-            className={`mr-2 h-4 w-4 ${reindexMutation.isPending ? "animate-spin" : ""}`}
-          />
-          Import/Reindex
-        </Button>
-        <Button
-          variant="outline"
-          onClick={() => backupsQuery.refetch()}
-          disabled={backupsQuery.isFetching}
-        >
-          <IconRefresh
-            className={`mr-2 h-4 w-4 ${backupsQuery.isFetching ? "animate-spin" : ""}`}
-          />
-          Refresh
-        </Button>
-      </PageHeader>
-
-      {stageLabel.length > 0 && (
-        <div className="flex items-center gap-2 text-sm">
-          {stageLabel.map((part, index) => {
-            const last = index === stageLabel.length - 1;
-            return (
-              <div key={`${part}-${index}`} className="flex items-center gap-2">
-                {last ? (
-                  <span className="text-white">{part}</span>
-                ) : (
-                  <button
-                    type="button"
-                    className="text-neutral-400 hover:text-white"
-                    onClick={() => {
-                      if (index === 0) setStage("list");
-                      if (index === 1) setStage("files");
-                    }}
-                  >
-                    {part}
-                  </button>
-                )}
-                {!last && <span className="text-neutral-600">/</span>}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {stage === "list" && (
-        <Card className="border-neutral-800 bg-neutral-900/50">
-          <CardHeader>
-            <CardTitle className="text-white">Backup History</CardTitle>
-            <CardDescription className="text-neutral-400">
-              {backupsQuery.data?.total ?? 0} backups found
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ScrollArea className="h-[560px] pr-3">
-              {backupsQuery.isLoading ? (
-                <div className="space-y-3">
-                  {[1, 2, 3, 4].map((idx) => (
-                    <Skeleton key={idx} className="h-24 w-full" />
-                  ))}
-                </div>
-              ) : (backupsQuery.data?.backups.length ?? 0) > 0 ? (
-                <div className="space-y-3">
-                  {(backupsQuery.data?.backups ?? []).map((backup) => (
-                    <BackupRow
-                      key={backup.backup_id}
-                      backup={backup}
-                      onOpenFiles={openFilesStage}
-                      onOpenDelete={openDeleteStage}
-                      onRestoreAll={(backupId) => {
-                        openFilesStage(backupId);
-                        planRestore(undefined, backupId);
-                      }}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="py-14 text-center text-neutral-500">No backups found</div>
-              )}
-            </ScrollArea>
-          </CardContent>
-        </Card>
-      )}
-
-      {stage === "files" && (
-        <Card className="border-neutral-800 bg-neutral-900/50">
-          <CardHeader>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <CardTitle className="text-white">Backup Files</CardTitle>
-                <CardDescription className="text-neutral-400">
-                  {selectedBackup?.folder_name || selectedBackupId} -{" "}
-                  {filesQuery.data?.files.length ?? 0} file(s)
-                </CardDescription>
-              </div>
-              <Button variant="outline" size="sm" onClick={() => setStage("list")}>
-                <IconArrowLeft className="mr-1.5 h-4 w-4" />
-                Back
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                onClick={() => planRestore(Array.from(selectedFiles))}
-                disabled={selectedFiles.size === 0 || planMutation.isPending}
-              >
-                <IconRestore className="mr-2 h-4 w-4" />
-                Restore Selected ({selectedFiles.size})
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => planRestore(undefined)}
-                disabled={planMutation.isPending}
-              >
-                <IconFileDownload className="mr-2 h-4 w-4" />
-                Restore All
-              </Button>
-              <Button variant="outline" onClick={() => openDeleteStage(selectedBackupId || "")}>
-                <IconTrash className="mr-2 h-4 w-4" />
-                Delete Backup
-              </Button>
-            </div>
-
-            <ScrollArea className="h-[460px] rounded border border-neutral-800">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-neutral-900">
-                  <tr className="border-b border-neutral-800 text-left text-neutral-400">
-                    <th className="w-10 p-3">
-                      <input
-                        type="checkbox"
-                        checked={
-                          (filesQuery.data?.files.length ?? 0) > 0 &&
-                          selectedFiles.size === (filesQuery.data?.files.length ?? 0)
-                        }
-                        onChange={(event) => toggleAllFiles(event.target.checked)}
-                      />
-                    </th>
-                    <th className="p-3">Context</th>
-                    <th className="p-3">Relative Path</th>
-                    <th className="p-3">Size</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(filesQuery.data?.files ?? []).map((file) => (
-                    <tr key={file.relative_path} className="border-b border-neutral-900">
-                      <td className="p-3">
-                        <input
-                          type="checkbox"
-                          checked={selectedFiles.has(file.relative_path)}
-                          onChange={(event) => toggleFile(file.relative_path, event.target.checked)}
-                        />
-                      </td>
-                      <td className="p-3 text-neutral-300">{file.context_display || "-"}</td>
-                      <td className="p-3 font-mono break-all text-neutral-200">
-                        {file.relative_path}
-                      </td>
-                      <td className="p-3 text-neutral-300">{humanBytes(file.file_size)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollArea>
-          </CardContent>
-        </Card>
-      )}
-
-      {stage === "plan" && (
-        <Card className="border-neutral-800 bg-neutral-900/50">
-          <CardHeader>
-            <CardTitle className="text-white">Restore Plan Preview</CardTitle>
-            <CardDescription className="text-neutral-400">
-              Review planned actions before applying restore
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <ScrollArea className="h-[480px] rounded border border-neutral-800">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-neutral-900">
-                  <tr className="border-b border-neutral-800 text-left text-neutral-400">
-                    <th className="p-3">Backup File</th>
-                    <th className="p-3">Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(restorePlan?.operations ?? []).length > 0 ? (
-                    (restorePlan?.operations ?? []).map((operation) => (
-                      <tr
-                        key={`${operation.backup_relative}-${operation.copy_to}`}
-                        className="border-b border-neutral-900"
-                      >
-                        <td className="p-3">
-                          <div className="font-mono break-all text-neutral-200">
-                            {operation.backup_relative}
-                          </div>
-                          <div className="mt-1 text-xs text-neutral-500">
-                            {operation.context_display || "No context detected"}
-                          </div>
-                        </td>
-                        <td className="p-3">
-                          {operation.target_delete &&
-                          operation.target_delete !== operation.copy_to ? (
-                            <div className="space-y-1 text-xs">
-                              <div className="text-yellow-300">
-                                Replace: {operation.target_delete}
-                              </div>
-                              <div className="text-green-300">Copy To: {operation.copy_to}</div>
-                            </div>
-                          ) : (
-                            <div className="text-xs text-green-300">
-                              Copy To: {operation.copy_to}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={2} className="p-6 text-center text-neutral-500">
-                        No operations in restore plan
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </ScrollArea>
-            <div className="flex gap-2">
-              <Button onClick={applyRestore} disabled={restoreMutation.isPending}>
-                <IconCheck className="mr-2 h-4 w-4" />
-                Apply Restore
-              </Button>
-              <Button variant="outline" onClick={() => setStage("files")}>
-                <IconArrowLeft className="mr-2 h-4 w-4" />
-                Back to Files
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {stage === "delete" && (
-        <Card className="border-neutral-800 bg-neutral-900/50">
-          <CardHeader>
-            <CardTitle className="text-white">Delete Backup</CardTitle>
-            <CardDescription className="text-neutral-400">
-              Choose whether to delete record, files, or both
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="space-y-3 rounded border border-neutral-800 bg-neutral-950 p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-white">Delete backup record</div>
-                  <div className="text-xs text-neutral-500">
-                    Remove backup metadata from database
-                  </div>
-                </div>
-                <Switch checked={deleteRecord} onCheckedChange={setDeleteRecord} />
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-white">Delete backup files</div>
-                  <div className="text-xs text-neutral-500">
-                    Remove files from{" "}
-                    {backupDetailsQuery.data?.backup?.backup_path || "backup storage"}
-                  </div>
-                </div>
-                <Switch checked={deleteFiles} onCheckedChange={setDeleteFiles} />
-              </div>
-            </div>
-
-            {deleteFiles && (
-              <ScrollArea className="h-[360px] rounded border border-neutral-800">
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-neutral-900">
-                    <tr className="border-b border-neutral-800 text-left text-neutral-400">
-                      <th className="p-3">Backup File</th>
-                      <th className="p-3">Size</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(filesQuery.data?.files ?? []).map((file) => (
-                      <tr key={file.relative_path} className="border-b border-neutral-900">
-                        <td className="p-3 font-mono text-xs break-all text-neutral-200">
-                          {file.relative_path}
-                        </td>
-                        <td className="p-3 text-neutral-300">{humanBytes(file.file_size)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </ScrollArea>
-            )}
-
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => setStage("list")}>
-                <IconArrowLeft className="mr-2 h-4 w-4" />
-                Cancel
-              </Button>
-              <Button
-                onClick={executeDelete}
-                disabled={deleteMutation.isPending || (!deleteRecord && !deleteFiles)}
-              >
-                <IconTrash className="mr-2 h-4 w-4" />
-                Delete Selected
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-    </div>
+  const totals = overview.data?.totals;
+  const tiles = useMemo(
+    () => [
+      { label: "Items", value: totals?.slot_count ?? 0, unit: "with versions" },
+      { label: "Versions", value: totals?.capture_count ?? 0, unit: "stored" },
+      { label: "Size", value: formatBytes(totals?.total_size), unit: "held" },
+      {
+        label: "Pinned",
+        value: totals?.pinned_count ?? 0,
+        unit: "kept always",
+        tone: (totals?.pinned_count ?? 0) > 0 ? ("ok" as const) : ("default" as const),
+      },
+    ],
+    [totals]
   );
-}
 
-function BackupRow({
-  backup,
-  onOpenFiles,
-  onRestoreAll,
-  onOpenDelete,
-}: {
-  backup: Backup;
-  onOpenFiles: (backupId: string) => void;
-  onRestoreAll: (backupId: string) => void;
-  onOpenDelete: (backupId: string) => void;
-}) {
+  function openRestore(capture: Capture) {
+    setRestoreTarget(capture);
+    setRestorePlan(null);
+    planRestore.mutate(
+      { captureId: capture.capture_id },
+      {
+        onSuccess: setRestorePlan,
+        onError: () => {
+          toast.error("Could not work out what this restore would do");
+          setRestoreTarget(null);
+        },
+      }
+    );
+  }
+
+  function confirmRestore() {
+    if (!restoreTarget) return;
+    setBusyId(restoreTarget.capture_id);
+    restore.mutate(
+      { captureId: restoreTarget.capture_id },
+      {
+        onSuccess: (result) => {
+          toast.success(result.message);
+          setRestoreTarget(null);
+          setRestorePlan(null);
+        },
+        onError: (error: unknown) => {
+          const message =
+            (error as { response?: { data?: { message?: string } } })?.response?.data?.message ??
+            "Restore could not be started";
+          toast.error(message);
+        },
+        onSettled: () => setBusyId(null),
+      }
+    );
+  }
+
+  function togglePin(capture: Capture) {
+    setBusyId(capture.capture_id);
+    pin.mutate(
+      { captureId: capture.capture_id, pinned: !capture.pinned },
+      {
+        onSuccess: (result) => toast.success(result.message),
+        onError: () => toast.error("Could not update the pin"),
+        onSettled: () => setBusyId(null),
+      }
+    );
+  }
+
+  /**
+   * Every delete goes through one path: preview, then confirm.
+   *
+   * Removing a stored version is the only action on this page with no undo —
+   * those files are the last copy of it — so the count and the size are always
+   * shown before anything happens, whether one version was picked or fifty.
+   */
+  function openDelete(selection: DeleteSelection, scope: string) {
+    setPendingDelete(selection);
+    setDeleteScope(scope);
+    setDeletePreview(null);
+    previewDelete.mutate(selection, {
+      onSuccess: setDeletePreview,
+      onError: () => {
+        toast.error("Could not work out what this would remove");
+        setPendingDelete(null);
+      },
+    });
+  }
+
+  function confirmDelete() {
+    if (!pendingDelete) return;
+    removeMany.mutate(pendingDelete, {
+      onSuccess: (result) => {
+        toast.success(result.message);
+        setPendingDelete(null);
+        setDeletePreview(null);
+        clearSelection();
+        // The inspector is showing a slot that may no longer have versions.
+        if (slot.data && result.deleted_count >= slot.data.captures.length) setSlotKey(null);
+      },
+      onError: () => toast.error("Could not delete"),
+    });
+  }
+
+  const selectionCount = pickedSlots.size + pickedVersions.size;
+
+  function deleteSelection() {
+    const parts: string[] = [];
+    if (pickedSlots.size) parts.push(`${pickedSlots.size} item(s)`);
+    if (pickedVersions.size) parts.push(`${pickedVersions.size} version(s)`);
+    openDelete(
+      {
+        slot_keys: pickedSlots.size ? [...pickedSlots] : undefined,
+        capture_ids: pickedVersions.size ? [...pickedVersions] : undefined,
+      },
+      parts.join(" and ")
+    );
+  }
+
+  const notConfigured = overview.data && !overview.data.configured;
+
   return (
-    <div className="rounded-lg border border-neutral-700/50 bg-neutral-800/50 p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="truncate text-sm font-medium text-white">
-              {backup.folder_name || backup.transfer_id || backup.backup_id}
-              {backup.season_name ? ` - ${backup.season_name}` : ""}
-            </p>
-            {statusBadge(backup.status)}
-            {backup.media_type && <Badge variant="outline">{backup.media_type}</Badge>}
-          </div>
-          <p className="mt-1 text-xs text-neutral-400">
-            {backup.file_count} file(s) - {humanBytes(backup.total_size)} -{" "}
-            {new Date(backup.created_at).toLocaleString()}
+    <div className="flex min-h-0 flex-1 flex-col gap-4 p-4">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="font-display text-xl font-semibold">Backups</h1>
+          <p className="text-[12.5px] text-muted-foreground">
+            Every movie and episode a sync has replaced, newest first. Restoring puts one back and
+            keeps what it replaced.
           </p>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => onOpenFiles(backup.backup_id)}>
-            <IconEye className="mr-1.5 h-4 w-4" />
-            Files
-          </Button>
-          {backup.status === "ready" && (
-            <Button size="sm" variant="outline" onClick={() => onRestoreAll(backup.backup_id)}>
-              <IconRestore className="mr-1.5 h-4 w-4" />
-              Restore
-            </Button>
-          )}
-          <Button size="sm" variant="outline" onClick={() => onOpenDelete(backup.backup_id)}>
-            <IconTrash className="mr-1.5 h-4 w-4" />
-            Delete
-          </Button>
+        <HousekeepingBar
+          legacyFolders={overview.data?.legacy_folders ?? 0}
+          unsortedCount={overview.data?.totals.unsorted_count ?? 0}
+          onOpenRetention={() => setShowRetention(true)}
+          onOpenMigration={() => setShowMigration(true)}
+          rebuilding={rebuild.isPending}
+          onRebuild={() =>
+            rebuild.mutate(undefined, {
+              onSuccess: (result) => toast.success(result.message),
+              onError: () => toast.error("Could not rebuild the index"),
+            })
+          }
+        />
+      </header>
+
+      {notConfigured && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-500/35 bg-amber-500/[0.08] px-4 py-3">
+          <IconAlertTriangle className="mt-0.5 size-5 flex-none text-amber-400" />
+          <div className="text-[13px]">
+            <div className="font-medium text-amber-400">No backup location is set</div>
+            <p className="text-muted-foreground">
+              Syncs will refuse to run until one is configured. Nothing is written anywhere else — a
+              backup that cannot be restored is worse than none at all.
+            </p>
+          </div>
         </div>
+      )}
+
+      <div className="grid gap-3 lg:grid-cols-[1fr_18rem]">
+        <StatTiles items={tiles} />
+        <DiskBar disk={overview.data?.disk ?? null} />
       </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex rounded-lg border border-border p-0.5">
+          {LIBRARIES.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              onClick={() => selectLibrary(entry.id)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium transition-colors",
+                library === entry.id
+                  ? "bg-brand/15 text-brand-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <entry.Icon className="size-4" />
+              <span className="hidden sm:inline">{entry.label}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="relative min-w-0 flex-1 sm:max-w-xs">
+          <IconSearch className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search titles"
+            className="pl-8"
+          />
+        </div>
+
+        <div className="flex rounded-lg border border-border p-0.5">
+          {(
+            [
+              { id: "recent", label: "Newest", Icon: IconClockHour4 },
+              { id: "size", label: "Largest", Icon: IconSortDescending2 },
+            ] as const
+          ).map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => setSort(option.id)}
+              title={
+                option.id === "size"
+                  ? "Biggest first — what to delete when you need space back"
+                  : "Most recently replaced first"
+              }
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors",
+                sort === option.id
+                  ? "bg-brand/15 text-brand-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <option.Icon className="size-3.5" />
+              <span className="hidden sm:inline">{option.label}</span>
+            </button>
+          ))}
+        </div>
+
+        {!isWide && pane === "slots" && (
+          <Button variant="outline" size="sm" onClick={() => setPane("titles")}>
+            <IconArrowLeft className="size-4" />
+            Titles
+          </Button>
+        )}
+      </div>
+
+      <div className={cn("grid min-h-0 flex-1 gap-4", isWide && "lg:grid-cols-[290px_1fr]")}>
+        {(isWide || pane === "titles") && (
+          <SectionCard
+            label="Titles"
+            className="flex min-h-0 flex-col"
+            contentClassName="min-h-0 flex-1"
+          >
+            <ScrollArea className="h-full max-h-[60vh] lg:max-h-[70vh]">
+              {titles.isLoading ? (
+                <div className="space-y-2 p-3">
+                  {[0, 1, 2, 3].map((row) => (
+                    <Skeleton key={row} className="h-9 w-full" />
+                  ))}
+                </div>
+              ) : !titles.data?.length ? (
+                <SectionEmpty
+                  icon={IconFolder}
+                  title="Nothing backed up here"
+                  hint={`No ${LIBRARY_LABELS[library]} have been replaced yet.`}
+                />
+              ) : (
+                <ul className="p-1.5">
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => setTitle(null)}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors",
+                        title === null ? "bg-brand/12 text-brand-foreground" : "hover:bg-muted/60"
+                      )}
+                    >
+                      <IconArchive className="size-3.5 flex-none opacity-70" />
+                      <span className="flex-1">Everything</span>
+                    </button>
+                  </li>
+                  {titles.data.map((entry) => (
+                    <li key={entry.title}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTitle(entry.title);
+                          setSlotKey(null);
+                          if (!isWide) setPane("slots");
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors",
+                          title === entry.title
+                            ? "bg-brand/12 text-brand-foreground"
+                            : "hover:bg-muted/60"
+                        )}
+                      >
+                        <span className="min-w-0 flex-1 truncate" title={entry.title}>
+                          {entry.title}
+                        </span>
+                        <span className="flex-none font-mono text-[10px] text-muted-foreground tabular-nums">
+                          {entry.capture_count}
+                        </span>
+                        <span className="w-14 flex-none text-right font-mono text-[10px] text-muted-foreground tabular-nums">
+                          {formatBytes(entry.total_size)}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </ScrollArea>
+          </SectionCard>
+        )}
+
+        {(isWide || pane === "slots") && (
+          <SectionCard
+            label={title ? `Versions in ${title}` : "All versions"}
+            description={
+              slots.data ? `${slots.data.total} item(s) with stored versions` : undefined
+            }
+            className="flex min-h-0 flex-col"
+            contentClassName="min-h-0 flex-1"
+          >
+            <ScrollArea className="h-full max-h-[70vh]">
+              {slots.isLoading ? (
+                <div className="space-y-2 p-3">
+                  {[0, 1, 2, 3, 4].map((row) => (
+                    <Skeleton key={row} className="h-11 w-full" />
+                  ))}
+                </div>
+              ) : !slots.data?.slots.length ? (
+                <SectionEmpty
+                  icon={IconArchive}
+                  title="Nothing stored here"
+                  hint="A version appears once a sync replaces or removes a file."
+                />
+              ) : (
+                <ul className="divide-y divide-border/50">
+                  {slots.data.slots.map((entry) => (
+                    <SlotRow
+                      key={entry.slot_key}
+                      slot={entry}
+                      active={slotKey === entry.slot_key}
+                      picked={pickedSlots.has(entry.slot_key)}
+                      onPick={() => toggleSlot(entry.slot_key)}
+                      onSelect={() => setSlotKey(entry.slot_key)}
+                    />
+                  ))}
+                </ul>
+              )}
+            </ScrollArea>
+            <SelectionBar
+              count={selectionCount}
+              onDelete={deleteSelection}
+              onClear={clearSelection}
+            />
+          </SectionCard>
+        )}
+      </div>
+
+      {(overview.data?.totals.unsorted_count ?? 0) > 0 && unsorted.data && (
+        <SectionCard
+          label="Unidentified"
+          description="Kept but not recognised. Recoverable by hand today, and re-sortable once the parser improves."
+          actions={
+            <ClearUnsortedButton
+              count={unsorted.data.length}
+              size={unsorted.data.reduce((total, capture) => total + capture.total_size, 0)}
+              busy={previewDelete.isPending || removeMany.isPending}
+              onClick={() =>
+                openDelete(
+                  { capture_ids: unsorted.data!.map((capture) => capture.capture_id) },
+                  `all ${unsorted.data!.length} unidentified item(s)`
+                )
+              }
+            />
+          }
+        >
+          <ul className="divide-y divide-border/50">
+            {unsorted.data.slice(0, 20).map((capture) => (
+              <li key={capture.capture_id} className="flex items-center gap-2 px-4 py-2.5">
+                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-muted-foreground">
+                  {capture.capture_path}
+                </span>
+                <span className="flex-none font-mono text-[10.5px] text-muted-foreground tabular-nums">
+                  {capture.file_count} file(s) · {formatBytes(capture.total_size)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      )}
+
+      <Sheet open={Boolean(slotKey)} onOpenChange={(open) => !open && setSlotKey(null)}>
+        <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-xl">
+          <SheetTitle className="border-b border-border px-4 py-3 text-[13.5px]">
+            {slot.data?.display || "Versions"}
+          </SheetTitle>
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <VersionList
+              captures={slot.data?.captures ?? []}
+              current={slot.data?.current ?? null}
+              loading={slot.isLoading}
+              busyId={busyId}
+              selected={pickedVersions}
+              onToggle={toggleVersion}
+              onRestore={openRestore}
+              onPin={togglePin}
+              onDelete={(capture) =>
+                openDelete({ capture_ids: [capture.capture_id] }, "this version")
+              }
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <RestoreDialog
+        open={Boolean(restoreTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRestoreTarget(null);
+            setRestorePlan(null);
+          }
+        }}
+        plan={restorePlan}
+        loading={planRestore.isPending}
+        submitting={restore.isPending}
+        onConfirm={confirmRestore}
+      />
+
+      <DeleteDialog
+        open={Boolean(pendingDelete)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingDelete(null);
+            setDeletePreview(null);
+          }
+        }}
+        preview={deletePreview}
+        loading={previewDelete.isPending}
+        submitting={removeMany.isPending}
+        scope={deleteScope}
+        onConfirm={confirmDelete}
+      />
+
+      {overview.data && (
+        <RetentionDialog
+          open={showRetention}
+          onOpenChange={setShowRetention}
+          rule={overview.data.retention}
+        />
+      )}
+      <MigrationDialog
+        open={showMigration}
+        onOpenChange={setShowMigration}
+        legacyFolders={overview.data?.legacy_folders ?? 0}
+      />
     </div>
   );
 }
+
+function SlotRow({
+  slot,
+  active,
+  picked,
+  onPick,
+  onSelect,
+}: {
+  slot: SlotSummary;
+  /** Currently open in the inspector. */
+  active: boolean;
+  /** Ticked for deletion. */
+  picked: boolean;
+  onPick: () => void;
+  onSelect: () => void;
+}) {
+  const season = seasonLabel(slot.season_number);
+  return (
+    <li className={cn("flex items-center", active ? "bg-brand/10" : "hover:bg-muted/40")}>
+      {/*
+        Base UI's checkbox forwards its click to a hidden input rendered as a
+        SIBLING of the box, so a checkbox nested inside the row's button would
+        toggle the row straight back. Keeping it outside the button — its own
+        interactive element, not inside another — is what makes both work.
+      */}
+      <div className="flex items-center py-2.5 pr-1 pl-4">
+        <Checkbox
+          checked={picked}
+          onCheckedChange={onPick}
+          aria-label={`Select every version of ${slot.display}`}
+        />
+      </div>
+
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pr-4 pl-2 text-left"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="min-w-0 truncate text-[13px] font-medium">{slot.display}</span>
+            {slot.has_pinned === 1 && (
+              <IconPinFilled
+                className="size-3 flex-none text-brand"
+                aria-label="Has a pinned version"
+              />
+            )}
+          </div>
+          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+            {season && <span>{season}</span>}
+            <span>
+              {slot.version_count} version{slot.version_count === 1 ? "" : "s"}
+            </span>
+            <span>·</span>
+            <span>{formatBytes(slot.total_size)}</span>
+          </div>
+        </div>
+        <span className="hidden flex-none font-mono text-[10.5px] text-muted-foreground tabular-nums sm:inline">
+          {formatWhen(slot.latest_captured_at).split(",")[0]}
+        </span>
+        <IconChevronRight className="size-4 flex-none text-muted-foreground/60" />
+      </button>
+    </li>
+  );
+}
+
+export default BackupsPage;

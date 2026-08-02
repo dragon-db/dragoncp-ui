@@ -1,8 +1,9 @@
 # Known Issues
 
-Defects found by reading the code while writing this documentation. Nothing here
-has been fixed — this page exists so the findings are not lost and can be
-triaged.
+Defects found by reading the code while writing this documentation. This page
+exists so the findings are not lost and can be triaged. Most are still open;
+where one has since been fixed it is marked as such and kept, because knowing a
+behaviour used to exist is what explains an old install that still looks wrong.
 
 Each entry names the file and line so it can be checked. Entries marked
 **verified** were re-checked by hand against the source; the rest come from the
@@ -12,18 +13,19 @@ documentation review and should be confirmed before acting on them.
 
 ## Data safety
 
-### Backups written to `/tmp` can never be restored — **verified**
+### ~~Backups written to `/tmp` can never be restored~~ — **fixed**
 
-`BACKUP_PATH` has two different defaults. Writing falls back to `/tmp/backup`
-(`services/backup_service.py:412`, `:546`), but restore refuses outright with
-`BACKUP_PATH is not configured; refusing restore` (`:145`).
+`BACKUP_PATH` had two different defaults: writing fell back to `/tmp/backup`
+while restore refused anything but a configured path. With it unset, every sync
+silently backed up replaced files where the OS may clear them, and the restore
+path would not touch them. Backups appeared to work and were unrecoverable.
 
-With `BACKUP_PATH` unset, every sync silently backs up replaced files into
-`/tmp/backup` — where the OS may clear them — and the restore path will not
-touch them. Backups appear to work and are unrecoverable.
-
-Either default should match the other, or writing should refuse the same way
-restore does.
+Writing now refuses exactly where restore refuses — there is no fallback
+anywhere. A transfer with no `BACKUP_PATH` fails to start, resume or restart,
+and says which setting is missing. `services/backups/layout.py` is the single
+place the base is resolved, and it raises rather than inventing a path.
+`tests/test_backups.py::BackupPathFailsClosedTests` fails the build if a
+fallback reappears.
 
 ### `migrate_v1_to_v2.py` will erase a v2 database — **verified**
 
@@ -81,24 +83,24 @@ each, plus why simulations are safe despite being exempt from the dry run.
 
 ## Configuration that silently does nothing
 
-- **`AUTO_SYNC_SERIES` and `AUTO_SYNC_ANIME` are read by nothing.**
-  `routes/webhooks.py:243` and `:368` pass a hard-coded `False` default to
-  `settings.get_bool`. Only `AUTO_SYNC_MOVIES` has an env fallback
-  (`routes/webhooks.py:113`), and that fallback stops applying permanently the
-  first time the Settings screen is saved.
+**Three of the entries that were here are fixed.** `AUTO_SYNC_SERIES` and
+`AUTO_SYNC_ANIME` being read by nothing, `WEBSOCKET_TIMEOUT_MINUTES` in the env
+file never reaching the server, and Settings-screen overrides being invisible
+to background work were all the same defect: a per-browser session store that
+`config.get()` consulted only inside a request. It is gone. Every setting now
+comes from the environment file (read-only at runtime) or from `app_settings`
+(editable, and read by background work), and `settings_registry.py` says which.
+Env values for database-backed keys are adopted into the table once at startup,
+so an existing installation keeps the behaviour it had. See
+[../reference/configuration.md](../reference/configuration.md#the-two-stores-and-which-one-wins).
+
+What remains:
+
 - **`ALLOW_QUERY_TOKEN_AUTH`, `PORT` and the four `GUNICORN_*` keys cannot be
   set in `dragoncp_env.env`.** They are evaluated before the env file is copied
   into `os.environ` — `websocket.py:39` at import time, and
   `deploy/gunicorn.conf.py` before gunicorn imports the app. They only work as
   real process environment variables.
-- **`WEBSOCKET_TIMEOUT_MINUTES` in the env file does not reach the server.**
-  `websocket.py:71` reads it only from the browser session's `ui_config`.
-  Setting it in the env file changes the client-side idle timer but leaves the
-  server's stale-connection reaper at its 35-minute default.
-- **Settings-screen overrides are invisible to actual work.** `config.py:55`
-  gates the lookup on `has_request_context()`, and transfers, the scheduler and
-  the queue all run on daemon threads. Overriding a destination path changes
-  only what the API reports back to that one browser.
 - **Four env-file loaders with different rules.** `config.py` reads
   `dragoncp_env.env` only; `app.py` and `auth.py` stop at the first of the two
   files that exists; `webhook_auth.py` merges both with `.env` winning. A value
@@ -136,15 +138,12 @@ each, plus why simulations are safe despite being exempt from the dry run.
 
 ## Realtime
 
-- **Backup restore does not reserve its destination.** `BackupService.restore_backup`
-  writes straight to `dest_path` and deletes files there without going near
-  `QueueManager`, which is what serialises transfers against each other by
-  destination. A restore can therefore pre-delete and rsync into a library path
-  while a transfer is writing the same one. Raised in review on PR #54 and left
-  alone deliberately: reserving the destination means threading queue
-  registration through the backup service and releasing it on every success,
-  failure and early return, which is its own piece of work rather than a
-  correction to that PR.
+- ~~**Backup restore does not reserve its destination.**~~ Fixed by the backups
+  rework. A restore now registers with `QueueManager` like any transfer, runs in
+  its own thread with progress and logs, and releases the destination on every
+  path out — success, failure and refusal. When the destination is busy or every
+  slot is taken it says so rather than queueing silently, because a restore is
+  watched and parking it invisibly is worse than refusing.
 
 - ~~**`transfer_failed` has a listener and no emitter.**~~ Fixed by deleting the
   helper. Failures arrive as `transfer_complete` carrying `status: "failed"`,
@@ -156,7 +155,7 @@ each, plus why simulations are safe despite being exempt from the dry run.
 - **Every event but one is broadcast to every client.** `transfer_logs` is
   room-scoped (`services/transfer_service.py:164`); no other emit passes `room`,
   `to` or `namespace`.
-- **Emits are swallowed.** `services/backup_service.py` wraps them in bare
+- **Emits are swallowed.** `services/backups/service.py` wraps them in a helper that swallows and logs; the old code used bare
   `try/except: pass`, and `routes/webhooks.py` routes them through
   `emit_socketio_event()`, which does the same.
 - ~~**`TransferUpdate` overstates its payload.**~~ Fixed. Only `transfer_id` is

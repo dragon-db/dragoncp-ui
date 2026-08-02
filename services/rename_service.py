@@ -407,7 +407,7 @@ class RenameService:
 
         Example:
             relative_path: "Season 01/Show - S01E01 - Title.mkv"
-            server_series_path: "/home/dragondb/media/TV Shows/Show Name (2025)"
+            server_series_path: "<TVSHOW_PATH>/Show Name (2025)"
             media_type: "tvshows"
 
             Result: "{TVSHOW_DEST_PATH}/Show Name (2025)/Season 01/Show - S01E01 - Title.mkv"

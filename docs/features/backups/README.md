@@ -1,258 +1,472 @@
 # Backups and Restore
 
-Every sync writes into a real media library, and a sync can overwrite an existing file or delete one that is no longer on the server. Before it does either, the copy that was already on disk is moved aside into a per-transfer backup folder. Once the transfer ends, DragonCP indexes that folder so the old files are listed in the UI with a title, season and episode next to them, and can be put back later - either the whole set or a few files - after previewing exactly which destination files the restore would replace.
+Every movie and every episode is a **slot**. The library holds the slot's
+current occupant; this feature holds the previous ones, newest first. A sync
+that replaces or deletes a file moves the old copy here first, and a restore
+promotes an old copy back to current — which pushes the file it replaced into
+the same slot's history.
 
-Last updated: 2026-07-28
-Primary files: `services/backup_service.py`, `models/backup.py`, `routes/backups.py`, `services/transfer_service.py`, `services/transfer_coordinator.py`
+That last part is why there is no separate "undo". Undoing a restore is
+restoring the version the restore itself created.
+
+Last updated: 2026-08-02
+Primary files: `services/backups/`, `models/backup_capture.py`, `routes/backups.py`,
+`services/transfer_coordinator.py`
 
 ## Where it lives
 
 | Concern | File |
 | --- | --- |
-| Backup capture during a sync (rsync flags) | `services/transfer_service.py` (`start_rsync_process`) |
-| Backup folder naming, indexing, restore, delete, reindex | `services/backup_service.py` |
-| Backup folder wiring into every transfer start/resume/restart | `services/transfer_coordinator.py` |
-| Database reads and writes for `backup` / `backup_file` | `models/backup.py` |
+| What a displaced file is — the slot it belongs to | `services/backups/identity.py` |
+| Where that slot lives on disk, and reading it back | `services/backups/layout.py` |
+| rsync's staging output → the identity tree | `services/backups/sorter.py` |
+| Rebuilding the index by walking the tree | `services/backups/indexer.py` |
+| Planning and running a restore | `services/backups/restore.py` |
+| Keeping N versions per slot | `services/backups/retention.py` |
+| Adopting the old per-transfer folders | `services/backups/migrate.py` |
+| The facade routes and the coordinator use | `services/backups/service.py` |
+| Index reads and writes | `models/backup_capture.py` |
 | Table definitions and indexes | `models/database.py` |
 | HTTP endpoints | `routes/backups.py` |
-| Path-boundary and traversal checks | `security.py` |
-| UI page and data hooks | `frontend/src/components/pages/backups.tsx`, `frontend/src/hooks/useBackups.ts` |
+| Path-boundary checks | `security.py` |
+| UI page and data hooks | `frontend/src/components/pages/backups.tsx`, `frontend/src/components/backups/`, `frontend/src/hooks/useBackups.ts` |
+
+## Vocabulary
+
+| Term | Means |
+| --- | --- |
+| **Slot** | One movie, or one episode of one series. The unit everything hangs off. |
+| **Capture** | One previous occupant of a slot: the media file plus the sidecars that travelled with it, taken at one moment. |
+| **Version** | A capture, as the UI says it. |
+| **Staging** | Where rsync's `--backup-dir` writes during a transfer, before anything is sorted. |
+| **Extras** | Files belonging to a title but to no episode — season artwork, a series `.nfo`. Kept, never restorable as a slot occupant. |
+| **Unsorted** | Files carrying no usable identity. Kept and listed, never guessed at. |
 
 ## How it works
 
-### 1. Every sync gets its own backup folder
+### 1. rsync displaces files into staging
 
-`TransferCoordinator` asks `BackupService._get_dynamic_backup_dir(transfer)` for a folder before it starts rsync. It does this in all four places a transfer can begin - `start_transfer`, `resume_transfer`, `restart_transfer` and `start_queued_transfer` - so a resumed run keeps writing into the same folder as its first attempt.
+`TransferCoordinator` asks `BackupsService.staging_dir(transfer_id)` for a
+folder before starting rsync, in all four places a transfer can begin, so a
+resumed run keeps writing into the folder its first attempt used.
 
-The folder is `<BACKUP_PATH>/<safe_folder>_<transfer_id>`, where `safe_folder` comes from `_safe_name(folder_name)`: everything outside `A-Za-z0-9._-` becomes an underscore. `BACKUP_PATH` falls back to `/tmp/backup` if it is not configured.
+The folder is `<BACKUP_PATH>/.staging/<transfer id>`. It is dot-prefixed so it
+never appears as content in the tree, and it is created lazily — a transfer
+that displaces nothing leaves nothing behind.
 
-### 2. rsync moves the old copies there
+rsync runs with `--backup --backup-dir <staging>` as before, so a file at
+`<dest>/Season 01/ep.mkv` lands at `<staging>/Season 01/ep.mkv`.
 
-`TransferService.start_rsync_process` creates the folder and a `.rsync-partial` subfolder inside it, then runs rsync with, among others:
+**If `BACKUP_PATH` is unset the transfer refuses to start.** There is no
+fallback. See "Failing closed" below.
+
+### 2. What was displaced is sorted into the tree
+
+Once the transfer settles, `_post_transfer_completion` calls
+`BackupsService.sort_after_transfer`. It walks staging, identifies every file,
+and moves each into the slot it belongs to:
 
 ```
---delete --backup --backup-dir <backup_dir> --update --size-only
---partial --partial-dir <backup_dir>/.rsync-partial
+<BACKUP_PATH>/
+  movies/
+    Example Film (2024)/
+      20260730T142205.311Z__t1a2b3/
+        Example Film (2024) [Bluray-1080p].mkv
+        Example Film (2024).nfo
+  shows/
+    Example Show (2024)/
+      Season 01/
+        S01E01/
+          20260730T142205.311Z__t1a2b3/
+            Example Show (2024) - S01E01 - An Episode [WEBDL-1080p].mkv
+            Example Show (2024) - S01E01 - An Episode.srt
+          20260804T091033.007Z__t9f8e7/
+            Example Show (2024) - S01E01 - An Episode [HDTV-720p].mkv
+      _extras/
+        20260730T142205.311Z__t1a2b3/
+          poster.jpg
+  anime/
+    ...
+  _unsorted/
+    20260730T142205.311Z__t1a2b3/
+      <the path the file had inside the transfer's destination>
+  .staging/
+    <transfer id>/
 ```
 
-`--backup` plus `--backup-dir` is what does the work: instead of being overwritten in place or removed by `--delete`, the file that was already at the destination is moved into the backup folder, keeping the same path relative to the destination root. So a file at `<dest>/Season 01/ep.mkv` lands at `<backup_dir>/Season 01/ep.mkv`.
+Three properties make this safe to run unattended after every transfer:
 
-Because the sync uses `--size-only`, "would overwrite" means "the server copy is a different size", not "different content".
+- it only touches files that are **already out of the library**, so a failure
+  cannot damage media;
+- it is a **rename within one filesystem** — instant regardless of file size,
+  because staging and the tree share a device even though the backup area and
+  the library do not;
+- it is **idempotent**. If it dies part-way the staging folder still holds what
+  is left and the next run finishes the job.
 
-### 3. The record is finalized after the transfer ends
+A capture is a *folder*, not a file, so an episode's subtitles and metadata stay
+welded to the copy they belong to. Sidecars need no pairing heuristic: a file
+named `... - S01E01 - Title.srt` carries the same episode code as the video, so
+it lands in the same capture on its own.
 
-`TransferCoordinator._post_transfer_completion` polls the transfer row every 5 seconds. When the status leaves `running`/`pending` it releases the queue slot, updates webhook state, sends the Discord notification, and then calls `BackupService.finalize_backup_for_transfer(transfer_id)`. A `paused` transfer breaks out of that loop early and deliberately does **not** finalize - the run is expected to continue, and the resumed run's own watcher finalizes it at the real end.
+One transfer usually produces **several** captures — a slot per episode, one
+per title's extras, and the unsorted bucket — and each gets its own id. They
+share a timestamp and a source reference because they share a cause, and a
+`__2` suffix keeps them apart. Reusing a single id across them all meant the
+second capture's index row replaced the first's, so a transfer that displaced a
+whole season left one episode listed and the rest on disk with nothing able to
+find them.
 
-`finalize_backup_for_transfer` walks the backup folder and, for each file, records its size, mtime, path relative to the backup folder, and the destination path it originally came from (`transfer.dest_path` + relative path). It also runs `_detect_context_from_filename` to work out what the file *is* (see below). If the walk finds zero files - the normal case, when nothing was overwritten or deleted - it returns without creating anything, so clean syncs do not litter the backups list.
+### 3. Identity
 
-Otherwise it calls `Backup.create_or_replace_backup` with `backup_id` set to the transfer ID, deletes any existing `backup_file` rows for that ID, and inserts the new ones. Replacing rather than appending is what makes a restart or resume safe: the record always describes what is on disk right now, and `create_or_replace_backup` clears `restored_at` back to NULL on replace.
+Episode parsing is **not** reimplemented here. `services/explore/identity.py`
+already derives its rules from the real library and handles the four things
+that break naive parsers: titles that sometimes carry a year, anime absolute
+numbers, `Season 01` versus `Season 1`, Specials, and multi-episode files.
 
-### 4. Context detection
+`services/backups/identity.py` adds the movie half — title and release year,
+taken from the library folder first because Radarr names it `Title (2024)` and
+it stays stable while the file inside carries quality tags — and the naming
+rules for the tree.
 
-`_detect_context_from_filename` parses the filename, using the transfer's media type to decide which shape to expect:
+A file with no usable identity is never guessed at. If it sits under a known
+title it goes to that title's `_extras`; otherwise it goes to `_unsorted`,
+keeping the relative path it had, where it is still recoverable by hand and can
+be re-sorted later once the parser improves.
 
-- `movies`: `Title (YYYY)` from the start of the name. If that fails it falls back to the transfer's folder name for the title and any `(YYYY)` found anywhere in the name.
-- everything else (series, anime): the text before the first ` - ` is taken as the series title, `SxxExx` is matched case-insensitively anywhere in the name, and a bare three-digit token between ` - ` separators is taken as an anime absolute episode number.
+**Multi-episode files.** `S01E01E02` is stored once, under `S01E01`, and
+registered against both slots in `backup_capture_key`. It is therefore
+reachable from either episode without being duplicated.
 
-It produces a `context_display` string for the UI (`Title (2019)`, `Series - S01E04 - 123`) and a normalized `context_key` (`movie|the_title|Y2019`, `anime|series_title|S01E04|A123`). Any parse error falls back to a context built from the folder name alone rather than failing the indexing.
+### 4. The index
 
-### 5. Planning a restore
+Three tables — `backup_capture`, `backup_capture_file`, `backup_capture_key` —
+and **none of them is the source of truth**. The tree is. Every fact needed to
+rebuild the index is in the path: library, title, season, episode, capture time
+and provenance.
 
-`plan_context_restore(backup_id, files)` is the read-only half of restore and backs both the preview endpoint and the restore itself - the restore calls the same function, so what you approve is what runs.
+`POST /api/backups/rebuild` regenerates the whole index by walking the disk. It
+needs no transfer record and no prior index, and is idempotent. Four things are
+carried over from the existing index rather than regenerated, because a path
+cannot hold them: whether a capture is **pinned**, **why** it was displaced,
+**which transfer** produced it, and **when it was last restored**.
 
-For each backup file row (filtered to the selected relative paths if any were given) it produces one operation:
+It deletes no media and moves nothing, with one exception. A capture folder
+whose name is already in use elsewhere in the tree is renamed, and the count is
+reported as `repaired`. The name *is* the capture's identity, so two folders
+sharing one means only one of them can be indexed and the other's files sit on
+disk unlistable — a rename inside the backup disk is instant and loses nothing,
+so the invariant is repaired rather than reported and left broken. On a tree
+written by the current sorter this is always zero.
 
-- `backup_relative` / `backup_full` - where the saved copy is
-- `copy_to` - the file's recorded `original_path`, falling back to `dest_path` + relative path
-- `target_delete` - the destination file that will be removed first, from `_find_dest_match_for_context`
-- `context_display`
+This is a direct answer to the state the previous implementation left: on the
+live disk it had 864 folders and 330 files, and the index knew about 19 of them.
 
-`_find_dest_match_for_context` walks the destination directory looking for a file that matches the recorded context. It exists because the file being restored may no longer be at the path it was taken from - the media manager may have renamed or re-encoded it since. The rules:
+### 5. Restore
 
-- Any candidate whose path equals `copy_to` is skipped, so the plan never proposes deleting the file it is about to write.
-- Extension grouping is enforced: if the backed-up file is a video (`.mkv .mp4 .avi .mov .wmv .webm .m4v`) the candidate must also be a video; if it is ancillary (`.nfo .srt .ass .sub .idx .txt`) the candidate must be ancillary too. A subtitle can therefore never displace a video.
-- For movies, the candidate name must contain `title (year)` lowercased.
-- Otherwise the candidate must contain `sXXeYY`, or ` NNN ` for an anime absolute number. The series title is checked but not required - a match on `SxxExx` alone is accepted.
-- If several candidates match, they are sorted by fewest path separators then shortest basename, and the first is used.
+`plan_restore(capture_id, files)` is the read-only half and backs both the
+preview and the run, so what is approved is what happens.
 
-If nothing matches, `target_delete` is `None` and the restore just copies the file back to `copy_to`.
+For each file it resolves:
 
-### 6. Running the restore
+- **target** — where it will be written, derived from the slot, not from a
+  destination recorded months ago,
+- **replaces** — the file currently occupying that slot, from a listing of the
+  slot's own folder filtered by episode identity.
 
-`restore_backup(backup_id, files)`:
+A media file only ever replaces a media file and a sidecar only ever replaces a
+sidecar, so restoring a subtitle can never delete an episode. An exact filename
+match wins; failing that, the single occupant of the matching kind is used,
+which is what catches an upgrade that renamed the file.
 
-1. Re-validates the file list (see the security notes below), loads the record, and refuses outright if `BACKUP_PATH` is unset, if `backup_path` resolves outside `BACKUP_PATH`, if no `*_DEST_PATH` is configured, if `dest_path` is empty, or if `dest_path` resolves outside the configured movie/tvshow/anime destinations. These are fail-closed checks - a missing configuration blocks the restore rather than widening it.
-2. Creates the destination directory if it is missing.
-3. Builds the plan. No operations means the restore stops with `No matching files to restore for the selected items`.
-4. Creates a synthetic transfer row with ID `restore_<backup_id>_<epoch>` and `operation_type='restore'`, so the restore shows up in the transfers UI with its own log, and emits a `transfer_progress` socket event listing up to 100 planned operations.
-5. Deletes each `target_delete` that still exists, logging `Deleted: <path>` with the context on the next line, and counting successes. A failed delete is logged as an error and the restore continues.
-6. Writes the selected relative paths to a temporary file and runs `rsync -av --progress --size-only --no-perms --no-owner --no-group --no-motd -r --files-from=<tmp> <backup_path>/ <dest_path>/` synchronously, then removes the temp file.
-7. On exit code 0 the synthetic transfer is marked `completed`, a `transfer_complete` event is emitted, and the backup row moves to `status='restored'` with `restored_at` set. On any other exit code both are marked failed and the message carries rsync's stderr (or stdout).
+The run is a swap, ordered so nothing is destroyed before its replacement is
+safely written:
 
-### 7. Deleting
+1. **Capture the current occupant** — copy it into a new capture in the same
+   slot, and verify the copy landed at the expected size. A failure here aborts
+   with `Nothing was changed`.
+2. **Write the restored file** to a temporary name beside the target, verify,
+   then `os.replace` it into position — atomic, because it is within the
+   library disk.
+3. **Remove the previous occupant** only if its path differs from the target.
+   When the names match, step 2 has already overwritten it.
+4. **Index** the capture the restore created.
 
-`routes/backups.py` sends every delete through `delete_backup_options(backup_id, delete_record, delete_files)`, which treats the two as independent:
+The restore runs as a normal queued transfer with live progress and logs.
 
-- `delete_files` removes the backup directory with `shutil.rmtree`. A failure here aborts before anything else changes.
-- `delete_record` deletes the `backup_file` rows and then the `backup` row outright.
-- If only the files are deleted, the record stays and its status becomes `files_removed`. If neither flag is set the call succeeds with `No changes`.
+A restore records **when** it happened and changes nothing else about the
+version it restored. The files are still in the backup tree, so the same
+version can be restored again, and it stays subject to retention like any
+other. Marking it "restored" instead made a successful restore its own last:
+the next attempt was refused with a message about the files having been removed
+while they were sitting right there, and retention skipped it forever, so every
+restore added a version the rule would never prune. A **partial** restore —
+some files back, some not — is not recorded as a restore at all, because the
+run has to be repeated.
 
-`BackupService.delete_backup` is the older single-flag variant: it removes the files, deletes the `backup_file` rows and sets the record's status to `deleted` rather than removing it. It is still reachable via `TransferCoordinator.delete_backup` but no route calls it.
+### 6. Deleting, to get space back
 
-### 8. Reindexing folders found on disk
+Retention runs on its own; this is the manual half, for when a disk is full
+now.
 
-`reindex_backups()` exists for backup folders that have no database record - left behind by an older install, a database reset, or a transfer whose finalization never ran.
+- **One version** — the trash control on any version in the inspector.
+- **Several versions** — tick them in the inspector, or tick whole items in the
+  slot list to mean *every version of these*, then **Delete selected**.
+- **Keep a safety net** — a slot deletion can leave the most recent N versions
+  (`keep_newest`), which is the shape of "free some space but do not leave me
+  with nothing".
+- **The unidentified bucket** — one action clears all of it. By definition
+  nothing can tell you what those files are, which on a full disk makes them
+  the least painful thing to lose.
+- **Find what is worth deleting** — the slot list sorts by **Largest** as well
+  as **Newest**. Reclaiming space is a question about size, not recency.
 
-It lists the immediate children of `BACKUP_PATH` and, for each directory, splits the name at the **last** underscore into a folder part and a suffix. If the suffix already starts with `transfer_` it is used as-is; otherwise the suffix is assumed to be the timestamp tail of a transfer ID and `transfer_<suffix>` is reconstructed. This is why the split is at the last underscore: a real folder is `The_Matrix_transfer_1732000000`, and taking the tail gives back `transfer_1732000000`.
+Two rules hold throughout:
 
-It then looks up that transfer. If found, media type, folder name, season, source and destination are taken from it. If not, the import is best-effort: `dest_path` becomes an empty string and the folder name is derived from the directory name with underscores turned back into spaces.
+**Every delete is previewed first.** The count and the total size are shown
+before anything happens, whether one version was picked or fifty. This is the
+only action in the feature with no undo — those files are the last copy of that
+version — so it never runs on a bare click.
 
-The directory is walked exactly as finalization walks it, `created_at` is taken from the directory's mtime (converted to UTC), and the record is written with `create_or_replace_backup`. A directory is skipped if it has no underscore in its name, if a record already exists under the reconstructed transfer ID, or if it contains no files. The endpoint returns the imported and skipped counts.
+**Pinned versions are held back** unless explicitly included, and the number
+held back is reported rather than silently absorbed. A pin that a bulk sweep
+ignored would be worthless.
+
+Deleting removes the files and the index entry together, and prunes the folders
+it emptied. The library is never touched. There is deliberately no way to drop
+the index entry on its own: the index is derived from the tree, so a row
+removed without its files frees no space and returns at the next rebuild — the
+version looks deleted right up until it silently is not.
+
+### 7. Retention
+
+Keep the newest `N` captures per slot, `N` from `BACKUP_RETENTION_KEEP`
+(default 2). Runs automatically after a capture is added.
+
+Three things protect a capture:
+
+- being within the newest `N` for its slot,
+- being **pinned**,
+- being younger than `BACKUP_RETENTION_GRACE_HOURS` (default 24) — which stops
+  an accidental sync immediately pushing the copy you wanted off the end.
+
+A multi-episode capture is only pruned when it has fallen out of the window in
+**every** slot it belongs to; otherwise restoring the other episode would find
+nothing. Nothing is removed silently: every prune reports what went and how
+much was reclaimed.
+
+Disk pressure is **shown and never acted on**. Pruning keyed to free space
+fires at unpredictable moments, which for a recovery tool is the wrong
+property.
+
+**Where the rule is stored.** In the `app_settings` table, not the env file.
+That is the only store that both survives a restart and is visible to the
+background thread that applies the rule after a transfer — a value in the Flask
+session would be invisible to it, and a value in the env file would need a
+redeploy. `BACKUP_RETENTION_*` in the env file still works as the default when
+nothing has been saved.
+
+### 8. Migrating the old layout
+
+`POST /api/backups/migration/plan` previews adopting the old
+`<safe title>_<transfer id>/` folders; `/apply` carries it out. Always preview
+first — identity is being inferred for files that in some cases have no
+transfer record left to check the inference against.
+
+Where a legacy record survives, its media type and destination are used. Where
+none does — the common case on the live disk — the library is asked instead:
+the folder name is matched against every title folder in every configured root,
+longest prefix wins, and that gives both the library and the folder's real
+spelling. An absent or ambiguous match stays unknown and those files go to
+`_unsorted`.
+
+Migration **refuses to run while any transfer is active**, because it moves
+files across the whole backup disk and a running transfer is still writing to
+it. Running, pending, queued and paused all count — a queued transfer is not
+writing yet, but it can start at any moment. It also refuses when it cannot
+*tell*: if the transfer table cannot be read, the answer is wait, not proceed.
+
+Each identified group gets its own capture id, including several episodes out
+of one legacy folder. Sharing one id across a whole season meant each episode's
+index row overwrote the last, leaving every episode but one on disk and
+invisible.
+
+**A shared backup disk needs a second guard.** More than one instance can point
+at the same `BACKUP_PATH` — a development checkout alongside the live one, each
+with its own database. The active-transfer check only sees its own database, so
+it cannot know the other instance is mid-transfer. Any legacy folder whose
+contents changed in the last 15 minutes is therefore left alone regardless, and
+reported as skipped.
+
+**Migrating on a shared disk moves the files for everyone, immediately.** The
+other instance's records still point at the folders that have just moved, so its
+Backups page will list versions it can no longer restore until it is running
+this code and has rebuilt its index. Sequence it deliberately: deploy first, or
+accept that the other instance's backup page is stale until you do.
 
 ## Behaviour worth knowing
 
-- **A restore is not queued and blocks the request.** `restore_backup` runs `subprocess.run` in the request thread, so `POST /api/backups/<id>/restore` does not return until rsync finishes. It also never goes through `QueueManager`, so nothing prevents a restore from writing into a destination that a running sync is writing to at the same time.
+- **Failing closed on `BACKUP_PATH`.** Unset, transfers refuse to start, resume
+  and restart. Previously writing fell back to `/tmp/backup` while restore
+  refused anything but a configured path, so every sync quietly wrote displaced
+  media somewhere the OS may clear and nothing could get it back. Both halves
+  now agree, and they agree on refusing.
 
-- **A restore can silently skip files.** The restore rsync uses `--size-only`. If a file already exists at `copy_to` with the same size as the backed-up copy, rsync will not rewrite it - the restore still reports success and still logs `Copied: ...` for it. The per-operation copy log lines are written unconditionally after rsync exits; they describe the plan, not rsync's actual decisions.
+- **A restore takes its turn in the queue.** It reserves its destination like
+  any transfer, so it can no longer write into a folder a sync is writing to.
+  If the destination is busy or every slot is full it says so rather than
+  queueing silently — a restore is watched, and parking it invisibly is worse
+  than refusing.
 
-- **Delete failures do not stop the restore.** If a `target_delete` cannot be removed, the error is logged and the copy still runs, which can leave both the old and the restored file in the library.
+- **A restore always rewrites the file.** The previous implementation compared
+  by size only, so a same-size file at the destination was silently left alone
+  while the log still reported it as copied.
 
-- **An empty selection means different things on the two endpoints.** `POST .../restore` rejects `"files": []` with a 400. `POST .../plan` does not: the route only checks the type, and `plan_context_restore` treats an empty list as falsy, so planning with an empty selection returns a plan for *every* file in the backup. The UI never sends this - it disables the selected-files button when nothing is ticked.
+- **Restoring a capture records `restored_at` and leaves `status` alone.** The
+  files stay in the backup tree, so it stays in the slot's history, can be
+  restored again, and is pruned by retention like any other version. A partial
+  restore is not recorded as one — the run has to be repeated.
 
-- **Reindexed folders from webhook transfers are not usable for restore.** Webhook and simulation transfers use IDs like `webhook_12_1732000000`, not `transfer_1732000000`. Reindex reconstructs the latter from the folder name, finds no matching transfer, and imports the record with an empty `dest_path`. Restoring such a record fails immediately with `Missing destination path for configured destination roots`. The files are listed and can still be recovered by hand from `backup_path`.
+- **Deleting a version removes its files and its index entry together.** There
+  is no longer a record to keep without files — the index is derived from the
+  tree.
 
-- **Partial-transfer leftovers can end up indexed as backup files.** `--partial-dir` points inside the backup folder, and the indexing walk only skips entries in `.rsync-partial` whose filename starts with a dot. Anything else left there is recorded as a backup file with a relative path beginning `.rsync-partial/`. Not verified: how rsync names files inside `--partial-dir` in practice, and therefore how often the dot filter actually applies.
+- **`_unsorted` is not restorable.** There is nowhere to put those files back,
+  so the plan is blocked with an explanation rather than offering a guess.
 
-- **TEST_MODE does not produce a working dry run for restore.** With `TEST_MODE=1` the deletions are only printed, but the code builds a `--files-from=/tmp/test_mode_dummy_file_<n>.txt` path and deliberately does not create that file. rsync then exits non-zero, so a TEST_MODE restore reports failure. Simulation runs are a separate mechanism - see [../simulation/README.md](../simulation/README.md).
+- **Timestamps are UTC everywhere**, to millisecond precision. The milliseconds
+  are not decoration: versions inside a slot are ordered by capture time, and a
+  sync followed immediately by a restore of the same episode would otherwise
+  produce two captures that could not be told apart — the pair whose order
+  matters most.
 
-- **Explore shows these backups too, read-only.** The Explore actions panel
-  lists what an earlier sync moved aside for the series or season you are
-  looking at, so you can see a replaced episode is still recoverable without
-  leaving the page. It never restores — the destination matching and the
-  confirmation live here — and links across instead. Matching is on the backup's
-  `folder_name` and each **file's** own `context_season`, never on
-  `context_series_title`: that column is parsed by splitting the filename at the
-  first `" - "`, so "Alpha - Bravo, Charlie of the Delta (2016)" is stored
-  as `Re`. See [../explore/README.md](../explore/README.md).
+- **The legacy endpoints still work.** The static UI is what production serves,
+  so `/api/backups`, `/api/backups/<id>/files|plan|restore|delete` and
+  `/api/backups/reindex` are kept, backed by the new store, with a capture id in
+  place of the old backup id. One deliberate difference survives at those
+  paths: the old page sends `"files": []` to mean "everything", so the legacy
+  plan route normalises it, while the current API rejects an empty list because
+  ticking nothing is not a request to restore everything.
 
-- **An Explore run that only removes files still produces a backup record.** It
-  starts no rsync, so nothing in the normal pipeline would finalize one. It
-  writes a completed transfer row with `operation_type='explore_prune'` and
-  calls `finalize_backup_for_transfer` itself, the same way restore creates its
-  own synthetic run. Before this, a pure removal left files in the backup
-  directory with no record pointing at them.
+- **Explore reads the same index.** Its actions panel lists a series' or
+  season's stored versions by slot, so a title containing `" - "` finds its own
+  backups. The previous implementation matched on a title parsed by splitting
+  the filename at the first `" - "`, which stored "Alpha - Bravo, Charlie of the
+  Delta" as "Alpha" and hid that series' backups from itself.
 
-- **Restoring a backup does not remove it.** The record stays listed with `status='restored'` and the files stay in `BACKUP_PATH` until someone deletes them.
-
-- **Timestamps are not consistent.** `created_at` is written as explicit UTC with a `Z` suffix by both finalization and reindex, but `Backup.update` writes `updated_at` and `restored_at` from `datetime.now()` - local time, no marker. The list is ordered by `created_at DESC` as a string.
-
-- **`status='files_removed'` has no dedicated badge in the UI.** `frontend/src/components/pages/backups.tsx` styles `ready`, `restored` and `deleted`; anything else renders as a plain outline badge with the raw status text. It is also still returned by `GET /backups` without `include_deleted`, since that filter only excludes `deleted`.
-
-- **Path safety.** Selected file paths are validated twice - once in `routes/backups.py` and again in `restore_backup` - through `security.validate_relative_path`, which rejects absolute paths, `..`, null bytes and CR/LF (the CR/LF check matters here specifically because the paths are written into an rsync `--files-from` list). The plan endpoint does not validate them, which is consistent: it only compares them against stored `relative_path` values and never touches the filesystem with them.
-
-- **The context scan can be expensive.** `_find_dest_match_for_context` does a full `os.walk` of the destination directory once per file in the plan, and it only runs when `dest_path` is an existing directory.
+- **In-flight rsync fragments are skipped.** `--partial-dir` points inside
+  staging, and anything under `.rsync-partial` is excluded from sorting rather
+  than indexed as recoverable media.
 
 ## Data
 
-Both tables are created in `models/database.py` and accessed through `models/backup.py`. Full column reference: [../../reference/database-schema.md](../../reference/database-schema.md).
+Created in `models/database.py`, accessed through `models/backup_capture.py`.
+Full column reference: [../../reference/database-schema.md](../../reference/database-schema.md).
 
-`backup` - one row per transfer that displaced files:
-
-| Column | Notes |
-| --- | --- |
-| `backup_id` | Unique; equals the transfer ID for finalized backups, and the reconstructed `transfer_<suffix>` for reindexed ones |
-| `transfer_id` | Indexed (`idx_backup_transfer_id`) |
-| | Explore runs appear here too: `explore_<hex>` for a normal run, and the same id with `operation_type='explore_prune'` for one that only removed files |
-| `media_type`, `folder_name`, `season_name` | Copied from the transfer |
-| `source_path`, `dest_path` | Copied from the transfer; `dest_path` may be empty for a reindexed unknown transfer |
-| `backup_path` | The `<safe_folder>_<transfer_id>` directory under `BACKUP_PATH` |
-| `file_count`, `total_size` | Computed by the indexing walk |
-| `status` | `ready`, `restored`, `files_removed`, `deleted` |
-| `created_at`, `restored_at`, `updated_at` | See the timestamp note above |
-
-`backup_file` - one row per displaced file:
+`backup_capture` — one row per version:
 
 | Column | Notes |
 | --- | --- |
-| `backup_id` | Indexed (`idx_backup_file_backup_id`) |
-| `relative_path` | Path within `backup_path`, always forward-slashed |
-| `original_path` | Where the file was in the library, used as the restore target |
-| `file_size`, `modified_time` | From `os.stat`; both `0` if the stat failed |
-| `context_media_type`, `context_title`, `context_release_year`, `context_series_title`, `context_season`, `context_episode`, `context_absolute` | Parsed context |
-| `context_key` | Normalized match key, indexed (`idx_backup_file_context_key`) |
-| `context_display` | Human-readable label used in plans and logs |
+| `capture_id` | `<UTC timestamp>__<short source ref>`, matches the folder name, unique across the whole tree |
+| `library` | `movies` / `shows` / `anime` |
+| `title` | Library folder name, as on disk |
+| `season_number`, `episode_number` | Integers; null for movies |
+| `release_year` | Movies only |
+| `slot_key` | `shows\|example_show\|S01E01`, indexed |
+| `capture_path` | Relative to `BACKUP_PATH` |
+| `captured_at` | Explicit UTC, millisecond precision |
+| `source_transfer_id`, `source_ref` | Provenance; the transfer id is null after a rebuild |
+| `reason` | `sync_replace`, `sync_delete`, `restore_swap`, `explore_prune` |
+| `kind` | `slot`, `extras`, `unsorted` |
+| `file_count`, `total_size` | From the files inside |
+| `pinned` | Retention skips it |
+| `status` | Whether the files are still on disk: `present` or `files_removed` |
+| `restored_at` | When it was last put back, or null. A restore does not make a version permanent — it stays restorable and stays subject to retention |
 
-The `transfers` table also gains a row per restore (`operation_type='restore'`, ID `restore_<backup_id>_<epoch>`), which carries the restore's log lines.
+`backup_capture_file` — one row per file: path inside the capture, the library
+path it came from, size, mtime, and whether it is media or a sidecar.
 
-Note: `context_key` is stored and indexed but no code in `services/backup_service.py` reads it back - destination matching is done by re-deriving patterns from the individual context columns.
+`backup_capture_key` — `(capture_id, slot_key)`. One row per capture, except a
+multi-episode file which has one per episode.
+
+The `backup` and `backup_file` tables from the previous implementation are no
+longer written to. Migration reads them for provenance.
 
 ## API
 
-All endpoints are registered under `/api` (`app.py`) and require authentication. Full contracts: [../../reference/api.md](../../reference/api.md).
+All endpoints require authentication. Full contracts:
+[../../reference/api.md](../../reference/api.md).
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/backups` | List backups. `limit` (default 100), `include_deleted` (`1`/`true`/`True`) |
-| `GET /api/backups/<backup_id>` | One record; 404 if missing |
-| `GET /api/backups/<backup_id>/files` | File rows with their context, optional `limit` |
-| `POST /api/backups/<backup_id>/plan` | Preview only. Optional `files` list |
-| `POST /api/backups/<backup_id>/restore` | Run the restore. Omit `files` for all; `[]` is rejected |
-| `POST /api/backups/<backup_id>/delete` | `delete_record` (default true), `delete_files` (default false) |
-| `POST /api/backups/reindex` | Import backup folders found under `BACKUP_PATH`; returns `imported` and `skipped` |
+| `GET /api/backups/overview` | Totals, disk pressure, retention rule, libraries, legacy folder count |
+| `GET /api/backups/titles?library=` | Titles holding versions |
+| `GET /api/backups/seasons?library=&title=` | Seasons within a title |
+| `GET /api/backups/slots?library=&title=&season=&search=&limit=&offset=&sort=` | Slot list with version counts. `sort=size` puts the biggest first |
+| `GET /api/backups/slot?slot_key=` | One slot's versions and what the library holds now |
+| `GET /api/backups/captures/<id>` | One version with its files |
+| `GET /api/backups/unsorted` | Files that could not be identified |
+| `POST /api/backups/captures/<id>/plan` | Preview. Omit `files` for all; `[]` is rejected |
+| `POST /api/backups/captures/<id>/restore` | Run it. Returns once accepted |
+| `POST /api/backups/captures/<id>/pin` | `{"pinned": true\|false}` |
+| `POST /api/backups/captures/<id>/delete` | Remove one version — files and index entry together |
+| `POST /api/backups/delete/preview` | What a deletion would remove, and the space it frees. Reads only |
+| `POST /api/backups/delete` | Remove many at once: `capture_ids`, `slot_keys`, `keep_newest`, `include_pinned` |
+| `POST /api/backups/unsorted/delete` | Clear the unidentified bucket in one call. `{"confirm": true}`. The UI does not use it — it routes that button through the preview and confirm path like every other deletion |
+| `POST /api/backups/retention` | **Save** the rule to the database |
+| `POST /api/backups/rebuild` | Regenerate the index from the tree |
+| `GET /api/backups/retention` | The rule and disk usage |
+| `POST /api/backups/retention/preview` | What keep-N would remove |
+| `POST /api/backups/retention/apply` | Remove it |
+| `POST /api/backups/migration/plan` | Preview adopting the old folders |
+| `POST /api/backups/migration/apply` | `{"confirm": true}` |
 
-The plan response is `{"status": "success", "plan": {"operations": [...]}}`, where each operation has `backup_relative`, `backup_full`, `copy_to`, `target_delete` and `context_display`. The example shown for this endpoint in `docs/reference/api.md` does not match what `plan_context_restore` returns.
+Legacy paths kept for the static UI: `GET /api/backups`,
+`GET /api/backups/<id>`, `GET /api/backups/<id>/files`,
+`POST /api/backups/<id>/plan|restore|delete`, `POST /api/backups/reindex`.
 
 ## The screen
 
-`frontend/src/components/pages/backups.tsx` is a single page that swaps between four stages, with a breadcrumb across the top once you leave the first one. Three of them are the restore path - history, files, confirmation - and the fourth is the delete screen, reached from either of the first two.
+`frontend/src/components/pages/backups.tsx`, shaped like Explore on purpose —
+titles on the left, contents on the right, details in an inspector — because
+the two are views of the same library.
 
-### 1. Backup History
+- **Stat tiles and disk bar** — items with versions, versions stored, size held,
+  pinned; and how full the backup disk is.
+- **Library tabs** — Movies / TV Shows / Anime, with a title search.
+- **Titles pane** — every title holding versions, with counts and size.
+- **Slot list** — each movie or episode with versions, showing how many and how
+  much. A pin marker appears when any of its versions is pinned.
+- **Inspector** — the slot's history. The library's current copy sits at the
+  top, marked as current rather than listed among the versions; under it, each
+  version with its capture time, why it was displaced, its files and sizes, and
+  **Restore**, **Pin** and **Delete**.
+- **Restore preview** — one row per file: what is being written, and what it
+  replaces, or *nothing to replace — this will be re-added*.
+- **Selection and bulk delete** — tick items in the list (meaning *every
+  version of these*) or versions in the inspector (meaning *these specific
+  ones*). A bar appears with **Delete selected**, and every delete is previewed
+  with its count and total size before it runs.
+- **Newest / Largest** — the slot list sorts either way. Largest first is the
+  order for reclaiming space.
+- **Housekeeping** — retention settings that **save to the database** and take
+  effect without a restart; the index rebuild; the one-off migration; and the
+  unidentified list.
+- **Every deletion is previewed, and the preview is binding.** Retention's
+  *Remove them now* is disabled until the current numbers have been previewed,
+  and editing them clears the preview — otherwise previewing "keep 10" and then
+  typing 1 would delete the far larger keep-1 set unseen. Clearing the
+  unidentified bucket goes through the same confirm dialog as any other delete,
+  with its count and total size, rather than firing on one click.
 
-The landing stage lists the backups newest first, with the total in the card subtitle. Each row shows the folder name (falling back to the transfer ID and then the backup ID) with the season appended, a status badge, the media type, and a line reading `N file(s) - <size> - <created date>`. Only `ready`, `restored` and `deleted` get a coloured badge; anything else, `files_removed` included, prints its raw status in a plain outline.
-
-Every row has **Files** and **Delete**. **Restore** appears only while the status is `ready`.
-
-Two buttons sit in the page header: **Refresh**, and **Import/Reindex**, described below.
-
-### 2. Backup Files
-
-"Files" opens the table of what that transfer displaced: a checkbox per row, the detected context (`Series - S01E04`, `Title (2019)`, or `-` when none was detected), the path relative to the backup folder, and the file size. The header checkbox selects or clears everything.
-
-Three actions sit above the table. **Restore Selected (N)** is disabled until at least one row is ticked and plans only those paths. **Restore All** plans every file in the backup. **Delete Backup** jumps to the delete stage.
-
-### 3. Restore Plan Preview
-
-Both restore buttons call the plan endpoint and land here - the breadcrumb calls this step "Confirmation". The table has one row per planned operation: the backup file's relative path with its context underneath (or "No context detected"), and the action.
-
-The action column is where the destination match shows up. When the plan found a destination file to remove first, the row reads `Replace: <path>` in amber above `Copy To: <path>` in green. When it did not - or when the file it found is the same path being written - only the green `Copy To` line appears. A plan that matched nothing shows "No operations in restore plan".
-
-**Apply Restore** runs it, and **Back to Files** returns to the table. The restore runs synchronously on the server, so the button stays disabled until rsync has finished; on success the page returns to the history list and refetches it.
-
-What gets applied is exactly what was planned: the page remembers the file list it sent to the plan endpoint and sends that same list to the restore endpoint. Nothing is re-derived between the preview and the run.
-
-### The Restore shortcut versus going through the files
-
-The **Restore** button on a history row does two things at once: it opens the files stage for that backup and immediately plans a restore with no file list. Because "no file list" means "everything", the shortcut is exactly **Restore All** with the file table skipped - you land straight on the confirmation preview, and pressing Back drops you onto the files table you jumped over.
-
-So the shortcut is not a faster restore, only a faster route to the same preview. The difference from going through the files stage is which paths reach the plan: the shortcut always sends none (all files), while **Restore Selected** sends the ticked relative paths and plans only those. Both then apply what the preview showed, and both are still one confirmation away from anything being written.
-
-One consequence of the shortcut is worth knowing: it is offered only on rows whose status is `ready`, so a backup that has already been restored, or whose files were removed, has to be opened through **Files** first.
-
-### 4. Delete Backup
-
-The delete stage has two independent switches - "Delete backup record" (on by default) and "Delete backup files" (off by default), the latter naming the actual backup path it would empty. Turning the files switch on reveals the list of files that would be removed, with sizes. The delete button is disabled while both switches are off.
-
-### Import/Reindex
-
-The **Import/Reindex** button in the header is a recovery action, not a refresh. It asks the server to walk the backup directory and create records for backup folders that have no database row - the case after a database reset, an older install, or a transfer whose finalization never ran. It creates records only; it never deletes, moves or restores files. Folders that already have a record, folders with no files in them, and directory names without an underscore are skipped, and the toast reports how many were imported.
-
-The reconstruction rules and their limits are in "Reindexing folders found on disk" above - in particular, folders left by webhook or simulation transfers import with an empty destination and cannot then be restored from this page.
+Below `lg` the two panes become one at a time with a back control, and the
+inspector is a sheet.
 
 ## Related
 
-- [../queue/README.md](../queue/README.md) - why a paused transfer skips backup finalization and a resumed one reuses the same backup folder
-- [../simulation/README.md](../simulation/README.md) - rehearsal runs, which go through the same rsync path and so produce backups the same way
-- [../../architecture/system-overview.md](../../architecture/system-overview.md)
+- [../explore/README.md](../explore/README.md) — the identity and inventory this reuses
+- [../queue/README.md](../queue/README.md) — what a restore joins
+- [../../plans/backup-restore-rework.md](../../plans/backup-restore-rework.md) — the design, and the measurements behind it
 - [../../reference/database-schema.md](../../reference/database-schema.md)
 - [../../reference/api.md](../../reference/api.md)
-- [../../reference/test-mode.md](../../reference/test-mode.md) — what `TEST_MODE` guarantees, and why restore is not a usable rehearsal
+- [../../reference/test-mode.md](../../reference/test-mode.md)
