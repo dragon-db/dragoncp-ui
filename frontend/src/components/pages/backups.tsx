@@ -285,7 +285,17 @@ export function BackupsPage() {
    * it jumped straight from the toolbar to the unidentified section.
    */
   return (
-    <div className="flex flex-col gap-4 p-4 lg:min-h-0 lg:flex-1">
+    <div
+      className={cn(
+        "flex flex-col gap-4 p-4 lg:min-h-0 lg:flex-1",
+        // Room for the selection bar, which is docked to the viewport on a phone
+        // and so covers whatever the page happens to end with — the unidentified
+        // list, or the versions card when there is no unidentified section.
+        // Reserved here rather than inside a list, because the bar floats over
+        // the page rather than over any one of them.
+        selectionCount > 0 && "pb-20 lg:pb-4"
+      )}
+    >
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="font-display text-xl font-semibold">Backups</h1>
@@ -478,7 +488,10 @@ export function BackupsPage() {
             className="flex flex-col lg:min-h-0"
             contentClassName="flex flex-col lg:min-h-0 lg:flex-1"
           >
-            <ScrollArea className="max-h-[55vh] lg:h-full lg:max-h-[70vh]">
+            {/* Shrinks rather than filling, so the selection bar below it has
+                somewhere to go. `h-full` took the whole content box and the
+                sticky bar was pulled back up over the last row of the list. */}
+            <ScrollArea className="max-h-[55vh] lg:max-h-[70vh] lg:min-h-0 lg:flex-1">
               {slots.isLoading ? (
                 <div className="space-y-2 p-3">
                   {[0, 1, 2, 3, 4].map((row) => (
