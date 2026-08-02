@@ -130,7 +130,16 @@ export function SelectionBar({
 }) {
   if (count === 0) return null;
   return (
-    <div className="sticky bottom-0 z-20 flex flex-wrap items-center gap-2 border-t border-border bg-card/95 px-4 py-2.5 backdrop-blur-md">
+    /*
+     * Docked to the viewport on a phone, sticky within its card from `lg` up.
+     *
+     * `sticky bottom-0` only pins against a scrolling ancestor. On mobile the
+     * card flows with the page instead of being height-constrained, so the bar
+     * sat at the very bottom of a long list — you could tick five items and the
+     * action to do anything with them was a screen and a half away. Fixed above
+     * the bottom navigation puts it where the selection is made.
+     */
+    <div className="fixed inset-x-0 bottom-[calc(3.75rem+env(safe-area-inset-bottom))] z-40 flex flex-wrap items-center gap-2 border-y border-border bg-card/95 px-4 py-2.5 backdrop-blur-md lg:sticky lg:inset-x-auto lg:bottom-0 lg:z-20 lg:border-y-0 lg:border-t">
       <span className="text-[12.5px] font-medium">{count} selected</span>
       <div className="ml-auto flex items-center gap-2">
         <Button variant="ghost" size="sm" onClick={onClear}>

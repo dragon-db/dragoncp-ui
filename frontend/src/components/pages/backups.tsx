@@ -274,8 +274,28 @@ export function BackupsPage() {
 
   const notConfigured = overview.data && !overview.data.configured;
 
+  /*
+   * The page fills the viewport and scrolls INSIDE its panes only from `lg` up.
+   *
+   * Below that it is an ordinary flowing column that the app shell scrolls.
+   * `flex-1` is `flex: 1 1 0%` — it takes leftover space and nothing else — and
+   * on a phone the header, tiles, disk bar and toolbar leave none, so the pane
+   * container collapsed to zero and the titles and versions lists rendered at
+   * 0px. They were in the DOM the whole time, which is why the page looked like
+   * it jumped straight from the toolbar to the unidentified section.
+   */
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 p-4">
+    <div
+      className={cn(
+        "flex flex-col gap-4 p-4 lg:min-h-0 lg:flex-1",
+        // Room for the selection bar, which is docked to the viewport on a phone
+        // and so covers whatever the page happens to end with — the unidentified
+        // list, or the versions card when there is no unidentified section.
+        // Reserved here rather than inside a list, because the bar floats over
+        // the page rather than over any one of them.
+        selectionCount > 0 && "pb-20 lg:pb-4"
+      )}
+    >
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="font-display text-xl font-semibold">Backups</h1>
@@ -337,7 +357,10 @@ export function BackupsPage() {
           ))}
         </div>
 
-        <div className="relative min-w-0 flex-1 sm:max-w-xs">
+        {/* A floor, not just `min-w-0`: on a phone the back control joins this
+            row and the field was squeezed down to its own magnifier icon.
+            Below the floor the row wraps instead. */}
+        <div className="relative min-w-[9rem] flex-1 sm:max-w-xs">
           <IconSearch className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={search}
@@ -384,14 +407,17 @@ export function BackupsPage() {
         )}
       </div>
 
-      <div className={cn("grid min-h-0 flex-1 gap-4", isWide && "lg:grid-cols-[290px_1fr]")}>
+      <div className={cn("grid gap-4 lg:min-h-0 lg:flex-1", isWide && "lg:grid-cols-[290px_1fr]")}>
         {(isWide || pane === "titles") && (
           <SectionCard
             label="Titles"
-            className="flex min-h-0 flex-col"
-            contentClassName="min-h-0 flex-1"
+            className="flex flex-col lg:min-h-0"
+            contentClassName="lg:min-h-0 lg:flex-1"
           >
-            <ScrollArea className="h-full max-h-[60vh] lg:max-h-[70vh]">
+            {/* A definite height below `lg`: the viewport inside is `size-full`,
+                so a percentage height of an auto-height parent gives it nothing
+                to scroll within. */}
+            <ScrollArea className="max-h-[55vh] lg:h-full lg:max-h-[70vh]">
               {titles.isLoading ? (
                 <div className="space-y-2 p-3">
                   {[0, 1, 2, 3].map((row) => (
@@ -459,10 +485,13 @@ export function BackupsPage() {
             description={
               slots.data ? `${slots.data.total} item(s) with stored versions` : undefined
             }
-            className="flex min-h-0 flex-col"
-            contentClassName="min-h-0 flex-1"
+            className="flex flex-col lg:min-h-0"
+            contentClassName="flex flex-col lg:min-h-0 lg:flex-1"
           >
-            <ScrollArea className="h-full max-h-[70vh]">
+            {/* Shrinks rather than filling, so the selection bar below it has
+                somewhere to go. `h-full` took the whole content box and the
+                sticky bar was pulled back up over the last row of the list. */}
+            <ScrollArea className="max-h-[55vh] lg:max-h-[70vh] lg:min-h-0 lg:flex-1">
               {slots.isLoading ? (
                 <div className="space-y-2 p-3">
                   {[0, 1, 2, 3, 4].map((row) => (
@@ -533,8 +562,19 @@ export function BackupsPage() {
       )}
 
       <Sheet open={Boolean(slotKey)} onOpenChange={(open) => !open && setSlotKey(null)}>
-        <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-xl">
-          <SheetTitle className="border-b border-border px-4 py-3 text-[13.5px]">
+        {/*
+          The width classes carry the same `data-[side=right]:` prefix the sheet's
+          own defaults use. Without it a plain `w-full` never applies: the base
+          sets `data-[side=right]:w-3/4`, which is the more specific selector AND
+          a different key to tailwind-merge, so the caller's width was dropped and
+          the inspector opened at three-quarter width with the page showing behind
+          it. Matching the prefix lets the merge see one width and keep this one.
+        */}
+        <SheetContent
+          side="right"
+          className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-xl"
+        >
+          <SheetTitle className="border-b border-border py-3 pr-12 pl-4 text-[13.5px]">
             {slot.data?.display || "Versions"}
           </SheetTitle>
           <div className="min-h-0 flex-1 overflow-y-auto">
