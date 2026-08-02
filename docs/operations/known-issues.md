@@ -12,18 +12,19 @@ documentation review and should be confirmed before acting on them.
 
 ## Data safety
 
-### Backups written to `/tmp` can never be restored — **verified**
+### ~~Backups written to `/tmp` can never be restored~~ — **fixed**
 
-`BACKUP_PATH` has two different defaults. Writing falls back to `/tmp/backup`
-(`services/backup_service.py:412`, `:546`), but restore refuses outright with
-`BACKUP_PATH is not configured; refusing restore` (`:145`).
+`BACKUP_PATH` had two different defaults: writing fell back to `/tmp/backup`
+while restore refused anything but a configured path. With it unset, every sync
+silently backed up replaced files where the OS may clear them, and the restore
+path would not touch them. Backups appeared to work and were unrecoverable.
 
-With `BACKUP_PATH` unset, every sync silently backs up replaced files into
-`/tmp/backup` — where the OS may clear them — and the restore path will not
-touch them. Backups appear to work and are unrecoverable.
-
-Either default should match the other, or writing should refuse the same way
-restore does.
+Writing now refuses exactly where restore refuses — there is no fallback
+anywhere. A transfer with no `BACKUP_PATH` fails to start, resume or restart,
+and says which setting is missing. `services/backups/layout.py` is the single
+place the base is resolved, and it raises rather than inventing a path.
+`tests/test_backups.py::BackupPathFailsClosedTests` fails the build if a
+fallback reappears.
 
 ### `migrate_v1_to_v2.py` will erase a v2 database — **verified**
 
@@ -136,15 +137,12 @@ each, plus why simulations are safe despite being exempt from the dry run.
 
 ## Realtime
 
-- **Backup restore does not reserve its destination.** `BackupService.restore_backup`
-  writes straight to `dest_path` and deletes files there without going near
-  `QueueManager`, which is what serialises transfers against each other by
-  destination. A restore can therefore pre-delete and rsync into a library path
-  while a transfer is writing the same one. Raised in review on PR #54 and left
-  alone deliberately: reserving the destination means threading queue
-  registration through the backup service and releasing it on every success,
-  failure and early return, which is its own piece of work rather than a
-  correction to that PR.
+- ~~**Backup restore does not reserve its destination.**~~ Fixed by the backups
+  rework. A restore now registers with `QueueManager` like any transfer, runs in
+  its own thread with progress and logs, and releases the destination on every
+  path out — success, failure and refusal. When the destination is busy or every
+  slot is taken it says so rather than queueing silently, because a restore is
+  watched and parking it invisibly is worse than refusing.
 
 - ~~**`transfer_failed` has a listener and no emitter.**~~ Fixed by deleting the
   helper. Failures arrive as `transfer_complete` carrying `status: "failed"`,
@@ -156,7 +154,7 @@ each, plus why simulations are safe despite being exempt from the dry run.
 - **Every event but one is broadcast to every client.** `transfer_logs` is
   room-scoped (`services/transfer_service.py:164`); no other emit passes `room`,
   `to` or `namespace`.
-- **Emits are swallowed.** `services/backup_service.py` wraps them in bare
+- **Emits are swallowed.** `services/backups/service.py` wraps them in a helper that swallows and logs; the old code used bare
   `try/except: pass`, and `routes/webhooks.py` routes them through
   `emit_socketio_event()`, which does the same.
 - ~~**`TransferUpdate` overstates its payload.**~~ Fixed. Only `transfer_id` is

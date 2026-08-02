@@ -13,7 +13,8 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 # Import services
-from services.backup_service import BackupService
+from services.backups import BackupsService
+from services.backups.layout import BackupPathNotConfigured
 from services.transfer_service import TransferService
 from services.notification_service import NotificationService
 from services.webhook_service import WebhookService
@@ -21,6 +22,11 @@ from services.auto_sync_scheduler import AutoSyncScheduler
 from services.sync_logger import log_sync, log_validation, log_state_change
 from services.queue_manager import QueueManager
 from services.path_service import PathService
+from services.settings_service import SettingsService
+
+# The model owns the definition of "active"; importing it here keeps one list
+# rather than two that can drift.
+from models.transfer import Transfer as _Transfer
 
 
 class TransferCoordinator:
@@ -33,23 +39,37 @@ class TransferCoordinator:
         self.socketio = socketio
         
         # Import models
-        from models import Transfer, Backup, WebhookNotification, SeriesWebhookNotification, AppSettings
-        
+        from models import (
+            Transfer, Backup, BackupCapture, WebhookNotification,
+            SeriesWebhookNotification, AppSettings,
+        )
+
         # Initialize models
         self.transfer_model = Transfer(db_manager)
         self.backup_model = Backup(db_manager)
+        self.capture_model = BackupCapture(db_manager)
         self.webhook_model = WebhookNotification(db_manager)
         self.series_webhook_model = SeriesWebhookNotification(db_manager)
         self.settings = AppSettings(db_manager)
+        # Reads across both stores. Everything that used to reach for
+        # `self.settings` with an ad-hoc env fallback goes through this, so
+        # "which store does this live in" is answered in one place.
+        self.settings_service = SettingsService(config, self.settings)
         
         # Initialize queue manager (must be before transfer service)
         self.queue_manager = QueueManager(self.transfer_model, socketio)
         
         # Initialize services
         self.path_service = PathService(config)
-        self.backup_service = BackupService(config, db_manager, self.backup_model, self.transfer_model, socketio)
+        # `backup_model` is the legacy per-transfer table. Nothing writes to it
+        # any more; the migration reads it for provenance and that is all.
+        self.backups = BackupsService(
+            config, db_manager, self.capture_model, self.transfer_model,
+            socketio=socketio, coordinator=self, settings=self.settings_service,
+            legacy_backup_model=self.backup_model,
+        )
         self.transfer_service = TransferService(config, db_manager, self.transfer_model, socketio, self.queue_manager)
-        self.notification_service = NotificationService(config, self.settings, self.transfer_model, self.webhook_model, self.series_webhook_model)
+        self.notification_service = NotificationService(config, self.settings_service, self.transfer_model, self.webhook_model, self.series_webhook_model)
         self.webhook_service = WebhookService(config, self.webhook_model, self.series_webhook_model, self)
         self.auto_sync_scheduler = AutoSyncScheduler(db_manager, self.settings)
         
@@ -216,11 +236,21 @@ class TransferCoordinator:
             self.transfer_model.create(transfer_data)
             print(f"✅ Transfer record created with status 'pending'")
             
-            # Calculate dynamic backup directory for this transfer
-            transfer = self.transfer_model.get(transfer_id)
-            backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
-            print(f"📁 Backup dir: {backup_dir}")
-            
+            # Where rsync sends anything this transfer displaces.
+            backup_dir = self._staging_dir(transfer_id)
+            if backup_dir is None:
+                self.transfer_model.update(transfer_id, {
+                    'status': 'failed',
+                    'progress': (
+                        'BACKUP_PATH is not configured. Set it before syncing — a '
+                        'sync can replace or delete files, and without a backup '
+                        'location those copies cannot be recovered.'
+                    ),
+                })
+                self.queue_manager.unregister_transfer(transfer_id, dest_path)
+                return (False, 'failed')
+            print(f"📁 Backup staging dir: {backup_dir}")
+
             # Start the actual transfer process
             print(f"🚀 Calling start_rsync_process...")
             success = self.transfer_service.start_rsync_process(transfer_id, source_path, dest_path, operation_type, backup_dir)
@@ -280,12 +310,21 @@ class TransferCoordinator:
                     except Exception as de:
                         print(f"⚠️  Discord notification error for {transfer_id}: {de}")
                 
-                # Finalize backup record if any files were backed up
+                # File whatever this transfer displaced into the backup tree,
+                # index it, and apply retention. A transfer that displaced
+                # nothing finds an empty staging folder and creates nothing.
                 try:
-                    self.backup_service.finalize_backup_for_transfer(transfer_id)
+                    summary = self.backups.sort_after_transfer(transfer_id)
+                    if summary.get('captures'):
+                        print(
+                            f"💾 Backed up {summary['files']} file(s) into "
+                            f"{summary['captures']} version(s)"
+                        )
+                    for error in summary.get('errors', []):
+                        print(f"⚠️  Backup sorting: {error}")
                 except Exception as be:
-                    print(f"⚠️  Backup finalization error for {transfer_id}: {be}")
-                
+                    print(f"⚠️  Backup sorting error for {transfer_id}: {be}")
+
                 break
             
             time.sleep(check_interval)
@@ -369,9 +408,17 @@ class TransferCoordinator:
             'end_time': None
         })
 
-        transfer = self.transfer_model.get(transfer_id)
-        backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
+        backup_dir = self._staging_dir(transfer_id)
+        if backup_dir is None:
+            self.transfer_model.update(transfer_id, {
+                'status': 'paused',
+                'progress': 'BACKUP_PATH is not configured; refusing to resume',
+                'paused_at': datetime.now().isoformat(),
+            })
+            self.queue_manager.unregister_transfer(transfer_id)
+            return False, 'BACKUP_PATH is not configured; refusing to resume'
 
+        transfer = self.transfer_model.get(transfer_id)
         success = self.transfer_service.start_rsync_process(
             transfer_id,
             transfer['source_path'],
@@ -409,8 +456,29 @@ class TransferCoordinator:
         transfer = self.transfer_model.get(transfer_id)
         if not transfer:
             return False
-        backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
+        backup_dir = self._staging_dir(transfer_id)
+        if backup_dir is None:
+            return False
         return self.transfer_service.restart_transfer(transfer_id, backup_dir)
+
+    def _staging_dir(self, transfer_id: str) -> Optional[str]:
+        """
+        Where rsync sends what a transfer displaces, or None when there is
+        nowhere safe to send it.
+
+        Returning None rather than falling back is the point. Writing displaced
+        media to a temporary directory the OS may clear, while restore refuses
+        to read from anywhere but a configured BACKUP_PATH, is what made
+        backups look like they worked and be unrecoverable.
+        """
+        try:
+            return self.backups.staging_dir(transfer_id)
+        except BackupPathNotConfigured as error:
+            print(f"🛑 {error}")
+            return None
+        except Exception as error:  # noqa: BLE001
+            print(f"🛑 Could not prepare the backup staging directory: {error}")
+            return None
     
     def get_transfer_status(self, transfer_id: str) -> Optional[Dict]:
         """Get transfer status from database"""
@@ -432,13 +500,13 @@ class TransferCoordinator:
             status_filter=status_filter, search=search, statuses=statuses
         )
     
-    ACTIVE_STATUSES = ['running', 'pending', 'queued', 'paused']
+    #: Kept as an attribute because callers reference it; the definition lives
+    #: on the model so there is one list, not two that can drift apart.
+    ACTIVE_STATUSES = list(_Transfer.ACTIVE_STATUSES)
 
     def get_active_transfers(self) -> List[Dict]:
         """Get active transfers (running/pending/queued/paused)"""
-        return self.transfer_model.get_all(
-            statuses=self.ACTIVE_STATUSES, include_logs=False
-        )
+        return self.transfer_model.get_active()
     
     def start_queued_transfer(self, transfer_id: str) -> bool:
         """
@@ -480,8 +548,15 @@ class TransferCoordinator:
         # Refresh transfer data after update
         transfer = self.transfer_model.get(transfer_id)
 
-        # Calculate dynamic backup directory
-        backup_dir = self.backup_service._get_dynamic_backup_dir(transfer)
+        # Where rsync sends anything this transfer displaces.
+        backup_dir = self._staging_dir(transfer_id)
+        if backup_dir is None:
+            self.transfer_model.update(transfer_id, {
+                'status': 'failed',
+                'progress': 'BACKUP_PATH is not configured; refusing to start',
+            })
+            self.queue_manager.unregister_transfer(transfer_id, transfer.get('dest_path'))
+            return False
 
         # Start the transfer
         success = self.transfer_service.start_rsync_process(
@@ -510,27 +585,9 @@ class TransferCoordinator:
         """Get current queue status"""
         return self.queue_manager.get_queue_status()
     
-    # Backup Operations
-    def restore_backup(self, backup_id: str, files: List[str] = None) -> Tuple[bool, str]:
-        """Restore a backup (optionally selected files)"""
-        return self.backup_service.restore_backup(backup_id, files)
-    
-    def delete_backup(self, backup_id: str, delete_files: bool = True) -> Tuple[bool, str]:
-        """Delete a backup record and optionally remove backup files"""
-        return self.backup_service.delete_backup(backup_id, delete_files)
-    
-    def delete_backup_options(self, backup_id: str, delete_record: bool, delete_files: bool) -> Tuple[bool, str]:
-        """Delete backup files and/or DB record independently"""
-        return self.backup_service.delete_backup_options(backup_id, delete_record, delete_files)
-    
-    def plan_context_restore(self, backup_id: str, files: List[str] = None) -> Dict:
-        """Plan a context-aware restore"""
-        return self.backup_service.plan_context_restore(backup_id, files)
-    
-    def reindex_backups(self) -> Tuple[int, int]:
-        """Scan BACKUP_PATH for existing backup dirs and import missing ones"""
-        return self.backup_service.reindex_backups()
-    
+    # Backup Operations — see services/backups/. The coordinator holds the
+    # service so routes and Explore can reach it; it delegates nothing itself.
+
     # Webhook Operations
     def parse_webhook_data(self, webhook_json: Dict) -> Dict:
         """Parse webhook JSON data for movies"""
@@ -569,7 +626,7 @@ class TransferCoordinator:
     def schedule_auto_sync(self, notification_id: str, series_title_slug: str, 
                           season_number: int, media_type: str):
         """Schedule an auto-sync job for series/anime"""
-        wait_time = int(self.settings.get('SERIES_ANIME_SYNC_WAIT_TIME', '60'))
+        wait_time = self.settings_service.get_int('SERIES_ANIME_SYNC_WAIT_TIME', 60)
         self.auto_sync_scheduler.schedule_job(
             notification_id=notification_id,
             series_title_slug=series_title_slug,
@@ -687,10 +744,10 @@ class TransferCoordinator:
         """Send Discord notification when manual sync is required"""
         try:
             # Check if Discord notifications are enabled
-            if not self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED', False):
+            if not self.settings_service.get_bool('DISCORD_NOTIFICATIONS_ENABLED'):
                 return
             
-            webhook_url = self.settings.get('DISCORD_WEBHOOK_URL')
+            webhook_url = self.settings_service.get('DISCORD_WEBHOOK_URL')
             if not webhook_url:
                 return
             
@@ -700,7 +757,7 @@ class TransferCoordinator:
             season_path = notification['season_path']
             
             # Get app URL for the link
-            app_url = self.settings.get('DISCORD_APP_URL', 'http://localhost:5000')
+            app_url = self.settings_service.get('DISCORD_APP_URL')
             
             # Create embed
             embed = {
@@ -742,7 +799,7 @@ class TransferCoordinator:
                 embed['url'] = app_url
             
             # Add icon if configured
-            icon_url = self.settings.get('DISCORD_ICON_URL')
+            icon_url = self.settings_service.get('DISCORD_ICON_URL')
             if icon_url:
                 embed['author'] = {
                     'name': 'Manual Sync Alert ⚠️',

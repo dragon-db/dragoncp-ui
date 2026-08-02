@@ -158,15 +158,22 @@ Important current-state notes:
 
 ## 7. Backup and Restore Logic
 
-Backup finalization occurs after transfer completion (`services/transfer_coordinator.py:218` calling backup service).
+Sorting runs after a transfer settles (`services/transfer_coordinator.py`,
+`_post_transfer_completion`, calling `BackupsService.sort_after_transfer`).
 
-Backup implementation (`services/backup_service.py`):
-- Scans transfer-specific backup directories.
-- Records backed-up files with context metadata.
-- Supports restore planning with context matching before copy.
-- Supports reindexing existing backup folders.
+Implementation (`services/backups/`):
+- rsync's `--backup-dir` writes into `<BACKUP_PATH>/.staging/<transfer id>`.
+- Everything it displaced is identified and renamed into an identity tree —
+  `<library>/<title>/<season>/<SxxEyy>/<capture>/` — so a movie or episode's
+  previous versions sit together in one folder.
+- The database is an index over that tree, not the source of truth, and can be
+  rebuilt by walking the disk.
+- A restore keeps the file it is about to replace before writing anything, and
+  goes through the queue like any transfer.
+- Retention keeps the newest N versions per slot.
 
-This design improves recoverability but adds filesystem walk overhead after each transfer.
+The sort is a set of renames within one filesystem, so it costs a directory walk
+and no data movement regardless of file size.
 
 ## 8. QoS and Performance Improvement Opportunities
 

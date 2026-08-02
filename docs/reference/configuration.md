@@ -1,11 +1,66 @@
 # Configuration
 
-Last updated: 2026-07-28
-Primary files: `config.py`, `app.py`, `auth.py`, `webhook_auth.py`, `logging_setup.py`, `websocket.py`, `ssh.py`, `models/settings.py`, `deploy/gunicorn.conf.py`
+Last updated: 2026-08-01
+Primary files: `settings_registry.py`, `services/settings_service.py`, `config.py`, `app.py`, `auth.py`, `webhook_auth.py`, `logging_setup.py`, `websocket.py`, `ssh.py`, `models/settings.py`, `deploy/gunicorn.conf.py`
 
 Every setting DragonCP reads, where it comes from, and what an operator sees
 when it is wrong. This page is derived from the code, not from the sample env
 file — the code reads considerably more than the sample ships.
+
+## Where a setting lives
+
+Two stores, and only two. `settings_registry.py` is the list.
+
+| | **Environment file** (`dragoncp_env.env`) | **Application settings** (`app_settings` table) |
+|---|---|---|
+| Holds | What an installation is built with | What an operator changes while running it |
+| Changing it | Edit on the server, restart | Settings page, effective immediately |
+| At runtime | **Read-only.** The UI shows these and refuses to write them | Editable |
+| Visible to background threads | Yes | Yes |
+
+**Environment file:** the remote host and SSH key, the six media directories,
+`BACKUP_PATH`, the disk-reporting paths and API, `TEST_MODE`, and every
+credential, secret and security control.
+
+The seven path settings are there for a specific reason: `get_all_allowed_paths()`
+returns exactly those, and every path-traversal check validates against them.
+They are the only boundary stopping a crafted webhook writing outside the media
+directories, and it should not be possible to widen it from a browser. Secrets
+are there for a related reason — the database is not an encrypted store, and a
+key editable from a web form is editable by anyone who reaches that form, using
+a session minted by the very key they would be changing.
+
+**Application settings:** the three auto-sync toggles, the batch wait time, the
+five Discord settings, the three backup-retention settings, and the realtime
+idle timeout.
+
+### The store that used to exist
+
+A third store — a per-browser Flask session — was removed. `config.get()` only
+consulted it when an HTTP request was in flight, so every background thread (the
+transfer monitor, the auto-sync scheduler, the backup sorter) fell through to
+the env file regardless. Sixteen settings appeared editable in the Settings page
+and were ignored by the machinery that used them.
+
+`DragonCPConfig.save_config` went with it — it rewrote the whole env file from
+a dict, dropping every comment, and nothing called it.
+
+`POST /api/config/reset` and `GET /api/config/env-only` are **kept**, because
+the legacy static UI calls both and that UI is what production serves. They now
+mean what is left of what they meant: `env-only` returns the environment half,
+and `reset` answers honestly that there is nothing to reset. For the same
+reason `GET /api/config` returns the flat key -> value map **as well as** the
+grouped payload — the old page reads the flat one, the React page reads the
+groups.
+
+### Moving a setting across
+
+Adding a row to `settings_registry.py` is the whole change. On the next start,
+any database-eligible key still sitting in the env file is copied into the
+database once, so behaviour does not change on the way over. After that the
+database is authoritative and the env value is only a default for a fresh
+install.
+
 
 ## The env file
 
@@ -84,7 +139,10 @@ rename, backup and restore must resolve inside one of them
 | `MOVIE_DEST_PATH` | Local destination for movies (`services/path_service.py:145`). | empty | Transfers of that type fail the destination check. |
 | `TVSHOW_DEST_PATH` | Local destination for TV. Also serves the `series` alias (`services/path_service.py:148`). | empty | As above. |
 | `ANIME_DEST_PATH` | Local destination for anime. | empty | As above. |
-| `BACKUP_PATH` | Root under which each sync gets its own directory of overwritten and deleted files. | `/tmp/backup` when building or rescanning backup directories (`services/backup_service.py:546`, `:412`); no default on the restore path (`:142`) | The two paths disagree when it is unset: backups are written under `/tmp/backup`, but a restore refuses with "BACKUP_PATH is not configured; refusing restore". So backups appear to work and then cannot be restored — and `/tmp` may be cleared out from under them. See [Backups](../features/backups/README.md). |
+| `BACKUP_PATH` | Root of the backup tree: every movie and episode a sync has replaced, grouped by what it is. | **None. Required.** | Unset, transfers refuse to start, resume or restart, and say so. There is deliberately no fallback anywhere — writing to a temporary directory that a restore then refuses to read is what made backups look like they worked and be unrecoverable. See [Backups](../features/backups/README.md). |
+| `BACKUP_RETENTION_KEEP` | How many previous versions of each movie or episode to keep. Older ones are removed once a new one is stored. | `2` (clamped to 1–50) | Pinned versions are never removed, and neither is anything newer than the grace period. |
+| `BACKUP_RETENTION_GRACE_HOURS` | How long a newly stored version is protected from the rule above. | `24` | This is what stops an accidental sync immediately pushing the copy you wanted off the end of the list. |
+| `BACKUP_RETENTION_ENABLED` | Set falsey to keep every version forever. | `true` | The backup disk fills. Usage is shown on the Backups page but never acted on automatically. |
 
 ## Authentication and web session
 
@@ -162,7 +220,7 @@ background scheduler are process-local. See
 
 | Key | What it does | Default when unset | If wrong or missing |
 |---|---|---|---|
-| `WEBSOCKET_TIMEOUT_MINUTES` | Idle timeout, in minutes. Server-side it is read **only from the browser session's overrides**, never from the env file (`websocket.py:63-81`): the value is clamped to 5-60, five minutes of slack is added, and the result is capped at 65 minutes. The client-side idle timer reads it from `GET /api/config` and defaults to 30 (`frontend/src/hooks/useRuntime.ts:170`). | server: 35 minutes; client: 30 minutes | Putting it in the env file changes the browser's idle timer but leaves the server's stale-connection reaper at 35 minutes. Set too low, the realtime connection drops while a long transfer is still running and the progress bar stops updating until you reload. The Settings screen clamps input to 5-60 before saving. |
+| `WEBSOCKET_TIMEOUT_MINUTES` *(now an application setting, not env)* | Idle timeout, in minutes. Server-side it is read **only from the browser session's overrides**, never from the env file (`websocket.py:63-81`): the value is clamped to 5-60, five minutes of slack is added, and the result is capped at 65 minutes. The client-side idle timer reads it from `GET /api/config` and defaults to 30 (`frontend/src/hooks/useRuntime.ts:170`). | server: 35 minutes; client: 30 minutes | Putting it in the env file changes the browser's idle timer but leaves the server's stale-connection reaper at 35 minutes. Set too low, the realtime connection drops while a long transfer is still running and the progress bar stops updating until you reload. The Settings screen clamps input to 5-60 before saving. |
 | `SOCKETIO_VERBOSE_LOGGING` | Turns on Socket.IO and Engine.IO internal logging (`app.py:112-113`, `:184-192`). Also switched on implicitly by `TEST_MODE` or `FLASK_DEBUG`. | off | Leaving it on in production floods the log with per-packet lines. |
 
 The Socket.IO ping interval (25s), ping timeout (60s) and async mode
@@ -186,7 +244,7 @@ Exactly three local paths are supported — the list is hard-coded.
 
 | Key | What it does | Default when unset | If wrong or missing |
 |---|---|---|---|
-| `TEST_MODE` | Set to `1`, `true`, `yes` or `on` and rsync runs with `--dry-run`, rename webhooks report what they would rename without touching the file (`services/rename_service.py:342`), destination and backup directories are described rather than created, and config writes are skipped (`services/transfer_service.py:497`, `:555`, `:599`; `services/rename_service.py:342`; `services/backup_service.py:169` and six others; `config.py:124`). Simulations are exempt from the dry-run so they still move their own fixture bytes. Also turns on verbose Socket.IO logging and permits the unsafe Werkzeug server. | off | Left on in production, every transfer reports success while **no files are actually copied**. The startup log warns `Runtime is using development/test flags`. Path-by-path guarantees are in [test-mode.md](test-mode.md). Every reader goes through `env_flags.test_mode_enabled()`; until this was unified the banner accepted `true` while every safety gate demanded exactly `'1'`, so `TEST_MODE=true` announced test mode and copied and deleted for real. |
+| `TEST_MODE` | Set to `1`, `true`, `yes` or `on` and rsync runs with `--dry-run`, rename webhooks report what they would rename without touching the file (`services/rename_service.py:342`), destination and backup directories are described rather than created, and config writes are skipped (`services/transfer_service.py:497`, `:555`, `:599`; `services/rename_service.py:342`; `services/backups/restore.py`; `config.py:124`). Simulations are exempt from the dry-run so they still move their own fixture bytes. Also turns on verbose Socket.IO logging and permits the unsafe Werkzeug server. | off | Left on in production, every transfer reports success while **no files are actually copied**. The startup log warns `Runtime is using development/test flags`. Path-by-path guarantees are in [test-mode.md](test-mode.md). Every reader goes through `env_flags.test_mode_enabled()`; until this was unified the banner accepted `true` while every safety gate demanded exactly `'1'`, so `TEST_MODE=true` announced test mode and copied and deleted for real. |
 | `FLASK_DEBUG` | Enables Flask debug mode on a direct `python app.py` start and permits the unsafe Werkzeug server (`app.py:510-512`). | off | Never appropriate in production; exposes the interactive debugger. Same startup warning as above. |
 | `DRAGONCP_DB` | Database path for `scripts/verify_v2_schema.py` only (`scripts/verify_v2_schema.py:6`). | `dragoncp.db` | The running application does not read this. `models/database.py:22-25` hard-codes `dragoncp.db` in the project root; there is no setting for it. |
 

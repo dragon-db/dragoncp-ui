@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Scoping backups to the series and season you are looking at.
+Scoping stored versions to the series and season you are looking at.
 
-Two traps here, both from real data in the production library:
+Explore's backup panel and the Backups page now read the same index, so this
+covers the scoping rules once for both.
 
-  * `context_series_title` is parsed by splitting the filename at the first
-    " - ", so "Alpha - Bravo, Charlie of the Delta (2016)" is stored as
-    "Alpha". Matching on it would hide that series' backups from itself.
-  * `context_season` and `context_episode` are stored zero-padded as TEXT
-    ('03', not 3), so comparing them to a season number needs a conversion.
+The trap this replaces came from real data: the previous implementation matched
+a series by a title parsed from the filename by splitting at the first " - ",
+so "Alpha - Bravo, Charlie of the Delta (2016)" was stored as "Alpha" and that
+series' own backups were invisible to it. Identity now comes from the library
+folder and the episode code, so the title is never parsed out of a filename.
 """
 
 import sqlite3
@@ -21,24 +22,27 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from services.explore.store import ExploreStore
 
+AWKWARD = 'Alpha - Bravo, Charlie of the Delta (2016)'
+
 
 class FakeDB:
-    """An in-memory stand-in with just the two backup tables."""
+    """An in-memory stand-in holding just the backup index."""
 
     def __init__(self):
         self.conn = sqlite3.connect(':memory:')
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(
             '''
-            CREATE TABLE backup (
-                backup_id TEXT, transfer_id TEXT, media_type TEXT, folder_name TEXT,
-                season_name TEXT, backup_path TEXT, dest_path TEXT, file_count INTEGER,
-                total_size INTEGER, status TEXT, created_at TEXT, restored_at TEXT
+            CREATE TABLE backup_capture (
+                capture_id TEXT, library TEXT, title TEXT, season_number INTEGER,
+                episode_number INTEGER, release_year TEXT, slot_key TEXT,
+                capture_path TEXT, captured_at TEXT, source_transfer_id TEXT,
+                source_ref TEXT, reason TEXT, kind TEXT, file_count INTEGER,
+                total_size INTEGER, pinned INTEGER, status TEXT
             );
-            CREATE TABLE backup_file (
-                backup_id TEXT, relative_path TEXT, original_path TEXT, file_size INTEGER,
-                modified_time INTEGER, context_season TEXT, context_episode TEXT,
-                context_absolute TEXT, context_display TEXT
+            CREATE TABLE backup_capture_file (
+                capture_id TEXT, relative_path TEXT, original_path TEXT,
+                file_size INTEGER, modified_time INTEGER, is_media INTEGER
             );
             '''
         )
@@ -55,18 +59,21 @@ class FakeDB:
 
         return Ctx()
 
-    def add_backup(self, backup_id, folder_name, season_name=None,
-                   media_type='anime', status='ready', created_at='2026-07-30T10:00:00Z'):
+    def add_capture(self, capture_id, title, season=None, episode=None,
+                    library='anime', kind='slot', status='present',
+                    captured_at='2026-07-30T10:00:00.000Z', pinned=0):
+        code = f"S{season:02d}E{episode:02d}" if season is not None and episode is not None else ''
         self.conn.execute(
-            'INSERT INTO backup VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-            (backup_id, backup_id, media_type, folder_name, season_name,
-             f'/backup/{backup_id}', '/local/x', 0, 0, status, created_at, None),
+            'INSERT INTO backup_capture VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (capture_id, library, title, season, episode, None,
+             f"{library}|{title.lower()}|{code}", f"{library}/{title}/{capture_id}",
+             captured_at, None, 'ref', 'sync_replace', kind, 0, 0, pinned, status),
         )
 
-    def add_file(self, backup_id, name, season=None, episode=None, size=100):
+    def add_file(self, capture_id, name, size=100, is_media=1):
         self.conn.execute(
-            'INSERT INTO backup_file VALUES (?,?,?,?,?,?,?,?,?)',
-            (backup_id, name, f'/local/x/{name}', size, 0, season, episode, None, name),
+            'INSERT INTO backup_capture_file VALUES (?,?,?,?,?,?)',
+            (capture_id, name, f'/local/x/{name}', size, 0, is_media),
         )
 
 
@@ -75,102 +82,105 @@ class BackupScopeTests(unittest.TestCase):
         self.db = FakeDB()
         self.store = ExploreStore(self.db)
 
-    def test_a_series_whose_title_the_parser_mangles_still_finds_its_backups(self):
-        # The context columns say "Alpha"; the folder says the real name.
-        self.db.add_backup('b1', 'Alpha - Bravo, Charlie of the Delta (2016)',
-                           season_name='Season 04')
-        self.db.add_file('b1', 'Alpha - Bravo ... - S04E04 - 070.mkv', season='04', episode='04')
+    def test_a_series_whose_title_contains_a_dash_finds_its_own_versions(self):
+        self.db.add_capture('b1', AWKWARD, season=4, episode=4)
+        self.db.add_file('b1', f"{AWKWARD} - S04E04 - 070.mkv")
 
-        runs = self.store.backups('anime', 'Alpha - Bravo, Charlie of the Delta (2016)')
+        runs = self.store.backups('anime', AWKWARD)
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]['files'][0]['code'], 'S04E04')
 
-    def test_another_series_backups_are_not_shown(self):
-        self.db.add_backup('b1', 'Other Show (2019)', season_name='Season 04')
-        self.db.add_file('b1', 'Other Show - S04E29.mkv', season='04', episode='29')
+    def test_another_series_versions_are_not_shown(self):
+        self.db.add_capture('b1', 'Other Show (2019)', season=4, episode=29)
+        self.db.add_file('b1', 'Other Show - S04E29.mkv')
 
         self.assertEqual(self.store.backups('anime', 'Another Show (2023)'), [])
 
     def test_the_same_folder_in_another_library_is_not_shown(self):
-        self.db.add_backup('b1', 'Show', media_type='anime')
-        self.db.add_file('b1', 'Show - S01E01.mkv', season='01', episode='01')
+        self.db.add_capture('b1', 'Show', season=1, episode=1, library='anime')
+        self.db.add_file('b1', 'Show - S01E01.mkv')
 
         self.assertEqual(self.store.backups('tvshows', 'Show'), [])
 
-    def test_a_deleted_backup_is_not_offered(self):
-        self.db.add_backup('b1', 'Show', status='deleted')
-        self.db.add_file('b1', 'Show - S01E01.mkv', season='01', episode='01')
+    def test_a_version_whose_files_are_gone_is_not_offered(self):
+        self.db.add_capture('b1', 'Show', season=1, episode=1, status='files_removed')
+        self.db.add_file('b1', 'Show - S01E01.mkv')
+
+        self.assertEqual(self.store.backups('anime', 'Show'), [])
+
+    def test_title_level_extras_are_not_offered_as_versions(self):
+        """Artwork belongs to the series but is not a restorable episode."""
+        self.db.add_capture('b1', 'Show', kind='extras')
+        self.db.add_file('b1', 'poster.jpg', is_media=0)
 
         self.assertEqual(self.store.backups('anime', 'Show'), [])
 
     # --- season scoping ----------------------------------------------------
 
-    def test_a_series_sync_backup_is_split_by_the_season_each_file_belongs_to(self):
-        # ONE backup holding two seasons — what a series-level sync produces.
-        self.db.add_backup('b1', 'Show', season_name=None)
-        self.db.add_file('b1', 'Show - S01E01.mkv', season='01', episode='01')
-        self.db.add_file('b1', 'Show - S02E05.mkv', season='02', episode='05')
+    def test_each_season_keeps_its_own_versions(self):
+        """
+        A series-level sync used to produce ONE backup spanning several seasons,
+        which had to be filtered per file. Now every episode is its own slot, so
+        the seasons were never mixed together to begin with.
+        """
+        self.db.add_capture('b1', 'Show', season=1, episode=1)
+        self.db.add_file('b1', 'Show - S01E01.mkv')
+        self.db.add_capture('b2', 'Show', season=2, episode=5)
+        self.db.add_file('b2', 'Show - S02E05.mkv')
 
-        first = self.store.backups('anime', 'Show', season_number=1, season_name='Season 01')
-        self.assertEqual(len(first), 1)
+        first = self.store.backups('anime', 'Show', season_number=1)
         self.assertEqual([f['code'] for f in first[0]['files']], ['S01E01'])
 
-        second = self.store.backups('anime', 'Show', season_number=2, season_name='Season 02')
+        second = self.store.backups('anime', 'Show', season_number=2)
         self.assertEqual([f['code'] for f in second[0]['files']], ['S02E05'])
 
-    def test_the_padded_text_season_matches_the_season_number(self):
-        self.db.add_backup('b1', 'Show', season_name='Season 04')
-        self.db.add_file('b1', 'Show - S04E03.mkv', season='04', episode='03')
+    def test_a_season_with_nothing_stored_returns_nothing(self):
+        self.db.add_capture('b1', 'Show', season=4, episode=3)
+        self.db.add_file('b1', 'Show - S04E03.mkv')
 
-        self.assertEqual(len(self.store.backups('anime', 'Show', season_number=4,
-                                                season_name='Season 04')), 1)
-        self.assertEqual(self.store.backups('anime', 'Show', season_number=40,
-                                            season_name='Season 40'), [])
-
-    def test_a_file_with_no_parsed_season_falls_back_to_the_runs_own_folder(self):
-        # Artwork and .nfo files carry no episode number.
-        self.db.add_backup('b1', 'Show', season_name='Season 02')
-        self.db.add_file('b1', 'poster.jpg')
-
-        self.assertEqual(len(self.store.backups('anime', 'Show', season_number=2,
-                                                season_name='Season 02')), 1)
-        self.assertEqual(self.store.backups('anime', 'Show', season_number=3,
-                                            season_name='Season 03'), [])
-
-    def test_a_run_with_nothing_left_after_filtering_is_dropped_entirely(self):
-        self.db.add_backup('b1', 'Show', season_name='Season 01')
-        self.db.add_file('b1', 'Show - S01E01.mkv', season='01', episode='01')
-
-        self.assertEqual(self.store.backups('anime', 'Show', season_number=9,
-                                            season_name='Season 09'), [])
+        self.assertEqual(len(self.store.backups('anime', 'Show', season_number=4)), 1)
+        self.assertEqual(self.store.backups('anime', 'Show', season_number=40), [])
 
     def test_specials_is_season_zero_not_missing(self):
-        self.db.add_backup('b1', 'Show', season_name='Specials')
-        self.db.add_file('b1', 'Show - S00E02.mkv', season='00', episode='02')
+        self.db.add_capture('b1', 'Show', season=0, episode=2)
+        self.db.add_file('b1', 'Show - S00E02.mkv')
 
-        runs = self.store.backups('anime', 'Show', season_number=0, season_name='Specials')
+        runs = self.store.backups('anime', 'Show', season_number=0)
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]['files'][0]['code'], 'S00E02')
+        self.assertEqual(runs[0]['season_name'], 'Specials')
 
     # --- what the panel shows ----------------------------------------------
 
-    def test_the_counts_describe_what_is_shown_not_the_whole_run(self):
-        self.db.add_backup('b1', 'Show', season_name=None)
-        self.db.add_file('b1', 'Show - S01E01.mkv', season='01', episode='01', size=500)
-        self.db.add_file('b1', 'Show - S02E05.mkv', season='02', episode='05', size=900)
+    def test_the_counts_describe_what_is_shown(self):
+        self.db.add_capture('b1', 'Show', season=1, episode=1)
+        self.db.add_file('b1', 'Show - S01E01.mkv', size=500)
+        self.db.add_file('b1', 'Show - S01E01.srt', size=20, is_media=0)
 
-        run = self.store.backups('anime', 'Show', season_number=1, season_name='Season 01')[0]
-        self.assertEqual(run['shown_count'], 1)
-        self.assertEqual(run['shown_size'], 500)
+        run = self.store.backups('anime', 'Show', season_number=1)[0]
+        self.assertEqual(run['shown_count'], 2, 'the subtitle travels with the episode')
+        self.assertEqual(run['shown_size'], 520)
 
-    def test_runs_come_back_newest_first(self):
-        self.db.add_backup('old', 'Show', created_at='2026-01-01T00:00:00Z')
-        self.db.add_file('old', 'a.mkv', season='01', episode='01')
-        self.db.add_backup('new', 'Show', created_at='2026-07-01T00:00:00Z')
-        self.db.add_file('new', 'b.mkv', season='01', episode='01')
+    def test_versions_come_back_newest_first(self):
+        self.db.add_capture('old', 'Show', season=1, episode=1,
+                            captured_at='2026-01-01T00:00:00.000Z')
+        self.db.add_file('old', 'a.mkv')
+        self.db.add_capture('new', 'Show', season=1, episode=1,
+                            captured_at='2026-07-01T00:00:00.000Z')
+        self.db.add_file('new', 'b.mkv')
 
-        self.assertEqual([r['backup_id'] for r in self.store.backups('anime', 'Show')],
-                         ['new', 'old'])
+        self.assertEqual(
+            [r['backup_id'] for r in self.store.backups('anime', 'Show')],
+            ['new', 'old'],
+        )
+
+    def test_a_movie_has_no_season_layer(self):
+        self.db.add_capture('b1', 'Example Film (2024)', library='movies')
+        self.db.add_file('b1', 'Example Film (2024).mkv')
+
+        runs = self.store.backups('movies', 'Example Film (2024)')
+        self.assertEqual(len(runs), 1)
+        self.assertIsNone(runs[0]['season_name'])
 
 
 if __name__ == '__main__':

@@ -129,7 +129,10 @@ def api_webhook_movies_receiver():
         
         # Check if auto-sync is enabled (prefer DB app_settings, fallback to env)
         try:
-            auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_MOVIES', default=(config.get("AUTO_SYNC_MOVIES", "false").lower() == "true"))
+            # One reader, one store. This used to fall back to the env file,
+            # while AUTO_SYNC_SERIES and AUTO_SYNC_ANIME did not — so the same
+            # setting was configured two different ways depending on media type.
+            auto_sync_enabled = transfer_coordinator.settings_service.get_bool('AUTO_SYNC_MOVIES')
         except Exception:
             auto_sync_enabled = config.get("AUTO_SYNC_MOVIES", "false").lower() == "true"
 
@@ -259,7 +262,7 @@ def api_webhook_series_receiver():
         notification_id = transfer_coordinator.series_webhook_model.create(parsed_data, raw_webhook_json)
         
         # Check if auto-sync is enabled for series
-        auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_SERIES', False)
+        auto_sync_enabled = transfer_coordinator.settings_service.get_bool('AUTO_SYNC_SERIES')
 
         emit_socketio_event(
             'webhook_received',
@@ -384,7 +387,7 @@ def api_webhook_anime_receiver():
         notification_id = transfer_coordinator.series_webhook_model.create(parsed_data, raw_webhook_json)
         
         # Check if auto-sync is enabled for anime
-        auto_sync_enabled = transfer_coordinator.settings.get_bool('AUTO_SYNC_ANIME', False)
+        auto_sync_enabled = transfer_coordinator.settings_service.get_bool('AUTO_SYNC_ANIME')
 
         emit_socketio_event(
             'webhook_received',
@@ -1002,13 +1005,14 @@ def api_webhook_settings():
     """Get or update webhook settings"""
     if request.method == 'GET':
         try:
-            # Get auto-sync settings for all media types
+            # All four are database settings; the resolver applies the same
+            # defaults and bounds the writer below does.
+            store = transfer_coordinator.settings_service
             settings = {
-                "auto_sync_movies": transfer_coordinator.settings.get_bool('AUTO_SYNC_MOVIES', 
-                    default=(config.get("AUTO_SYNC_MOVIES", "false").lower() == "true")),
-                "auto_sync_series": transfer_coordinator.settings.get_bool('AUTO_SYNC_SERIES', False),
-                "auto_sync_anime": transfer_coordinator.settings.get_bool('AUTO_SYNC_ANIME', False),
-                "series_anime_sync_wait_time": int(transfer_coordinator.settings.get('SERIES_ANIME_SYNC_WAIT_TIME', '60'))
+                "auto_sync_movies": store.get_bool('AUTO_SYNC_MOVIES'),
+                "auto_sync_series": store.get_bool('AUTO_SYNC_SERIES'),
+                "auto_sync_anime": store.get_bool('AUTO_SYNC_ANIME'),
+                "series_anime_sync_wait_time": store.get_int('SERIES_ANIME_SYNC_WAIT_TIME'),
             }
             return jsonify({
                 "status": "success",
@@ -1026,31 +1030,25 @@ def api_webhook_settings():
             if not data:
                 return jsonify({"status": "error", "message": "No data provided"}), 400
             
-            # Update auto-sync settings (store only in DB; no .env write)
-            if "auto_sync_movies" in data:
-                new_val = bool(data["auto_sync_movies"])
-                transfer_coordinator.settings.set_bool('AUTO_SYNC_MOVIES', new_val)
-                print(f"🎬 Auto-sync movies setting updated (DB): {new_val}")
-            
-            if "auto_sync_series" in data:
-                new_val = bool(data["auto_sync_series"])
-                transfer_coordinator.settings.set_bool('AUTO_SYNC_SERIES', new_val)
-                print(f"📺 Auto-sync series setting updated (DB): {new_val}")
-            
-            if "auto_sync_anime" in data:
-                new_val = bool(data["auto_sync_anime"])
-                transfer_coordinator.settings.set_bool('AUTO_SYNC_ANIME', new_val)
-                print(f"🍙 Auto-sync anime setting updated (DB): {new_val}")
-            
-            if "series_anime_sync_wait_time" in data:
-                wait_time = int(data["series_anime_sync_wait_time"])
-                # Validate wait time (min 30s, max 900s/15min)
-                if wait_time < 30:
-                    wait_time = 30
-                elif wait_time > 900:
-                    wait_time = 900
-                transfer_coordinator.settings.set('SERIES_ANIME_SYNC_WAIT_TIME', str(wait_time))
-                print(f"⏰ Series/Anime sync wait time updated (DB): {wait_time}s")
+            # Written through the resolver, which owns the bounds. The wait
+            # time used to be clamped here and nowhere else, so a value set by
+            # any other path went unchecked.
+            store = transfer_coordinator.settings_service
+            payload = {
+                key: data[form_key]
+                for key, form_key in (
+                    ('AUTO_SYNC_MOVIES', 'auto_sync_movies'),
+                    ('AUTO_SYNC_SERIES', 'auto_sync_series'),
+                    ('AUTO_SYNC_ANIME', 'auto_sync_anime'),
+                    ('SERIES_ANIME_SYNC_WAIT_TIME', 'series_anime_sync_wait_time'),
+                )
+                if form_key in data
+            }
+            saved, _refused, errors = store.set_many(payload)
+            if errors:
+                return jsonify({"status": "error", "message": "; ".join(errors)}), 400
+            for key, value in saved.items():
+                print(f"⚙️  {key} updated (DB): {value}")
             
             return jsonify({
                 "status": "success",
@@ -1073,12 +1071,15 @@ def api_discord_settings():
     """Get or update Discord notification settings"""
     if request.method == 'GET':
         try:
+            # Read through the resolver so the defaults here match the ones
+            # the notification service applies when it actually sends.
+            store = transfer_coordinator.settings_service
             settings = {
-                "webhook_url": transfer_coordinator.settings.get('DISCORD_WEBHOOK_URL', ''),
-                "app_url": transfer_coordinator.settings.get('DISCORD_APP_URL', 'http://localhost:5000'),
-                "manual_sync_thumbnail_url": transfer_coordinator.settings.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', ''),
-                "icon_url": transfer_coordinator.settings.get('DISCORD_ICON_URL', ''),
-                "enabled": transfer_coordinator.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED', False)
+                "webhook_url": store.get('DISCORD_WEBHOOK_URL'),
+                "app_url": store.get('DISCORD_APP_URL'),
+                "manual_sync_thumbnail_url": store.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL'),
+                "icon_url": store.get('DISCORD_ICON_URL'),
+                "enabled": store.get_bool('DISCORD_NOTIFICATIONS_ENABLED'),
             }
             return jsonify({
                 "status": "success",
@@ -1097,26 +1098,27 @@ def api_discord_settings():
                 return jsonify({"status": "error", "message": "No data provided"}), 400
             
             # Update Discord settings
-            if "enabled" in data:
-                transfer_coordinator.settings.set_bool('DISCORD_NOTIFICATIONS_ENABLED', data["enabled"])
-                print(f"🎮 Discord notifications enabled: {data['enabled']}")
-            
-            if "webhook_url" in data:
-                transfer_coordinator.settings.set('DISCORD_WEBHOOK_URL', data["webhook_url"])
-                print(f"🎮 Discord webhook URL updated")
-            
-            if "app_url" in data:
-                transfer_coordinator.settings.set('DISCORD_APP_URL', data["app_url"])
-                print(f"🎮 Discord app URL updated")
-            
-            if "manual_sync_thumbnail_url" in data:
-                transfer_coordinator.settings.set('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', data["manual_sync_thumbnail_url"])
-                print(f"🎮 Discord manual sync thumbnail URL updated")
-            
-            if "icon_url" in data:
-                transfer_coordinator.settings.set('DISCORD_ICON_URL', data["icon_url"])
-                print(f"🎮 Discord icon URL updated")
-            
+            # One writer. These are database settings like any other, so they
+            # go through the resolver rather than reaching for the raw model —
+            # which is what kept the bounds and the redaction rule in one place.
+            store = transfer_coordinator.settings_service
+            payload = {
+                key: data[form_key]
+                for key, form_key in (
+                    ('DISCORD_NOTIFICATIONS_ENABLED', 'enabled'),
+                    ('DISCORD_WEBHOOK_URL', 'webhook_url'),
+                    ('DISCORD_APP_URL', 'app_url'),
+                    ('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', 'manual_sync_thumbnail_url'),
+                    ('DISCORD_ICON_URL', 'icon_url'),
+                )
+                if form_key in data
+            }
+            saved, _refused, errors = store.set_many(payload)
+            if errors:
+                return jsonify({"status": "error", "message": "; ".join(errors)}), 400
+            for key in saved:
+                print(f"🎮 {key} updated (DB)")
+
             return jsonify({
                 "status": "success",
                 "message": "Discord settings updated successfully"
@@ -1136,7 +1138,8 @@ def api_discord_test():
     """Test Discord webhook with a sample notification"""
     try:
         # Check if Discord notifications are enabled
-        notifications_enabled = transfer_coordinator.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED', False)
+        store = transfer_coordinator.settings_service
+        notifications_enabled = store.get_bool('DISCORD_NOTIFICATIONS_ENABLED')
         if not notifications_enabled:
             return jsonify({
                 "status": "error",
@@ -1144,7 +1147,7 @@ def api_discord_test():
             }), 400
         
         # Get Discord webhook URL from settings
-        discord_webhook_url = transfer_coordinator.settings.get('DISCORD_WEBHOOK_URL')
+        discord_webhook_url = store.get('DISCORD_WEBHOOK_URL')
         if not discord_webhook_url:
             return jsonify({
                 "status": "error",
@@ -1152,9 +1155,9 @@ def api_discord_test():
             }), 400
         
         # Get other Discord settings
-        app_url = transfer_coordinator.settings.get('DISCORD_APP_URL', 'http://localhost:5000')
-        manual_sync_thumbnail_url = transfer_coordinator.settings.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', '')
-        icon_url = transfer_coordinator.settings.get('DISCORD_ICON_URL', '')
+        app_url = store.get('DISCORD_APP_URL')
+        manual_sync_thumbnail_url = store.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL')
+        icon_url = store.get('DISCORD_ICON_URL')
         
         # Create test embed
         embed = {

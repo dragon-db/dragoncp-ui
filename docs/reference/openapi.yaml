@@ -1980,11 +1980,497 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 
   # ==================== BACKUPS ====================
+  #
+  # Backups are organised by SLOT — one movie, or one episode — with a version
+  # history inside each. A CAPTURE is one stored version. See
+  # ../features/backups/README.md.
+
+  /backups/overview:
+    get:
+      tags: [Backups]
+      summary: Totals, backup-disk pressure, the retention rule and pending migration work
+      responses:
+        '200':
+          description: Overview
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  configured:
+                    type: boolean
+                    description: >-
+                      False when BACKUP_PATH is unset, in which case transfers
+                      refuse to start — there is nowhere safe to put displaced
+                      files, and there is deliberately no fallback.
+                  totals: { type: object }
+                  disk: { type: object, nullable: true }
+                  retention: { type: object }
+                  libraries: { type: array, items: { type: object } }
+                  legacy_folders: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/titles:
+    get:
+      tags: [Backups]
+      summary: Titles holding stored versions
+      parameters:
+        - name: library
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [movies, shows, anime]
+      responses:
+        '200':
+          description: Titles
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/seasons:
+    get:
+      tags: [Backups]
+      summary: Seasons within one title
+      parameters:
+        - name: library
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: title
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Seasons
+        '400':
+          description: library and title are both required
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/slots:
+    get:
+      tags: [Backups]
+      summary: One row per movie or episode with stored versions
+      parameters:
+        - name: library
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: title
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: season
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+        - name: sort
+          in: query
+          required: false
+          description: >-
+            'size' puts the biggest first, which is the order you want when the
+            question is what to delete to get space back.
+          schema:
+            type: string
+            enum: [recent, size]
+            default: recent
+      responses:
+        '200':
+          description: Slot list with version counts and sizes
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/slot:
+    get:
+      tags: [Backups]
+      summary: One slot's versions, newest first, and what the library holds now
+      parameters:
+        - name: slot_key
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Version history plus the current occupant
+        '400':
+          description: slot_key is required
+        '404':
+          description: No versions stored for this slot
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/captures/{capture_id}:
+    get:
+      tags: [Backups]
+      summary: One stored version, with its files and the slots it belongs to
+      parameters:
+        - name: capture_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The version
+        '404':
+          description: Not found
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/unsorted:
+    get:
+      tags: [Backups]
+      summary: Files kept but not identified; listed, never restorable
+      responses:
+        '200':
+          description: Unidentified captures
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/captures/{capture_id}/plan:
+    post:
+      tags: [Backups]
+      summary: Preview a restore. Reads only; the same planner runs it
+      parameters:
+        - name: capture_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items: { type: string }
+                  description: >-
+                    Paths inside the capture. Omit the key entirely to mean
+                    every file. An EMPTY LIST is rejected — ticking nothing is
+                    not a request to restore everything.
+      responses:
+        '200':
+          description: >-
+            The plan. Each operation carries the target path and `replaces`,
+            which is null when the slot is empty. `blocked` is set with a reason
+            when the restore cannot run at all.
+        '400':
+          description: Empty selection, or a path that failed traversal checks
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/captures/{capture_id}/restore:
+    post:
+      tags: [Backups]
+      summary: Start a restore
+      description: >-
+        Returns as soon as the run is accepted; it proceeds as a queued transfer
+        with progress and logs. The file each restored file replaces is stored as
+        a new version of the same slot FIRST, so a restore can itself be undone.
+        Refuses rather than queueing silently when the destination is busy, when
+        every transfer slot is taken, or when the same version is already being
+        restored.
+      parameters:
+        - name: capture_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: Accepted; includes the transfer id
+        '400':
+          description: Blocked, refused, or an invalid selection
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/captures/{capture_id}/pin:
+    post:
+      tags: [Backups]
+      summary: Pin or unpin a version. Pinned versions are never removed by retention
+      parameters:
+        - name: capture_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pinned: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Updated
+        '404':
+          description: Not found
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/captures/{capture_id}/delete:
+    post:
+      tags: [Backups]
+      summary: Remove a version's files and its index entry. The library is not touched
+      parameters:
+        - name: capture_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                delete_files: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Deleted
+        '400':
+          description: Not found, or the files could not be removed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/delete/preview:
+    post:
+      tags: [Backups]
+      summary: Preview a deletion — what it removes and the space it frees. Reads only
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: At least one of capture_ids or slot_keys is required.
+              properties:
+                capture_ids: { type: array, items: { type: string } }
+                slot_keys: { type: array, items: { type: string } }
+                keep_newest:
+                  type: integer
+                  description: With slot_keys, leave the most recent N of each.
+                include_pinned: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Candidates, count, total size and how many pins were held back
+        '400':
+          description: Nothing was selected
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/delete:
+    post:
+      tags: [Backups]
+      summary: Remove several versions at once — the space-reclaiming action
+      description: >-
+        Pinned versions are held back unless include_pinned is set, and the
+        number held back is reported. Removes the files and the index entry
+        together, prunes the folders it emptied, and never touches the library.
+        This has no undo — those files are the last copy of that version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                capture_ids: { type: array, items: { type: string } }
+                slot_keys: { type: array, items: { type: string } }
+                keep_newest: { type: integer }
+                include_pinned: { type: boolean, default: false }
+      responses:
+        '200':
+          description: What was deleted and how much was reclaimed
+        '400':
+          description: Nothing was selected
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/unsorted/delete:
+    post:
+      tags: [Backups]
+      summary: Throw away everything that could not be identified
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm: { type: boolean }
+      responses:
+        '200':
+          description: What was removed
+        '400':
+          description: Not confirmed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/rebuild:
+    post:
+      tags: [Backups]
+      summary: Regenerate the index by walking the backup tree
+      description: >-
+        The tree is the source of truth; this index is a view over it. Writes no
+        files and deletes no media, and is idempotent. Pins, displacement reasons
+        and transfer provenance are carried forward, because a path cannot hold
+        them.
+      responses:
+        '200':
+          description: Counts of what was indexed and what stale entries went
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/retention:
+    get:
+      tags: [Backups]
+      summary: The retention rule and backup-disk usage
+      responses:
+        '200':
+          description: >-
+            Rule and disk usage. `retention.editable` is false when there is no
+            database store, in which case the rule is env-file only.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Backups]
+      summary: Save the retention rule
+      description: >-
+        Written to the app_settings table, not the env file — the only store
+        that both survives a restart and is visible to the background thread
+        that applies the rule after a transfer.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keep: { type: integer, minimum: 1, maximum: 50 }
+                grace_hours: { type: integer, minimum: 0 }
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: The saved rule
+        '400':
+          description: Invalid value, or no settings store is available
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/retention/preview:
+    post:
+      tags: [Backups]
+      summary: Which versions keep-N would remove. Reads only
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keep: { type: integer }
+                grace_hours: { type: integer }
+      responses:
+        '200':
+          description: Candidates and the space they hold
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/retention/apply:
+    post:
+      tags: [Backups]
+      summary: Remove them, reporting what went and how much was reclaimed
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keep: { type: integer }
+                grace_hours: { type: integer }
+      responses:
+        '200':
+          description: What was deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/migration/plan:
+    post:
+      tags: [Backups]
+      summary: Preview adopting the old per-transfer folders. Moves nothing
+      responses:
+        '200':
+          description: >-
+            Planned moves, unidentified files and empty folders. `blocked` is set
+            when a transfer is still running, because migration moves files
+            across the whole backup disk.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/migration/apply:
+    post:
+      tags: [Backups]
+      summary: Carry out the migration and rebuild the index over the result
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm: { type: boolean }
+      responses:
+        '200':
+          description: What moved and what was removed
+        '400':
+          description: Not confirmed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ---- Legacy backup endpoints -------------------------------------------
+  # Kept because the static UI is what production serves. Backed by the same
+  # store, with a capture id in place of the old backup id.
 
   /backups:
     get:
       tags: [Backups]
-      summary: List backup records
+      summary: (Legacy) Versions newest first, in the old record shape
       parameters:
         - name: limit
           in: query
@@ -1992,202 +2478,105 @@ paths:
           schema:
             type: integer
             default: 100
-        - name: include_deleted
-          in: query
-          required: false
-          description: Pass `1`, `true` or `True` to include deleted records.
-          schema:
-            type: string
       responses:
         '200':
           description: Backup list
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  backups:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties: true
-                  total:
-                    type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /backups/{backup_id}:
     get:
       tags: [Backups]
-      summary: Return one backup record
+      summary: (Legacy) One version in the old record shape
       parameters:
-        - $ref: '#/components/parameters/BackupId'
+        - name: backup_id
+          in: path
+          required: true
+          schema: { type: string }
       responses:
         '200':
           description: Backup record
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  backup:
-                    type: object
-                    additionalProperties: true
+        '404':
+          description: Not found
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
 
   /backups/{backup_id}/files:
     get:
       tags: [Backups]
-      summary: List the files held in one backup
+      summary: (Legacy) The files inside one version
       parameters:
-        - $ref: '#/components/parameters/BackupId'
-        - name: limit
-          in: query
-          required: false
-          schema:
-            type: integer
+        - name: backup_id
+          in: path
+          required: true
+          schema: { type: string }
       responses:
         '200':
-          description: File list
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  files:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties: true
-                  total:
-                    type: integer
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /backups/{backup_id}/restore:
-    post:
-      tags: [Backups]
-      summary: Restore a backup in full, or only the listed relative file paths
-      parameters:
-        - $ref: '#/components/parameters/BackupId'
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                files:
-                  type: array
-                  description: Relative paths to restore; omit for a full restore.
-                  items:
-                    type: string
-      responses:
-        '200':
-          $ref: '#/components/responses/Success'
-        '400':
-          description: Invalid `files` shape, or the restore failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /backups/{backup_id}/delete:
-    post:
-      tags: [Backups]
-      summary: Delete a backup record and optionally its files on disk
-      parameters:
-        - $ref: '#/components/parameters/BackupId'
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                delete_record:
-                  type: boolean
-                delete_files:
-                  type: boolean
-      responses:
-        '200':
-          $ref: '#/components/responses/Success'
-        '400':
-          $ref: '#/components/responses/BadRequest'
+          description: Files
+        '404':
+          description: Not found
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /backups/{backup_id}/plan:
     post:
       tags: [Backups]
-      summary: Preview what a restore would copy back, without applying it
+      summary: (Legacy) Restore preview in the old plan shape
+      description: >-
+        Here an empty `files` list means EVERYTHING, which is what the old page
+        sends. The current API rejects it instead.
       parameters:
-        - $ref: '#/components/parameters/BackupId'
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                files:
-                  type: array
-                  items:
-                    type: string
+        - name: backup_id
+          in: path
+          required: true
+          schema: { type: string }
       responses:
         '200':
-          description: Restore plan, one entry per file that would be copied back
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  plan:
-                    type: object
-                    properties:
-                      operations:
-                        type: array
-                        items:
-                          type: object
-                          additionalProperties: true
+          description: Plan
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/{backup_id}/restore:
+    post:
+      tags: [Backups]
+      summary: (Legacy) Start a restore
+      parameters:
+        - name: backup_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Accepted
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: Blocked or refused
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /backups/{backup_id}/delete:
+    post:
+      tags: [Backups]
+      summary: (Legacy) Remove a version. Files and entry go together
+      parameters:
+        - name: backup_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted
+        '400':
+          description: Not found
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /backups/reindex:
     post:
       tags: [Backups]
-      summary: Scan the backup directory and import folders that are missing from the database
+      summary: (Legacy) The index rebuild under its old name
       responses:
         '200':
           description: Import summary
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  message:
-                    type: string
-                  imported:
-                    type: integer
-                  skipped:
-                    type: integer
         '401':
           $ref: '#/components/responses/Unauthorized'
 

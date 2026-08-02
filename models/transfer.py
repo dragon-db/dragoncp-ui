@@ -322,9 +322,23 @@ class Transfer:
 
             return transfers
 
+    #: The statuses that mean a transfer still has work ahead of it. `queued`
+    #: and `paused` count: neither is writing this instant, but both can start
+    #: at any moment, which is what matters to anything asking "is it safe to
+    #: touch the files".
+    ACTIVE_STATUSES = ('running', 'pending', 'queued', 'paused')
+
     def get_active(self) -> List[Dict]:
-        """Get all active (running/pending) transfers"""
-        return self.get_all(status_filter=None)  # We'll filter in memory for multiple statuses
+        """
+        Transfers that are running, pending, queued or paused.
+
+        This used to return `get_all(status_filter=None)` — every transfer ever
+        recorded — behind a docstring promising active ones, with a comment
+        saying the filtering would happen in memory. It never did. Any caller
+        trusting the name got the whole table, so a database with ten completed
+        transfers looked like ten running ones.
+        """
+        return self.get_all(statuses=list(self.ACTIVE_STATUSES), include_logs=False)
     
     def delete(self, transfer_id: str) -> bool:
         """Delete transfer record"""

@@ -99,23 +99,39 @@ def get_cleanup_thread_status():
         return cleanup_thread is not None and cleanup_thread.is_alive()
 
 
+#: Set by app.py once the settings service exists. Left as None in tests and
+#: any context without one, where the default applies.
+_settings_service = None
+
+
+def set_settings_service(service):
+    """Give the websocket layer a way to read the configured idle timeout."""
+    global _settings_service
+    _settings_service = service
+
+
 def get_websocket_timeout_for_session(session=None):
-    """Get WebSocket timeout for current session, respecting user configuration"""
+    """
+    How long a realtime connection may sit idle before the server drops it.
+
+    Read from the application settings, not from the caller's browser session.
+    It used to come from a per-browser overlay, which meant the timeout applied
+    to whoever happened to save it and to nobody else — and was invisible to the
+    cleanup thread that enforces it, because that thread has no request context.
+
+    `session` is still accepted so callers do not all have to change; it is no
+    longer read.
+    """
+    del session
     try:
-        if session is None:
+        if _settings_service is None:
             return WEBSOCKET_TIMEOUT_DEFAULT
-            
-        # Get user's configured timeout from session
-        session_config = session.get('ui_config', {})
-        user_timeout_minutes = session_config.get('WEBSOCKET_TIMEOUT_MINUTES')
-        
-        if user_timeout_minutes:
-            # Convert to seconds and add 5 minutes buffer, but cap at maximum
-            user_timeout_seconds = min(60, max(5, int(user_timeout_minutes))) * 60
-            server_timeout = min(WEBSOCKET_TIMEOUT_MAX, user_timeout_seconds + 5 * 60)
-            return server_timeout
-        else:
+        minutes = _settings_service.get_int('WEBSOCKET_TIMEOUT_MINUTES', 0)
+        if not minutes:
             return WEBSOCKET_TIMEOUT_DEFAULT
+        # The server holds on a little longer than the client is told to, so a
+        # client that is about to reconnect is not cut off mid-handshake.
+        return min(WEBSOCKET_TIMEOUT_MAX, minutes * 60 + 5 * 60)
     except (TypeError, ValueError, AttributeError):
         return WEBSOCKET_TIMEOUT_DEFAULT
 

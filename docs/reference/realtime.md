@@ -1,7 +1,7 @@
 # Realtime (Socket.IO) Reference
 
 Last updated: 2026-07-28
-Primary files: `websocket.py`, `app.py`, `services/transfer_service.py`, `services/transfer_coordinator.py`, `services/queue_manager.py`, `services/backup_service.py`, `services/rename_service.py`, `routes/webhooks.py`, `frontend/src/services/socket.ts`, `frontend/src/hooks/useRuntime.ts`
+Primary files: `websocket.py`, `app.py`, `services/transfer_service.py`, `services/transfer_coordinator.py`, `services/queue_manager.py`, `services/backups/service.py`, `services/rename_service.py`, `routes/webhooks.py`, `frontend/src/services/socket.ts`, `frontend/src/hooks/useRuntime.ts`
 
 ## Realtime is opt-in
 
@@ -14,7 +14,7 @@ What this means if you build on these events:
 - **Never treat a socket event as the only delivery of a fact.** A user with realtime off will never receive it. Anything that must be durable has to be written to the database and exposed through the REST API (see [`api.md`](api.md)); the event is a hint that the API has something new.
 - **Every listener needs a polling equivalent.** That is how the existing pages are written: the transfers page uses `transfer_progress` to patch the query cache in place and `transfer_complete`/`transfer_queued`/`transfer_promoted` to trigger a refetch, all of which the 2–5 second poll would eventually have done anyway.
 - **Events are broadcast to everyone.** No emit in the codebase passes a `room`, `to`, or `namespace` argument, so every connected client receives every event regardless of which user started the work. There is no per-user filtering to rely on.
-- **Emits are best-effort.** In `routes/webhooks.py` the emit is wrapped by `emit_socketio_event()`, which swallows and logs any exception so a failed emit never fails the webhook. In `services/backup_service.py` the emits sit inside bare `try/except: pass` blocks. If nobody is listening, nothing anywhere notices.
+- **Emits are best-effort.** In `routes/webhooks.py` the emit is wrapped by `emit_socketio_event()`, which swallows and logs any exception so a failed emit never fails the webhook. In `services/backups/service.py` they go through `_emit()`, which swallows and logs the same way. If nobody is listening, nothing anywhere notices.
 
 ## Server-emitted events
 
@@ -26,10 +26,10 @@ that asked for that transfer's output. See
 | Event | What triggers it | Emitted by | Payload fields |
 |---|---|---|---|
 | `transfer_progress` | Every line rsync writes while a transfer is running (the socket is *not* throttled; only the database writes are) | `services/transfer_service.py` | `transfer_id`, `progress` (the raw rsync line), `log_count`, `status` (always `"running"`), `stats`. **No log body** — see `transfer_logs` |
-| `transfer_progress` | Once, when a backup restore has built its plan and is about to start deleting/copying | `services/backup_service.py:198` | `transfer_id` (a synthetic `restore_<backup_id>_<timestamp>` id), `progress` (`"Planning restore: N item(s)"`), `logs` (up to 100 plan lines), `log_count`, `status` (`"running"`) |
+| `transfer_progress` | Per file, while a backup restore runs | `services/backups/service.py` (`_run_restore`) | `transfer_id` (a synthetic `restore_<epoch>_<hex>` id), `status` (`"running"`), `progress` (`"Restoring 2/5: <filename>"`), `folder_name` (the slot, e.g. `Example Show (2024) — S01E01`) |
 | `transfer_complete` | The rsync monitor thread has seen the process exit | `services/transfer_service.py` | `transfer_id`, `status` (`completed`, `failed`, `paused` or `cancelled`), `message`, `log_count`, `stats`. **No log body** |
 | `transfer_complete` | The rsync monitor thread itself raised — the transfer row is forced to `failed` | `services/transfer_service.py` | `transfer_id`, `status` (`"failed"`), `message`, `log_count` — **no** log body and **no** `stats` on this path |
-| `transfer_complete` | A backup restore finished, successfully or not | `services/backup_service.py:287` (success), `:306` (failure) | `transfer_id`, `status` (`completed` / `failed`), `message`, `logs` (last 100), `log_count` |
+| `transfer_complete` | A backup restore finished, successfully or not | `services/backups/service.py` (`_finish_restore`) | `transfer_id`, `status` (`completed` / `failed`), `message`, `folder_name` |
 | `transfer_queued` | A new transfer is held because another transfer already owns the destination path | `services/transfer_coordinator.py:144` | `transfer_id`, `status` (`"queued"`), `queue_type` (`"path"`), `existing_transfer_id`, `dest_path`, `message` |
 | `transfer_queued` | A new transfer is held because the concurrency cap is reached | `services/transfer_coordinator.py:182` | `transfer_id`, `message` (`"Transfer added to queue"`) |
 | `transfer_queued` | A paused transfer was resumed but had to go back into the queue | `services/transfer_coordinator.py:345` | `transfer_id`, `message` (`"Resumed transfer added to queue"`) |

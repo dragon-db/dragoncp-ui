@@ -37,6 +37,14 @@ def init_debug_routes(app_config, app_ssh_manager, app_db_manager, app_transfer_
     socketio_runtime_info = app_socketio_runtime_info or {}
 
 
+def _settings_timeout():
+    """The configured realtime idle timeout, in minutes, or a note when unset."""
+    from websocket import _settings_service
+    if _settings_service is None:
+        return 'Not configured'
+    return _settings_service.get_int('WEBSOCKET_TIMEOUT_MINUTES', 0) or 'Not set'
+
+
 @debug_bp.route('/runtime/status')
 @require_auth
 def api_runtime_status():
@@ -93,7 +101,7 @@ def api_debug():
                 "default_timeout_minutes": WEBSOCKET_TIMEOUT_DEFAULT // 60,
                 "max_timeout_minutes": WEBSOCKET_TIMEOUT_MAX // 60,
                 "current_session_timeout_minutes": get_websocket_timeout_for_session(session) // 60,
-                "session_config_timeout": session.get('ui_config', {}).get('WEBSOCKET_TIMEOUT_MINUTES', 'Not set'),
+                "configured_timeout_minutes": _settings_timeout(),
                 "cleanup_thread_running": get_cleanup_thread_status(),
                 "runtime": socketio_runtime_info,
                 "connection_details": [
@@ -135,7 +143,7 @@ def api_debug():
                 "rsync_version": subprocess.run(["rsync", "--version"], capture_output=True, text=True).stdout.split('\n')[0] if subprocess.run(["which", "rsync"], capture_output=True, text=True).returncode == 0 else "Not available"
             },
             "active_transfers": len(transfer_coordinator.transfer_service.transfers),
-            "session_config": session.get('ui_config', {})
+            "configured_timeout_minutes": _settings_timeout()
         }
         
         return jsonify({

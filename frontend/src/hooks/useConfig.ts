@@ -2,14 +2,17 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import api from "@/lib/api";
 import type {
-  AppConfig,
+  SettingsResponse,
   DiskUsage,
   RemoteStorageInfo,
   SSHConfig,
   SSHConfigResponse,
 } from "@/lib/api-types";
 export type {
-  AppConfig,
+  SettingsResponse,
+  SettingDescriptor,
+  SettingGroup,
+  SettingStore,
   DiskUsage,
   RemoteStorageInfo,
   SSHConfig,
@@ -90,52 +93,36 @@ function runtimeStatusQueryOptions() {
   };
 }
 
-export function useAppConfig() {
+/** Every setting, grouped, each saying which store it came from. */
+export function useSettings() {
   return useQuery({
     queryKey: ["config"],
     queryFn: async () => {
-      const response = await api.get<AppConfig>("/config");
+      const response = await api.get<SettingsResponse>("/config");
       return response.data;
     },
   });
 }
 
-export function useUpdateConfig() {
+/**
+ * Save the editable half.
+ *
+ * Environment-backed keys are refused by name rather than ignored, so a save
+ * that only partly applied says which settings it did not touch instead of
+ * reporting a flat success.
+ */
+export function useUpdateSettings() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (config: Partial<AppConfig>) => {
-      const response = await api.post("/config", config);
+    mutationFn: async (values: Record<string, string | number | boolean>) => {
+      const response = await api.post<SettingsResponse>("/config", values);
       return response.data;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["config"] });
       queryClient.invalidateQueries({ queryKey: ["runtime", "status"] });
-    },
-  });
-}
-
-export function useResetConfig() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: async () => {
-      const response = await api.post("/config/reset");
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["config"] });
-      queryClient.invalidateQueries({ queryKey: ["runtime", "status"] });
-    },
-  });
-}
-
-export function useEnvOnlyConfig() {
-  return useQuery({
-    queryKey: ["config", "env-only"],
-    queryFn: async () => {
-      const response = await api.get<AppConfig>("/config/env-only");
-      return response.data;
+      queryClient.invalidateQueries({ queryKey: ["backups"] });
     },
   });
 }

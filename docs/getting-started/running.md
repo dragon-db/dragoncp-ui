@@ -286,3 +286,19 @@ proxy is used.
 - [../operations/runtime-and-deployment.md](../operations/runtime-and-deployment.md) - production runtime
 - [../operations/frontend-deployment.md](../operations/frontend-deployment.md) - serving the built frontend
 - [../reference/configuration.md](../reference/configuration.md) - configuration keys
+
+
+### The Settings page's Config tab is empty
+
+The backend is running older code. That tab asks for settings grouped by which
+store they come from; a backend from before that change answers with the
+previous flat map, and the page says so rather than rendering nothing.
+
+The frontend hot-reloads and the backend does not, so this is the normal shape
+of a half-restarted dev environment. Restart the backend:
+
+```
+PORT=5050 FLASK_DEBUG=1 venv/bin/python app.py
+```
+
+The Automation tab is unaffected either way — it uses its own endpoints.

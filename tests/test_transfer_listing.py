@@ -118,3 +118,73 @@ class TransferListingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ActiveTransferListingTests(unittest.TestCase):
+    """
+    `get_active()` feeds two things: the migration guard, and — through
+    `TransferCoordinator.get_active_transfers()` — the `/api/transfers/active`
+    listing behind the Activity panel.
+
+    Its body used to be `get_all(status_filter=None)`: the whole table, behind a
+    docstring promising active transfers. Fixing it meant choosing a contract,
+    and the choice was the four statuses the coordinator already used rather
+    than the two the docstring named. Implementing the docstring literally would
+    have dropped queued and paused transfers out of the Activity panel, which is
+    what these tests exist to prevent.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.model = Transfer(DatabaseManager(os.path.join(self.tmp.name, 'active.db')))
+        for index, status in enumerate(
+            ('running', 'pending', 'queued', 'paused', 'completed', 'failed', 'cancelled')
+        ):
+            self.model.create({
+                'transfer_id': f"t{index}", 'media_type': 'tvshows',
+                'folder_name': f"F{index}", 'source_path': '/a', 'dest_path': '/b',
+                'operation_type': 'folder', 'status': status,
+            })
+            self.model.update(f"t{index}", {'status': status})
+            self.model.add_log(f"t{index}", 'x' * 100)
+
+    def ids(self, rows):
+        return sorted(row['transfer_id'] for row in rows)
+
+    def test_it_returns_only_unfinished_transfers(self):
+        self.assertEqual(self.ids(self.model.get_active()), ['t0', 't1', 't2', 't3'])
+
+    def test_it_does_not_return_the_whole_table(self):
+        """The original defect: seven rows came back, four are active."""
+        self.assertEqual(len(self.model.get_all()), 7)
+        self.assertEqual(len(self.model.get_active()), 4)
+
+    def test_queued_and_paused_stay_in_the_listing(self):
+        """
+        Both are still in flight from an operator's point of view, and both can
+        start writing at any moment. Narrowing to running/pending would empty
+        the Activity panel of everything waiting.
+        """
+        ids = self.ids(self.model.get_active())
+        self.assertIn('t2', ids, 'queued')
+        self.assertIn('t3', ids, 'paused')
+
+    def test_it_matches_what_the_listing_did_before_it_delegated(self):
+        """`get_active_transfers()` now calls this; the result must not move."""
+        previous = self.model.get_all(
+            statuses=['running', 'pending', 'queued', 'paused'], include_logs=False
+        )
+        self.assertEqual(previous, self.model.get_active())
+
+    def test_log_bodies_are_still_left_out(self):
+        """A listing shows the count, never the text. Selecting it read megabytes."""
+        row = self.model.get_active()[0]
+        self.assertNotIn('logs', row)
+        self.assertIn('log_count', row)
+
+    def test_the_docstring_and_the_behaviour_agree(self):
+        """They did not before, which is the whole reason this was wrong."""
+        documented = Transfer.get_active.__doc__.lower()
+        for status in Transfer.ACTIVE_STATUSES:
+            self.assertIn(status, documented, status)

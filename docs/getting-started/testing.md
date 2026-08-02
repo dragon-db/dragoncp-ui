@@ -207,10 +207,12 @@ These are the only modules that test anything under `routes/`.
 
 ## What the tests deliberately do not cover
 
-Nothing under `routes/` is tested **except `routes/explore.py`**, which has
-`test_explore_routes.py`. There are no HTTP-level tests elsewhere: no Flask test
-client, no request/response assertions, no authentication or webhook-signature
-tests. `auth.py`, `webhook_auth.py` and `security.py` have no test module.
+Nothing under `routes/` is tested **except `routes/explore.py` and
+`routes/backups.py`**, which have `test_explore_routes.py` and
+`test_backup_routes.py`. There are no HTTP-level tests elsewhere: no
+request/response assertions, no authentication or webhook-signature tests
+outside those two. `auth.py`, `webhook_auth.py` and `security.py` have no test
+module of their own.
 
 No test opens an SSH connection or runs a real rsync. `ssh.py` is untested, and
 the rsync command that `TransferService` builds is never asserted on - the
@@ -218,11 +220,17 @@ logging tests bypass process launch entirely by feeding a fake process into the
 monitor loop.
 
 `services/queue_manager.py`, `services/transfer_coordinator.py`,
-`services/auto_sync_scheduler.py`, `services/backup_service.py` and
-`services/notification_service.py` have no module under `tests/`. Path-lock and
-slot-cap behaviour, queue promotion, restart recovery, auto-sync batching,
-backup restore and Discord notifications are all unverified by the suite.
-`services/webhook_service.py` is covered only for group sync.
+`services/auto_sync_scheduler.py` and `services/notification_service.py` have no
+module under `tests/`. Path-lock and slot-cap behaviour, queue promotion,
+restart recovery, auto-sync batching and Discord notifications are all
+unverified by the suite. `services/webhook_service.py` is covered only for group
+sync.
+
+`services/backups/` is covered by `test_backups.py` (identity, sorting into the
+tree, the index and its rebuild, migration, restore, retention) and
+`test_backup_routes.py` (the HTTP layer, against real files on a temp disk).
+Both use real directories and a real database; only auth and the transfer queue
+are stood in for.
 
 The rsync command Explore builds is asserted on indirectly — the dry run runs
 the same command builder — but no test launches rsync or opens an SSH

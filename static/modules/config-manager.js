@@ -180,7 +180,16 @@ export class ConfigManager {
                     }
                 }
                 
-                this.app.ui.showAlert('Configuration saved successfully!', 'success');
+                // The server reports which settings it could not change: the
+                // media paths, remote connection and secrets come from the
+                // environment file and are read-only at runtime. Saying so is
+                // the point — this form used to write them to a per-browser
+                // session that no background job ever read.
+                if (result.refused && result.refused.length) {
+                    this.app.ui.showAlert(result.message || 'Configuration saved', 'warning');
+                } else {
+                    this.app.ui.showAlert('Configuration saved successfully!', 'success');
+                }
                 
                 // If critical changes were made, disconnect and show reconnect UI
                 if (hasCriticalChanges || timeoutChanged) {

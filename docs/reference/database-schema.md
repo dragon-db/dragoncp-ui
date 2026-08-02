@@ -1,5 +1,7 @@
 # DragonCP Database Schema v2 Documentation
 
+Last updated: 2026-08-01
+
 ## Overview
 
 This document describes the current SQLite schema used by DragonCP.
@@ -15,8 +17,11 @@ This document describes the current SQLite schema used by DragonCP.
 - `radarr_webhook`
 - `sonarr_webhook`
 - `rename_webhook`
-- `backup`
-- `backup_file`
+- `backup` *(legacy — read by the backups migration, written by nothing)*
+- `backup_file` *(legacy — as above)*
+- `backup_capture`
+- `backup_capture_file`
+- `backup_capture_key`
 - `app_settings`
 
 ### Column Renames
@@ -426,112 +431,146 @@ CREATE TABLE app_settings (
 
 ---
 
-## Table: `backup`
+## Table: `backup` *(legacy)*
 
-**Purpose:** Backup records for rsync --backup deletions
-
-**Schema:**
-```sql
-CREATE TABLE backup (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    backup_id TEXT UNIQUE NOT NULL,
-    transfer_id TEXT NOT NULL,
-    media_type TEXT,
-    folder_name TEXT,
-    season_name TEXT,
-    source_path TEXT NOT NULL,
-    dest_path TEXT NOT NULL,
-    backup_path TEXT NOT NULL,
-    file_count INTEGER DEFAULT 0,
-    total_size INTEGER DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'ready',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    restored_at DATETIME,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)
-```
-
-**Column Descriptions:**
-- `id` - Primary key, auto-incrementing integer
-- `backup_id` - Unique identifier for the backup. Not a UUID; it is set to the
-  transfer id that produced the backup
-- `transfer_id` - Associated transfer ID
-- `media_type` - Type of media: 'movies', 'tvshows', 'anime'
-- `folder_name` - Name of the media folder
-- `season_name` - Name of the season folder (for series/anime)
-- `source_path` - Source path on remote server
-- `dest_path` - Destination path on local machine
-- `backup_path` - Directory where backup files are stored (renamed from `backup_dir`)
-- `file_count` - Number of files in backup
-- `total_size` - Total size of backup in bytes
-- `status` - Backup status: 'ready', 'deleted', etc.
-- `created_at` - Record creation timestamp
-- `restored_at` - Timestamp when backup was restored
-- `updated_at` - Last update timestamp
-
-**Indexes:**
-- `idx_backup_transfer_id` on `transfer_id` - Lookup by transfer ID
-
-**Model:** `Backup` in `models/backup.py`
+**Purpose:** the previous per-transfer backup records. **No longer written to.**
+The backups migration reads them for provenance and nothing else; see
+`../features/backups/README.md`. Retained until the migration has run and been
+trusted for a while.
 
 ---
 
-## Table: `backup_file`
+## Table: `backup_file` *(legacy)*
 
-**Purpose:** Individual files within backups
+**Purpose:** files within a legacy backup record. As above: read by the
+migration, written by nothing.
+
+The `context_*` columns on this table are why it is superseded. They stored a
+series title parsed by splitting the filename at the first `" - "`, so a title
+containing one was recorded as only its first word and its own backups became
+invisible to it. Identity now comes from the library folder and the episode
+code, and is never parsed out of a filename.
+
+---
+
+## Table: `backup_capture`
+
+**Purpose:** one stored version of one slot — a movie or an episode — displaced
+at one moment.
+
+**None of the three `backup_capture*` tables is the source of truth.** The tree
+under `BACKUP_PATH` is; these are a queryable index over it that can be dropped
+and rebuilt by walking the disk (`POST /api/backups/rebuild`). That is
+deliberate: the previous shape treated the database as authoritative over a disk
+it had largely lost track of, and what it lost track of was unrecoverable.
 
 **Schema:**
 ```sql
-CREATE TABLE backup_file (
+CREATE TABLE backup_capture (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    backup_id TEXT NOT NULL,
-    relative_path TEXT NOT NULL,
-    original_path TEXT NOT NULL,
-    file_size INTEGER,
-    modified_time INTEGER,
-    -- Context-aware fields for smarter restore
-    -- These fields store metadata about the file's context to enable
-    -- intelligent restore operations that can match files to their
-    -- original locations even if paths have changed.
-    context_media_type TEXT,      -- Media type: 'movies', 'tvshows', 'anime'
-    context_title TEXT,            -- Movie or series title
-    context_release_year TEXT,    -- Release year
-    context_series_title TEXT,    -- Series title (for series/anime)
-    context_season TEXT,          -- Season number/name
-    context_episode TEXT,         -- Episode number/name
-    context_absolute TEXT,        -- Absolute path context
-    context_key TEXT,             -- Composite key for context-aware queries
-    context_display TEXT,         -- Display-friendly context string
+    capture_id TEXT UNIQUE NOT NULL,
+    library TEXT,
+    title TEXT,
+    season_number INTEGER,
+    episode_number INTEGER,
+    release_year TEXT,
+    slot_key TEXT,
+    capture_path TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    source_transfer_id TEXT,
+    source_ref TEXT,
+    reason TEXT,
+    kind TEXT NOT NULL DEFAULT 'slot',
+    file_count INTEGER DEFAULT 0,
+    total_size INTEGER DEFAULT 0,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'present',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )
 ```
 
 **Column Descriptions:**
-- `id` - Primary key, auto-incrementing integer
-- `backup_id` - Foreign key to `backup.backup_id`
-- `relative_path` - Relative path within backup directory
-- `original_path` - Original path before backup
-- `file_size` - File size in bytes
-- `modified_time` - File modification timestamp
-- `context_media_type` - Media type context for restore
-- `context_title` - Title context for restore
-- `context_release_year` - Release year context for restore
-- `context_series_title` - Series title context for restore
-- `context_season` - Season context for restore
-- `context_episode` - Episode context for restore
-- `context_absolute` - Absolute path context
-- `context_key` - Key for context-aware restore queries
-- `context_display` - Display-friendly context string
-- `created_at` - Record creation timestamp
+- `capture_id` - `<UTC timestamp>__<short source ref>`, and the folder name on
+  disk. The timestamp carries **milliseconds**: versions inside a slot are
+  ordered by it, and a sync followed immediately by a restore of the same
+  episode would otherwise produce two captures that could not be told apart
+- `library` - `movies`, `shows` or `anime`
+- `title` - the library folder name, exactly as it appears on disk
+- `season_number`, `episode_number` - integers; null for movies
+- `release_year` - movies only
+- `slot_key` - normalised match key, e.g. `shows|example_show|S01E01`
+- `capture_path` - relative to `BACKUP_PATH`
+- `captured_at` - explicit UTC, millisecond precision
+- `source_transfer_id` - provenance; **null after a rebuild**, because the path
+  does not carry it
+- `source_ref` - the short reference embedded in `capture_id`
+- `reason` - `sync_replace`, `sync_delete`, `restore_swap`, `explore_prune`
+- `kind` - `slot` (restorable), `extras` (belongs to a title but no episode),
+  `unsorted` (no usable identity)
+- `pinned` - retention never removes a pinned version
+- `status` - `present`, `restored`, `files_removed`
 
 **Indexes:**
-- `idx_backup_file_backup_id` on `backup_id` - Fast lookup by backup ID
-- `idx_backup_file_context_key` on `context_key` - Context-aware restore queries
+- `idx_backup_capture_slot` on `slot_key`
+- `idx_backup_capture_library_title` on `(library, title)`
+- `idx_backup_capture_captured_at` on `captured_at`
+- `idx_backup_capture_kind` on `kind`
+- `idx_backup_capture_transfer` on `source_transfer_id`
 
-**Model:** `Backup` in `models/backup.py`
+**Model:** `BackupCapture` in `models/backup_capture.py`
 
-**Context Fields Purpose:**
-The `context_*` fields are used for intelligent restore operations. They store metadata about the file's context (media type, title, season, episode, etc.) to enable context-aware restore queries that can match files to their original locations even if paths have changed. These fields are essential for the restore functionality and are kept in v2.
+---
+
+## Table: `backup_capture_file`
+
+**Purpose:** the files inside one capture.
+
+**Schema:**
+```sql
+CREATE TABLE backup_capture_file (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    capture_id TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    original_path TEXT NOT NULL,
+    file_size INTEGER DEFAULT 0,
+    modified_time INTEGER DEFAULT 0,
+    is_media INTEGER NOT NULL DEFAULT 0
+)
+```
+
+**Column Descriptions:**
+- `relative_path` - path within the capture folder
+- `original_path` - where it was in the library. Empty after a rebuild; the
+  restore target is re-derived from the slot and the live library, which is more
+  reliable than a path stored months ago and never revisited
+- `is_media` - `1` for video, `0` for a sidecar. A media file only ever replaces
+  a media file, so restoring a subtitle can never delete an episode
+
+**Indexes:**
+- `idx_backup_capture_file_capture` on `capture_id`
+
+---
+
+## Table: `backup_capture_key`
+
+**Purpose:** which slots a capture belongs to.
+
+**Schema:**
+```sql
+CREATE TABLE backup_capture_key (
+    capture_id TEXT NOT NULL,
+    slot_key TEXT NOT NULL,
+    PRIMARY KEY (capture_id, slot_key)
+)
+```
+
+Normally one row per capture. A double episode (`S01E01E02`) has two, so the one
+stored copy is reachable from both episodes rather than duplicated or findable
+from only the first. Retention reads this too: such a capture is only pruned
+once it has fallen out of the keep window in **every** slot it belongs to.
+
+**Indexes:**
+- `idx_backup_capture_key_slot` on `slot_key`
 
 ---
 

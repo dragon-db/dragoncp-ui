@@ -16,7 +16,7 @@ Primary files: `auth.py`, `routes/auth.py`, `webhook_auth.py`, `security.py`, `w
 | WebSocket connect / re-authenticate handlers | `websocket.py` |
 | Blueprint registration, CORS headers, secret-key check | `app.py` |
 | Path validation at the transfer entry point | `routes/transfers.py`, `routes/media.py`, `routes/backups.py` |
-| Path validation in the service layer | `services/path_service.py`, `services/rename_service.py`, `services/backup_service.py` |
+| Path validation in the service layer | `services/path_service.py`, `services/rename_service.py`, `services/backups/layout.py` |
 | Browser-side token storage and refresh | `frontend/src/stores/auth.ts`, `frontend/src/lib/api.ts`, `frontend/src/services/socket.ts` |
 
 ## How it works
@@ -103,7 +103,7 @@ IP checking (`_parse_allowed_ips` / `is_ip_allowed`) accepts a comma-separated m
 
 The two layers are used together. `routes/transfers.py:api_transfer` validates `folder_name`, `season_name`, and `episode_name` individually with `validate_path_component()` and returns `400` for any failure, then builds the destination path and calls `assert_path_within_bounds(dest_path, [base_dest])`. The comment there states the reason for doing both: component validation stops literal `..` in the request, and the realpath check catches an escape through a symlink that was already on disk. `routes/media.py` does the same for its browse and dry-run endpoints; `routes/backups.py:api_restore_backup` validates each entry of the `files` list with `validate_relative_path()`.
 
-The service layer repeats the checks rather than trusting its callers. `services/path_service.py:construct_destination_path()` validates components and then asserts bounds; `get_destination_path()` asserts bounds on the path it derives from a webhook's source path; `validate_destination_path()` returns `False` when no destination bases are configured at all. `services/rename_service.py` validates the webhook-supplied relative path and then asserts the assembled local path stays under the media destination base. `services/backup_service.py` validates restore entries and checks both the backup path and the destination path against their allowed bases.
+The service layer repeats the checks rather than trusting its callers. `services/path_service.py:construct_destination_path()` validates components and then asserts bounds; `get_destination_path()` asserts bounds on the path it derives from a webhook's source path; `validate_destination_path()` returns `False` when no destination bases are configured at all. `services/rename_service.py` validates the webhook-supplied relative path and then asserts the assembled local path stays under the media destination base. `services/backups/layout.py` is the only place a path inside `BACKUP_PATH` is constructed: every title, season and slot segment is validated as a single path component and the assembled path is asserted to resolve inside the base, so a crafted library folder name cannot walk out of the tree. Restore validates its file selection and asserts its target stays inside a configured library.
 
 ## Behaviour worth knowing
 

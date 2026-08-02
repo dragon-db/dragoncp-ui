@@ -1,5 +1,7 @@
 # Transfers
 
+Last updated: 2026-08-01
+
 A transfer copies one folder (or one episode file) from the remote media server
 onto local storage and keeps a record of how it went. The operator sees a live
 percentage, throughput, ETA and the running rsync output; anything the copy would
@@ -16,7 +18,7 @@ failure, and its record deleted once it is no longer interesting.
 | HTTP endpoints | `routes/transfers.py` |
 | Row storage, log storage, listing query | `models/transfer.py` |
 | Concurrency and destination locking | `services/queue_manager.py` |
-| Per-transfer backup directory, backup finalization | `services/backup_service.py` |
+| Backup staging directory, and sorting what a transfer displaced | `services/backups/` |
 | SSH host-key policy shared with the browse path | `ssh.py` |
 | Path-component validation for request input | `security.py` |
 | Storage tests | `tests/test_transfer_logging.py`, `tests/test_transfer_listing.py` |
@@ -294,6 +296,21 @@ Deleting `completed` records has a consequence beyond the list: `get_sync_status
 reads completed transfers to decide the SYNCED / OUT_OF_SYNC badges in Browse
 Media, so media covered by a deleted record shows as not yet synced. The
 confirmation in the UI says so.
+
+`Transfer.get_active()` is the one definition of "still in flight": `running`,
+`pending`, `queued` and `paused`. `TransferCoordinator.get_active_transfers()`
+delegates to it, so `/api/transfers/active` and the migration guard cannot
+disagree about what active means.
+
+Queued and paused count deliberately. Neither is writing this instant, but both
+can start at any moment — which is what matters both to an operator reading the
+Activity panel and to anything asking whether it is safe to move files.
+
+**It was broken until 2026-08-01.** The body was `get_all(status_filter=None)` —
+every transfer ever recorded — behind a docstring promising active ones, with a
+comment saying filtering would happen in memory. It never did. Nothing called
+it, so nothing noticed until the backup migration guard did and read a history
+of ten completed transfers as ten running ones.
 
 Both coordinator listing methods (`get_all_transfers`, `get_active_transfers`)
 and `resume_active_transfers()` pass `include_logs=False`. The detail endpoints

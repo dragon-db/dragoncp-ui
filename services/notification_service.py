@@ -113,7 +113,7 @@ class NotificationService:
         """Send Discord webhook notification for completed or failed transfer"""
         try:
             # Check if Discord notifications are enabled
-            notifications_enabled = self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED', False)
+            notifications_enabled = self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED')
             if not notifications_enabled:
                 print("📭 Discord notifications are disabled, skipping notification")
                 return
@@ -141,9 +141,9 @@ class NotificationService:
             errors = self.extract_rsync_errors(logs) if transfer_status == 'failed' else []
             
             # Get settings for Discord notification
-            app_url = self.settings.get('DISCORD_APP_URL', 'http://localhost:5000')
-            manual_sync_thumbnail_url = self.settings.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', '')
-            icon_url = self.settings.get('DISCORD_ICON_URL', '')
+            app_url = self.settings.get('DISCORD_APP_URL')
+            manual_sync_thumbnail_url = self.settings.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL')
+            icon_url = self.settings.get('DISCORD_ICON_URL')
             
             # Determine title and thumbnail
             title = transfer.get('parsed_title', transfer.get('folder_name', 'Unknown'))
@@ -338,7 +338,7 @@ class NotificationService:
         """
         try:
             # Check if Discord notifications are enabled
-            notifications_enabled = self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED', False)
+            notifications_enabled = self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED')
             if not notifications_enabled:
                 print("📭 Discord notifications are disabled, skipping rename notification")
                 return
@@ -359,8 +359,8 @@ class NotificationService:
             media_type = rename_result.get('media_type', 'series')
             
             # Get settings for Discord notification
-            app_url = self.settings.get('DISCORD_APP_URL', 'http://localhost:5000')
-            icon_url = self.settings.get('DISCORD_ICON_URL', '')
+            app_url = self.settings.get('DISCORD_APP_URL')
+            icon_url = self.settings.get('DISCORD_ICON_URL')
             
             # Determine color based on status
             # Teal/Cyan color (1752220) for successful renames - unique to rename operation

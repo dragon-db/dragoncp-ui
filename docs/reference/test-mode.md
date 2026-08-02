@@ -1,5 +1,7 @@
 # Test mode
 
+Last updated: 2026-08-01
+
 What `TEST_MODE` guarantees, path by path. This is the lookup you check before
 trusting a test installation with a real media library — or before deciding
 whether an incident on a test box could have touched real files.
@@ -48,13 +50,12 @@ media.
 |---|---|---|
 | Transfer rsync — copies from the remote, and `--delete` removes destination files absent from the source | `services/transfer_service.py:599` | `--dry-run` appended; no bytes move and nothing is deleted |
 | Destination directory creation | `services/transfer_service.py:497` | Printed, not created |
-| Dynamic backup directory and its `.rsync-partial` | `services/transfer_service.py:555` | Printed, not created |
+| Backup staging directory and its `.rsync-partial` | `services/transfer_service.py:555` | Printed, not created |
 | Rename webhook — `os.rename` on a local media file | `services/rename_service.py:342` | Skipped; reported as `Renamed successfully (dry run)` |
-| Backup restore rsync | `services/backup_service.py:239` | `--dry-run` appended |
-| Backup restore file deletes | `services/backup_service.py:220` | Skipped, logged as `[DRY-RUN] Would delete` |
-| Restore destination directory creation | `services/backup_service.py:169` | Printed, not created |
-| Restore temporary file-list write and removal | `services/backup_service.py:247`, `:273` | Printed, not written |
-| Backup directory removal, two call sites | `services/backup_service.py:333`, `:358` | Skipped |
+| Restore — keeping the file it is about to replace | `services/backups/restore.py` (`_capture_current`) | Skipped; logged as `would store N replaced file(s)` |
+| Restore — writing the restored file | `services/backups/restore.py` (`_restore_one`) | Skipped; logged as `would write <path>` |
+| Restore — removing the file it replaced | `services/backups/restore.py` (`_restore_one`) | Skipped; logged as `would remove <path>` |
+| Restore destination directory creation | `services/backups/restore.py` (`RestoreRunner.run`) | Skipped |
 | Explore — moving superseded/removed local files into backup before a run | `services/explore/executor.py:87` | Skipped, printed as `TEST_MODE: would move to backup`. **This gate is load-bearing:** the rsync is dry, so moving the local copies anyway would strand them — old copy gone, new one never fetched |
 | Explore transfer rsync | `services/transfer_service.py:838` | `--dry-run` inserted into the same command the real run uses |
 | Config file write | `config.py:124` | Printed; in-memory config still updates |
@@ -99,9 +100,15 @@ dry. This is why simulations are safe to run against production — see
   `services/simulation_service.py` reads `TEST_MODE`.
 - **It does not bypass authentication.** Neither `auth.py` nor
   `webhook_auth.py` mentions it.
-- **It does not make backup restore a usable rehearsal.** Restore skips writing
-  its temporary file list, so rsync then exits non-zero and the restore reports
-  failure. See [../features/backups/README.md](../features/backups/README.md).
+- **Restore IS a usable rehearsal.** A restore under test mode reports success
+  and logs, line by line, which file it would keep, which it would write and
+  which it would remove — the whole plan, without touching anything. It no
+  longer builds an rsync command around a file list it deliberately did not
+  write, which is what used to make every test-mode restore fail. See
+  [../features/backups/README.md](../features/backups/README.md).
+- **It does not stop retention or the backup sorter.** Both only ever move or
+  remove files inside `BACKUP_PATH`, never in a media library. A test-mode
+  transfer displaces nothing, so there is nothing for them to sort.
 - **It does not stop the database being written.** Transfers, notifications and
   logs are recorded exactly as normal. Test mode protects files, not rows. An
   Explore run in test mode still creates its transfer row, its per-file records

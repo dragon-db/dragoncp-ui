@@ -45,6 +45,199 @@ Notes:
 
 ## In progress
 
+### TASK-014 — Backup and restore rework
+Status: done (unreleased)      Priority: high
+Tags: backend, frontend, backups                     Branch: backup-and-rename
+Docs: [docs/features/backups/README.md](docs/features/backups/README.md), [docs/plans/backup-restore-rework.md](docs/plans/backup-restore-rework.md)
+
+Plan: backups are organised by the transfer that produced them, which is why
+nothing can answer "what old copies of this episode do I have". Reorganise them
+by what the file *is*: every movie and episode is a slot with a version history,
+the library holds the current version, the backup area holds the rest.
+
+Done looks like: a restore that names the exact episode and the exact file it
+will replace before it runs, is reversible because the swap is the only
+mechanism, and cannot fill the disk.
+
+Steps:
+- [x] Phase 1 — `BACKUP_PATH` fails closed. One place resolves the base and it
+      raises; transfers refuse to start, resume or restart without it. The
+      `/tmp/backup` fallback is gone, and `services/backup_service.py` with it
+- [x] Phase 2 — identity: Explore's episode parser reused as-is, movie identity
+      added, slot keys, capture ids with millisecond ordering
+- [x] Phase 3 — sorting: rsync stages into `.staging/<transfer>`, then every
+      file is renamed into `<library>/<title>/<season>/<SxxEyy>/<capture>/`.
+      Extras and unsorted buckets for what carries no episode identity
+- [x] Phase 4 — three index tables, rebuild-from-disk carrying pins forward
+- [x] Phase 5 — migration with a preview, library-prefix title matching, and a
+      guard that refuses while transfers are running
+- [x] Phase 6 — restore: capture-before-destroy, queued, exact preview
+- [x] Phase 7 — retention: keep N per slot, grace period, pinning, reporting
+- [x] Phase 8 — UI shaped like Explore: titles, slots, version inspector,
+      restore preview, retention/migration/rebuild housekeeping
+- [x] Phase 9 — Explore's backup panel reads the same index, by slot
+- [x] Phase 10 — admin cleanup: bulk delete by version or by whole item, with
+      `keep_newest` as a safety net, a preview of the space it frees, pinned
+      versions held back and reported, a Largest-first sort to find what is
+      worth deleting, and one action to clear the unidentified bucket
+- [x] Retention settings are saved to `app_settings`, so the rule can be
+      changed from the UI and takes effect without a restart
+- [ ] Verify on the live instance: preview the migration, apply it, then walk
+      one restore end to end. Nothing has been run against the real disk yet
+      beyond the read-only preview
+- [ ] Retire the legacy `backup` / `backup_file` tables once the migration has
+      run and been trusted for a while — migration still reads them
+
+Notes:
+- 2026-08-01 (operator): three decisions taken — reorganise on disk rather than
+  grouping only in the index, migrate the existing data after a dry run, and
+  prune by keeping N versions per slot.
+- 2026-08-01 (claude): measured the live backup area before designing anything.
+  864 folders on disk, **687 of them empty**; 330 files totalling 367 GB; this
+  checkout's index knows about **19**. The disk is 68% full with no pruning of
+  any kind. That ratio is the argument for making the tree authoritative and the
+  index rebuildable — the current shape has already lost track of the disk.
+- The backup area and the library are on **different devices**, so displacing a
+  file is a real copy but reorganising within the backup area is a rename. That
+  asymmetry is what makes the sorting step cheap and why restore has to be
+  queued rather than run inside the request.
+- Reversibility falls out rather than being built: if the only primitive is
+  "displace the occupant, put something else in the slot", then undoing a
+  restore is restoring the capture the restore itself created.
+- Do not write a second episode parser. Explore's already handles the four
+  things that break naive ones here, and the current backup parser splits titles
+  at the first " - ", which mis-parses any title containing one.
+- Sonarr/Radarr API integration is deliberately out of scope; renames wait for
+  it. Backups do not depend on it, which is why they go first.
+- 2026-08-01 (claude): the migration preview was run read-only against the live
+  backup disk twice while tuning it. First pass identified 77 of 301 files;
+  after two fixes it identifies **271**, leaving 30 (26 pieces of artwork, 2
+  `.nfo`, 2 hand-made pre-restore movie files). The two fixes were: legacy
+  folder names cannot be split reliably (real ids look like
+  `series_webhook_tvshows_301_s1_ef92`), so the name is matched against the
+  library's own title folders by longest prefix instead; and a stray
+  `.rsync-partial` sat at the top of the backup disk and would have had
+  half-finished downloads migrated in as if they were backups.
+- 2026-08-01 (claude): the live disk holds 147 distinct slots with up to 3
+  stored versions each — which is the case the old per-transfer shape could not
+  express at all.
+- 131 new tests across `tests/test_backups.py` (identity, sorting, index,
+  migration, restore, retention, bulk delete, settings) and
+  `tests/test_backup_routes.py` (the HTTP layer end to end). 328 pass overall;
+  nothing pre-existing changed behaviour.
+- 2026-08-01 (claude): writing the bulk-delete tests found a real bug in the
+  folder tidy-up — it started walking at the directory it had just removed, hit
+  the first error and gave up, so every deletion left the empty slot, season and
+  title folders behind. Retention had been doing this since it was written.
+- Handoff: built, tested, and verified against the live disk read-only. What has
+  NOT happened is the migration itself — preview it in the UI, read the mapping,
+  then apply. Do it with no transfers running; the code refuses otherwise.
+
+### TASK-015 — One settings boundary: env for constants, database for the rest
+Status: done (unreleased)      Priority: high
+Tags: backend, frontend, settings                    Branch: backup-and-rename
+Docs: [docs/reference/configuration.md](docs/reference/configuration.md#where-a-setting-lives)
+
+Plan: settings lived in three places and one of them was a lie. Establish two
+stores with a written boundary, and delete the third.
+
+Done looks like: every setting declared in one registry, the UI showing which
+store each came from, and no field that appears editable and silently is not.
+
+Steps:
+- [x] `settings_registry.py` — one row per setting: store, type, default,
+      bounds, whether it is a secret. 28 env, 13 database
+- [x] `services/settings_service.py` — reads either store, writes only the
+      database half, refuses env keys by name
+- [x] Removed the per-browser session store, `save_config`, `/api/config/reset`
+      and `/api/config/env-only`
+- [x] `WEBSOCKET_TIMEOUT_MINUTES` moved out of the session into the database —
+      it lived nowhere else, so it was per-operator and invisible to the
+      cleanup thread that enforces it
+- [x] Every consumer repointed at the resolver, so the env fallback is applied
+      in one place instead of per call site
+- [x] Startup adoption: database-eligible values still in the env file are
+      copied in once, so nothing changes behaviour on the way over
+- [x] Settings page generated from the registry — env read-only with
+      provenance, database editable
+- [x] 31 tests pinning the boundary, including that the path settings and the
+      secrets cannot become editable
+
+Notes:
+- 2026-08-01 (operator): boundary chosen — remote connection, the six media
+  directories, `BACKUP_PATH`, disk paths/API and `TEST_MODE` are constants;
+  everything else variable.
+- 2026-08-01 (claude): kept the 11 credential/secret/security keys in the env
+  file against that instruction, and said so. The database is not encrypted, and
+  a key editable from a web form is editable by anyone reaching that form using
+  a session minted by the key they would be changing. The seven path settings
+  are also the path-traversal boundary — `get_all_allowed_paths()` returns
+  exactly those.
+- 2026-08-01 (claude): writing the registry found `SERIES_ANIME_SYNC_WAIT_TIME`
+  is in **seconds**, not minutes — the scheduler adds it straight to
+  `time.time()`. Its 30–900 bounds were enforced in one route and nowhere else,
+  so any other path wrote it unchecked.
+- 2026-08-01 (claude): `AUTO_SYNC_MOVIES` read the env file as a fallback while
+  `AUTO_SYNC_SERIES` and `AUTO_SYNC_ANIME` did not, so the same setting was
+  configured two different ways depending on media type. One reader now.
+- 2026-08-01 (claude): regression sweep over the whole branch after a reported
+  UI crash. Four real defects found and fixed:
+  1. `useRuntimeConnection` read `settings?.groups.flatMap(...)` — the optional
+     chain stopped at `settings`, so any response without `groups` threw. That
+     hook wraps every authenticated route, so it white-screened the entire app,
+     not just Settings. It now tolerates the grouped shape, the previous flat
+     shape and anything else, which is what a partial deploy actually looks
+     like.
+  2. The legacy static UI calls `/api/config/env-only` and `/api/config/reset`
+     and reads a FLAT config map. Both endpoints had been deleted and the shape
+     changed — that is the production UI. Both restored, and `/api/config` now
+     returns the flat map alongside the grouped payload.
+  3. `RetentionPolicy.save()` called `set_bool` on the settings resolver, which
+     has no such method — every attempt to save the retention rule would have
+     raised AttributeError. Hidden by a test double that answered `set_bool`;
+     the tests now use the real service over a real table.
+  4. Discord and auto-sync settings were still read and written through the raw
+     model in five places, bypassing the registry's defaults and bounds. Every
+     settings path now goes through the resolver.
+- Verified with an in-process sweep of 27 endpoints against the real app and
+  the live database: no 5xx, no duplicate route rules. The realtime idle
+  timeout still resolves to the same 35 minutes it did before it moved stores.
+- 2026-08-01 (claude): reported as "Core Config is empty". Diagnosed, not
+  guessed: the dev backend on :5050 had been up 28 hours and was still serving
+  the previous `/api/config`, while Vite had hot-reloaded the new frontend. So
+  the cause was a missing restart — but two things about that were my fault and
+  are fixed:
+  1. The defensive guard added for the earlier crash rendered a BLANK panel
+     when it did not recognise the response. Silence is not tolerance. It now
+     says the backend is running an older version and to restart it, and has
+     separate states for a failed request and a genuinely empty list.
+  2. The page header still carried a "Save Automation" button, left over from
+     "Save All" when one button saved every tab. A page-level button that saves
+     one tab is worse than none — moved to the end of the Automation tab, next
+     to what it saves.
+- Verified against the restarted backend: Core Config renders 6 cards / 25
+  settings, env keys refuse writes by name, the automation and Discord round
+  trips are byte-identical, and the 9 stored settings survived the restart
+  untouched.
+- 2026-08-01 (claude): reported as "migration says 10 transfers are running when
+  none are". `Transfer.get_active()` was `get_all(status_filter=None)` — the
+  whole table — behind a docstring promising active transfers, with a comment
+  saying filtering happened in memory that was never written. The dev database
+  holds 10 completed transfers, so the guard read 10 running ones. Pre-existing,
+  and dead code until the guard called it.
+  Fixed at the model, not worked around at the call site: `get_active()` now
+  filters on the four unfinished statuses, and `get_active_transfers()`
+  delegates to it so `/api/transfers/active` and the guard share one definition.
+  That delegation is byte-identical to what the listing returned before —
+  pinned by `tests/test_transfer_listing.py::ActiveTransferListingTests`.
+  Note the contract choice: the old docstring said running/pending, and
+  implementing it literally would have dropped queued and paused transfers out
+  of the Activity panel. The four-status set the coordinator already used won,
+  and the docstring was corrected to match.
+- Handoff: done and verified live. The Settings page's Automation tab still has
+  its own controls for auto-sync and Discord; they write through the same
+  resolver, so they cannot disagree with the Config tab.
+
 ### TASK-010 — Explore rebuild
 Status: in progress      Priority: high
 Tags: backend, frontend, explore                     Branch: explore-page
@@ -302,6 +495,48 @@ Notes:
   the same symptom for unrelated reasons and will send you chasing ghosts.
 - Handoff: the reverted attempt is in the PR #54 review discussion.
 
+### TASK-013 — Install the React UI as a PWA on the phone
+Status: planned      Priority: medium
+Tags: frontend, tooling, deployment                  Branch: —
+Docs: [docs/plans/mobile-app-strategy.md](docs/plans/mobile-app-strategy.md)
+
+Plan: the UI is already a working phone UI but only ever a browser tab. Make it
+installable — home-screen icon, its own task-switcher card, no URL bar, launches
+from cache. Decided 2026-08-01 in favour of a PWA over Capacitor and React
+Native; the plan doc holds the comparison and the numbers behind it.
+
+Done looks like: the app opens from the home screen, survives an app switch, and
+updates when new files are deployed.
+
+Steps:
+- [ ] Enable HTTPS certificates in the tailnet admin console, then put
+      `tailscale serve` in front of the nginx container on 5002 — a service
+      worker cannot register over plain HTTP. No code in this step
+- [ ] `vite-plugin-pwa`, manifest, icon set, `display: standalone`
+- [ ] Deny-list `/api` and `/socket.io` from the navigation fallback, and keep
+      API responses out of the runtime cache
+- [ ] Update prompt on a new build, so a cached shell cannot run against a newer
+      API
+- [ ] Live with it before deciding anything else
+- [ ] Optional, only if it turns out to be the point: Web Push — VAPID keys, a
+      subscription table, a sender beside the existing socket emits
+
+Notes:
+- 2026-08-01 (claude): the client is a remote control. rsync, SSH, the queue and
+  the database are all server-side, so there is no native capability to gain —
+  only notifications, which an installed Android PWA already gets. React Native
+  would rewrite ~15,000 lines of components against ~4,600 portable, because
+  Base UI and Tailwind are both DOM-only.
+- The blocker is a secure context, not code. Tailscale is already running and
+  the phone is already on the tailnet; `tailscale cert` reports no cert domains,
+  which means HTTPS Certificates is simply switched off in the admin console.
+- Sequenced after the backups/rename work. Do not start this first.
+- Two things worth settling before an icon lands on a home screen: the React app
+  is not the production UI yet, and an installed PWA is sticky. The bundle is
+  also one 962 KB chunk — route-level code splitting would cut install and
+  update cost.
+- Handoff: not started. Step 1 is a console toggle and costs nothing to try.
+
 ## Backlog
 
 ### TASK-004 — Triage the known issues
@@ -313,8 +548,9 @@ Plan: 79 defects were found while writing the documentation. Three are verified
 data-safety issues and should be handled first:
 
 Steps:
-- [ ] `BACKUP_PATH` unset writes backups to `/tmp/backup` while restore refuses
-      them — backups appear to work and cannot be restored
+- [x] `BACKUP_PATH` unset wrote backups to `/tmp/backup` while restore refused
+      them — writing now refuses the same way, with no fallback anywhere
+      (TASK-014 phase 1)
 - [ ] `migrate_v1_to_v2.py` has no v1 check and drops `transfers` and
       `app_settings` regardless, erasing history on a live v2 install
 - [x] `TEST_MODE=true` shows the development banner while rsync still runs for

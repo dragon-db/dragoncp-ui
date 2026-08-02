@@ -1,7 +1,33 @@
 # Settings Screen
 
-Last updated: 2026-07-28
-Primary files: `frontend/src/components/pages/settings.tsx`, `frontend/src/hooks/useConfig.ts`, `frontend/src/hooks/useWebhooks.ts`, `app.py`, `config.py`, `routes/webhooks.py`, `routes/debug.py`, `models/settings.py`, `websocket.py`
+Last updated: 2026-08-01
+Primary files: `settings_registry.py`, `services/settings_service.py`, `frontend/src/components/settings/settings-panel.tsx`, `frontend/src/components/pages/settings.tsx`, `frontend/src/hooks/useConfig.ts`, `app.py`, `config.py`, `routes/webhooks.py`, `models/settings.py`, `websocket.py`
+
+## Where a setting lives
+
+Two stores, and only two — see
+[`../../reference/configuration.md`](../../reference/configuration.md#where-a-setting-lives).
+
+The **Config** tab is now generated from `settings_registry.py`. Environment
+settings render read-only, with a note saying they come from
+`dragoncp_env.env`; database settings are editable and take effect immediately.
+A save that includes an environment key refuses it **by name** rather than
+ignoring it.
+
+The **Automation** tab keeps its purpose-built controls for auto-sync and
+Discord. Those are database settings too, written through the same resolver, so
+the two tabs cannot disagree.
+
+**The old warning on this page no longer applies.** The two tabs used to save to
+different places — Core Config to a per-browser Flask session that background
+threads never read, Automation to the database. That session store is gone.
+Everything writable now goes to one place.
+
+**The legacy static UI still works.** It reads a flat key -> value map from
+`GET /api/config`, which is returned alongside the grouped payload, and it
+still calls `/api/config/env-only` and `/api/config/reset`. Its settings form
+now reports which fields it could not change rather than claiming a full save.
+
 
 ## Purpose
 
