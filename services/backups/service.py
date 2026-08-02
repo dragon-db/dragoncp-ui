@@ -413,8 +413,12 @@ class BackupsService:
                 'progress': message,
                 'end_time': now,
             })
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as error:  # noqa: BLE001 - the queue must still be released
+            # Swallowed but never silent: the files are already where they
+            # belong, and what is lost is the record saying so. A transfer stuck
+            # showing 'running' with no explanation is what this used to leave.
+            print(f"⚠️  Restore {transfer_id} finished but its status could not be "
+                  f"recorded: {error}")
 
         # Record WHEN it was restored, and leave `status` alone: the files are
         # still in the backup tree, so the capture stays restorable and stays
@@ -428,8 +432,9 @@ class BackupsService:
         if ok and not summary.get('failed'):
             try:
                 self.captures.update(capture_id, {'restored_at': now})
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as error:  # noqa: BLE001 - the restore itself succeeded
+                print(f"⚠️  Restore of {capture_id} succeeded but the restore time "
+                      f"could not be recorded: {error}")
 
         self._emit('transfer_complete', {
             'transfer_id': transfer_id,
@@ -599,17 +604,23 @@ class BackupsService:
         kept = [r for r in selected if not r.get('pinned')]
         return kept, len(selected) - len(kept)
 
-    def clear_unsorted(self) -> Dict:
+    def clear_unsorted(self, include_pinned: bool = False) -> Dict:
         """
         Throw away everything that could not be identified.
 
         Offered as one action because the bucket is, by definition, files
         nothing can tell you anything about — and on a full disk that is the
         least painful thing to lose.
+
+        Pinned captures are held back like everywhere else, and the count is
+        reported. This used to force `include_pinned`, so the one sweep an
+        operator could not narrow was also the only one that ignored a pin —
+        and a pin on an unidentified file is the clearest possible statement
+        that it is worth keeping until someone works out what it is.
         """
         return self.delete_many(
             capture_ids=[c['capture_id'] for c in self.captures.by_kind('unsorted', limit=100000)],
-            include_pinned=True,
+            include_pinned=include_pinned,
         )
 
     @staticmethod

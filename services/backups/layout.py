@@ -40,6 +40,7 @@ tree. See security.py.
 
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterator, List, Optional, Set, Tuple
@@ -62,11 +63,12 @@ STAGING_DIR = '.staging'
 UNSORTED_DIR = '_unsorted'
 EXTRAS_DIR = '_extras'
 
+# Explore's file lists for rsync. Dot-prefixed like the staging area, so the
+# tree scan never sees it as content.
+PLANS_DIR = '.explore-plans'
+
 # Directories the tree scan must never descend into or treat as content.
 RESERVED_TOP_LEVEL = frozenset({STAGING_DIR, UNSORTED_DIR})
-
-# Legacy plumbing that lived directly under BACKUP_PATH before this rework.
-LEGACY_INTERNAL = frozenset({'.explore-plans', '.explore-dryrun'})
 
 _SLOT_FOLDER_RE = re.compile(r'^S(\d{2,4})E(\d{2,4})$')
 
@@ -169,6 +171,23 @@ class BackupLayout:
     def staging_root(self) -> str:
         return self._within(os.path.join(self.base(), STAGING_DIR))
 
+    def plans_dir(self, *segments: str) -> str:
+        """
+        Where Explore writes the file lists it hands to rsync.
+
+        Inside BACKUP_PATH like everything else here, and failing closed with
+        it. These used to be built as `BACKUP_PATH or '/tmp'`, which is the
+        same defect the backup tree itself was fixed for: an unconfigured
+        install wrote them somewhere the OS may clear, and a plan that vanishes
+        between approval and execution turns a reviewed transfer into a
+        whole-directory mirror.
+        """
+        for segment in segments:
+            if not validate_path_component(segment):
+                raise PathTraversalError(f"Unsafe path segment for a plan: {segment!r}")
+        path = os.path.join(self.base(), PLANS_DIR, *segments)
+        return self._within(path)
+
     # ---- slots and captures ----------------------------------------------
 
     def slot_dir(self, identity: SlotIdentity) -> str:
@@ -263,6 +282,22 @@ class BackupLayout:
 
     # ---- reading the tree back -------------------------------------------
 
+    @staticmethod
+    def _listdir(path: str) -> List[str]:
+        """
+        A directory's entries, sorted, or nothing when it cannot be read.
+
+        A rebuild walks the whole backup disk. One unreadable title folder —
+        a permission change, or a directory another instance removed while this
+        was walking it — must not abort the scan and leave every library after
+        it unindexed.
+        """
+        try:
+            return sorted(os.listdir(path))
+        except OSError as error:
+            print(f"⚠️  Skipping unreadable backup directory {path}: {error}")
+            return []
+
     def scan(self) -> Iterator[CaptureLocation]:
         """
         Every capture in the tree, found by walking it.
@@ -285,7 +320,7 @@ class BackupLayout:
 
         unsorted_root = os.path.join(base, UNSORTED_DIR)
         if os.path.isdir(unsorted_root):
-            for name in sorted(os.listdir(unsorted_root)):
+            for name in self._listdir(unsorted_root):
                 path = os.path.join(unsorted_root, name)
                 parsed = parse_capture_id(name)
                 if not os.path.isdir(path) or not parsed:
@@ -298,7 +333,7 @@ class BackupLayout:
                 )
 
     def _scan_library(self, base: str, library: str, library_root: str) -> Iterator[CaptureLocation]:
-        for title in sorted(os.listdir(library_root)):
+        for title in self._listdir(library_root):
             title_path = os.path.join(library_root, title)
             if not os.path.isdir(title_path):
                 continue
@@ -310,7 +345,7 @@ class BackupLayout:
                 )
                 continue
 
-            for child in sorted(os.listdir(title_path)):
+            for child in self._listdir(title_path):
                 child_path = os.path.join(title_path, child)
                 if not os.path.isdir(child_path):
                     continue
@@ -325,7 +360,7 @@ class BackupLayout:
                 # read from the slot code, which is padded and canonical — the
                 # folder name is not, and trusting it is what splits one
                 # episode's history across "Season 1" and "Season 01".
-                for slot in sorted(os.listdir(child_path)):
+                for slot in self._listdir(child_path):
                     slot_path = os.path.join(child_path, slot)
                     if not os.path.isdir(slot_path):
                         continue
@@ -340,7 +375,7 @@ class BackupLayout:
     def _captures_in(self, parent: str, library: str, title: str,
                      season: Optional[int], episode: Optional[int],
                      kind: str) -> Iterator[CaptureLocation]:
-        for name in sorted(os.listdir(parent)):
+        for name in self._listdir(parent):
             path = os.path.join(parent, name)
             if not os.path.isdir(path):
                 continue
@@ -365,11 +400,11 @@ class BackupLayout:
         if not base or not os.path.isdir(base):
             return []
         found = []
-        for name in sorted(os.listdir(base)):
+        for name in self._listdir(base):
             path = os.path.join(base, name)
             if not os.path.isdir(path):
                 continue
-            if name in LIBRARIES or name in RESERVED_TOP_LEVEL or name in LEGACY_INTERNAL:
+            if name in LIBRARIES or name in RESERVED_TOP_LEVEL:
                 continue
             # Anything dot-prefixed is rsync's or ours, never a backup folder.
             # The live disk has a stray `.rsync-partial` at the top level, and
@@ -405,7 +440,10 @@ class BackupLayout:
         except BackupPathNotConfigured:
             return
 
-        current = os.path.abspath(start)
+        # Resolved the same way the base is. Comparing an unresolved path
+        # against a resolved base means a symlink anywhere in BACKUP_PATH makes
+        # the containment check fail and the prune silently do nothing.
+        current = os.path.realpath(start)
         while current.startswith(base + os.sep) and not os.path.isdir(current):
             current = os.path.dirname(current)
 
@@ -421,3 +459,36 @@ class BackupLayout:
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# How recently a folder must have been touched to count as "in use".
+#
+# The backup disk can be shared by more than one instance — a development
+# checkout and the live one, each with its own database. Neither can see the
+# other's transfers, so anything that reorganises files on that disk asks the
+# disk itself: a folder whose contents changed in the last few minutes is left
+# alone regardless of what any database says.
+ACTIVE_FOLDER_GRACE_SECONDS = 15 * 60
+
+
+def recently_touched(folder: str, within: int = ACTIVE_FOLDER_GRACE_SECONDS) -> bool:
+    """Whether anything in this folder changed very recently."""
+    cutoff = time.time() - within
+    try:
+        if os.path.getmtime(folder) > cutoff:
+            return True
+    except OSError:
+        return False
+    for root, _dirs, files in os.walk(folder):
+        try:
+            if os.path.getmtime(root) > cutoff:
+                return True
+        except OSError:
+            continue
+        for name in files:
+            try:
+                if os.path.getmtime(os.path.join(root, name)) > cutoff:
+                    return True
+            except OSError:
+                continue
+    return False

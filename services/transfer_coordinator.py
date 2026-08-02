@@ -415,7 +415,7 @@ class TransferCoordinator:
                 'progress': 'BACKUP_PATH is not configured; refusing to resume',
                 'paused_at': datetime.now().isoformat(),
             })
-            self.queue_manager.unregister_transfer(transfer_id)
+            self.queue_manager.unregister_transfer(transfer_id, transfer['dest_path'])
             return False, 'BACKUP_PATH is not configured; refusing to resume'
 
         transfer = self.transfer_model.get(transfer_id)
@@ -439,7 +439,7 @@ class TransferCoordinator:
                 'progress': 'Resume failed - partial files kept, try again',
                 'paused_at': datetime.now().isoformat()
             })
-            self.queue_manager.unregister_transfer(transfer_id)
+            self.queue_manager.unregister_transfer(transfer_id, transfer['dest_path'])
             return False, 'Failed to resume transfer'
 
         import threading
@@ -458,6 +458,12 @@ class TransferCoordinator:
             return False
         backup_dir = self._staging_dir(transfer_id)
         if backup_dir is None:
+            # Say why on the row, as start and resume already do. Returning a
+            # bare False left the transfer showing whatever it failed with and
+            # the operator retrying a button that could never work.
+            self.transfer_model.update(transfer_id, {
+                'progress': 'BACKUP_PATH is not configured; refusing to restart',
+            })
             return False
         return self.transfer_service.restart_transfer(transfer_id, backup_dir)
 

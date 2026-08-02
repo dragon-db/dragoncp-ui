@@ -21,6 +21,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from datetime import datetime, timedelta
 
 from models.database import DatabaseManager
+from services.backups.layout import BackupLayout
 from services.explore.store import ExploreStore
 from services.explore.service import ExploreError, ExploreService
 
@@ -52,12 +53,27 @@ class FakeSSH:
         return 0, payload, ''
 
 
+class _BackupPathConfig:
+    """The one setting BackupLayout reads."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def get(self, key, default=''):
+        return self.root if key == 'BACKUP_PATH' else default
+
+
 class FakeBackups:
     """Stands in for BackupsService at the boundary the executor uses."""
 
     def __init__(self, root):
         self.root = root
         self.sorted = []
+        # The real service exposes its layout, and Explore builds its plan
+        # directories through it so they land under BACKUP_PATH and fail closed
+        # with it. Using the real one keeps that path under test rather than
+        # letting a stub agree with whatever the code does.
+        self.layout = BackupLayout(_BackupPathConfig(root))
 
     def staging_dir(self, transfer_id):
         return os.path.join(self.root, '.staging', transfer_id)

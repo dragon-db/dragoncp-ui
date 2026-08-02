@@ -348,6 +348,10 @@ class RestoreRunner:
         summary = {
             'restored': 0, 'replaced': 0, 'failed': 0,
             'captured': None, 'bytes': 0, 'failures': [],
+            # Files that WERE restored but left something behind — the old copy
+            # could not be removed. Kept apart from `failures` so the counts
+            # stay honest: these are successes with a caveat, not failures.
+            'warnings': [],
         }
 
         allowed = self.config.get_destination_paths()
@@ -389,6 +393,12 @@ class RestoreRunner:
                 summary['failed'] += 1
                 summary['failures'].append({'file': operation.relative_path, 'error': error})
                 continue
+            if error:
+                # A success that could not finish tidying up. This used to be
+                # returned and then dropped on the floor, so the operator was
+                # told the restore was clean while a stale file stayed in the
+                # library beside the restored one.
+                summary['warnings'].append({'file': operation.relative_path, 'error': error})
             summary['restored'] += 1
             summary['bytes'] += operation.file_size
             if operation.replaces:
@@ -532,7 +542,12 @@ class RestoreRunner:
                 self.log(f"Removed the replaced file: {os.path.basename(operation.replaces)}")
             except OSError as error:
                 # The restored file is already in place and the old copy is
-                # safely stored, so this is reported rather than fatal.
-                return True, f"could not remove {operation.replaces}: {error}"
+                # safely stored, so this is reported rather than fatal. Logged
+                # here as well as returned: the library now holds both files,
+                # and that is worth saying at the moment it happens rather than
+                # only in a summary the caller might not read.
+                warning = f"could not remove {operation.replaces}: {error}"
+                self.log(f"⚠️  Restored, but {warning}")
+                return True, warning
 
         return True, ''

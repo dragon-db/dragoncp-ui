@@ -86,6 +86,12 @@ export function RetentionDialog({
   const values = { keep: Number(keep) || rule.keep, grace_hours: Number(grace) || 0 };
   const changed = values.keep !== rule.keep || values.grace_hours !== rule.grace_hours;
 
+  // The backend reports whether it has a writable store. Without one the rule
+  // lives in the env file and a restart, so offering a Save that can only
+  // return an error is worse than saying so. Preview and a one-off clean-up
+  // still work — they do not persist anything.
+  const savable = rule.editable !== false;
+
   /**
    * Which rule the shown preview belongs to.
    *
@@ -116,6 +122,14 @@ export function RetentionDialog({
           </DialogDescription>
         </DialogHeader>
 
+        {!savable && (
+          <div className="rounded-lg border border-amber-500/35 bg-amber-500/[0.08] px-3 py-2.5 text-[12.5px] text-amber-400">
+            No settings store is available, so this rule can only be changed in
+            <code className="mx-1 font-mono text-[11.5px]">dragoncp_env.env</code>
+            on the server. You can still preview and run a one-off clean-up below.
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <Label htmlFor="retention-keep">Versions to keep</Label>
@@ -125,6 +139,7 @@ export function RetentionDialog({
               min={1}
               max={50}
               value={keep}
+              disabled={!savable}
               onChange={(event) => editRule(setKeep, event.target.value)}
             />
           </div>
@@ -135,6 +150,7 @@ export function RetentionDialog({
               type="number"
               min={0}
               value={grace}
+              disabled={!savable}
               onChange={(event) => editRule(setGrace, event.target.value)}
             />
           </div>
@@ -179,7 +195,7 @@ export function RetentionDialog({
         <DialogFooter className="gap-2 sm:justify-between">
           <Button
             variant="secondary"
-            disabled={save.isPending || !changed}
+            disabled={save.isPending || !changed || !savable}
             onClick={() =>
               save.mutate(values, {
                 onSuccess: () => toast.success("Retention saved"),
@@ -248,7 +264,9 @@ export function MigrationDialog({
           <DialogDescription className="text-[12.5px]">
             {legacyFolders} folder(s) from the previous per-transfer layout are still on the disk.
             This identifies what is in them and files each one under the movie or episode it belongs
-            to. Preview first — nothing moves until you say so.
+            to. Preview first — nothing moves until you say so. Moving re-reads the disk, so a
+            folder that appeared or changed since the preview is handled as it is then; nothing is
+            deleted either way.
           </DialogDescription>
         </DialogHeader>
 
@@ -346,7 +364,15 @@ export function MigrationDialog({
                   setReport(result);
                   toast.success(result.message);
                 },
-                onError: () => toast.error("Migration failed"),
+                onError: (error: unknown) => {
+                  // A refusal comes back 409 with the reason — a transfer is
+                  // running, or the disk could not be checked. Say which.
+                  const body = (
+                    error as { response?: { data?: { message?: string } & MigrationReport } }
+                  )?.response?.data;
+                  if (body) setReport(body as MigrationReport);
+                  toast.error(body?.message ?? "Migration failed");
+                },
               })
             }
           >

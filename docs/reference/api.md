@@ -1749,6 +1749,16 @@ What it does: carries out the migration and rebuilds the index over the result.
 
 Auth: required. Input JSON: `confirm` must be `true`; `400` without it.
 
+**It re-derives its own plan** rather than redeeming the one `/migration/plan`
+returned, so a folder that appeared or changed since the preview is handled as
+it is now. That is safe here in a way it would not be for a deletion: migration
+only moves legacy folders into the tree and removes ones it has emptied, so a
+plan that has drifted costs accuracy, not files.
+
+Refusals come back `409` with `applied: false` and the reason in `message` — a
+transfer is active, or whether one is active could not be determined. A refusal
+is never reported as a success with a zero count.
+
 ### Legacy endpoints
 
 Kept because the static UI is what production serves. They are backed by the

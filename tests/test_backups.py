@@ -558,6 +558,36 @@ class IndexerTests(BackupsTestCase):
         for key in keys:
             self.assertEqual(len(self.captures.captures_for_slot(key)), 1)
 
+    def test_a_double_episode_lists_under_both_of_its_own_numbers(self):
+        """
+        The slot key is the authority on which episode a summary row is about.
+
+        A double episode is filed under S01E01 and registered against both
+        slots, so reading season/episode off the capture made the S01E02 row
+        claim to be S01E01 — the page listed the same episode twice.
+        """
+        self.stage('transfer_dbl', f"{SHOW} - S01E01E02 - A.mkv")
+        self.sort('transfer_dbl', 'tvshows', os.path.join(self.tv_root, SHOW, 'Season 01'))
+        self.indexer.rebuild()
+
+        slots = self.captures.slots()
+        self.assertEqual(len(slots), 2)
+        self.assertEqual(
+            sorted((s['season_number'], s['episode_number']) for s in slots),
+            [(1, 1), (1, 2)],
+        )
+
+    def test_a_movie_slot_keeps_its_null_episode(self):
+        """Movies have no episode code in the key, and must not gain one."""
+        self.stage('transfer_mv', f"{FILM} [Bluray-1080p].mkv")
+        self.sort('transfer_mv', 'movies', os.path.join(self.movie_root, FILM))
+        self.indexer.rebuild()
+
+        slots = self.captures.slots()
+        self.assertEqual(len(slots), 1)
+        self.assertIsNone(slots[0]['season_number'])
+        self.assertIsNone(slots[0]['episode_number'])
+
     def test_unsorted_captures_are_indexed_separately(self):
         self.stage('transfer_u', 'stray.mkv')
         self.sort('transfer_u', '', os.path.join(self.tv_root, SHOW))
@@ -584,6 +614,32 @@ class IndexerTests(BackupsTestCase):
         self.assertEqual(len(slots), 1)
         self.assertEqual(slots[0]['version_count'], 2)
 
+    def duplicates(self, episodes, aged=True):
+        """
+        Several capture folders sharing one id — what the earlier sorter left.
+
+        Aged by default, because a real duplicate is one an old sorter wrote:
+        the rebuild deliberately leaves anything touched in the last few minutes
+        alone, since another instance may be writing into it right now.
+        """
+        shared = str(new_capture_id('transfer_dup'))
+        made = []
+        for episode in episodes:
+            folder = os.path.join(
+                self.backup_root, 'shows', SHOW, 'Season 01',
+                f"S01E{episode:02d}", shared,
+            )
+            touch(os.path.join(folder, f"{SHOW} - S01E{episode:02d} - A.mkv"))
+            made.append(folder)
+
+        if aged:
+            old = time.time() - 7 * 24 * 3600
+            for folder in made:
+                for name in os.listdir(folder):
+                    os.utime(os.path.join(folder, name), (old, old))
+                os.utime(folder, (old, old))
+        return shared
+
     def test_a_duplicate_folder_name_is_repaired_rather_than_lost(self):
         """
         Two folders cannot share a name, because the name is the identity.
@@ -593,12 +649,7 @@ class IndexerTests(BackupsTestCase):
         other would leave the second's files on disk and unreachable, so the
         rebuild renames it and indexes both.
         """
-        shared = str(new_capture_id('transfer_dup'))
-        for episode in (1, 2):
-            touch(os.path.join(
-                self.backup_root, 'shows', SHOW, 'Season 01',
-                f"S01E{episode:02d}", shared, f"{SHOW} - S01E{episode:02d} - A.mkv",
-            ))
+        self.duplicates((1, 2))
 
         result = self.indexer.rebuild()
 
@@ -607,13 +658,68 @@ class IndexerTests(BackupsTestCase):
         self.assertEqual(len(self.captures.slots()), 2)
         self.assertEqual(len(self.tree()), 2, 'no media was moved out of its slot')
 
+    def test_a_duplicate_being_written_to_right_now_is_left_alone(self):
+        """
+        The backup disk can be shared, and this one cannot see the other
+        instance's transfers. Renaming a folder mid-write would strand whatever
+        is still arriving, so it is reported and retried next time instead.
+        """
+        self.duplicates((1, 2), aged=False)
+
+        result = self.indexer.rebuild()
+
+        self.assertEqual(result.repaired, 0)
+        self.assertEqual(result.indexed, 1, 'the untouched one is still indexed')
+        self.assertTrue(any('left' in error for error in result.errors), result.errors)
+        self.assertEqual(len(self.tree()), 2, 'and nothing was moved or lost')
+
+    def test_an_unreadable_capture_keeps_its_row_and_its_pin(self):
+        """
+        A transient read error must not cost someone their pin.
+
+        The cleanup pass removes rows whose files are gone. A folder that could
+        not be read this time round is not gone — treating it as such deleted
+        the pin, the reason and the restore time, none of which the path holds.
+        """
+        self._one_capture('transfer_1')
+        self.indexer.rebuild()
+        capture_id = self.captures.recent()[0]['capture_id']
+        self.captures.update(capture_id, {'pinned': 1})
+
+        original = self.indexer.index_location
+
+        def explode(location, carried=None):
+            raise OSError('permission denied')
+
+        self.indexer.index_location = explode
+        try:
+            result = self.indexer.rebuild()
+        finally:
+            self.indexer.index_location = original
+
+        self.assertEqual(result.removed, 0, 'the row was not deleted')
+        self.assertTrue(result.errors)
+        still_there = self.captures.get(capture_id)
+        self.assertIsNotNone(still_there)
+        self.assertEqual(still_there['pinned'], 1, 'and the pin survived')
+
+    def test_a_capture_whose_files_are_gone_still_loses_its_row(self):
+        """The other half: an empty folder holds nothing to restore."""
+        self._one_capture('transfer_1')
+        self.indexer.rebuild()
+        capture_id = self.captures.recent()[0]['capture_id']
+
+        capture_dir = self.layout.absolute(self.captures.get(capture_id)['capture_path'])
+        for name in os.listdir(capture_dir):
+            os.remove(os.path.join(capture_dir, name))
+
+        result = self.indexer.rebuild()
+
+        self.assertEqual(result.removed, 1)
+        self.assertIsNone(self.captures.get(capture_id))
+
     def test_repairing_twice_does_not_stack_suffixes(self):
-        shared = str(new_capture_id('transfer_dup'))
-        for episode in (1, 2, 3):
-            touch(os.path.join(
-                self.backup_root, 'shows', SHOW, 'Season 01',
-                f"S01E{episode:02d}", shared, f"{SHOW} - S01E{episode:02d} - A.mkv",
-            ))
+        self.duplicates((1, 2, 3))
 
         self.indexer.rebuild()
         second = self.indexer.rebuild()
@@ -974,6 +1080,10 @@ class RestoreTests(BackupsTestCase):
         with open(target, 'rb') as handle:
             self.assertNotEqual(handle.read(1), b'X', 'the file was actually rewritten')
 
+    @unittest.skipIf(
+        hasattr(os, 'geteuid') and os.geteuid() == 0,
+        'root ignores the directory permissions this test relies on',
+    )
     def test_nothing_is_destroyed_when_the_copy_cannot_be_made(self):
         capture = self.back_up(f"{SHOW} - S01E01 - Old.mkv")
         current = self.library_file(f"{SHOW} - S01E01 - New.mkv", size=777)
@@ -1231,10 +1341,11 @@ class RetentionTests(BackupsTestCase):
         ]
         self.assertEqual(empty, [])
 
-    def test_pruning_the_last_version_removes_the_slot_folder_too(self):
+    def test_the_only_version_of_a_slot_is_never_pruned(self):
+        """Old enough and unpinned, but it is the newest of its slot."""
         self.add_version('only', f"{SHOW} - S01E09 - v0.mkv", when=self.old(30))
         capture = self.captures.recent()[0]
-        self.retention.apply(keep=1)  # protected: it is the newest of its slot
+        self.retention.apply(keep=1)
         self.assertIsNotNone(self.captures.get(capture['capture_id']))
 
     def test_keep_is_clamped_to_something_sane(self):
@@ -1344,6 +1455,38 @@ class BulkDeleteTests(BackupsTestCase):
         self.sort(transfer_id, 'tvshows', self.season_dir)
         self.indexer.rebuild()
         return self.captures.recent()[0]
+
+    def test_clearing_the_unidentified_bucket_holds_pinned_ones_back(self):
+        """
+        A pin on an unidentified file is the clearest possible statement that
+        it is worth keeping until someone works out what it is. This was the
+        one sweep that ignored one.
+        """
+        self.stage('t_unsorted', 'stray.mkv')
+        self.sort('t_unsorted', '', self.tv_root)
+        self.indexer.rebuild()
+        pinned = self.captures.by_kind('unsorted')[0]['capture_id']
+        self.captures.update(pinned, {'pinned': 1})
+
+        result = self.service.clear_unsorted()
+
+        self.assertEqual(result['deleted_count'], 0)
+        self.assertEqual(result['skipped_pinned'], 1)
+        self.assertIsNotNone(self.captures.get(pinned))
+
+    def test_an_unknown_column_never_reaches_the_update_statement(self):
+        """
+        The SET clause interpolates key names into SQL, which binding cannot
+        protect. Every caller passes literals today; this is what keeps that
+        from mattering when one does not.
+        """
+        capture = self.version('t_upd', f"{SHOW} - S01E01 - v1.mkv")
+
+        self.assertFalse(self.captures.update(
+            capture['capture_id'], {'capture_path = "x" --': 'nope'},
+        ))
+        self.assertTrue(self.captures.update(capture['capture_id'], {'pinned': 1}))
+        self.assertEqual(self.captures.get(capture['capture_id'])['pinned'], 1)
 
     def test_preview_reports_the_space_without_touching_anything(self):
         first = self.version('t1', f"{SHOW} - S01E01 - v1.mkv", size=500)

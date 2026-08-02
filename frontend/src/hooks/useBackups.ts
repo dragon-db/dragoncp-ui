@@ -268,6 +268,20 @@ export function useRetentionApply() {
   });
 }
 
+/**
+ * Preview the migration. Moves nothing.
+ *
+ * The plan is NOT a token that `useMigrationApply` then redeems. Apply re-walks
+ * the disk and re-derives its own plan, so the preview is a description of what
+ * the migration would do to the disk as it was a moment ago, not a reservation
+ * of those exact moves.
+ *
+ * That is deliberate rather than an oversight, and it is safe here in a way it
+ * would not be for a deletion: migration only ever moves legacy folders into the
+ * tree and removes ones it has emptied. It deletes no media, so a plan that has
+ * drifted since it was shown costs an operator accuracy, not files. Anything it
+ * cannot identify goes to `_unsorted` rather than being placed on a guess.
+ */
 export function useMigrationPlan() {
   return useMutation({
     mutationFn: async () => {
@@ -279,6 +293,7 @@ export function useMigrationPlan() {
   });
 }
 
+/** Re-derives the plan against the disk as it is now — see `useMigrationPlan`. */
 export function useMigrationApply() {
   const queryClient = useQueryClient();
   return useMutation({

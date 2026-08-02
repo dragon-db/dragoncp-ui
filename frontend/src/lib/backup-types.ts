@@ -252,6 +252,8 @@ export interface RebuildResult {
   total_size: number;
   unsorted: number;
   removed: number;
+  /** Capture folders renamed because another folder already had that id. */
+  repaired: number;
   errors: string[];
   message: string;
 }

@@ -93,7 +93,11 @@ export class ConfigManager {
         ];
         
         const editable = this.editableKeysFrom(config);
-        const boundaryKnown = editable.size > 0;
+        // Whether the SERVER told us the boundary, not whether anything turned
+        // out to be editable. Keying on the set being non-empty meant an
+        // installation whose visible settings are all environment-owned looked
+        // exactly like an old backend, and every field was offered as editable.
+        const boundaryKnown = Array.isArray(config?.groups) && config.groups.length > 0;
 
         // What each field held when the form was loaded, so a save can tell an
         // edit from an untouched field. Reading `input.defaultValue` did not:

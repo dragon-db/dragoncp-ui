@@ -115,7 +115,9 @@ def api_backups_slots():
                 title=request.args.get('title') or None,
                 season=season,
                 search=request.args.get('search') or None,
-                limit=min(request.args.get('limit', 200, type=int) or 200, 1000),
+                # Clamped at both ends: a negative limit reaches SQLite as
+                # "no limit", which is the opposite of what it asks for.
+                limit=max(1, min(request.args.get('limit', 200, type=int) or 200, 1000)),
                 offset=max(request.args.get('offset', 0, type=int) or 0, 0),
                 # 'size' puts the biggest first, which is the order you want
                 # when the question is "what do I delete to get space back".
@@ -240,8 +242,11 @@ def api_backups_delete(capture_id):
     """
     try:
         ok, message = _service().delete_capture(capture_id)
-        return (jsonify({'status': 'success', 'message': message})
-                if ok else _fail(message))
+        if ok:
+            return jsonify({'status': 'success', 'message': message})
+        # Unknown id is a 404 here as it is on the pin and detail routes; a
+        # failure to remove the files is a 400.
+        return _fail(message, 404 if message == 'Backup not found' else 400)
     except Exception as error:  # noqa: BLE001
         return _fail(f'Failed to delete the backup: {error}', 500)
 
@@ -374,7 +379,9 @@ def api_backups_rebuild():
             'message': (
                 f"Indexed {result['indexed']} version(s), "
                 f"{result['files']} file(s)"
-                + (f", removed {result['removed']} stale entr(ies)" if result['removed'] else '')
+                + (f", removed {result['removed']} stale entry(s)" if result['removed'] else '')
+                + (f", repaired {result['repaired']} duplicate id(s)"
+                   if result.get('repaired') else '')
             ),
             **result,
         })
@@ -426,16 +433,35 @@ def api_backups_save_retention():
         return _fail(f'Failed to save retention: {error}', 500)
 
 
+def _retention_overrides(payload: Dict):
+    """
+    `keep` and `grace_hours` from a request body, as integers.
+
+    The policy clamps them, but it cannot clamp a string: `"5"` arriving from a
+    form would sail past the bounds and reach the comparison as text. Converted
+    here, the same way the save endpoint already does it, so preview and apply
+    cannot disagree with each other or with what was saved.
+    """
+    keep = payload.get('keep')
+    grace = payload.get('grace_hours')
+    return (
+        None if keep is None else int(keep),
+        None if grace is None else int(grace),
+    )
+
+
 @backups_bp.route('/backups/retention/preview', methods=['POST'])
 @require_auth
 def api_backups_retention_preview():
     payload = request.json or {}
     try:
+        keep, grace = _retention_overrides(payload)
+    except (TypeError, ValueError) as error:
+        return _fail(f'Invalid retention value: {error}')
+    try:
         return jsonify({
             'status': 'success',
-            **_service().retention_preview(
-                keep=payload.get('keep'), grace_hours=payload.get('grace_hours'),
-            ),
+            **_service().retention_preview(keep=keep, grace_hours=grace),
         })
     except Exception as error:  # noqa: BLE001
         return _fail(f'Failed to preview retention: {error}', 500)
@@ -446,9 +472,11 @@ def api_backups_retention_preview():
 def api_backups_retention_apply():
     payload = request.json or {}
     try:
-        result = _service().retention_apply(
-            keep=payload.get('keep'), grace_hours=payload.get('grace_hours'),
-        )
+        keep, grace = _retention_overrides(payload)
+    except (TypeError, ValueError) as error:
+        return _fail(f'Invalid retention value: {error}')
+    try:
+        result = _service().retention_apply(keep=keep, grace_hours=grace)
         return jsonify({
             'status': 'success',
             'message': (
@@ -485,6 +513,15 @@ def api_backups_migration_apply():
         return _fail('Migration must be confirmed after reviewing the preview')
     try:
         result = _service().migration_apply()
+        # A refused migration is not a success with a zero count. It comes back
+        # `applied: false` with the reason, and reporting "Moved 0 file(s)"
+        # over the top of that reads as "there was nothing to do".
+        if not result.get('applied'):
+            return jsonify({
+                'status': 'error',
+                'message': result.get('blocked') or 'Migration did not run',
+                **result,
+            }), 409
         return jsonify({
             'status': 'success',
             'message': (
@@ -535,7 +572,7 @@ def _as_legacy_backup(capture: Dict) -> Dict:
 def api_list_backups():
     """Legacy list. Newest versions first, across every slot."""
     try:
-        limit = request.args.get('limit', 100, type=int)
+        limit = max(1, min(request.args.get('limit', 100, type=int) or 100, 1000))
         captures = transfer_coordinator.capture_model.recent(limit=limit)
         rows = [_as_legacy_backup(c) for c in captures]
         return jsonify({'status': 'success', 'backups': rows, 'total': len(rows)})

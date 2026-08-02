@@ -217,12 +217,26 @@ settings_service = transfer_coordinator.settings_service
 # database, once. Without this, moving a setting across the boundary would
 # change behaviour on the way over: the env value keeps working as a fallback
 # until something is saved, then silently stops being the source of truth.
-_adopted = settings_service.adopt_env_defaults()
-if _adopted:
-    logger.info(
-        'Adopted %d setting(s) from the environment file into app settings: %s',
-        len(_adopted), ', '.join(_adopted),
+#
+# A failure here must not stop the process starting. This runs at import time,
+# so a locked or briefly unavailable database would otherwise take the whole
+# application down over a one-off convenience — and the resolver already falls
+# back to the env file for any key with no row, which is exactly what adoption
+# would have written.
+try:
+    _adopted = settings_service.adopt_env_defaults()
+except Exception as error:  # noqa: BLE001 - startup must survive this
+    logger.warning(
+        'Could not adopt environment defaults into app settings (%s). '
+        'Startup continues; database-backed settings fall back to the env file '
+        'until this succeeds on a later start.', error,
     )
+else:
+    if _adopted:
+        logger.info(
+            'Adopted %d setting(s) from the environment file into app settings: %s',
+            len(_adopted), ', '.join(_adopted),
+        )
 
 # Initialize rename service
 rename_model = RenameNotification(db_manager)

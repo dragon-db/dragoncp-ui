@@ -38,7 +38,10 @@ export function DeleteDialog({
   scope: string;
   onConfirm: () => void;
 }) {
-  const nothingToDo = !loading && preview?.count === 0;
+  // No preview counts as nothing to do, not as something to do. The optional
+  // chain made a failed or absent preview leave the button enabled, so a
+  // permanent deletion could be confirmed against numbers that never arrived.
+  const nothingToDo = !loading && !preview?.count;
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>

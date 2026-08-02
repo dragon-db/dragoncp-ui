@@ -165,12 +165,16 @@ class BackupSorter:
         """
         if not library or not dest_path:
             return ''
-        media_type = {'movies': 'movies', 'shows': 'tvshows', 'anime': 'anime'}[library]
-        base = self.config.get({
+        # One lookup, and an unknown library is answered rather than raised.
+        # Two chained subscripts meant anything outside the three libraries
+        # aborted the whole sort with a KeyError, which for displaced media is
+        # the worst possible way to fail.
+        key = {
             'movies': 'MOVIE_DEST_PATH',
-            'tvshows': 'TVSHOW_DEST_PATH',
+            'shows': 'TVSHOW_DEST_PATH',
             'anime': 'ANIME_DEST_PATH',
-        }[media_type])
+        }.get(library)
+        base = self.config.get(key) if key else ''
         if not base:
             return ''
         try:

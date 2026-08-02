@@ -2529,6 +2529,12 @@ paths:
     post:
       tags: [Backups]
       summary: Carry out the migration and rebuild the index over the result
+      description: >-
+        Re-walks the disk and derives its own plan rather than redeeming the one
+        `/migration/plan` returned, so a folder that appeared or changed since
+        the preview is handled as it is now. Safe here in a way it would not be
+        for a deletion: migration only moves legacy folders into the tree and
+        removes ones it has emptied, so a drifted plan costs accuracy, not files.
       requestBody:
         required: true
         content:
@@ -2545,6 +2551,11 @@ paths:
           description: Not confirmed
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: >-
+            Refused. A transfer is active, or whether one is active could not be
+            determined. The body carries `applied: false` and the reason in
+            `message`.
 
   # ---- Legacy backup endpoints -------------------------------------------
   # Kept because the static UI is what production serves. Backed by the same
@@ -2613,6 +2624,20 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items: { type: string }
+                  description: >-
+                    Relative paths inside the capture. Omitted, null or empty
+                    all mean every file — the current API rejects an empty list
+                    instead.
       responses:
         '200':
           description: Plan

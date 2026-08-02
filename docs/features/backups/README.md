@@ -322,8 +322,10 @@ accept that the other instance's backup page is stale until you do.
   by size only, so a same-size file at the destination was silently left alone
   while the log still reported it as copied.
 
-- **Restoring a capture marks it `restored`; it is not removed.** It stays in
-  the slot's history and can be restored again.
+- **Restoring a capture records `restored_at` and leaves `status` alone.** The
+  files stay in the backup tree, so it stays in the slot's history, can be
+  restored again, and is pruned by retention like any other version. A partial
+  restore is not recorded as one — the run has to be repeated.
 
 - **Deleting a version removes its files and its index entry together.** There
   is no longer a record to keep without files — the index is derived from the

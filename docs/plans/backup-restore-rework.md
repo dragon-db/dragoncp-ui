@@ -274,7 +274,7 @@ over the tree. Shape:
 | `library` | `movies` / `shows` / `anime` |
 | `title_folder` | Library folder name, as on disk |
 | `season_number`, `episode_number` | Integers; null for movies |
-| `slot_key` | Normalised, e.g. `shows|example_show|S01E01` — indexed |
+| `slot_key` | Normalised, e.g. `shows\|example_show\|S01E01` — indexed |
 | `capture_path` | Relative to `BACKUP_PATH` |
 | `captured_at` | Explicit UTC |
 | `source_transfer_id` | Provenance, nullable |

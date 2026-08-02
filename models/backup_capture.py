@@ -13,7 +13,26 @@ what it lost track of was unrecoverable.
     backup_capture_key    which slots it belongs to (>1 for a double episode)
 """
 
-from typing import Dict, List, Optional
+import re
+from typing import Dict, List, Optional, Tuple
+
+#: The episode half of a slot key: "shows|example_show|S01E02".
+_SLOT_CODE_RE = re.compile(r'\|S(\d{2,4})E(\d{2,4})$')
+
+
+def _episode_from_slot_key(slot_key: Optional[str]) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Season and episode as the SLOT states them, or (None, None) for a movie.
+
+    The slot key is the authority on which episode a summary row is about. The
+    capture's own columns are not: a double episode lives under S01E01 and is
+    registered against both slots, so reading them made the S01E02 row claim to
+    be S01E01.
+    """
+    match = _SLOT_CODE_RE.search(slot_key or '')
+    if not match:
+        return None, None
+    return int(match.group(1)), int(match.group(2))
 
 
 class BackupCapture:
@@ -90,11 +109,21 @@ class BackupCapture:
             conn.commit()
         return capture_id
 
+    #: Columns `update()` will write. The SET clause is built by interpolating
+    #: key names into SQL, which parameter binding cannot protect, so the names
+    #: are checked against this rather than trusted. Every caller today passes
+    #: literals; the allowlist is what keeps that true when one does not.
+    UPDATABLE_COLUMNS = frozenset({'pinned', 'status', 'restored_at', 'reason'})
+
     def update(self, capture_id: str, updates: Dict) -> bool:
-        if not updates:
+        allowed = {k: v for k, v in (updates or {}).items() if k in self.UPDATABLE_COLUMNS}
+        rejected = set(updates or {}) - set(allowed)
+        if rejected:
+            print(f"⚠️  Ignoring unknown backup_capture column(s): {', '.join(sorted(rejected))}")
+        if not allowed:
             return False
-        clause = ', '.join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [capture_id]
+        clause = ', '.join(f"{k} = ?" for k in allowed)
+        values = list(allowed.values()) + [capture_id]
         with self.db.get_connection() as conn:
             cursor = conn.execute(
                 f'UPDATE backup_capture SET {clause} WHERE capture_id = ?', values
@@ -204,7 +233,18 @@ class BackupCapture:
         '''
         params.extend([limit, offset])
         with self.db.get_connection() as conn:
-            return [dict(r) for r in conn.execute(query, params).fetchall()]
+            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+
+        # Season and episode come from the slot key, not from the capture's own
+        # columns. A double episode is filed under S01E01 and registered against
+        # both slots, so `MIN(c.episode_number)` answered 1 for the S01E02 group
+        # as well — and the page listed the same episode twice.
+        for row in rows:
+            season, episode = _episode_from_slot_key(row.get('slot_key'))
+            if season is not None:
+                row['season_number'] = season
+                row['episode_number'] = episode
+        return rows
 
     def count_slots(self, library: Optional[str] = None, title: Optional[str] = None,
                     season: Optional[int] = None, search: Optional[str] = None) -> int:
@@ -346,12 +386,30 @@ class BackupCapture:
         for row in rows:
             by_capture.setdefault(row['capture_id'], []).append(dict(row))
 
-        prunable = []
-        for capture_id, entries in by_capture.items():
-            member_keys = self._slot_keys_for(capture_id)
-            if len(entries) == len(member_keys):
-                prunable.append(entries[0])
-        return prunable
+        # One query for every candidate's slot count, not one per candidate.
+        # A retention sweep on a full disk has hundreds of candidates, and this
+        # was opening a connection for each of them.
+        membership = self._slot_counts(list(by_capture))
+
+        return [
+            entries[0]
+            for capture_id, entries in by_capture.items()
+            if len(entries) == membership.get(capture_id, 0)
+        ]
+
+    def _slot_counts(self, capture_ids: List[str]) -> Dict[str, int]:
+        """How many slots each capture belongs to, for a batch of captures."""
+        if not capture_ids:
+            return {}
+        placeholders = ','.join('?' * len(capture_ids))
+        with self.db.get_connection() as conn:
+            rows = conn.execute(f'''
+                SELECT capture_id, COUNT(*) AS slot_count
+                FROM backup_capture_key
+                WHERE capture_id IN ({placeholders})
+                GROUP BY capture_id
+            ''', capture_ids).fetchall()
+            return {r['capture_id']: r['slot_count'] for r in rows}
 
     def _slot_keys_for(self, capture_id: str) -> List[str]:
         with self.db.get_connection() as conn:

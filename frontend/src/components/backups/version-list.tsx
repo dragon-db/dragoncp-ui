@@ -132,7 +132,7 @@ export function VersionRow({
             className="h-7 px-2 text-[11.5px]"
             disabled={busy}
             onClick={() => onPin(capture)}
-            aria-label={capture.pinned ? "Unpin this version" : "Pin this version"}
+            aria-label={capture.pinned ? `Unpin version ${index + 1}` : `Pin version ${index + 1}`}
           >
             {capture.pinned ? (
               <IconPinFilled className="size-3.5" />
@@ -146,7 +146,7 @@ export function VersionRow({
             className="h-7 px-2 text-[11.5px] text-rose-300 hover:text-rose-200"
             disabled={busy}
             onClick={() => onDelete(capture)}
-            aria-label="Delete this version"
+            aria-label={`Delete version ${index + 1}`}
           >
             <IconTrash className="size-3.5" />
           </Button>

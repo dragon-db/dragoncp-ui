@@ -138,6 +138,6 @@ A transfer running dry also says so in its own log:
 - [../getting-started/running.md](../getting-started/running.md) — turning it on, and what it is for
 - [configuration.md](configuration.md) — the key alongside every other setting
 - [../features/simulation/README.md](../features/simulation/README.md) — the deliberate exception
-- [../features/backups/README.md](../features/backups/README.md) — why restore is not a usable rehearsal
+- [../features/backups/README.md](../features/backups/README.md) — what a restore reports when it runs dry
 - [../features/renames/README.md](../features/renames/README.md) — the rename path this gates
 - [../operations/known-issues.md](../operations/known-issues.md) — the two defects behind this page

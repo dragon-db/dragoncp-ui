@@ -30,7 +30,6 @@ reported rather than invented.
 import os
 import re
 import shutil
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Tuple
@@ -45,19 +44,9 @@ from .identity import (
     new_capture_id,
     title_of,
 )
-from .layout import BackupLayout
+from .layout import ACTIVE_FOLDER_GRACE_SECONDS, BackupLayout, recently_touched
 
 _PARTIAL_DIR = '.rsync-partial'
-
-# How recently a legacy folder must have been touched to be treated as "in use".
-#
-# The backup disk can be shared by more than one instance — a development
-# checkout and the live one, each with its own database. The "no transfers
-# running" guard only sees its OWN database, so it cannot know the other
-# instance is mid-transfer writing into one of these folders. A folder whose
-# contents changed in the last few minutes is left alone regardless of what any
-# database says.
-ACTIVE_FOLDER_GRACE_SECONDS = 15 * 60
 
 # Legacy folders are "<safe title>_<transfer id>", and a transfer id carries its
 # own underscores ("transfer_1732000000", "webhook_12_1732000000"). Splitting at
@@ -89,33 +78,11 @@ def _split_legacy_name(folder_name: str) -> Tuple[str, Optional[str]]:
     return folder_name or '', None
 
 
-def _recently_touched(folder: str, within: int = ACTIVE_FOLDER_GRACE_SECONDS) -> bool:
-    """
-    Whether anything in this folder changed very recently.
-
-    Cheap insurance for a shared backup disk: if another instance is running a
-    transfer, rsync is writing into its backup folder right now, and moving
-    those files out from under it would strand them.
-    """
-    cutoff = time.time() - within
-    try:
-        if os.path.getmtime(folder) > cutoff:
-            return True
-    except OSError:
-        return False
-    for root, _dirs, files in os.walk(folder):
-        try:
-            if os.path.getmtime(root) > cutoff:
-                return True
-        except OSError:
-            continue
-        for name in files:
-            try:
-                if os.path.getmtime(os.path.join(root, name)) > cutoff:
-                    return True
-            except OSError:
-                continue
-    return False
+#: Cheap insurance for a shared backup disk: if another instance is running a
+#: transfer, rsync is writing into its backup folder right now, and moving
+#: those files out from under it would strand them. Shared with the rebuild,
+#: which renames folders on the same disk for the same reason.
+_recently_touched = recently_touched
 
 
 def _flatten(name: str) -> str:

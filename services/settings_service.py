@@ -115,13 +115,11 @@ class SettingsService:
         if errors:
             return {}, refused, errors
 
+        # One write, always. A per-key fallback here would quietly give up the
+        # atomicity the validation pass above exists to provide, and the store
+        # is the only thing that can offer it.
         if pending:
-            writer = getattr(self.settings, 'write_many', None)
-            if callable(writer):
-                writer(pending)
-            else:
-                for key, stored in pending.items():
-                    self.settings.set(key, stored)
+            self.settings.write_many(pending)
 
         return dict(pending), refused, errors
 
@@ -130,6 +128,11 @@ class SettingsService:
         if errors:
             raise ValueError(errors[0])
         if refused:
+            # `refused` covers two different things, and they need different
+            # explanations: a key the registry does not know at all, and a key
+            # it knows but that the environment file owns.
+            if registry.get(key) is None:
+                raise ValueError(f"{key} is not a known setting")
             raise PermissionError(
                 f"{key} is set in the environment file and cannot be changed here"
             )

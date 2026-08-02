@@ -13,8 +13,19 @@ import json
 from auth import require_auth
 from webhook_auth import require_webhook_auth
 from models.webhook import NotificationCatalog
+from settings_registry import REDACTED
 
 webhooks_bp = Blueprint('webhooks', __name__)
+
+
+def _redacted(value):
+    """A stored secret as the client should see it: a placeholder, or nothing.
+
+    Sending the placeholder back on save means "unchanged" — `SettingsService`
+    treats it that way for every sensitive setting — so the field round-trips
+    without the value ever leaving the server.
+    """
+    return REDACTED if value else ''
 
 # A page the UI would never render is a payload nobody reads.
 MAX_PAGE_SIZE = 200
@@ -127,14 +138,11 @@ def api_webhook_movies_receiver():
         raw_webhook_json = json.dumps(webhook_data, indent=2)
         notification_id = transfer_coordinator.webhook_model.create(parsed_data, raw_webhook_json)
         
-        # Check if auto-sync is enabled (prefer DB app_settings, fallback to env)
-        try:
-            # One reader, one store. This used to fall back to the env file,
-            # while AUTO_SYNC_SERIES and AUTO_SYNC_ANIME did not — so the same
-            # setting was configured two different ways depending on media type.
-            auto_sync_enabled = transfer_coordinator.settings_service.get_bool('AUTO_SYNC_MOVIES')
-        except Exception:
-            auto_sync_enabled = config.get("AUTO_SYNC_MOVIES", "false").lower() == "true"
+        # One reader, one store — the same call the series and anime paths make.
+        # This used to sit behind a try/except that fell back to the env file,
+        # so the same setting resolved two different ways depending on media
+        # type, and the resolver already treats the env file as the default.
+        auto_sync_enabled = transfer_coordinator.settings_service.get_bool('AUTO_SYNC_MOVIES')
 
         emit_socketio_event(
             'webhook_received',
@@ -1075,7 +1083,11 @@ def api_discord_settings():
             # the notification service applies when it actually sends.
             store = transfer_coordinator.settings_service
             settings = {
-                "webhook_url": store.get('DISCORD_WEBHOOK_URL'),
+                # Redacted the same way `/api/config` redacts it — it is the
+                # same secret, and one endpoint handing it back in full made
+                # the other's redaction decorative. Sending the placeholder
+                # back on save means "unchanged", so the round trip still works.
+                "webhook_url": _redacted(store.get('DISCORD_WEBHOOK_URL')),
                 "app_url": store.get('DISCORD_APP_URL'),
                 "manual_sync_thumbnail_url": store.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL'),
                 "icon_url": store.get('DISCORD_ICON_URL'),

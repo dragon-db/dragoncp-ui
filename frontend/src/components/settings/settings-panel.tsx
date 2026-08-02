@@ -113,6 +113,10 @@ function SettingRow({
   const value = draft ?? setting.value;
   const readOnly = !setting.editable;
   const changed = !readOnly && String(value) !== String(setting.value);
+  // The setting key is already unique across the whole panel, so it makes a
+  // stable id without a counter. Without one the label was attached to nothing
+  // and clicking it did not focus the field it names.
+  const controlId = `setting-${setting.key}`;
 
   return (
     <div
@@ -122,7 +126,7 @@ function SettingRow({
       )}
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Label className="flex items-center gap-1.5 text-foreground/90">
+        <Label htmlFor={controlId} className="flex items-center gap-1.5 text-foreground/90">
           {readOnly && <IconLock className="size-3 text-muted-foreground" />}
           {setting.label}
         </Label>
@@ -142,6 +146,7 @@ function SettingRow({
       {setting.kind === "boolean" ? (
         <div className="flex items-center gap-2 pt-0.5">
           <Switch
+            id={controlId}
             checked={Boolean(value)}
             disabled={readOnly}
             onCheckedChange={(next) => onChange(setting.key, next)}
@@ -150,6 +155,7 @@ function SettingRow({
         </div>
       ) : (
         <Input
+          id={controlId}
           type={setting.sensitive ? "password" : setting.kind === "number" ? "number" : "text"}
           value={String(value ?? "")}
           readOnly={readOnly}

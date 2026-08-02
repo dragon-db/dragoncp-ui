@@ -384,8 +384,10 @@ class ExploreService:
         Separate from the executor's copy: a dry run must not leave anything
         behind that a later real run could pick up by accident.
         """
-        base = self.config.get('BACKUP_PATH') or '/tmp'
-        work_dir = os.path.join(base, '.explore-plans', 'dryrun')
+        # Under BACKUP_PATH via the layout, so it fails closed with the rest of
+        # the backup area rather than falling back to a temporary directory the
+        # OS may clear.
+        work_dir = self.coordinator.backups.layout.plans_dir('dryrun')
         os.makedirs(work_dir, exist_ok=True)
         path = os.path.join(work_dir, f"{plan_id}-{index}.txt")
         with open(path, 'w', encoding='utf-8') as handle:

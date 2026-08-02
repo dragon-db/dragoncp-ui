@@ -26,7 +26,7 @@ from .identity import (
     is_media,
     parse_movie_identity,
 )
-from .layout import BackupLayout, CaptureLocation
+from .layout import BackupLayout, CaptureLocation, recently_touched
 
 
 @dataclass
@@ -180,11 +180,16 @@ class BackupIndexer:
         carried = self._carry_forward()
         seen = set()
         claimed: Set[str] = set()
+        #: Captures whose folder is on disk but which could not be read this
+        #: time round. Their rows are left alone rather than deleted — a
+        #: transient read error must not cost someone their pin.
+        kept: Set[str] = set()
 
         for location in self.layout.scan():
             if location.capture_id in claimed:
                 repaired = self._make_unique(location, claimed, result)
                 if repaired is None:
+                    kept.add(location.capture_id)
                     continue
                 location = repaired
             claimed.add(location.capture_id)
@@ -193,8 +198,12 @@ class BackupIndexer:
                 record = self.index_location(location, carried.get(location.capture_id))
             except Exception as error:  # noqa: BLE001 - one bad folder must not stop the scan
                 result.errors.append(f"{location.relative_path}: {error}")
+                kept.add(location.capture_id)
                 continue
             if not record:
+                # The folder is there but holds no files, so there is nothing to
+                # restore from it. Its row goes, like any other capture whose
+                # files are gone.
                 continue
             seen.add(location.capture_id)
             result.indexed += 1
@@ -205,7 +214,8 @@ class BackupIndexer:
 
         # Anything indexed but no longer on disk is gone; the index must say so
         # rather than offering a restore that would fail at the first read.
-        for capture_id in set(carried) - seen:
+        # Anything merely unreadable this time keeps its row and its metadata.
+        for capture_id in set(carried) - seen - kept:
             if self.captures.delete(capture_id):
                 result.removed += 1
 
@@ -227,7 +237,21 @@ class BackupIndexer:
         tree's invariant is repaired rather than reported and left broken. A
         rename that fails is reported and the folder left alone — never
         indexed over the top of the other one.
+
+        A folder something wrote to in the last few minutes is left alone too.
+        The backup disk can be shared by another instance whose transfers this
+        one cannot see, and renaming a folder mid-write would strand whatever
+        was still arriving. Same rule the migration applies, for the same
+        reason.
         """
+        if recently_touched(location.path):
+            result.errors.append(
+                f"{location.relative_path}: shares a backup id with another folder, "
+                'but something wrote to it in the last few minutes, so it was left '
+                'alone. Run this again once the disk is idle.'
+            )
+            return None
+
         parent = os.path.dirname(location.path)
 
         # Strip any existing "__2" disambiguator so repeated repairs do not

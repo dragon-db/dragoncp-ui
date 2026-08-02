@@ -95,7 +95,11 @@ export function SettingsPage() {
    * are split across two stores and only one of them is writable, so a single
    * "save everything" button would have to claim it wrote things it did not.
    */
-  const saveAllSettings = async () => {
+  const saveAutomationSettings = async () => {
+    // Two requests, so say which one failed. "Failed to save settings" after
+    // the first succeeded left the screen and the database disagreeing with no
+    // clue which half was live.
+    let failed: string | null = null;
     try {
       await updateWebhookSettings.mutateAsync({
         auto_sync_movies: webhookDraft.auto_sync_movies,
@@ -106,7 +110,11 @@ export function SettingsPage() {
           Number(webhookDraft.series_anime_sync_wait_time) || 60
         ),
       });
+    } catch {
+      failed = "auto-sync";
+    }
 
+    try {
       await updateDiscordSettings.mutateAsync({
         enabled: discordDraft.enabled,
         webhook_url: discordDraft.webhook_url,
@@ -114,15 +122,21 @@ export function SettingsPage() {
         icon_url: discordDraft.icon_url,
         manual_sync_thumbnail_url: discordDraft.manual_sync_thumbnail_url,
       });
-
-      toast.success("Settings saved");
-
-      webhookSettingsQuery.refetch();
-      discordSettingsQuery.refetch();
-      wsStatusQuery.refetch();
     } catch {
-      toast.error("Failed to save settings");
+      failed = failed ? "auto-sync and Discord" : "Discord";
     }
+
+    if (failed) {
+      toast.error(`Could not save the ${failed} settings`);
+    } else {
+      toast.success("Settings saved");
+    }
+
+    // Refetched either way. After a partial save the screen has to show what
+    // the server actually holds, which is exactly when it differs from the form.
+    webhookSettingsQuery.refetch();
+    discordSettingsQuery.refetch();
+    wsStatusQuery.refetch();
   };
 
   const runAutoConnect = async () => {
@@ -349,7 +363,7 @@ export function SettingsPage() {
               Auto-sync and Discord settings are stored in the database and take effect immediately.
             </span>
             <Button
-              onClick={saveAllSettings}
+              onClick={saveAutomationSettings}
               disabled={updateWebhookSettings.isPending || updateDiscordSettings.isPending}
             >
               <IconCheck className="mr-2 h-4 w-4" />

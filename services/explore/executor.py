@@ -51,8 +51,16 @@ class ExploreExecutor:
         return self.coordinator.backups.staging_dir(transfer_id)
 
     def _work_dir(self, transfer_id: str) -> str:
-        base = self.config.get('BACKUP_PATH') or '/tmp'
-        path = os.path.join(base, '.explore-plans', transfer_id)
+        """
+        Where this run's file list lives — under BACKUP_PATH, via the layout.
+
+        Built through the layout rather than by joining strings, so it fails
+        closed with the rest of the backup area. The old `BACKUP_PATH or '/tmp'`
+        meant an unconfigured install wrote the approved file list somewhere the
+        OS may clear, and rsync reading a missing --files-from is what turns a
+        reviewed transfer into a whole-directory mirror.
+        """
+        path = self.coordinator.backups.layout.plans_dir(transfer_id)
         os.makedirs(path, exist_ok=True)
         return path
 

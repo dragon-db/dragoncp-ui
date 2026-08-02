@@ -167,7 +167,29 @@ Notes:
     table. It now refuses.
   - five documents still described the removed session store.
 
-- Handoff: built, tested (397), and verified against the live disk read-only.
+- 2026-08-02 (review, second round): a follow-up review raised ~40 further
+  points. Most were fixed; a few were verified as already-correct and left
+  alone, with the reasons recorded in the response rather than here. The three
+  worth remembering:
+  1. `slots()` read season and episode off the capture, but a double episode is
+     filed under its first episode and registered against both slots — so the
+     S01E02 row displayed S01E01 and the page listed the same episode twice.
+     Season and episode now come from the slot key, which is the authority.
+  2. A rebuild deleted the index row of any capture it could not READ this time
+     round, not just ones whose files were gone. A permission blip cost the pin,
+     the reason and the restore time — none of which the path holds, so a
+     rebuild could not put them back.
+  3. Explore still built its `.explore-plans` paths as `BACKUP_PATH or '/tmp'`
+     — the same fail-open the backup tree was fixed for, missed because it lives
+     outside `services/backups/`. Both call sites now go through `BackupLayout`,
+     so they fail closed with everything else and are bounds-checked.
+- 2026-08-02 (claude): running the smoke test against the live instance
+  **repaired 44 real duplicate-id collisions** on the backup disk. Seven
+  transfers had each given one capture id to every episode they displaced,
+  covering 51 folders; only 7 were reachable through the index and the other 44
+  were sitting there unlistable. The rebuild renamed them apart. No media moved
+  — 334 files before and after, newest file mtime unchanged.
+- Handoff: built, tested (406), and verified against the live disk read-only.
   What has NOT happened is the migration itself — preview it in the UI, read the
   mapping, then apply. Do it with no transfers running; the code refuses
   otherwise. Deploy to prod before adopting: both instances share `BACKUP_PATH`

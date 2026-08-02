@@ -294,6 +294,32 @@ class BackupRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(self.captures.get(capture['capture_id']))
 
+    def test_deleting_something_that_is_gone_is_404(self):
+        """Matching the pin and detail routes, which already answer 404."""
+        response = self.client.post('/api/backups/captures/nope/delete', json={})
+        self.assertEqual(response.status_code, 404)
+
+    def test_a_blocked_migration_is_not_reported_as_a_success(self):
+        """
+        "Moved 0 file(s)" over a refusal reads as "there was nothing to do",
+        which is the opposite of "something is running, wait".
+        """
+        self.transfers.create({
+            'transfer_id': 'busy', 'media_type': 'tvshows', 'folder_name': SHOW,
+            'source_path': '/x', 'dest_path': '/y', 'operation_type': 'folder',
+            'status': 'running',
+        })
+        self.transfers.rows['busy']['status'] = 'running'
+        self.transfers.get_active = lambda: [self.transfers.rows['busy']]
+
+        response = self.client.post('/api/backups/migration/apply', json={'confirm': True})
+        body = response.get_json()
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(body['status'], 'error')
+        self.assertIn('still active', body['message'])
+        self.assertFalse(body['applied'])
+
     def test_the_entry_cannot_be_dropped_while_the_files_stay(self):
         """
         Asking for a record-only delete deletes the files too.
