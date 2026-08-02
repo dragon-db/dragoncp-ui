@@ -42,7 +42,10 @@ export interface Capture {
   file_count: number;
   total_size: number;
   pinned: 0 | 1;
-  status: "present" | "restored" | "files_removed";
+  /** Whether the files are still on the backup disk, and nothing else. */
+  status: "present" | "files_removed";
+  /** When this version was last put back into the library, if it ever was. */
+  restored_at: string | null;
   /** Present on the detail endpoints only. */
   files?: CaptureFile[];
   slot_keys?: string[];

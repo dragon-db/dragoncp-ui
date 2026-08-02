@@ -42,7 +42,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterator, List, Optional, Tuple
+from typing import Iterator, List, Optional, Set, Tuple
 
 from security import (
     PathTraversalError,
@@ -232,18 +232,33 @@ class BackupLayout:
         path = os.path.join(self.base(for_writing=False), relative_path)
         return self._within(path)
 
-    def unique_capture_dir(self, parent: str, capture_id: str) -> Tuple[str, str]:
+    def unique_capture_dir(self, parent: str, capture_id: str,
+                           taken: Optional[Set[str]] = None) -> Tuple[str, str]:
         """
-        A capture folder that does not already exist.
+        A capture folder that does not already exist, under an unclaimed id.
 
-        Two captures of one slot in the same second, from the same source, would
-        otherwise collide and merge into each other. Returns (path, capture_id).
+        A capture id is the index's primary key, so it has to be unique across
+        the WHOLE tree — not merely within one parent. Checking only the parent
+        was a data-loss bug: one transfer displacing two episodes writes two
+        capture folders under two different slots, both were given the id built
+        from the transfer, and indexing the second silently replaced the first.
+        The files stayed on disk and became impossible to list or restore.
+
+        `taken` is the set of ids already handed out during the caller's current
+        run; pass the same set to every call in that run and ids stay distinct
+        even when the folders live in different parts of the tree.
+
+        Returns (path, capture_id).
         """
         candidate = capture_id
         suffix = 1
-        while os.path.exists(os.path.join(parent, candidate)):
+        while os.path.exists(os.path.join(parent, candidate)) or (
+            taken is not None and candidate in taken
+        ):
             suffix += 1
             candidate = f"{capture_id}__{suffix}"
+        if taken is not None:
+            taken.add(candidate)
         return os.path.join(parent, candidate), candidate
 
     # ---- reading the tree back -------------------------------------------

@@ -221,63 +221,90 @@ Output JSON:
 ## 2) Configuration and SSH Endpoints
 
 ### GET `/config`
-What it does: returns active runtime configuration (env + session overrides).
+What it does: returns every setting, in two shapes at once — grouped for the React
+Settings screen, and as a flat key -> value map for the legacy static UI.
+
+Each grouped setting carries `store` (`env` or `db`) and `editable`, so a client can
+show the environment-file half read-only instead of offering a field that silently does
+nothing. Environment secrets are omitted entirely; editable secrets come back as
+`<redacted>`.
 
 Auth: required.
 
 Input: none.
 
-Output: raw config object, for example:
+Output, abbreviated:
 ```json
 {
+  "status": "success",
   "REMOTE_IP": "192.168.1.10",
-  "REMOTE_USER": "root",
-  "MOVIE_PATH": "/data/movies",
-  "TVSHOW_PATH": "/data/tvshows",
-  "ANIME_PATH": "/data/anime",
-  "MOVIE_DEST_PATH": "/media/movies",
-  "TVSHOW_DEST_PATH": "/media/tvshows",
-  "ANIME_DEST_PATH": "/media/anime",
-  "BACKUP_PATH": "/backups"
+  "BACKUP_RETENTION_KEEP": "2",
+  "groups": [
+    {
+      "id": "backups",
+      "label": "Backups",
+      "settings": [
+        {
+          "key": "BACKUP_RETENTION_KEEP",
+          "store": "db",
+          "editable": true,
+          "kind": "number",
+          "label": "Versions to keep",
+          "description": "How many previous versions of each movie or episode to keep.",
+          "value": "2",
+          "minimum": 1,
+          "maximum": 50,
+          "is_default": true
+        }
+      ]
+    }
+  ],
+  "stores": {
+    "env": { "label": "Environment file", "description": "..." },
+    "db":  { "label": "Application settings", "description": "..." }
+  }
 }
 ```
 
 ### POST `/config`
-What it does: updates session-level config overrides (does not directly modify source code).
+What it does: writes the database-backed settings in the payload.
+
+Environment-owned keys are **refused by name** rather than ignored, and listed in
+`refused`. The whole payload is validated before anything is written, so a 400 means
+nothing changed.
 
 Auth: required.
 
-Input JSON: any config keys to override in current session.
+Input JSON: any editable settings keys. Sending `<redacted>` for a secret means
+"unchanged". Numbers outside a setting's bounds are clamped, not rejected.
 
-Output JSON:
+Output JSON (the full `GET` payload is returned alongside, so a client can refresh
+without a second request):
 ```json
 {
   "status": "success",
-  "message": "Configuration saved"
+  "message": "Saved 1 setting(s). 1 setting(s) come from the environment file and were not changed: REMOTE_IP",
+  "saved": ["BACKUP_RETENTION_KEEP"],
+  "refused": ["REMOTE_IP"]
 }
 ```
 
+Errors: `400` with `message` naming the invalid value. Nothing in the payload is
+written.
+
 ### POST `/config/reset`
-What it does: clears session overrides and resets runtime config back to env values.
+What it does: kept for the legacy static UI, which still calls it. There is no longer a
+per-browser override layer to clear, so it reports success and changes nothing.
 
 Auth: required.
 
 Input: none.
 
-Output JSON:
-```json
-{
-  "status": "success",
-  "message": "Configuration reset to environment values"
-}
-```
-
 ### GET `/config/env-only`
-What it does: returns only environment config, without session overrides.
+What it does: returns the environment-backed settings alone, which is what the legacy
+UI's comparison column shows. Secrets are redacted; hidden env secrets are omitted.
 
 Auth: required.
-
-Output: raw environment config object.
 
 ### POST `/connect`
 What it does: creates SSH connection to remote server and attaches it to active backend runtime.
@@ -1606,10 +1633,14 @@ What it does: pinned versions are never removed by retention.
 Auth: required. Input JSON: `pinned` (bool, default `true`). `404` when unknown.
 
 ### POST `/backups/captures/{capture_id}/delete`
-What it does: removes a version's files and its index entry. The library is not
-touched.
+What it does: removes a version's files and its index entry, always together. The
+library is not touched.
 
-Auth: required. Input JSON: `delete_files` (default `true`).
+There is no record-only option. The index is derived from the backup tree, so removing
+a row on its own frees no space and the entry returns at the next rebuild. Any
+`delete_files` or `delete_record` flag in the body is ignored.
+
+Auth: required. Input: none.
 
 ### POST `/backups/delete/preview`
 What it does: previews a deletion — the versions it would remove and the space

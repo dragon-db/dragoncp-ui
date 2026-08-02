@@ -119,7 +119,7 @@ export function VersionRow({
             Pinned
           </span>
         )}
-        {capture.status === "restored" && (
+        {capture.restored_at && (
           <span className="rounded-full border border-emerald-500/35 bg-emerald-500/12 px-2 py-px text-[9.5px] font-bold tracking-[0.05em] text-emerald-300 uppercase">
             Restored
           </span>

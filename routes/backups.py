@@ -231,10 +231,15 @@ def api_backups_pin(capture_id):
 @backups_bp.route('/backups/captures/<capture_id>/delete', methods=['POST'])
 @require_auth
 def api_backups_delete(capture_id):
-    payload = request.json or {}
-    delete_files = bool(payload.get('delete_files', True))
+    """
+    Remove one version — its files and its index entry, always together.
+
+    There is no record-only option. The index is derived from the tree, so
+    deleting a row on its own frees nothing and the entry returns at the next
+    rebuild.
+    """
     try:
-        ok, message = _service().delete_capture(capture_id, delete_files=delete_files)
+        ok, message = _service().delete_capture(capture_id)
         return (jsonify({'status': 'success', 'message': message})
                 if ok else _fail(message))
     except Exception as error:  # noqa: BLE001
@@ -518,9 +523,9 @@ def _as_legacy_backup(capture: Dict) -> Dict:
         'source_path': '',
         'file_count': capture.get('file_count', 0),
         'total_size': capture.get('total_size', 0),
-        'status': 'restored' if capture.get('status') == 'restored' else 'ready',
+        'status': 'restored' if capture.get('restored_at') else 'ready',
         'created_at': capture.get('captured_at'),
-        'restored_at': None,
+        'restored_at': capture.get('restored_at'),
         'pinned': bool(capture.get('pinned')),
     }
 
@@ -628,13 +633,16 @@ def api_restore_backup(backup_id):
 @backups_bp.route('/backups/<backup_id>/delete', methods=['POST'])
 @require_auth
 def api_delete_backup(backup_id):
-    payload = request.json or {}
-    # The old page offered "delete the record" and "delete the files"
-    # separately. There is no longer a record to keep without its files — the
-    # index is derived from the tree, so removing the files removes the entry.
-    delete_files = bool(payload.get('delete_files', True)) or bool(payload.get('delete_record', True))
+    """
+    Legacy delete.
+
+    The old page offered "delete the record" and "delete the files" as separate
+    choices. There is no longer a record to keep without its files — the index
+    is derived from the tree — so both requests mean the same thing and any
+    `delete_record` / `delete_files` flags in the body are ignored.
+    """
     try:
-        ok, message = _service().delete_capture(backup_id, delete_files=delete_files)
+        ok, message = _service().delete_capture(backup_id)
         return (jsonify({'status': 'success', 'message': message})
                 if ok else _fail(message))
     except Exception as error:  # noqa: BLE001

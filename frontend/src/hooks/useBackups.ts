@@ -168,25 +168,11 @@ export function usePinCapture() {
   });
 }
 
-export function useDeleteCapture() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async ({
-      captureId,
-      deleteFiles = true,
-    }: {
-      captureId: string;
-      deleteFiles?: boolean;
-    }) => {
-      const response = await api.post<{ status: string; message: string }>(
-        `/backups/captures/${captureId}/delete`,
-        { delete_files: deleteFiles }
-      );
-      return response.data;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [KEY] }),
-  });
-}
+// Deleting a single version has no hook of its own either. Every deletion on
+// the page — one version, fifty, or the whole unidentified bucket — goes
+// through `useDeletePreview` then `useDeleteBackups`, so the count and the size
+// are always shown first. `POST /backups/captures/<id>/delete` still exists for
+// API callers; it removes the files and the index entry together.
 
 /** Selection for a bulk delete: explicit versions, or whole items. */
 export interface DeleteSelection {
@@ -224,19 +210,10 @@ export function useDeleteBackups() {
   });
 }
 
-export function useClearUnsorted() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async () => {
-      const response = await api.post<{ status: string } & DeleteResult>(
-        "/backups/unsorted/delete",
-        { confirm: true }
-      );
-      return response.data;
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [KEY] }),
-  });
-}
+// Clearing the unidentified bucket deliberately has no hook of its own. It is
+// a permanent deletion like any other, so the page runs it through the same
+// preview-then-confirm path (`useDeletePreview` + `useDeleteBackups`) rather
+// than firing a one-click endpoint that erased the whole bucket on a misclick.
 
 /** Persists to the database, so it survives a restart and background threads see it. */
 export function useSaveRetention() {

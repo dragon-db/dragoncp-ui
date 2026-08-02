@@ -30,7 +30,6 @@ import {
   useBackupSlots,
   useBackupTitles,
   useBackupsOverview,
-  useClearUnsorted,
   useDeleteBackups,
   useDeletePreview,
   usePinCapture,
@@ -121,7 +120,6 @@ export function BackupsPage() {
   const pin = usePinCapture();
   const previewDelete = useDeletePreview();
   const removeMany = useDeleteBackups();
-  const clearUnsorted = useClearUnsorted();
   const rebuild = useRebuildIndex();
 
   /**
@@ -509,12 +507,12 @@ export function BackupsPage() {
             <ClearUnsortedButton
               count={unsorted.data.length}
               size={unsorted.data.reduce((total, capture) => total + capture.total_size, 0)}
-              busy={clearUnsorted.isPending}
+              busy={previewDelete.isPending || removeMany.isPending}
               onClick={() =>
-                clearUnsorted.mutate(undefined, {
-                  onSuccess: (result) => toast.success(result.message),
-                  onError: () => toast.error("Could not clear the unidentified files"),
-                })
+                openDelete(
+                  { capture_ids: unsorted.data!.map((capture) => capture.capture_id) },
+                  `all ${unsorted.data!.length} unidentified item(s)`
+                )
               }
             />
           }

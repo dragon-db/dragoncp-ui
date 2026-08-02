@@ -8,15 +8,16 @@ reconstructed a transfer id from a folder name and imported the backup with an
 empty destination when that failed, which is why webhook-created backups could
 be listed and never restored.
 
-Three things are NOT derivable from a path and are therefore carried over from
+Four things are NOT derivable from a path and are therefore carried over from
 the existing index rather than regenerated: whether a capture is pinned, why it
-was displaced, and which transfer produced it. Losing a pin to a routine
-rebuild would quietly re-expose the one copy someone marked as worth keeping.
+was displaced, which transfer produced it, and when it was last restored.
+Losing a pin to a routine rebuild would quietly re-expose the one copy someone
+marked as worth keeping.
 """
 
 import os
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass, field, replace
+from typing import Dict, List, Optional, Set
 
 from services.explore.identity import parse_episode_keys
 
@@ -35,6 +36,9 @@ class RebuildResult:
     total_size: int = 0
     unsorted: int = 0
     removed: int = 0
+    #: Capture folders renamed because their name was already in use elsewhere
+    #: in the tree. Should be zero on a tree written by the current sorter.
+    repaired: int = 0
     errors: List[str] = field(default_factory=list)
 
     def as_dict(self) -> Dict:
@@ -44,6 +48,7 @@ class RebuildResult:
             'total_size': self.total_size,
             'unsorted': self.unsorted,
             'removed': self.removed,
+            'repaired': self.repaired,
             'errors': self.errors,
         }
 
@@ -83,6 +88,7 @@ class BackupIndexer:
             'total_size': sum(f['file_size'] for f in files),
             'pinned': carried.get('pinned', 0),
             'status': 'present',
+            'restored_at': carried.get('restored_at'),
         }
 
         slot_keys: List[str] = []
@@ -164,14 +170,25 @@ class BackupIndexer:
         Regenerate the entire index from disk.
 
         Safe to run at any time and idempotent — running it twice leaves the
-        same index. It writes nothing to the tree and deletes no media.
+        same index. It deletes no media and moves nothing, with one exception:
+        a capture folder whose name is already in use elsewhere in the tree is
+        renamed, because the name is the capture's identity and two folders
+        sharing one means only one of them can be indexed. See `_make_unique`.
         """
         result = RebuildResult()
 
         carried = self._carry_forward()
         seen = set()
+        claimed: Set[str] = set()
 
         for location in self.layout.scan():
+            if location.capture_id in claimed:
+                repaired = self._make_unique(location, claimed, result)
+                if repaired is None:
+                    continue
+                location = repaired
+            claimed.add(location.capture_id)
+
             try:
                 record = self.index_location(location, carried.get(location.capture_id))
             except Exception as error:  # noqa: BLE001 - one bad folder must not stop the scan
@@ -194,6 +211,54 @@ class BackupIndexer:
 
         return result
 
+    def _make_unique(self, location: CaptureLocation, claimed: Set[str],
+                     result: RebuildResult) -> Optional[CaptureLocation]:
+        """
+        Rename a capture folder whose name is already in use elsewhere.
+
+        The folder name IS the capture's identity in the index, so two folders
+        sharing one means the second's row replaces the first's and one of them
+        becomes unlistable and unrestorable while its files sit on disk. An
+        earlier sorter minted one id per transfer and reused it for every
+        episode it displaced, so such pairs exist on disks written before that
+        was fixed.
+
+        Renaming inside the backup disk is instant and loses nothing, so the
+        tree's invariant is repaired rather than reported and left broken. A
+        rename that fails is reported and the folder left alone — never
+        indexed over the top of the other one.
+        """
+        parent = os.path.dirname(location.path)
+
+        # Strip any existing "__2" disambiguator so repeated repairs do not
+        # stack suffix upon suffix.
+        parts = location.capture_id.split('__')
+        stem = '__'.join(parts[:2]) if len(parts) > 2 else location.capture_id
+
+        suffix = 1
+        candidate = stem
+        while candidate in claimed or os.path.exists(os.path.join(parent, candidate)):
+            suffix += 1
+            candidate = f"{stem}__{suffix}"
+
+        target = os.path.join(parent, candidate)
+        try:
+            os.rename(location.path, target)
+        except OSError as error:
+            result.errors.append(
+                f"{location.relative_path}: shares a backup id with another folder "
+                f"and could not be renamed ({error}), so it was not indexed"
+            )
+            return None
+
+        result.repaired += 1
+        return replace(
+            location,
+            capture_id=candidate,
+            path=target,
+            relative_path=self.layout.relative(target),
+        )
+
     def _carry_forward(self) -> Dict[str, Dict]:
         """Facts the path cannot hold, keyed by capture id."""
         carried: Dict[str, Dict] = {}
@@ -202,6 +267,7 @@ class BackupIndexer:
                 'pinned': row.get('pinned', 0),
                 'reason': row.get('reason'),
                 'source_transfer_id': row.get('source_transfer_id'),
+                'restored_at': row.get('restored_at'),
             }
         return carried
 
@@ -214,5 +280,6 @@ class BackupIndexer:
                     'pinned': existing.get('pinned', 0),
                     'reason': existing.get('reason'),
                     'source_transfer_id': existing.get('source_transfer_id'),
+                    'restored_at': existing.get('restored_at'),
                 })
         return None

@@ -264,26 +264,23 @@
                     <!-- Delete Options -->
                     <div class="card mb-3">
                         <div class="card-body">
-                            <h6 class="card-title"><i class="bi bi-exclamation-triangle text-warning"></i> What would you like to delete?</h6>
-                            <div class="form-check mb-2">
-                                <input class="form-check-input" type="checkbox" id="deleteRecordCheck" checked>
-                                <label class="form-check-label text-light" for="deleteRecordCheck">
-                                    <strong>Database Record</strong> - Remove backup entry from database
-                                </label>
-                                <div class="text-muted small ms-4">This will remove the backup from the list but keep files on disk</div>
-                            </div>
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="deleteFilesCheck">
-                                <label class="form-check-label text-light" for="deleteFilesCheck">
-                                    <strong>Backup Files</strong> - Delete all backup files from disk
-                                </label>
-                                <div class="text-warning small ms-4"><i class="bi bi-exclamation-triangle"></i> This will permanently delete all files in the backup directory (NOT your original media)</div>
+                            <h6 class="card-title"><i class="bi bi-exclamation-triangle text-warning"></i> Delete this backup?</h6>
+                            <p class="text-light small mb-1">
+                                The stored files and the list entry go together. The backup list is
+                                built from what is on the backup disk, so removing the entry on its
+                                own would free no space and it would reappear the next time the
+                                index is rebuilt.
+                            </p>
+                            <div class="text-warning small">
+                                <i class="bi bi-exclamation-triangle"></i>
+                                This permanently deletes the files below from the backup directory.
+                                Your library is not touched, and this cannot be undone.
                             </div>
                         </div>
                     </div>
 
-                    <!-- Files to be deleted (shown when deleteFilesCheck is checked) -->
-                    <div id="deleteFilesPreview" style="display:none;">
+                    <!-- The files this will remove -->
+                    <div id="deleteFilesPreview">
                         <div class="card">
                             <div class="card-header">
                                 <h6 class="mb-0"><i class="bi bi-files text-danger"></i> Backup files to be deleted</h6>

@@ -420,22 +420,22 @@ This makes it easy to:
 
 ### **Movies:**
 ```
-Remote:  /home/dragondb/media/Movies/New Gods Nezha Reborn (2021)
-Local:   /home/dragondb/media_external/media/movies/New Gods Nezha Reborn (2021)
+Remote:  <MOVIE_PATH>/Example Film (2024)
+Local:   <MOVIE_DEST_PATH>/Example Film (2024)
          ↑ Base path replaced, folder name preserved exactly ↑
 ```
 
 ### **Series:**
 ```
-Remote:  /home/dragondb/media/TVShows/Breaking Bad (2008)/Season 01
-Local:   /home/dragondb/media_external/media/tvshows/Breaking Bad (2008)/Season 01
+Remote:  <TVSHOW_PATH>/Example Show (2024)/Season 01
+Local:   <TVSHOW_DEST_PATH>/Example Show (2024)/Season 01
          ↑ Base path replaced, series/season structure preserved exactly ↑
 ```
 
 ### **Anime:**
 ```
-Remote:  /home/dragondb/media/Anime/Attack on Titan (2013)/Season 01
-Local:   /home/dragondb/media_external/media/anime/Attack on Titan (2013)/Season 01
+Remote:  <ANIME_PATH>/Example Anime (2018)/Season 01
+Local:   <ANIME_DEST_PATH>/Example Anime (2018)/Season 01
          ↑ Base path replaced, structure preserved exactly ↑
 ```
 

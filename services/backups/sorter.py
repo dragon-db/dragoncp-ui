@@ -25,7 +25,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from security import PathTraversalError
 
@@ -119,23 +119,30 @@ class BackupSorter:
         capture_id = str(new_capture_id(transfer_id, moment))
         groups, extras, unknown = self._group(staging, library, dest_relative, dest_path)
 
+        # One transfer can produce many captures — a slot per episode, extras
+        # per title, and the unsorted bucket. They share a base id because they
+        # share a cause, but each needs its own, because the id is what the
+        # index keys on. Without this set the second episode's capture replaced
+        # the first's index row and its files became unlistable.
+        taken: Set[str] = set()
+
         for identity, entries in groups.items():
             capture = self._write_group(
-                identity, entries, capture_id, transfer_id, reason, staging,
+                identity, entries, capture_id, transfer_id, reason, staging, taken,
             )
             if capture:
                 result.captures.append(capture)
 
         for title, entries in extras.items():
             capture = self._write_extras(
-                library or '', title, entries, capture_id, transfer_id, reason,
+                library or '', title, entries, capture_id, transfer_id, reason, taken,
             )
             if capture:
                 result.captures.append(capture)
 
         if unknown:
             capture = self._write_unsorted(
-                unknown, capture_id, transfer_id, reason, library,
+                unknown, capture_id, transfer_id, reason, library, taken,
             )
             if capture:
                 result.captures.append(capture)
@@ -246,7 +253,7 @@ class BackupSorter:
 
     def _write_group(self, identity: SlotIdentity, entries: List[Dict],
                      capture_id: str, transfer_id: str, reason: str,
-                     staging: str) -> Optional[SortedCapture]:
+                     staging: str, taken: Set[str]) -> Optional[SortedCapture]:
         del staging  # kept for call-site symmetry with the unsorted path
         try:
             parent = self.layout.slot_dir(identity)
@@ -254,11 +261,11 @@ class BackupSorter:
             # Cannot place it — treat as unsorted rather than losing it.
             print(f"⚠️  Backup sorter could not place {identity.display}: {error}")
             return self._write_unsorted(
-                entries, capture_id, transfer_id, reason, identity.library,
+                entries, capture_id, transfer_id, reason, identity.library, taken,
             )
 
         os.makedirs(parent, exist_ok=True)
-        capture_path, actual_id = self.layout.unique_capture_dir(parent, capture_id)
+        capture_path, actual_id = self.layout.unique_capture_dir(parent, capture_id, taken)
         moved = self._move_all(entries, capture_path, flatten=True)
         if not moved:
             return None
@@ -277,16 +284,18 @@ class BackupSorter:
         )
 
     def _write_extras(self, library: str, title: str, entries: List[Dict],
-                      capture_id: str, transfer_id: str, reason: str
-                      ) -> Optional[SortedCapture]:
+                      capture_id: str, transfer_id: str, reason: str,
+                      taken: Set[str]) -> Optional[SortedCapture]:
         try:
             parent = os.path.dirname(self.layout.extras_dir(library, title, capture_id))
         except (OSError, ValueError, PathTraversalError) as error:
             print(f"⚠️  Backup sorter could not place extras for {title}: {error}")
-            return self._write_unsorted(entries, capture_id, transfer_id, reason, library)
+            return self._write_unsorted(
+                entries, capture_id, transfer_id, reason, library, taken,
+            )
 
         os.makedirs(parent, exist_ok=True)
-        capture_path, actual_id = self.layout.unique_capture_dir(parent, capture_id)
+        capture_path, actual_id = self.layout.unique_capture_dir(parent, capture_id, taken)
         moved = self._move_all(entries, capture_path, flatten=False)
         if not moved:
             return None
@@ -305,7 +314,8 @@ class BackupSorter:
         )
 
     def _write_unsorted(self, entries: List[Dict], capture_id: str, transfer_id: str,
-                        reason: str, library: Optional[str]) -> Optional[SortedCapture]:
+                        reason: str, library: Optional[str],
+                        taken: Set[str]) -> Optional[SortedCapture]:
         try:
             parent = self.layout.unsorted_root()
         except (OSError, ValueError, PathTraversalError) as error:
@@ -313,7 +323,7 @@ class BackupSorter:
             return None
 
         os.makedirs(parent, exist_ok=True)
-        capture_path, actual_id = self.layout.unique_capture_dir(parent, capture_id)
+        capture_path, actual_id = self.layout.unique_capture_dir(parent, capture_id, taken)
         # Unsorted files keep their original relative path, so they are
         # recoverable by hand and can be re-sorted once the parser improves.
         moved = self._move_all(entries, capture_path, flatten=False)

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api";
 import { toast } from "sonner";
@@ -61,12 +61,27 @@ export function useRuntimeController() {
     clearLiveActivity,
   } = useRuntimeStore();
 
+  /**
+   * Minutes left before the realtime connection idles out.
+   *
+   * Driven by a ticking clock rather than read from `Date.now()` while
+   * rendering. Computing it in a memo keyed on the last activity meant it only
+   * ever changed when activity happened — so the countdown in the status
+   * popover sat on the same number instead of counting down.
+   */
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!socketConnected) return;
+    const tick = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(tick);
+  }, [socketConnected]);
+
   const minutesRemaining = useMemo(() => {
     if (!socketConnected) return 0;
-    const elapsedMs = Date.now() - lastActivityAt;
-    const remainingMs = timeoutMinutes * 60 * 1000 - elapsedMs;
+    const remainingMs = timeoutMinutes * 60 * 1000 - (now - lastActivityAt);
     return Math.max(0, Math.floor(remainingMs / 60000));
-  }, [lastActivityAt, socketConnected, timeoutMinutes]);
+  }, [lastActivityAt, now, socketConnected, timeoutMinutes]);
 
   const enableRealtime = () => {
     if (socketConnected) return;

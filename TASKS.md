@@ -129,9 +129,50 @@ Notes:
   folder tidy-up — it started walking at the directory it had just removed, hit
   the first error and gave up, so every deletion left the empty slot, season and
   title folders behind. Retention had been doing this since it was written.
-- Handoff: built, tested, and verified against the live disk read-only. What has
-  NOT happened is the migration itself — preview it in the UI, read the mapping,
-  then apply. Do it with no transfers running; the code refuses otherwise.
+- 2026-08-02 (review): an external review of the branch found a release blocker
+  and eight smaller defects. All are fixed; the blocker is worth recording
+  because it would have destroyed data on the very first run.
+
+  **Capture ids were reused within one transfer.** One id was minted per
+  transfer and used for every capture it produced — a slot per episode, the
+  title's extras, the unsorted bucket. The id is the index's primary key and
+  the upsert replaces on conflict, so indexing the second capture deleted the
+  first. A transfer displacing a whole season left one episode listed and every
+  other one on disk, invisible and unrestorable. Migration had the same shape
+  (a legacy folder often held a whole season) and a rebuild reproduced it,
+  because it derives the id from the folder name. Fixed by making ids unique
+  across the whole tree: `unique_capture_dir` now takes a set of ids already
+  handed out in the current run, and the rebuild renames any folder whose name
+  is already in use rather than indexing over it. Two restores at once could
+  collide the same way — same millisecond, same `restore` reference, different
+  slots — so a restore now reserves its id against the index too.
+
+  The rest, in one line each:
+  - a successful restore marked the capture `restored`, and the planner only
+    reads `present` ones, so a restore could not be repeated and retention
+    skipped it forever. `status` now means "are the files there"; `restored_at`
+    records when, and only for a fully successful run.
+  - the retention dialog applied the current form values, not the previewed
+    ones — preview keep-10, type 1, delete the keep-1 set unseen.
+  - "Clear unidentified" deleted the whole bucket on one click with no preview.
+  - a settings save committed key by key, so a bad value at the end left the
+    earlier ones written behind a 400.
+  - a stored empty string read as "nothing saved", so clearing the Discord
+    webhook fell back to the env value and kept posting to the old URL.
+  - the legacy UI offered env-owned fields as editable and dropped the realtime
+    connection announcing a save the server had refused.
+  - `delete_files: false` removed the index row and left the files, so the
+    entry came back at the next rebuild. Record-only deletion is gone.
+  - the migration guard failed *open* when it could not read the transfer
+    table. It now refuses.
+  - five documents still described the removed session store.
+
+- Handoff: built, tested (397), and verified against the live disk read-only.
+  What has NOT happened is the migration itself — preview it in the UI, read the
+  mapping, then apply. Do it with no transfers running; the code refuses
+  otherwise. Deploy to prod before adopting: both instances share `BACKUP_PATH`
+  but keep separate databases, so adopting from either side moves folders the
+  other's index still names.
 
 ### TASK-015 — One settings boundary: env for constants, database for the rest
 Status: done (unreleased)      Priority: high
@@ -234,6 +275,21 @@ Notes:
   implementing it literally would have dropped queued and paused transfers out
   of the Activity panel. The four-status set the coordinator already used won,
   and the docstring was corrected to match.
+- 2026-08-02 (review): three more defects on this boundary, all fixed.
+  1. A save committed each key as it went, so an invalid value part-way through
+     left everything before it written while the response was a 400. The whole
+     payload is validated first now, then written in one transaction.
+  2. A stored empty string was treated as "nothing saved", so the resolver fell
+     back to the env file. Clearing the Discord webhook in the UI looked like it
+     worked and notifications kept going to the old URL; startup adoption then
+     wrote the env value back over the blank on every restart. An empty row is
+     now a deliberate choice, distinct from no row at all.
+  3. The legacy static UI — which is what production serves — still rendered
+     env-owned fields as editable, and after a refused save it compared what it
+     had *typed* against what was loaded, dropped the realtime connection and
+     announced that critical changes were saved. It now disables those fields
+     using the `editable` flag the server already sends, and only reacts to keys
+     in the server's `saved` list.
 - Handoff: done and verified live. The Settings page's Automation tab still has
   its own controls for auto-sync and Discord; they write through the same
   resolver, so they cannot disagree with the Config tab.

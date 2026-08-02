@@ -165,7 +165,11 @@ class RestorePlanner:
             )
             return plan
 
-        if capture.get('status') != 'present':
+        # `status` answers one question: are the files still on disk. It used
+        # to double as "has this been restored", which made a successful
+        # restore unrepeatable — the second attempt was refused with a message
+        # about files being gone while they were sitting right there.
+        if capture.get('status') not in (None, '', 'present'):
             plan.blocked = 'The files for this backup have been removed from disk'
             return plan
 
@@ -437,8 +441,7 @@ class RestoreRunner:
 
         try:
             os.makedirs(slot_dir, exist_ok=True)
-            capture_path, actual_id = self.layout.unique_capture_dir(slot_dir, capture_id)
-            os.makedirs(capture_path, exist_ok=True)
+            capture_path, actual_id = self._reserve(slot_dir, capture_id)
         except OSError as error:
             return False, (
                 f"Could not create somewhere to keep the file being replaced: {error}. "
@@ -474,6 +477,26 @@ class RestoreRunner:
             return True, 'nothing to preserve', None, None
 
         return True, 'preserved', capture_path, actual_id
+
+    def _reserve(self, slot_dir: str, capture_id: str) -> Tuple[str, str]:
+        """
+        A capture folder under an id nothing else already holds.
+
+        Checked against the index as well as the folder, because a capture id
+        has to be unique across the whole tree and this one is minted from the
+        clock. Two restores running at once — the queue allows three — mint
+        theirs from the same millisecond and the same 'restore' reference, and
+        they land in different slots, where looking only at the target folder
+        would not see the clash. The index keys on the id, so the second would
+        replace the first and leave its files unreachable.
+        """
+        taken = set()
+        while True:
+            path, actual = self.layout.unique_capture_dir(slot_dir, capture_id, taken)
+            if not self.captures.get(actual):
+                os.makedirs(path, exist_ok=True)
+                return path, actual
+            taken.add(actual)
 
     # ---- steps 2 and 3 ----------------------------------------------------
 

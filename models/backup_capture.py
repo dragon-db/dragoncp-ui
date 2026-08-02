@@ -41,8 +41,8 @@ class BackupCapture:
                     capture_id, library, title, season_number, episode_number,
                     release_year, slot_key, capture_path, captured_at,
                     source_transfer_id, source_ref, reason, kind,
-                    file_count, total_size, pinned, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    file_count, total_size, pinned, status, restored_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 capture_id,
                 record.get('library'),
@@ -61,6 +61,7 @@ class BackupCapture:
                 record.get('total_size', 0),
                 1 if record.get('pinned') else 0,
                 record.get('status', 'present'),
+                record.get('restored_at'),
             ))
 
             if files:
@@ -308,6 +309,11 @@ class BackupCapture:
         newest `keep` for its slot, being pinned, and being younger than the
         grace period. The grace period is what stops an accidental sync
         immediately pushing the copy you wanted off the end of the list.
+
+        Having been restored is deliberately NOT one of them. `status` answers
+        only whether the files are still on disk; when it also meant "restored"
+        a restored capture became permanent and the backup disk filled with
+        copies nothing would ever prune.
         """
         with self.db.get_connection() as conn:
             rows = conn.execute('''

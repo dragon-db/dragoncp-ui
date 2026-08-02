@@ -114,9 +114,7 @@ class RetentionPolicy:
         """
         if self.settings is not None:
             try:
-                value = self.settings.get(key)
-                if value not in (None, ''):
-                    return value
+                return self.settings.get(key)
             except Exception:  # noqa: BLE001 - fall through to config
                 pass
         return self.config.get(key)

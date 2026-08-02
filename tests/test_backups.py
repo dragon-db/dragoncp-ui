@@ -279,6 +279,14 @@ class IdentityTests(unittest.TestCase):
 # ===========================================================================
 
 class SorterTests(BackupsTestCase):
+    def index(self, result):
+        """Index a sort's output the way a finished transfer does."""
+        service = BackupsService(
+            self.config, self.db, self.captures, _TransferSpy(), socketio=None,
+        )
+        for capture in result.captures:
+            service.index_sorted(capture)
+
     def test_season_transfer_lands_in_the_right_slot(self):
         self.stage('transfer_1', f"{SHOW} - S01E01 - An Episode.mkv")
         result = self.sort('transfer_1', 'tvshows', os.path.join(self.tv_root, SHOW, 'Season 01'))
@@ -324,6 +332,76 @@ class SorterTests(BackupsTestCase):
                          'two independent versions')
         # Both live under the same slot.
         self.assertEqual(len({p.rsplit('/', 2)[0] for p in placed}), 1)
+
+    # ---- capture ids are the index's primary key, so they must be unique ----
+
+    def test_each_episode_of_one_transfer_gets_its_own_id(self):
+        """
+        The whole point of the id: it identifies ONE stored copy.
+
+        One transfer displacing two episodes writes two capture folders under
+        two different slots. Giving them the same id made indexing the second
+        replace the first, so one episode's files stayed on disk and became
+        impossible to list or restore.
+        """
+        self.stage('transfer_multi', f"{SHOW} - S01E01 - A.mkv")
+        self.stage('transfer_multi', f"{SHOW} - S01E02 - B.mkv")
+        result = self.sort(
+            'transfer_multi', 'tvshows', os.path.join(self.tv_root, SHOW, 'Season 01'),
+        )
+
+        self.assertEqual(len(result.captures), 2)
+        ids = [capture.capture_id for capture in result.captures]
+        self.assertEqual(len(set(ids)), 2, f"ids collided: {ids}")
+
+    def test_every_episode_of_one_transfer_is_indexed(self):
+        """Both the live path and a rebuild have to see all three."""
+        self.stage('transfer_multi2', f"{SHOW} - S01E01 - A.mkv")
+        self.stage('transfer_multi2', f"{SHOW} - S01E02 - B.mkv")
+        self.stage('transfer_multi2', f"{SHOW} - S01E03 - C.mkv")
+        result = self.sort(
+            'transfer_multi2', 'tvshows', os.path.join(self.tv_root, SHOW, 'Season 01'),
+        )
+        self.index(result)
+
+        self.assertEqual(self.captures.totals()['capture_count'], 3)
+        self.assertEqual(self.indexer.rebuild().indexed, 3)
+        for episode in (1, 2, 3):
+            slot_key = SlotIdentity(
+                library='shows', title=SHOW, season=1, episode=episode,
+            ).slot_key
+            self.assertEqual(
+                len(self.captures.captures_for_slot(slot_key)), 1,
+                f"S01E{episode:02d} is missing from the index",
+            )
+
+    def test_extras_and_unsorted_do_not_share_an_id_with_a_slot(self):
+        self.stage('transfer_mixed', f"{SHOW}/Season 01/{SHOW} - S01E01 - A.mkv")
+        self.stage('transfer_mixed', f"{SHOW}/poster.jpg")
+        self.stage('transfer_mixed', 'stray.mkv')
+        result = self.sort('transfer_mixed', 'tvshows', self.tv_root)
+        self.index(result)
+
+        ids = [capture.capture_id for capture in result.captures]
+        self.assertEqual(len(ids), 3, 'a slot, the title extras, and the unsorted bucket')
+        self.assertEqual(len(ids), len(set(ids)), f"ids collided: {ids}")
+        self.assertEqual(self.captures.totals()['capture_count'], 3)
+
+    def test_the_source_transfer_survives_a_disambiguated_id(self):
+        """
+        Reading provenance by splitting on the separator recorded the "2" of a
+        "…__2" id as the source instead of the transfer it came from.
+        """
+        self.stage('transfer_ref', f"{SHOW} - S01E01 - A.mkv")
+        self.stage('transfer_ref', f"{SHOW} - S01E02 - B.mkv")
+        result = self.sort(
+            'transfer_ref', 'tvshows', os.path.join(self.tv_root, SHOW, 'Season 01'),
+        )
+        self.index(result)
+
+        for row in self.captures.recent(limit=10):
+            self.assertNotEqual(row['source_ref'], '2')
+            self.assertTrue(row['source_ref'])
 
     def test_movies_have_no_season_layer(self):
         self.stage('transfer_6', f"{FILM} [Bluray-1080p].mkv")
@@ -506,6 +584,48 @@ class IndexerTests(BackupsTestCase):
         self.assertEqual(len(slots), 1)
         self.assertEqual(slots[0]['version_count'], 2)
 
+    def test_a_duplicate_folder_name_is_repaired_rather_than_lost(self):
+        """
+        Two folders cannot share a name, because the name is the identity.
+
+        Disks written by the earlier sorter hold pairs like this — one id per
+        transfer, reused for every episode it displaced. Indexing one over the
+        other would leave the second's files on disk and unreachable, so the
+        rebuild renames it and indexes both.
+        """
+        shared = str(new_capture_id('transfer_dup'))
+        for episode in (1, 2):
+            touch(os.path.join(
+                self.backup_root, 'shows', SHOW, 'Season 01',
+                f"S01E{episode:02d}", shared, f"{SHOW} - S01E{episode:02d} - A.mkv",
+            ))
+
+        result = self.indexer.rebuild()
+
+        self.assertEqual(result.repaired, 1)
+        self.assertEqual(result.indexed, 2, 'both versions are reachable')
+        self.assertEqual(len(self.captures.slots()), 2)
+        self.assertEqual(len(self.tree()), 2, 'no media was moved out of its slot')
+
+    def test_repairing_twice_does_not_stack_suffixes(self):
+        shared = str(new_capture_id('transfer_dup'))
+        for episode in (1, 2, 3):
+            touch(os.path.join(
+                self.backup_root, 'shows', SHOW, 'Season 01',
+                f"S01E{episode:02d}", shared, f"{SHOW} - S01E{episode:02d} - A.mkv",
+            ))
+
+        self.indexer.rebuild()
+        second = self.indexer.rebuild()
+
+        self.assertEqual(second.repaired, 0, 'the tree is already consistent')
+        self.assertEqual(second.indexed, 3)
+        for row in self.captures.recent(limit=10):
+            self.assertIsNotNone(
+                parse_capture_id(row['capture_id']),
+                f"{row['capture_id']} is no longer a readable capture id",
+            )
+
 
 # ===========================================================================
 # Phase 5 — migrating the old per-transfer folders
@@ -607,6 +727,41 @@ class MigrationTests(BackupsTestCase):
 
         self.assertEqual(self.captures.totals()['capture_count'], 2)
         self.assertEqual(len(self.captures.slots()), 2)
+
+    def test_a_whole_season_in_one_legacy_folder_keeps_every_episode(self):
+        """
+        The shape that loses data if one id is reused for a whole folder.
+
+        A legacy folder often held a whole season. Each episode becomes its own
+        capture, so each needs its own id — sharing one meant every episode's
+        index row overwrote the last and only the final one stayed reachable,
+        with the rest sitting on disk unlistable.
+        """
+        os.makedirs(os.path.join(self.tv_root, SHOW), exist_ok=True)
+        for episode in (1, 2, 3):
+            self.legacy(
+                'Example_Show_2024_transfer_season',
+                f"Season 01/{SHOW} - S01E{episode:02d} - A.mkv",
+            )
+        report = self.migration.apply()
+
+        self.assertEqual(report.moved_count, 3)
+        self.assertEqual(self.captures.totals()['capture_count'], 3)
+        self.assertEqual(len(self.captures.slots()), 3)
+        self.assertEqual(len(self.tree()), 3, 'nothing was overwritten on disk either')
+
+    def test_the_preview_shows_a_separate_destination_per_episode(self):
+        os.makedirs(os.path.join(self.tv_root, SHOW), exist_ok=True)
+        for episode in (1, 2):
+            self.legacy(
+                'Example_Show_2024_transfer_preview',
+                f"Season 01/{SHOW} - S01E{episode:02d} - A.mkv",
+            )
+        report = self.migration.plan()
+
+        targets = [move.target_relative for move in report.moves]
+        self.assertEqual(len(targets), 2)
+        self.assertEqual(len(set(targets)), 2, f"the preview showed one path twice: {targets}")
 
     def test_the_old_folder_is_removed_once_it_is_empty(self):
         os.makedirs(os.path.join(self.tv_root, SHOW), exist_ok=True)
@@ -833,12 +988,90 @@ class RestoreTests(BackupsTestCase):
         self.assertIn('Nothing was changed', message)
         self.assertTrue(os.path.isfile(current), 'the library is untouched')
 
-    def test_restore_marks_the_version_as_restored(self):
+    def test_restore_records_when_it_happened(self):
         capture = self.back_up(f"{SHOW} - S01E01 - Old.mkv")
         ok, _message, _summary = self.service.restore(capture['capture_id'])
         self.assertTrue(ok)
         self._settle()
-        self.assertEqual(self.captures.get(capture['capture_id'])['status'], 'restored')
+
+        stored = self.captures.get(capture['capture_id'])
+        self.assertTrue(stored['restored_at'], 'the restore is recorded')
+        self.assertEqual(stored['status'], 'present',
+                         'status answers whether the files are there, nothing else')
+
+    def test_a_restored_version_can_be_restored_again(self):
+        """
+        The files are still in the backup tree, so a restore is repeatable.
+
+        Marking the capture 'restored' made a successful restore its own last:
+        the planner refused the second attempt with a message about the files
+        having been removed from disk, while they were sitting right there.
+        """
+        capture = self.back_up(f"{SHOW} - S01E01 - Old.mkv")
+        self.assertTrue(self.run_restore(capture)[0])
+
+        plan = self.service.plan_restore(capture['capture_id'])
+        self.assertIsNone(plan['blocked'])
+        self.assertTrue(plan['operations'])
+
+        ok, _message, _summary = self.run_restore(capture)
+        self.assertTrue(ok, 'restoring the same version twice must work')
+
+    def test_a_restored_version_is_still_subject_to_retention(self):
+        """
+        Otherwise every restore adds a version that can never be pruned, and
+        the backup disk fills with copies the rule will not touch.
+        """
+        capture = self.back_up(f"{SHOW} - S01E01 - Old.mkv")
+        self.run_restore(capture)
+
+        prunable = self.captures.prunable(keep=0, older_than_iso='2999-01-01T00:00:00Z')
+        self.assertIn(capture['capture_id'], [row['capture_id'] for row in prunable])
+
+    def test_two_restores_in_the_same_millisecond_get_different_ids(self):
+        """
+        A restore's capture id is minted from the clock and a fixed 'restore'
+        reference, so two running at once can produce the same one — and they
+        land in different slots, where checking only the target folder would
+        not see the clash. The index keys on the id, so the second would
+        replace the first.
+        """
+        runner = RestoreRunner(self.config, self.layout, self.captures, self.service.indexer)
+        base = str(new_capture_id('restore'))
+
+        first_dir = self.layout.slot_dir(
+            SlotIdentity(library='shows', title=SHOW, season=1, episode=1))
+        second_dir = self.layout.slot_dir(
+            SlotIdentity(library='shows', title=SHOW, season=1, episode=2))
+        os.makedirs(first_dir, exist_ok=True)
+        os.makedirs(second_dir, exist_ok=True)
+
+        _path, first_id = runner._reserve(first_dir, base)
+        self.captures.upsert(
+            {'capture_id': first_id, 'capture_path': 'shows/x', 'captured_at': '2026-01-01T00:00:00Z'},
+            [], [],
+        )
+        _path, second_id = runner._reserve(second_dir, base)
+
+        self.assertNotEqual(first_id, second_id)
+
+    def test_a_partial_restore_is_not_recorded_as_a_restore(self):
+        """Some files went back and some did not; it has to look unfinished."""
+        capture = self.back_up(f"{SHOW} - S01E01 - Old.mkv")
+        plan = self.service.planner.plan(capture['capture_id'])
+
+        # Make the one operation fail by pointing it at a source that is gone.
+        plan.operations[0].source = os.path.join(self.backup_root, 'missing.mkv')
+        runner = RestoreRunner(self.config, self.layout, self.captures, self.service.indexer)
+        ok, _message, summary = runner.run(plan, self.captures.get(capture['capture_id']))
+
+        self.assertFalse(ok)
+        self.assertEqual(summary['failed'], 1)
+        self.service._finish_restore(
+            'transfer_x', capture['capture_id'],
+            self.captures.get(capture['capture_id']), plan, ok, 'failed', summary,
+        )
+        self.assertIsNone(self.captures.get(capture['capture_id'])['restored_at'])
 
     # ---- queueing ----
 
@@ -1075,6 +1308,23 @@ class ActiveTransferDetectionTests(BackupsTestCase):
         """It is not writing yet, but it can start at any moment."""
         self.add('waiting', 'queued')
         self.assertIsNotNone(self.service._migration_blocker())
+
+    def test_not_being_able_to_check_also_blocks(self):
+        """
+        This guard stands in front of an operation that moves files across the
+        whole backup disk. "The database did not answer" has to mean wait, not
+        go ahead — it used to mean go ahead.
+        """
+        class Unavailable:
+            def get_active(self):
+                raise RuntimeError('database is locked')
+
+        self.service.transfer_model = Unavailable()
+        blocker = self.service._migration_blocker()
+
+        self.assertIsNotNone(blocker)
+        self.assertIn('Could not check', blocker)
+        self.assertFalse(self.service.migration_apply()['applied'])
 
 
 class BulkDeleteTests(BackupsTestCase):

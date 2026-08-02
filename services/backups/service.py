@@ -18,7 +18,7 @@ import threading
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .identity import SlotIdentity, media_type_for_library
+from .identity import SlotIdentity, media_type_for_library, parse_capture_id
 from .indexer import BackupIndexer
 from .layout import BackupLayout, BackupPathNotConfigured, utc_now
 from .migrate import LegacyMigration
@@ -128,6 +128,11 @@ class BackupsService:
     def index_sorted(self, capture: SortedCapture) -> None:
         """Write the index row for a capture the sorter just created."""
         identity = capture.identity
+        # Read the provenance back out of the id rather than splitting on the
+        # separator: a disambiguated id ends in "__2", and taking the last
+        # segment recorded the disambiguator as the source instead of the
+        # transfer it came from.
+        parsed = parse_capture_id(capture.capture_id)
         record = {
             'capture_id': capture.capture_id,
             'library': capture.library or None,
@@ -139,7 +144,7 @@ class BackupsService:
             'capture_path': self.layout.relative(capture.path),
             'captured_at': capture.captured_at.isoformat().replace('+00:00', 'Z'),
             'source_transfer_id': capture.source_transfer_id,
-            'source_ref': capture.capture_id.split('__')[-1],
+            'source_ref': parsed[1] if parsed else '',
             'reason': capture.reason,
             'kind': capture.kind,
             'file_count': len(capture.files),
@@ -411,9 +416,18 @@ class BackupsService:
         except Exception:  # noqa: BLE001
             pass
 
-        if ok:
+        # Record WHEN it was restored, and leave `status` alone: the files are
+        # still in the backup tree, so the capture stays restorable and stays
+        # subject to retention. Marking it 'restored' made a successful restore
+        # its own last — the planner then refused to read files that were still
+        # there, and retention skipped it forever.
+        #
+        # A partial restore is not recorded as one. Some files went back and
+        # some did not, and the honest thing is to leave it looking un-restored
+        # so it is obvious the run has to be repeated.
+        if ok and not summary.get('failed'):
             try:
-                self.captures.update(capture_id, {'status': 'restored'})
+                self.captures.update(capture_id, {'restored_at': now})
             except Exception:  # noqa: BLE001
                 pass
 
@@ -453,15 +467,22 @@ class BackupsService:
         self.captures.update(capture_id, {'pinned': 1 if pinned else 0})
         return True, 'Pinned' if pinned else 'Unpinned'
 
-    def delete_capture(self, capture_id: str, delete_files: bool = True) -> Tuple[bool, str]:
+    def delete_capture(self, capture_id: str) -> Tuple[bool, str]:
+        """
+        Remove one version, files and index entry together.
+
+        There is deliberately no way to drop the index entry alone. The tree is
+        the source of truth and the index is derived from it, so a row removed
+        without its files frees no space and comes straight back on the next
+        rebuild — the entry looks deleted until it silently is not.
+        """
         record = self.captures.get(capture_id)
         if not record:
             return False, 'Backup not found'
 
-        if delete_files:
-            ok, error = self._remove_capture_files(record)
-            if not ok:
-                return False, error
+        ok, error = self._remove_capture_files(record)
+        if not ok:
+            return False, error
 
         self.captures.delete(capture_id)
         return True, 'Backup deleted'
@@ -678,14 +699,22 @@ class BackupsService:
         version of this called `get_active()`, whose name and docstring promised
         active transfers and whose body returned the entire table, so a database
         holding ten *completed* transfers reported ten still running.
+
+        Not being able to answer the question blocks too. This is the guard in
+        front of an operation that moves files across the whole backup disk, so
+        "the database did not respond" has to mean wait, not proceed.
         """
         try:
             active = [
                 transfer for transfer in self.transfer_model.get_active()
                 if (transfer.get('status') or '') in _ACTIVE_STATUSES
             ]
-        except Exception:  # noqa: BLE001 - cannot tell, so do not block
-            return None
+        except Exception as error:  # noqa: BLE001 - cannot tell, so refuse
+            return (
+                f"Could not check whether any transfers are running ({error}). "
+                'Migration moves files across the whole backup disk, so it only '
+                'runs when the system is known to be idle.'
+            )
 
         if not active:
             return None

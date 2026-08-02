@@ -9,7 +9,7 @@ the same slot's history.
 That last part is why there is no separate "undo". Undoing a restore is
 restoring the version the restore itself created.
 
-Last updated: 2026-08-01
+Last updated: 2026-08-02
 Primary files: `services/backups/`, `models/backup_capture.py`, `routes/backups.py`,
 `services/transfer_coordinator.py`
 
@@ -109,6 +109,14 @@ welded to the copy they belong to. Sidecars need no pairing heuristic: a file
 named `... - S01E01 - Title.srt` carries the same episode code as the video, so
 it lands in the same capture on its own.
 
+One transfer usually produces **several** captures — a slot per episode, one
+per title's extras, and the unsorted bucket — and each gets its own id. They
+share a timestamp and a source reference because they share a cause, and a
+`__2` suffix keeps them apart. Reusing a single id across them all meant the
+second capture's index row replaced the first's, so a transfer that displaced a
+whole season left one episode listed and the rest on disk with nothing able to
+find them.
+
 ### 3. Identity
 
 Episode parsing is **not** reimplemented here. `services/explore/identity.py`
@@ -138,10 +146,18 @@ rebuild the index is in the path: library, title, season, episode, capture time
 and provenance.
 
 `POST /api/backups/rebuild` regenerates the whole index by walking the disk. It
-needs no transfer record and no prior index, writes nothing to the tree, and is
-idempotent. Three things are carried over from the existing index rather than
-regenerated, because a path cannot hold them: whether a capture is **pinned**,
-**why** it was displaced, and **which transfer** produced it.
+needs no transfer record and no prior index, and is idempotent. Four things are
+carried over from the existing index rather than regenerated, because a path
+cannot hold them: whether a capture is **pinned**, **why** it was displaced,
+**which transfer** produced it, and **when it was last restored**.
+
+It deletes no media and moves nothing, with one exception. A capture folder
+whose name is already in use elsewhere in the tree is renamed, and the count is
+reported as `repaired`. The name *is* the capture's identity, so two folders
+sharing one means only one of them can be indexed and the other's files sit on
+disk unlistable — a rename inside the backup disk is instant and loses nothing,
+so the invariant is repaired rather than reported and left broken. On a tree
+written by the current sorter this is always zero.
 
 This is a direct answer to the state the previous implementation left: on the
 live disk it had 864 folders and 330 files, and the index knew about 19 of them.
@@ -178,6 +194,16 @@ safely written:
 
 The restore runs as a normal queued transfer with live progress and logs.
 
+A restore records **when** it happened and changes nothing else about the
+version it restored. The files are still in the backup tree, so the same
+version can be restored again, and it stays subject to retention like any
+other. Marking it "restored" instead made a successful restore its own last:
+the next attempt was refused with a message about the files having been removed
+while they were sitting right there, and retention skipped it forever, so every
+restore added a version the rule would never prune. A **partial** restore —
+some files back, some not — is not recorded as a restore at all, because the
+run has to be repeated.
+
 ### 6. Deleting, to get space back
 
 Retention runs on its own; this is the manual half, for when a disk is full
@@ -207,7 +233,10 @@ held back is reported rather than silently absorbed. A pin that a bulk sweep
 ignored would be worthless.
 
 Deleting removes the files and the index entry together, and prunes the folders
-it emptied. The library is never touched.
+it emptied. The library is never touched. There is deliberately no way to drop
+the index entry on its own: the index is derived from the tree, so a row
+removed without its files frees no space and returns at the next rebuild — the
+version looks deleted right up until it silently is not.
 
 ### 7. Retention
 
@@ -253,7 +282,14 @@ spelling. An absent or ambiguous match stays unknown and those files go to
 
 Migration **refuses to run while any transfer is active**, because it moves
 files across the whole backup disk and a running transfer is still writing to
-it.
+it. Running, pending, queued and paused all count — a queued transfer is not
+writing yet, but it can start at any moment. It also refuses when it cannot
+*tell*: if the transfer table cannot be read, the answer is wait, not proceed.
+
+Each identified group gets its own capture id, including several episodes out
+of one legacy folder. Sharing one id across a whole season meant each episode's
+index row overwrote the last, leaving every episode but one on disk and
+invisible.
 
 **A shared backup disk needs a second guard.** More than one instance can point
 at the same `BACKUP_PATH` — a development checkout alongside the live one, each
@@ -329,7 +365,7 @@ Full column reference: [../../reference/database-schema.md](../../reference/data
 
 | Column | Notes |
 | --- | --- |
-| `capture_id` | `<UTC timestamp>__<short source ref>`, matches the folder name |
+| `capture_id` | `<UTC timestamp>__<short source ref>`, matches the folder name, unique across the whole tree |
 | `library` | `movies` / `shows` / `anime` |
 | `title` | Library folder name, as on disk |
 | `season_number`, `episode_number` | Integers; null for movies |
@@ -342,7 +378,8 @@ Full column reference: [../../reference/database-schema.md](../../reference/data
 | `kind` | `slot`, `extras`, `unsorted` |
 | `file_count`, `total_size` | From the files inside |
 | `pinned` | Retention skips it |
-| `status` | `present`, `restored`, `files_removed` |
+| `status` | Whether the files are still on disk: `present` or `files_removed` |
+| `restored_at` | When it was last put back, or null. A restore does not make a version permanent — it stays restorable and stays subject to retention |
 
 `backup_capture_file` — one row per file: path inside the capture, the library
 path it came from, size, mtime, and whether it is media or a sidecar.
@@ -370,10 +407,10 @@ All endpoints require authentication. Full contracts:
 | `POST /api/backups/captures/<id>/plan` | Preview. Omit `files` for all; `[]` is rejected |
 | `POST /api/backups/captures/<id>/restore` | Run it. Returns once accepted |
 | `POST /api/backups/captures/<id>/pin` | `{"pinned": true\|false}` |
-| `POST /api/backups/captures/<id>/delete` | Remove one version |
+| `POST /api/backups/captures/<id>/delete` | Remove one version — files and index entry together |
 | `POST /api/backups/delete/preview` | What a deletion would remove, and the space it frees. Reads only |
 | `POST /api/backups/delete` | Remove many at once: `capture_ids`, `slot_keys`, `keep_newest`, `include_pinned` |
-| `POST /api/backups/unsorted/delete` | Clear the unidentified bucket. `{"confirm": true}` |
+| `POST /api/backups/unsorted/delete` | Clear the unidentified bucket in one call. `{"confirm": true}`. The UI does not use it — it routes that button through the preview and confirm path like every other deletion |
 | `POST /api/backups/retention` | **Save** the rule to the database |
 | `POST /api/backups/rebuild` | Regenerate the index from the tree |
 | `GET /api/backups/retention` | The rule and disk usage |
@@ -411,9 +448,14 @@ the two are views of the same library.
 - **Newest / Largest** — the slot list sorts either way. Largest first is the
   order for reclaiming space.
 - **Housekeeping** — retention settings that **save to the database** and take
-  effect without a restart, with a preview before anything is removed; the
-  index rebuild; the one-off migration; and the unidentified list with a
-  one-action clear.
+  effect without a restart; the index rebuild; the one-off migration; and the
+  unidentified list.
+- **Every deletion is previewed, and the preview is binding.** Retention's
+  *Remove them now* is disabled until the current numbers have been previewed,
+  and editing them clears the preview — otherwise previewing "keep 10" and then
+  typing 1 would delete the far larger keep-1 set unseen. Clearing the
+  unidentified bucket goes through the same confirm dialog as any other delete,
+  with its count and total size, rather than firing on one click.
 
 Below `lg` the two panes become one at a time with a back control, and the
 inspector is a sheet.

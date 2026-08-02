@@ -1,8 +1,9 @@
 # Known Issues
 
-Defects found by reading the code while writing this documentation. Nothing here
-has been fixed — this page exists so the findings are not lost and can be
-triaged.
+Defects found by reading the code while writing this documentation. This page
+exists so the findings are not lost and can be triaged. Most are still open;
+where one has since been fixed it is marked as such and kept, because knowing a
+behaviour used to exist is what explains an old install that still looks wrong.
 
 Each entry names the file and line so it can be checked. Entries marked
 **verified** were re-checked by hand against the source; the rest come from the
@@ -82,24 +83,24 @@ each, plus why simulations are safe despite being exempt from the dry run.
 
 ## Configuration that silently does nothing
 
-- **`AUTO_SYNC_SERIES` and `AUTO_SYNC_ANIME` are read by nothing.**
-  `routes/webhooks.py:243` and `:368` pass a hard-coded `False` default to
-  `settings.get_bool`. Only `AUTO_SYNC_MOVIES` has an env fallback
-  (`routes/webhooks.py:113`), and that fallback stops applying permanently the
-  first time the Settings screen is saved.
+**Three of the entries that were here are fixed.** `AUTO_SYNC_SERIES` and
+`AUTO_SYNC_ANIME` being read by nothing, `WEBSOCKET_TIMEOUT_MINUTES` in the env
+file never reaching the server, and Settings-screen overrides being invisible
+to background work were all the same defect: a per-browser session store that
+`config.get()` consulted only inside a request. It is gone. Every setting now
+comes from the environment file (read-only at runtime) or from `app_settings`
+(editable, and read by background work), and `settings_registry.py` says which.
+Env values for database-backed keys are adopted into the table once at startup,
+so an existing installation keeps the behaviour it had. See
+[../reference/configuration.md](../reference/configuration.md#the-two-stores-and-which-one-wins).
+
+What remains:
+
 - **`ALLOW_QUERY_TOKEN_AUTH`, `PORT` and the four `GUNICORN_*` keys cannot be
   set in `dragoncp_env.env`.** They are evaluated before the env file is copied
   into `os.environ` — `websocket.py:39` at import time, and
   `deploy/gunicorn.conf.py` before gunicorn imports the app. They only work as
   real process environment variables.
-- **`WEBSOCKET_TIMEOUT_MINUTES` in the env file does not reach the server.**
-  `websocket.py:71` reads it only from the browser session's `ui_config`.
-  Setting it in the env file changes the client-side idle timer but leaves the
-  server's stale-connection reaper at its 35-minute default.
-- **Settings-screen overrides are invisible to actual work.** `config.py:55`
-  gates the lookup on `has_request_context()`, and transfers, the scheduler and
-  the queue all run on daemon threads. Overriding a destination path changes
-  only what the API reports back to that one browser.
 - **Four env-file loaders with different rules.** `config.py` reads
   `dragoncp_env.env` only; `app.py` and `auth.py` stop at the first of the two
   files that exists; `webhook_auth.py` merges both with `.env` winning. A value

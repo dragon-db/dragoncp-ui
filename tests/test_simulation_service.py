@@ -45,7 +45,7 @@ class SimulationSafetyTests(unittest.TestCase):
 
     def test_refuses_paths_outside_the_simulation_directory(self):
         """The guard standing between a bad path and someone's media library."""
-        for outside in ("/etc", "/home/dragondb/media", os.path.join(self.service.root, "..", "escape")):
+        for outside in ("/etc", "/srv/media", os.path.join(self.service.root, "..", "escape")):
             with self.assertRaises(ValueError, msg=f"{outside} should be refused"):
                 self.service._assert_inside_root(outside)
 

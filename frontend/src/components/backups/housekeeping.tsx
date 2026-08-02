@@ -86,6 +86,24 @@ export function RetentionDialog({
   const values = { keep: Number(keep) || rule.keep, grace_hours: Number(grace) || 0 };
   const changed = values.keep !== rule.keep || values.grace_hours !== rule.grace_hours;
 
+  /**
+   * Which rule the shown preview belongs to.
+   *
+   * Removing versions has no undo, so the button may only ever delete the set
+   * that is on screen. Editing the numbers after previewing used to leave the
+   * old list visible while the button applied the NEW rule — preview "keep 10",
+   * type 1, and it would delete the far larger keep-1 set unseen.
+   */
+  const [previewedFor, setPreviewedFor] = useState<string | null>(null);
+  const signature = `${values.keep}:${values.grace_hours}`;
+  const previewIsCurrent = Boolean(preview.data) && previewedFor === signature;
+
+  function editRule(setter: (next: string) => void, next: string) {
+    setter(next);
+    setPreviewedFor(null);
+    preview.reset();
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
@@ -107,7 +125,7 @@ export function RetentionDialog({
               min={1}
               max={50}
               value={keep}
-              onChange={(event) => setKeep(event.target.value)}
+              onChange={(event) => editRule(setKeep, event.target.value)}
             />
           </div>
           <div className="space-y-1.5">
@@ -117,12 +135,12 @@ export function RetentionDialog({
               type="number"
               min={0}
               value={grace}
-              onChange={(event) => setGrace(event.target.value)}
+              onChange={(event) => editRule(setGrace, event.target.value)}
             />
           </div>
         </div>
 
-        {preview.data && (
+        {preview.data && previewIsCurrent && (
           <div className="rounded-lg border border-border bg-muted/25 px-3 py-2.5 text-[12.5px]">
             {preview.data.candidate_count === 0 ? (
               <span className="text-muted-foreground">
@@ -151,6 +169,13 @@ export function RetentionDialog({
           </div>
         )}
 
+        {!previewIsCurrent && (
+          <p className="text-[12px] text-muted-foreground">
+            Preview to see exactly which versions this rule would remove. Nothing can be removed
+            until you have, and editing the numbers means previewing again.
+          </p>
+        )}
+
         <DialogFooter className="gap-2 sm:justify-between">
           <Button
             variant="secondary"
@@ -168,19 +193,22 @@ export function RetentionDialog({
           <div className="flex gap-2">
             <Button
               variant="outline"
-              onClick={() => preview.mutate(values)}
+              onClick={() =>
+                preview.mutate(values, { onSuccess: () => setPreviewedFor(signature) })
+              }
               disabled={preview.isPending}
             >
               {preview.isPending ? "Checking…" : "Preview"}
             </Button>
             <Button
               variant="destructive"
-              disabled={apply.isPending || !preview.data?.candidate_count}
+              disabled={apply.isPending || !previewIsCurrent || !preview.data?.candidate_count}
               onClick={() =>
                 apply.mutate(values, {
                   onSuccess: (result) => {
                     toast.success(result.message);
                     preview.reset();
+                    setPreviewedFor(null);
                     onOpenChange(false);
                   },
                   onError: () => toast.error("Could not apply retention"),

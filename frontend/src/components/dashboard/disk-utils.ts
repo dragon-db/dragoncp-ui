@@ -6,7 +6,7 @@ export interface DiskItem {
   used: string;
   free: string;
   total: string;
-  /** Mount point / watched path, e.g. /home/dragondb/ftp_ssd. */
+  /** Mount point / watched path, e.g. /mnt/media. */
   path: string;
   /** Backing device / filesystem, e.g. /dev/sdc1. */
   device: string;

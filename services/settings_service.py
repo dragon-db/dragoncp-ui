@@ -36,11 +36,15 @@ class SettingsService:
 
         if setting.store == DB:
             stored = self.settings.get(key)
-            if stored not in (None, ''):
+            # A stored empty string is an ANSWER, not an absence: it is how an
+            # operator clears a webhook URL or an icon. Treating it as missing
+            # sent the request back to the env file, so clearing the Discord
+            # webhook in the UI silently kept posting to the old one.
+            if stored is not None:
                 return stored
-            # An env-file value is honoured as the DEFAULT for a DB setting, so
-            # an existing install keeps working before anything is saved and a
-            # fresh one can be seeded from the file.
+            # With no row at all, an env-file value is honoured as the default,
+            # so an existing install keeps working before anything is saved and
+            # a fresh one can be seeded from the file.
             from_env = self.config.get(key, '')
             if from_env not in (None, ''):
                 return from_env
@@ -83,9 +87,9 @@ class SettingsService:
         rather than ignored, so the UI can say which ones and why instead of
         reporting a save that half happened.
         """
-        saved: Dict[str, str] = {}
         refused: List[str] = []
         errors: List[str] = []
+        pending: Dict[str, str] = {}
 
         for key, value in (payload or {}).items():
             setting = registry.get(key)
@@ -100,14 +104,26 @@ class SettingsService:
             if setting.sensitive and value == REDACTED:
                 continue
             try:
-                stored = registry.coerce(setting, value)
+                pending[key] = registry.coerce(setting, value)
             except ValueError as error:
                 errors.append(str(error))
-                continue
-            self.settings.set(key, stored)
-            saved[key] = stored
 
-        return saved, refused, errors
+        # Validate the WHOLE payload before writing any of it. Coercing and
+        # committing key by key meant one bad value at the end of a form left
+        # every setting before it already changed, while the response said the
+        # save had failed — so the screen and the database disagreed.
+        if errors:
+            return {}, refused, errors
+
+        if pending:
+            writer = getattr(self.settings, 'write_many', None)
+            if callable(writer):
+                writer(pending)
+            else:
+                for key, stored in pending.items():
+                    self.settings.set(key, stored)
+
+        return dict(pending), refused, errors
 
     def set(self, key: str, value: Any) -> str:
         saved, refused, errors = self.set_many({key: value})
@@ -188,7 +204,8 @@ class SettingsService:
         if setting.maximum is not None:
             described['maximum'] = setting.maximum
         if setting.store == DB:
-            described['is_default'] = self.settings.get(setting.key) in (None, '')
+            # No row at all, rather than a row someone deliberately emptied.
+            described['is_default'] = self.settings.get(setting.key) is None
         return described
 
     def flat(self, include_env: bool = True) -> Dict[str, str]:
@@ -239,14 +256,16 @@ class SettingsService:
         the source of truth. Copying it makes the database authoritative
         immediately, with the value the installation already had.
 
-        Only writes keys that have no stored value, so it never overwrites a
-        deliberate choice, and it is safe to run on every start.
+        Only writes keys with no row at all, so it never overwrites a
+        deliberate choice, and it is safe to run on every start. A row holding
+        an empty string counts as a choice — that is how a value is cleared,
+        and re-adopting over it put the env value back on every restart.
         """
         adopted = []
         for setting in registry.SETTINGS:
             if setting.store != DB:
                 continue
-            if self.settings.get(setting.key) not in (None, ''):
+            if self.settings.get(setting.key) is not None:
                 continue
             from_env = self.config.get(setting.key, '')
             if from_env in (None, ''):

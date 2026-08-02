@@ -47,27 +47,11 @@ export class BackupManager {
             const confirmDeleteBtn = document.getElementById('confirmDeleteBtn');
             if (confirmDeleteBtn) confirmDeleteBtn.addEventListener('click', () => this.executeDelete());
             
-            // Delete options change handlers
-            const deleteRecordCheck = document.getElementById('deleteRecordCheck');
-            const deleteFilesCheck = document.getElementById('deleteFilesCheck');
-            const deleteFilesPreview = document.getElementById('deleteFilesPreview');
-            
-            if (deleteRecordCheck && deleteFilesCheck && confirmDeleteBtn) {
-                const updateDeleteButton = () => {
-                    const hasSelection = deleteRecordCheck.checked || deleteFilesCheck.checked;
-                    confirmDeleteBtn.disabled = !hasSelection;
-                    
-                    if (deleteFilesCheck.checked && deleteFilesPreview) {
-                        deleteFilesPreview.style.display = 'block';
-                    } else if (deleteFilesPreview) {
-                        deleteFilesPreview.style.display = 'none';
-                    }
-                };
-                
-                deleteRecordCheck.addEventListener('change', updateDeleteButton);
-                deleteFilesCheck.addEventListener('change', updateDeleteButton);
-                updateDeleteButton(); // Initial state
-            }
+            // Deleting a backup removes its files and its list entry together.
+            // The old separate "database record" / "backup files" choice is
+            // gone: the list is derived from the backup disk, so removing the
+            // entry alone freed nothing and it came back at the next rebuild.
+            if (confirmDeleteBtn) confirmDeleteBtn.disabled = false;
 
             // Manage Backups button toggles the dedicated card
             const manageBtn = document.getElementById('manageBackupsBtn');
@@ -401,22 +385,6 @@ export class BackupManager {
 
     async executeDelete() {
         try {
-            const deleteRecordCheck = document.getElementById('deleteRecordCheck');
-            const deleteFilesCheck = document.getElementById('deleteFilesCheck');
-            
-            if (!deleteRecordCheck || !deleteFilesCheck) {
-                this.app.ui.showAlert('Delete options not found', 'danger');
-                return;
-            }
-            
-            const deleteRecord = deleteRecordCheck.checked;
-            const deleteFiles = deleteFilesCheck.checked;
-            
-            if (!deleteRecord && !deleteFiles) {
-                this.app.ui.showAlert('Please select at least one delete option', 'warning');
-                return;
-            }
-            
             const ctx = this.currentBackupContext || {};
             const backupId = ctx.backupId;
             
@@ -425,7 +393,7 @@ export class BackupManager {
                 return;
             }
             
-            console.log('Executing delete:', { backupId, deleteRecord, deleteFiles });
+            console.log('Executing delete:', { backupId });
             
             // Show loading state
             const confirmBtn = document.getElementById('confirmDeleteBtn');
@@ -437,7 +405,7 @@ export class BackupManager {
             const res = await this.app.api.fetch(`/api/backups/${backupId}/delete`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ delete_record: deleteRecord, delete_files: deleteFiles })
+                body: JSON.stringify({})
             });
             const data = await res.json();
             

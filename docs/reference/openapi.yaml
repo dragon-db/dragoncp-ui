@@ -208,9 +208,80 @@ components:
     ConfigObject:
       type: object
       description: |
-        Raw configuration key/value object, not wrapped in a status envelope.
-        Secrets are stripped before the response is sent.
+        Settings, in two shapes at once.
+
+        Top-level keys are the flat key -> value map the legacy static UI reads.
+        `groups` is the same data shaped for the React Settings screen, with the
+        store and editability of each setting attached.
+
+        Environment secrets are omitted entirely rather than redacted — there is
+        nothing a reader could do with a redacted value they cannot change.
+        Editable secrets come back as the literal string `<redacted>`, and
+        sending that back means "unchanged".
       additionalProperties: true
+      properties:
+        groups:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              label: { type: string }
+              settings:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SettingDescription'
+        stores:
+          type: object
+          description: A label and an explanation for each store, for the UI to show.
+          additionalProperties: true
+
+    SettingDescription:
+      type: object
+      properties:
+        key: { type: string }
+        store:
+          type: string
+          enum: [env, db]
+          description: >-
+            `env` comes from dragoncp_env.env and is read-only at runtime.
+            `db` is stored in app_settings and takes effect immediately.
+        group: { type: string }
+        label: { type: string }
+        description: { type: string }
+        kind:
+          type: string
+          enum: [text, password, number, boolean, path]
+        editable:
+          type: boolean
+          description: True only for `db` settings. A write to any other key is refused by name.
+        sensitive: { type: boolean }
+        value: {}
+        minimum: { type: integer }
+        maximum: { type: integer }
+        is_default:
+          type: boolean
+          description: >-
+            `db` settings only. True when no row exists — a row holding an empty
+            string is a deliberate choice, not an absence.
+
+    ConfigSaveResult:
+      type: object
+      description: The full GET payload, plus what the write actually did.
+      additionalProperties: true
+      properties:
+        status: { type: string }
+        message: { type: string }
+        saved:
+          type: array
+          items: { type: string }
+          description: Keys that were written.
+        refused:
+          type: array
+          items: { type: string }
+          description: >-
+            Keys that come from the environment file, or are not settings at all.
+            Reported by name so a client can say what did not change.
 
     NotificationList:
       type: object
@@ -564,7 +635,9 @@ paths:
   /config:
     get:
       tags: [Configuration]
-      summary: Return the active runtime configuration (environment plus session overrides)
+      summary: >-
+        Return every setting, grouped for the React UI and flat for the legacy UI.
+        Each grouped setting says which store owns it and whether it can be changed here
       responses:
         '200':
           description: Configuration object
@@ -576,7 +649,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
     post:
       tags: [Configuration]
-      summary: Apply session-level configuration overrides
+      summary: >-
+        Write the database-backed settings in the payload. Environment-owned keys are
+        refused by name and listed in `refused`. The whole payload is validated before
+        anything is written, so a 400 means nothing changed
       requestBody:
         required: true
         content:
@@ -585,7 +661,12 @@ paths:
               $ref: '#/components/schemas/ConfigObject'
       responses:
         '200':
-          $ref: '#/components/responses/Success'
+          description: >-
+            Saved. Carries `saved` and `refused` key lists alongside the full GET payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigSaveResult'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -594,7 +675,9 @@ paths:
   /config/reset:
     post:
       tags: [Configuration]
-      summary: Drop session overrides and fall back to environment values
+      summary: >-
+        Kept for the legacy static UI. There is no per-browser override layer left to
+        clear, so this reports success and changes nothing
       responses:
         '200':
           $ref: '#/components/responses/Success'
@@ -604,7 +687,8 @@ paths:
   /config/env-only:
     get:
       tags: [Configuration]
-      summary: Return environment configuration only, ignoring session overrides
+      summary: >-
+        Return the environment-backed settings alone — the legacy UI's comparison column
       responses:
         '200':
           description: Configuration object
@@ -2247,19 +2331,18 @@ paths:
   /backups/captures/{capture_id}/delete:
     post:
       tags: [Backups]
-      summary: Remove a version's files and its index entry. The library is not touched
+      summary: >-
+        Remove a version's files and its index entry, always together. The library is
+        not touched
+      description: >-
+        There is no record-only option. The index is derived from the backup tree, so
+        removing a row on its own frees no space and the entry returns at the next
+        rebuild. Any `delete_files` or `delete_record` flag in the body is ignored.
       parameters:
         - name: capture_id
           in: path
           required: true
           schema: { type: string }
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                delete_files: { type: boolean, default: true }
       responses:
         '200':
           description: Deleted

@@ -485,6 +485,7 @@ CREATE TABLE backup_capture (
     total_size INTEGER DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'present',
+    restored_at TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )
 ```
@@ -493,7 +494,13 @@ CREATE TABLE backup_capture (
 - `capture_id` - `<UTC timestamp>__<short source ref>`, and the folder name on
   disk. The timestamp carries **milliseconds**: versions inside a slot are
   ordered by it, and a sync followed immediately by a restore of the same
-  episode would otherwise produce two captures that could not be told apart
+  episode would otherwise produce two captures that could not be told apart.
+  Unique across the **whole tree**, not just within a slot — one transfer that
+  displaces two episodes writes two capture folders in two different places and
+  each needs its own id. A `__2` suffix is appended when a base id is already
+  taken. The rebuild renames any folder it finds sharing a name with another,
+  because indexing one over the other would leave the second's files on disk
+  and unreachable
 - `library` - `movies`, `shows` or `anime`
 - `title` - the library folder name, exactly as it appears on disk
 - `season_number`, `episode_number` - integers; null for movies
@@ -508,7 +515,14 @@ CREATE TABLE backup_capture (
 - `kind` - `slot` (restorable), `extras` (belongs to a title but no episode),
   `unsorted` (no usable identity)
 - `pinned` - retention never removes a pinned version
-- `status` - `present`, `restored`, `files_removed`
+- `status` - whether the **files** are still on disk, and nothing else:
+  `present` or `files_removed`. It briefly also carried `restored`, which made
+  a successful restore its own last — the planner refused to read files that
+  were still there, and retention skipped the capture forever
+- `restored_at` - when this version was last put back into the library, or null.
+  Set only on a fully successful restore: a partial one leaves it null, because
+  the run has to be repeated. Carried across a rebuild, like `pinned`, since the
+  path does not hold it
 
 **Indexes:**
 - `idx_backup_capture_slot` on `slot_key`

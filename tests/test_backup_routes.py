@@ -294,6 +294,36 @@ class BackupRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(self.captures.get(capture['capture_id']))
 
+    def test_the_entry_cannot_be_dropped_while_the_files_stay(self):
+        """
+        Asking for a record-only delete deletes the files too.
+
+        The index is derived from the tree, so a row removed on its own frees
+        no space and comes straight back at the next rebuild — the version
+        looks deleted right up until it silently is not.
+        """
+        layout = self.service.layout
+
+        current = self.displace(f"{SHOW} - S01E01 - A.mkv")
+        where = layout.absolute(current['capture_path'])
+        self.client.post(
+            f"/api/backups/captures/{current['capture_id']}/delete",
+            json={'delete_files': False},
+        )
+        self.assertFalse(os.path.exists(where), 'the files went too')
+        self.assertIsNone(self.captures.get(current['capture_id']))
+
+        # The legacy path behaves the same way.
+        legacy = self.displace(f"{SHOW} - S01E01 - B.mkv", transfer_id='transfer_2')
+        path = layout.absolute(legacy['capture_path'])
+        self.client.post(f"/api/backups/{legacy['capture_id']}/delete",
+                         json={'delete_record': True, 'delete_files': False})
+        self.assertFalse(os.path.exists(path))
+        self.assertIsNone(self.captures.get(legacy['capture_id']))
+
+        self.assertEqual(self.service.rebuild_index()['indexed'], 0,
+                         'nothing comes back at the next rebuild')
+
     # ---- reclaiming space ----
 
     def test_delete_preview_reads_only(self):

@@ -253,7 +253,13 @@ class DatabaseManager:
                     file_count INTEGER DEFAULT 0,
                     total_size INTEGER DEFAULT 0,
                     pinned INTEGER NOT NULL DEFAULT 0,
+                    -- Whether the FILES are still there, and nothing else. A
+                    -- capture that has been restored still has its files and
+                    -- stays 'present', so it can be restored again and stays
+                    -- subject to retention; when it was restored is recorded
+                    -- separately in restored_at.
                     status TEXT NOT NULL DEFAULT 'present',
+                    restored_at TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -359,6 +365,17 @@ class DatabaseManager:
             self._ensure_column(conn, 'transfers', 'explore_files_from', "TEXT")
             self._ensure_column(conn, 'transfers', 'explore_mode', "TEXT")
             self._ensure_column(conn, 'transfers', 'explore_plan_id', "TEXT")
+
+            # When a backup was last restored. Split out from `status`, which
+            # briefly carried 'restored' as well as presence and so made a
+            # successful restore its own last: the planner refused to restore
+            # anything not marked 'present', and retention skipped it forever,
+            # filling the disk with copies it would never prune. `status` now
+            # answers only "are the files there".
+            self._ensure_column(conn, 'backup_capture', 'restored_at', "TEXT")
+            conn.execute(
+                "UPDATE backup_capture SET status = 'present' WHERE status = 'restored'"
+            )
 
             # ==========================================
             # Table: explore_snapshot — a cached comparison of one scope

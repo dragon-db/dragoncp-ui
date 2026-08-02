@@ -33,7 +33,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from security import PathTraversalError
 
@@ -200,6 +200,13 @@ class LegacyMigration:
         self.transfer_model = transfer_model
         self.indexer = indexer
         self._catalogue_cache: Optional[List[Tuple[str, str, str]]] = None
+        #: Capture ids handed out during the current walk. A capture id is the
+        #: index's primary key, so two folders may never share one — and a
+        #: legacy folder holding a whole season produces one capture per
+        #: episode, all derived from the same folder. Reusing the id there let
+        #: each episode's index row overwrite the last, leaving every episode
+        #: but one on disk and invisible.
+        self._taken: Set[str] = set()
 
     # ---- planning ---------------------------------------------------------
 
@@ -221,6 +228,7 @@ class LegacyMigration:
 
     def _walk(self, apply: bool) -> MigrationReport:
         report = MigrationReport(applied=apply)
+        self._taken = set()
         base = self.layout.base_or_none(for_writing=apply)
         if not base:
             report.errors.append('BACKUP_PATH is not configured')
@@ -510,7 +518,9 @@ class LegacyMigration:
 
         if apply:
             os.makedirs(slot_dir, exist_ok=True)
-        capture_path, _actual = self.layout.unique_capture_dir(slot_dir, capture_id)
+        capture_path, _actual = self.layout.unique_capture_dir(
+            slot_dir, capture_id, self._taken,
+        )
 
         for entry in entries:
             target = os.path.join(capture_path, entry['filename'])
@@ -538,7 +548,9 @@ class LegacyMigration:
 
         if apply:
             os.makedirs(root, exist_ok=True)
-        capture_path, _actual = self.layout.unique_capture_dir(root, capture_id)
+        capture_path, _actual = self.layout.unique_capture_dir(
+            root, capture_id, self._taken,
+        )
 
         for entry in entries:
             target = os.path.join(capture_path, entry['relative'])
@@ -561,7 +573,9 @@ class LegacyMigration:
 
         if apply:
             os.makedirs(root, exist_ok=True)
-        capture_path, _actual = self.layout.unique_capture_dir(root, capture_id)
+        capture_path, _actual = self.layout.unique_capture_dir(
+            root, capture_id, self._taken,
+        )
 
         for entry in entries:
             target = os.path.join(capture_path, entry['relative'])

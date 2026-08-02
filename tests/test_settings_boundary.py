@@ -171,6 +171,51 @@ class ResolverTests(unittest.TestCase):
         self.service.set_many({'DISCORD_WEBHOOK_URL': registry.REDACTED})
         self.assertEqual(self.service.get('DISCORD_WEBHOOK_URL'), 'https://example.invalid/hook')
 
+    def test_a_value_can_be_deliberately_cleared(self):
+        """
+        Emptying a field is an answer, not an absence.
+
+        A stored empty string used to read as "nothing saved", so the resolver
+        went back to the env file: clearing the Discord webhook in the UI
+        looked like it worked and notifications kept going to the old one.
+        """
+        self.config.values['DISCORD_WEBHOOK_URL'] = 'https://example.invalid/from-env'
+        self.assertEqual(
+            self.service.get('DISCORD_WEBHOOK_URL'), 'https://example.invalid/from-env',
+        )
+
+        self.service.set('DISCORD_WEBHOOK_URL', '')
+        self.assertEqual(self.service.get('DISCORD_WEBHOOK_URL'), '')
+
+    def test_a_cleared_value_survives_a_restart(self):
+        """Startup adoption used to put the env value back over it every time."""
+        self.config.values['DISCORD_WEBHOOK_URL'] = 'https://example.invalid/from-env'
+        self.service.set('DISCORD_WEBHOOK_URL', '')
+
+        self.service.adopt_env_defaults()
+
+        self.assertEqual(self.service.get('DISCORD_WEBHOOK_URL'), '')
+
+    def test_nothing_is_written_when_any_value_in_the_payload_is_invalid(self):
+        """
+        Saving a form is one decision, so it is one write.
+
+        Coercing and committing key by key meant a bad value at the end left
+        every setting before it already changed, behind a response saying the
+        save had failed.
+        """
+        self.service.set('BACKUP_RETENTION_KEEP', 2)
+
+        saved, _refused, errors = self.service.set_many({
+            'BACKUP_RETENTION_KEEP': 9,
+            'WEBSOCKET_TIMEOUT_MINUTES': 'not a number',
+        })
+
+        self.assertTrue(errors)
+        self.assertEqual(saved, {})
+        self.assertEqual(self.service.get_int('BACKUP_RETENTION_KEEP'), 2,
+                         'the earlier setting was not written')
+
     def test_an_unknown_key_is_refused(self):
         _saved, refused, _errors = self.service.set_many({'NONSENSE': 'x'})
         self.assertEqual(refused, ['NONSENSE'])
@@ -360,6 +405,18 @@ class ConfigRouteTests(unittest.TestCase):
     def test_an_invalid_number_fails_the_whole_save(self):
         response = self.client.post('/api/config', json={'BACKUP_RETENTION_KEEP': 'lots'})
         self.assertEqual(response.status_code, 400)
+
+    def test_a_failed_save_changes_nothing_at_all(self):
+        """A 400 has to mean the settings are exactly as they were."""
+        self.client.post('/api/config', json={'BACKUP_RETENTION_KEEP': 4})
+
+        response = self.client.post('/api/config', json={
+            'BACKUP_RETENTION_KEEP': 9,
+            'WEBSOCKET_TIMEOUT_MINUTES': 'lots',
+        })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.service.get_int('BACKUP_RETENTION_KEEP'), 4)
 
     def test_the_response_is_grouped_for_the_ui(self):
         body = self.client.get('/api/config').get_json()

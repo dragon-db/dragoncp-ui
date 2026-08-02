@@ -140,7 +140,9 @@ Defined at the top of `websocket.py`:
 
 These are literals in the source. **There is no environment variable or setting that changes them** — the only tunable is the per-session value.
 
-`get_websocket_timeout_for_session()` computes that per-session value at handshake time. It reads `WEBSOCKET_TIMEOUT_MINUTES` out of the Flask session's `ui_config`, clamps it to 5–60 minutes, adds a 5-minute buffer, and caps the result at `WEBSOCKET_TIMEOUT_MAX`. With no value present it returns the 35-minute default. `ui_config` is written by `config.update_session_config()`, which is called from `POST /api/config` — that is the Settings page, which exposes `WEBSOCKET_TIMEOUT_MINUTES` as a number field with `min=5` and `max=60`. The setting lives in the Flask session, not in the env file (`dragoncp_env_sample.env` does not mention it) and not in the database.
+`get_websocket_timeout_for_session()` computes that value at handshake time. It reads `WEBSOCKET_TIMEOUT_MINUTES` through the settings resolver, clamps it to 5–60 minutes, adds a 5-minute buffer, and caps the result at `WEBSOCKET_TIMEOUT_MAX`. With no value present it returns the 35-minute default.
+
+The setting lives in the **database** (`app_settings`), written by `POST /api/config` from the Settings page. It used to be read out of the Flask session's `ui_config`, which meant the value an operator saved was visible only to their own browser: the server's own stale-connection sweeper never saw it and stayed on 35 minutes regardless. Reading it from the database removes the question of whether a session cookie accompanies the handshake — it does not need one.
 
 The buffer is deliberate: the server always waits five minutes longer than the client's own countdown, so the browser is the one that normally ends an idle session and the sweeper is the backstop for clients that vanished.
 
@@ -169,7 +171,6 @@ Two smaller mismatches found while checking the above:
 ## Not verified
 
 - **Not verified**: behaviour under multiple backend workers. The connection map, the sweeper thread and the queue manager's state are all process-local, and `socketio_runtime_info` names `gunicorn --config deploy/gunicorn.conf.py app:app` as the recommended production server, but I did not read that config or test a multi-worker run, so I cannot say how emits and idle cleanup behave across workers.
-- **Not verified**: whether the Flask session cookie is actually present during a Socket.IO handshake from the React frontend. `get_websocket_timeout_for_session()` reads `ui_config` off the Flask session; if the handshake carries no session cookie, every connection would silently get the 35-minute default regardless of the Settings value. I did not run this to confirm which way it falls.
 - **Not verified**: the legacy Jinja UI under `templates/` and `static/`. I only traced the React client in `frontend/`.
 
 ## Related documentation
