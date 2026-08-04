@@ -7,9 +7,11 @@ Handles webhook receivers for Radarr/Sonarr and webhook management
 import os
 import logging
 from datetime import datetime
-from flask import Blueprint, jsonify, request, Response
+from flask import Blueprint, jsonify, request, Response, g
 import requests
 import json
+from activity_log import record
+from actor import AUTO_WEBHOOK_RENAME, webhook_actor
 from auth import require_auth
 from webhook_auth import require_webhook_auth
 from models.webhook import NotificationCatalog
@@ -86,6 +88,12 @@ def notification_catalog():
 @require_webhook_auth
 def api_webhook_movies_receiver():
     """Webhook receiver endpoint for movie notifications from Radarr"""
+    # Nobody signs in to a webhook. Naming the actor for the whole
+    # request means everything this handler goes on to do — storing
+    # the notification, and the sync it may start automatically —
+    # is attributed to the receiver instead of to nobody.
+    g.current_actor = webhook_actor('movies')
+
     try:
         print("🎬 Webhook received")
         
@@ -137,6 +145,17 @@ def api_webhook_movies_receiver():
         # Store notification in database (with raw webhook JSON)
         raw_webhook_json = json.dumps(webhook_data, indent=2)
         notification_id = transfer_coordinator.webhook_model.create(parsed_data, raw_webhook_json)
+        # Nobody is signed in on a webhook, so the receiver names
+        # itself — otherwise everything it kicks off, including an
+        # automatic sync, would be recorded as coming from nowhere.
+        record(
+                'notification.received',
+                f"Received a movies notification for "
+                f"{parsed_data.get('title') or 'an unknown title'}",
+                target_type='notification', target_id=notification_id,
+                target_label=parsed_data.get('title'),
+                detail={'media_type': 'movies'},
+            )
         
         # One reader, one store — the same call the series and anime paths make.
         # This used to sit behind a try/except that fell back to the env file,
@@ -201,6 +220,12 @@ def api_webhook_movies_receiver():
 @require_webhook_auth
 def api_webhook_series_receiver():
     """Webhook receiver endpoint for series notifications from Sonarr"""
+    # Nobody signs in to a webhook. Naming the actor for the whole
+    # request means everything this handler goes on to do — storing
+    # the notification, and the sync it may start automatically —
+    # is attributed to the receiver instead of to nobody.
+    g.current_actor = webhook_actor('series')
+
     try:
         print("📺 Series webhook received")
         
@@ -249,6 +274,11 @@ def api_webhook_series_receiver():
         if event_type == 'Rename':
             print(f"📝 Series RENAME webhook received for {title}")
             if rename_service:
+                # A rename arrives on the series/anime endpoint but is its own
+                # kind of automated work, with its own failure modes. Naming it
+                # separately is what lets the trail answer "what has the rename
+                # path been doing" without wading through ordinary syncs.
+                g.current_actor = AUTO_WEBHOOK_RENAME
                 success, result = rename_service.process_rename_webhook(webhook_data, 'tvshows')
                 return jsonify({
                     "status": "success" if success else "error",
@@ -268,6 +298,17 @@ def api_webhook_series_receiver():
         # Store notification in database (with raw webhook JSON)
         raw_webhook_json = json.dumps(webhook_data, indent=2)
         notification_id = transfer_coordinator.series_webhook_model.create(parsed_data, raw_webhook_json)
+        # Nobody is signed in on a webhook, so the receiver names
+        # itself — otherwise everything it kicks off, including an
+        # automatic sync, would be recorded as coming from nowhere.
+        record(
+                'notification.received',
+                f"Received a series notification for "
+                f"{parsed_data.get('title') or 'an unknown title'}",
+                target_type='notification', target_id=notification_id,
+                target_label=parsed_data.get('title'),
+                detail={'media_type': 'series'},
+            )
         
         # Check if auto-sync is enabled for series
         auto_sync_enabled = transfer_coordinator.settings_service.get_bool('AUTO_SYNC_SERIES')
@@ -326,6 +367,12 @@ def api_webhook_series_receiver():
 @require_webhook_auth
 def api_webhook_anime_receiver():
     """Webhook receiver endpoint for anime notifications from Sonarr"""
+    # Nobody signs in to a webhook. Naming the actor for the whole
+    # request means everything this handler goes on to do — storing
+    # the notification, and the sync it may start automatically —
+    # is attributed to the receiver instead of to nobody.
+    g.current_actor = webhook_actor('anime')
+
     try:
         print("🍙 Anime webhook received")
         
@@ -374,6 +421,11 @@ def api_webhook_anime_receiver():
         if event_type == 'Rename':
             print(f"📝 Anime RENAME webhook received for {title}")
             if rename_service:
+                # A rename arrives on the series/anime endpoint but is its own
+                # kind of automated work, with its own failure modes. Naming it
+                # separately is what lets the trail answer "what has the rename
+                # path been doing" without wading through ordinary syncs.
+                g.current_actor = AUTO_WEBHOOK_RENAME
                 success, result = rename_service.process_rename_webhook(webhook_data, 'anime')
                 return jsonify({
                     "status": "success" if success else "error",
@@ -393,6 +445,17 @@ def api_webhook_anime_receiver():
         # Store notification in database (with raw webhook JSON)
         raw_webhook_json = json.dumps(webhook_data, indent=2)
         notification_id = transfer_coordinator.series_webhook_model.create(parsed_data, raw_webhook_json)
+        # Nobody is signed in on a webhook, so the receiver names
+        # itself — otherwise everything it kicks off, including an
+        # automatic sync, would be recorded as coming from nowhere.
+        record(
+                'notification.received',
+                f"Received a anime notification for "
+                f"{parsed_data.get('title') or 'an unknown title'}",
+                target_type='notification', target_id=notification_id,
+                target_label=parsed_data.get('title'),
+                detail={'media_type': 'anime'},
+            )
         
         # Check if auto-sync is enabled for anime
         auto_sync_enabled = transfer_coordinator.settings_service.get_bool('AUTO_SYNC_ANIME')
@@ -526,6 +589,10 @@ def api_bulk_delete_notifications():
             if not isinstance(notification_ids, list):
                 return jsonify({"status": "error", "message": "ids must be a list"}), 400
             deleted = catalog.delete(notification_ids)
+
+        record('notification.bulk_delete',
+               f"Deleted {deleted} notification{'s' if deleted != 1 else ''}",
+               target_type='notification', detail={'deleted_count': deleted})
 
         return jsonify({
             "status": "success",
@@ -681,6 +748,9 @@ def api_webhook_sync(notification_id):
         success, message = transfer_coordinator.trigger_webhook_sync(notification_id)
         
         if success:
+            record('notification.sync', f"Synced the movie notification {notification_id}",
+                   target_type='notification', target_id=notification_id,
+                   detail={'media_type': 'movie', 'manual': True})
             return jsonify({
                 "status": "success",
                 "message": message
@@ -707,6 +777,9 @@ def api_series_webhook_sync(notification_id):
         success, message = transfer_coordinator.trigger_series_webhook_sync(notification_id)
         
         if success:
+            record('notification.sync', f"Synced the series notification {notification_id}",
+                   target_type='notification', target_id=notification_id,
+                   detail={'media_type': 'series', 'manual': True})
             return jsonify({
                 "status": "success",
                 "message": message
@@ -752,6 +825,11 @@ def api_series_webhook_sync_batch():
                 "message": "notification_ids must be strings"
             }), 400
 
+        record('notification.sync_batch',
+               f"Synced a group of {len(notification_ids)} notification(s) as one transfer",
+               target_type='notification',
+               detail={'notification_count': len(notification_ids)})
+
         success, message, transfer_ids = transfer_coordinator.sync_notification_group(
             notification_ids
         )
@@ -780,6 +858,9 @@ def api_anime_webhook_sync(notification_id):
         success, message = transfer_coordinator.trigger_series_webhook_sync(notification_id)
         
         if success:
+            record('notification.sync', f"Synced the anime notification {notification_id}",
+                   target_type='notification', target_id=notification_id,
+                   detail={'media_type': 'anime', 'manual': True})
             return jsonify({
                 "status": "success",
                 "message": message
@@ -808,6 +889,8 @@ def api_series_webhook_delete_notification(notification_id):
         success = transfer_coordinator.series_webhook_model.delete(notification_id)
         
         if success:
+            record('notification.delete', f"Deleted the series notification {notification_id}",
+                   target_type='notification', target_id=notification_id)
             return jsonify({
                 "status": "success",
                 "message": "Series notification deleted successfully"
@@ -834,6 +917,8 @@ def api_anime_webhook_delete_notification(notification_id):
         success = transfer_coordinator.series_webhook_model.delete(notification_id)
         
         if success:
+            record('notification.delete', f"Deleted the anime notification {notification_id}",
+                   target_type='notification', target_id=notification_id)
             return jsonify({
                 "status": "success",
                 "message": "Anime notification deleted successfully"
@@ -860,6 +945,8 @@ def api_webhook_delete_notification(notification_id):
         success = transfer_coordinator.webhook_model.delete(notification_id)
         
         if success:
+            record('notification.delete', f"Deleted the movie notification {notification_id}",
+                   target_type='notification', target_id=notification_id)
             return jsonify({
                 "status": "success",
                 "message": "Notification deleted successfully"
@@ -903,6 +990,8 @@ def api_webhook_mark_notification_complete(notification_id):
         
         if success:
             print(f"✅ Movie notification {notification_id} manually marked as complete")
+            record('notification.complete', f"Marked the movie notification {notification_id} complete",
+                   target_type='notification', target_id=notification_id)
             return jsonify({
                 "status": "success",
                 "message": "Movie notification marked as complete successfully"
@@ -945,6 +1034,8 @@ def api_series_webhook_mark_notification_complete(notification_id):
         if success:
             series_title = notification.get('series_title', 'Unknown')
             print(f"✅ Series notification {notification_id} ({series_title}) manually marked as complete")
+            record('notification.complete', f"Marked the series notification {notification_id} complete",
+                   target_type='notification', target_id=notification_id)
             return jsonify({
                 "status": "success",
                 "message": "Series notification marked as complete successfully"
@@ -987,6 +1078,8 @@ def api_anime_webhook_mark_notification_complete(notification_id):
         if success:
             series_title = notification.get('series_title', 'Unknown')
             print(f"✅ Anime notification {notification_id} ({series_title}) manually marked as complete")
+            record('notification.complete', f"Marked the anime notification {notification_id} complete",
+                   target_type='notification', target_id=notification_id)
             return jsonify({
                 "status": "success",
                 "message": "Anime notification marked as complete successfully"
@@ -1055,6 +1148,12 @@ def api_webhook_settings():
             saved, _refused, errors = store.set_many(payload)
             if errors:
                 return jsonify({"status": "error", "message": "; ".join(errors)}), 400
+            # After the error gate: a rejected save must not be recorded as a
+            # change, and `saved` is what actually persisted.
+            record('settings.webhook_update',
+                   f"Changed webhook settings: {', '.join(sorted(saved)) or 'nothing'}",
+                   target_type='setting', target_id='webhook',
+                   detail={'keys': sorted(saved)})
             for key, value in saved.items():
                 print(f"⚙️  {key} updated (DB): {value}")
             
@@ -1128,6 +1227,12 @@ def api_discord_settings():
             saved, _refused, errors = store.set_many(payload)
             if errors:
                 return jsonify({"status": "error", "message": "; ".join(errors)}), 400
+            # After the error gate: a rejected save must not be recorded as a
+            # change, and `saved` is what actually persisted.
+            record('settings.discord_update',
+                   f"Changed Discord settings: {', '.join(sorted(saved)) or 'nothing'}",
+                   target_type='setting', target_id='discord',
+                   detail={'keys': sorted(saved)})
             for key in saved:
                 print(f"🎮 {key} updated (DB)")
 
@@ -1231,6 +1336,8 @@ def api_discord_test():
         )
         
         if response.status_code == 204:
+            record('settings.discord_test', 'Sent a Discord test message',
+                   target_type='setting', target_id='discord')
             return jsonify({
                 "status": "success",
                 "message": "Test Discord notification sent successfully!"
@@ -1538,6 +1645,8 @@ def api_rename_notification_delete(notification_id):
         success = rename_service.rename_model.delete(notification_id)
         
         if success:
+            record('notification.delete', f"Deleted the rename notification {notification_id}",
+                   target_type='notification', target_id=notification_id)
             return jsonify({
                 "status": "success",
                 "message": "Rename notification deleted successfully"
@@ -1575,6 +1684,8 @@ def api_rename_notification_verify(notification_id):
                 "message": result.get('message', 'Rename notification not found')
             }), 404
 
+        record('notification.verify_rename', f"Verified the renamed files for {notification_id}",
+               target_type='notification', target_id=notification_id)
         return jsonify({
             "status": "success" if success else "error",
             "result": result

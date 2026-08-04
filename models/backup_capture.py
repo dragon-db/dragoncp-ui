@@ -113,7 +113,10 @@ class BackupCapture:
     #: key names into SQL, which parameter binding cannot protect, so the names
     #: are checked against this rather than trusted. Every caller today passes
     #: literals; the allowlist is what keeps that true when one does not.
-    UPDATABLE_COLUMNS = frozenset({'pinned', 'status', 'restored_at', 'reason'})
+    UPDATABLE_COLUMNS = frozenset({
+        'pinned', 'status', 'restored_at', 'reason',
+        'restored_by_kind', 'restored_by_name', 'restored_by_account_id',
+    })
 
     def update(self, capture_id: str, updates: Dict) -> bool:
         allowed = {k: v for k, v in (updates or {}).items() if k in self.UPDATABLE_COLUMNS}

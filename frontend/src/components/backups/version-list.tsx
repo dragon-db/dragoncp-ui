@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { formatBytes, formatWhen } from "@/lib/explore-format";
 import { REASON_LABELS, type Capture, type CurrentOccupant } from "@/lib/backup-types";
 import { SectionEmpty } from "@/components/layout/section-card";
+import { ActorBadge } from "@/components/activity/actor-badge";
 
 /**
  * One slot's version history.
@@ -123,6 +124,13 @@ export function VersionRow({
           <span className="rounded-full border border-emerald-500/35 bg-emerald-500/12 px-2 py-px text-[9.5px] font-bold tracking-[0.05em] text-emerald-300 uppercase">
             Restored
           </span>
+        )}
+        {capture.restored_at && capture.restored_by_name && (
+          <ActorBadge
+            kind={capture.restored_by_kind}
+            name={capture.restored_by_name}
+            size="sm"
+          />
         )}
 
         <div className="ml-auto flex items-center gap-1">

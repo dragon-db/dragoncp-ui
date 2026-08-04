@@ -25,6 +25,8 @@ from .migrate import LegacyMigration
 from .restore import RestorePlanner, RestoreRunner
 from .retention import RetentionPolicy
 from .sorter import BackupSorter, SortedCapture, SortResult
+from activity_log import record
+from actor import AUTO_RETENTION, acting_as, current_actor
 
 #: What counts as "still using the disk". Mirrors the transfer model's own
 #: definition; stated here so the guard does not depend on a helper's name
@@ -431,7 +433,16 @@ class BackupsService:
         # so it is obvious the run has to be repeated.
         if ok and not summary.get('failed'):
             try:
-                self.captures.update(capture_id, {'restored_at': now})
+                # Stamped alongside the timestamp: "who put this back" is
+                # asked while looking at the version history, and restore is
+                # the one action here that overwrites the live library.
+                restorer = current_actor()
+                self.captures.update(capture_id, {
+                    'restored_at': now,
+                    'restored_by_kind': restorer.kind,
+                    'restored_by_name': restorer.name,
+                    'restored_by_account_id': restorer.account_id,
+                })
             except Exception as error:  # noqa: BLE001 - the restore itself succeeded
                 print(f"⚠️  Restore of {capture_id} succeeded but the restore time "
                       f"could not be recorded: {error}")
@@ -662,7 +673,14 @@ class BackupsService:
         return self.retention.save(keep=keep, grace_hours=grace_hours, enabled=enabled)
 
     def _apply_retention_quietly(self) -> None:
-        """Run retention after a capture is added, reporting to the log only."""
+        """
+        Run retention after a capture is added, reporting to the log only.
+
+        This deletes backups without anyone asking it to, which is exactly
+        the kind of thing that later reads as "who deleted my backup?".
+        It runs on the transfer pipeline's thread, so it names itself
+        rather than inheriting whoever happened to start the sync.
+        """
         if not self.retention.enabled():
             return
         try:
@@ -672,6 +690,16 @@ class BackupsService:
             return
         if result.deleted:
             reclaimed_gb = result.reclaimed / 1e9
+            with acting_as(AUTO_RETENTION):
+                record(
+                    'backup.retention_apply',
+                    f"Retention removed {len(result.deleted)} old backup version(s), "
+                    f"reclaiming {result.reclaimed / 1e9:.2f} GB",
+                    target_type='backup_capture',
+                    detail={'deleted_count': len(result.deleted),
+                            'reclaimed_bytes': result.reclaimed,
+                            'automatic': True},
+                )
             print(
                 f"🧹 Backup retention removed {len(result.deleted)} old version(s), "
                 f"reclaiming {reclaimed_gb:.2f} GB"

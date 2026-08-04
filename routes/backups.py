@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 
 from flask import Blueprint, jsonify, request
 
+from activity_log import record
 from auth import require_auth
 from security import validate_relative_path
 
@@ -38,6 +39,42 @@ def _service():
 
 def _fail(message: str, code: int = 400):
     return jsonify({'status': 'error', 'message': message}), code
+
+
+def _capture_label(capture_id: str) -> str:
+    """
+    Name a backup version for the activity trail.
+
+    Read before the action wherever the action removes it: once the files and
+    the index entry are gone, the recorded entry is the only place that says
+    what was deleted, and an id on its own tells nobody anything.
+    """
+    try:
+        capture = _service().captures.get(capture_id)
+        if capture:
+            parts = [capture.get('title') or capture.get('slot_key') or capture_id]
+            season = capture.get('season_number')
+            episode = capture.get('episode_number')
+            if season is not None and episode is not None:
+                parts.append(f"S{int(season):02d}E{int(episode):02d}")
+            elif season is not None:
+                parts.append(f"Season {int(season)}")
+            return ' '.join(str(p) for p in parts if p)
+    except Exception:
+        pass
+    return capture_id
+
+
+def _retention_phrase(rule: Dict) -> str:
+    """The retention rule as a sentence fragment, for the activity trail."""
+    if not rule or not rule.get('enabled'):
+        return 'off'
+    keep = rule.get('keep')
+    grace = rule.get('grace_hours')
+    parts = [f"keep {keep} version(s) per item" if keep is not None else 'enabled']
+    if grace:
+        parts.append(f"after a {grace}h grace period")
+    return ', '.join(parts)
 
 
 def _selected_files(payload: Dict) -> Optional[List[str]]:
@@ -147,10 +184,13 @@ def api_backups_slot():
 @require_auth
 def api_backups_capture(capture_id):
     try:
-        record = _service().capture(capture_id)
-        if not record:
+        # Named `capture`, not `record`: the module-level `record` is the
+        # activity recorder, and a local of the same name would silently shadow
+        # it for the whole function the moment anyone added a call here.
+        capture = _service().capture(capture_id)
+        if not capture:
             return _fail('Backup not found', 404)
-        return jsonify({'status': 'success', 'capture': record})
+        return jsonify({'status': 'success', 'capture': capture})
     except Exception as error:  # noqa: BLE001
         return _fail(f'Failed to load the backup: {error}', 500)
 
@@ -203,7 +243,12 @@ def api_backups_restore(capture_id):
     except ValueError as error:
         return _fail(str(error))
     try:
+        label = _capture_label(capture_id)
         ok, message, detail = _service().restore(capture_id, files)
+        if ok:
+            record('backup.restore', f"Restored {label} from a backup",
+                   target_type='backup_capture', target_id=capture_id, target_label=label,
+                   detail={'files': len(files) if files else None})
         if not ok:
             return jsonify({'status': 'error', 'message': message, 'plan': detail}), 400
         return jsonify({'status': 'success', 'message': message, **detail})
@@ -223,7 +268,12 @@ def api_backups_pin(capture_id):
     payload = request.json or {}
     pinned = bool(payload.get('pinned', True))
     try:
+        label = _capture_label(capture_id)
         ok, message = _service().set_pinned(capture_id, pinned)
+        if ok:
+            record('backup.pin' if pinned else 'backup.unpin',
+                   f"{'Pinned' if pinned else 'Unpinned'} the backup of {label}",
+                   target_type='backup_capture', target_id=capture_id, target_label=label)
         return (jsonify({'status': 'success', 'message': message})
                 if ok else _fail(message, 404))
     except Exception as error:  # noqa: BLE001
@@ -241,8 +291,11 @@ def api_backups_delete(capture_id):
     rebuild.
     """
     try:
+        label = _capture_label(capture_id)
         ok, message = _service().delete_capture(capture_id)
         if ok:
+            record('backup.delete', f"Deleted the backup of {label}",
+                   target_type='backup_capture', target_id=capture_id, target_label=label)
             return jsonify({'status': 'success', 'message': message})
         # Unknown id is a 404 here as it is on the pin and detail routes; a
         # failure to remove the files is a 400.
@@ -325,6 +378,15 @@ def api_backups_delete_many():
             keep_newest=max(0, int(payload.get('keep_newest') or 0)),
             include_pinned=bool(payload.get('include_pinned')),
         )
+        record('backup.bulk_delete',
+               f"Deleted {result['deleted_count']} backup version(s), "
+               f"reclaiming {result['reclaimed'] / 1e9:.2f} GB",
+               target_type='backup_capture',
+               detail={'deleted_count': result['deleted_count'],
+                       'reclaimed_bytes': result['reclaimed'],
+                       'skipped_pinned': result['skipped_pinned'],
+                       'by_slot': bool(slot_keys)})
+
         pinned_note = (
             f", {result['skipped_pinned']} pinned version(s) left alone"
             if result['skipped_pinned'] else ''
@@ -351,6 +413,11 @@ def api_backups_clear_unsorted():
         return _fail('Clearing the unidentified files must be confirmed')
     try:
         result = _service().clear_unsorted()
+        record('backup.clear_unsorted',
+               f"Cleared {result['deleted_count']} unidentified backup item(s)",
+               target_type='backup_capture',
+               detail={'deleted_count': result['deleted_count'],
+                       'reclaimed_bytes': result['reclaimed']})
         return jsonify({
             'status': 'success',
             'message': (
@@ -374,6 +441,8 @@ def api_backups_rebuild():
     """
     try:
         result = _service().rebuild_index()
+        record('backup.rebuild_index', 'Rebuilt the backup index from the files on disk',
+               target_type='backup_capture', detail=dict(result) if isinstance(result, dict) else None)
         return jsonify({
             'status': 'success',
             'message': (
@@ -424,6 +493,9 @@ def api_backups_save_retention():
             grace_hours=None if grace is None else int(grace),
             enabled=None if enabled is None else bool(enabled),
         )
+        record('backup.retention_save',
+               f"Changed the backup retention rule to {_retention_phrase(rule)}",
+               target_type='setting', target_id='backup_retention', detail=dict(rule))
         return jsonify({'status': 'success', 'message': 'Retention saved', 'retention': rule})
     except (TypeError, ValueError) as error:
         return _fail(f'Invalid retention value: {error}')
@@ -477,6 +549,12 @@ def api_backups_retention_apply():
         return _fail(f'Invalid retention value: {error}')
     try:
         result = _service().retention_apply(keep=keep, grace_hours=grace)
+        record('backup.retention_apply',
+               f"Applied the retention rule, removing {result['deleted_count']} old version(s)",
+               target_type='backup_capture',
+               detail={'deleted_count': result['deleted_count'],
+                       'reclaimed_bytes': result['reclaimed'],
+                       'keep': keep, 'grace_hours': grace})
         return jsonify({
             'status': 'success',
             'message': (
@@ -513,6 +591,10 @@ def api_backups_migration_apply():
         return _fail('Migration must be confirmed after reviewing the preview')
     try:
         result = _service().migration_apply()
+        if result.get('applied'):
+            record('backup.migrate', 'Migrated the old per-transfer backup folders',
+                   target_type='backup_capture',
+                   detail={k: v for k, v in result.items() if isinstance(v, (int, str, bool))})
         # A refused migration is not a success with a zero count. It comes back
         # `applied: false` with the reason, and reporting "Moved 0 file(s)"
         # over the top of that reads as "there was nothing to do".
@@ -660,7 +742,12 @@ def api_restore_backup(backup_id):
             if not isinstance(entry, str) or not validate_relative_path(entry):
                 return _fail(f'Invalid file path rejected: {entry}')
     try:
+        label = _capture_label(backup_id)
         ok, message, _detail = _service().restore(backup_id, files)
+        if ok:
+            record('backup.restore', f"Restored {label} from a backup",
+                   target_type='backup_capture', target_id=backup_id, target_label=label,
+                   detail={'files': len(files) if files else None, 'legacy_endpoint': True})
         return (jsonify({'status': 'success', 'message': message})
                 if ok else _fail(message))
     except Exception as error:  # noqa: BLE001
@@ -679,7 +766,12 @@ def api_delete_backup(backup_id):
     `delete_record` / `delete_files` flags in the body are ignored.
     """
     try:
+        label = _capture_label(backup_id)
         ok, message = _service().delete_capture(backup_id)
+        if ok:
+            record('backup.delete', f"Deleted the backup of {label}",
+                   target_type='backup_capture', target_id=backup_id, target_label=label,
+                   detail={'legacy_endpoint': True})
         return (jsonify({'status': 'success', 'message': message})
                 if ok else _fail(message))
     except Exception as error:  # noqa: BLE001
@@ -692,6 +784,8 @@ def api_reindex_backups():
     """Legacy name for the index rebuild."""
     try:
         result = _service().rebuild_index()
+        record('backup.rebuild_index', 'Rebuilt the backup index from the files on disk',
+               target_type='backup_capture', detail={'legacy_endpoint': True})
         return jsonify({
             'status': 'success',
             'message': f"Indexed {result['indexed']} version(s).",

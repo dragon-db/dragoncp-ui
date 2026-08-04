@@ -44,6 +44,8 @@ map; `INDEX.md` is the catalogue.
 | Something behaves oddly — check whether it is already known | `operations/known-issues.md` | `operations/logging.md` |
 | Picking up work, or leaving it for the next session | `../TASKS.md` | `plans/task-manager.md` |
 | Migrating, verifying or compacting the database by hand | `operations/maintenance-scripts.md` | `reference/database-schema.md` |
+| Adding an administrator, resetting a password, removing someone's access | `operations/admin-accounts.md` | `features/auth/README.md` |
+| Who did something — a deleted backup, a sync nobody admits to starting | `features/activity/README.md` | `operations/admin-accounts.md` |
 | First time in the codebase | `architecture/system-overview.md` | `architecture/service-decomposition.md` |
 | Setting the app up locally | `getting-started/installation.md` | `../AGENTS.md` |
 | Starting the backend and the frontend dev server, or using `TEST_MODE` | `getting-started/running.md` | `getting-started/installation.md` |

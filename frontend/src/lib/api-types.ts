@@ -72,6 +72,17 @@ export interface Transfer {
   log_count: number;
   logs?: string[];
   rsync_process_id?: number;
+  /**
+   * Who started this run. `started_by_kind` separates a person from automation;
+   * `started_by_account_id` is the stable identity that survives a rename, while
+   * `started_by_name` is the name as it read at the time.
+   *
+   * All three are absent on runs that predate attribution — those show as
+   * "unrecorded" rather than being guessed at.
+   */
+  started_by_kind?: "admin" | "automated" | "system" | null;
+  started_by_name?: string | null;
+  started_by_account_id?: number | null;
   /** Structured rsync progress, parsed server-side from --info=progress2 output. */
   progress_percent?: number | null;
   bytes_transferred?: number | null;

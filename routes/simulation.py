@@ -11,6 +11,7 @@ from the request reaches the filesystem. See services/simulation_service.py.
 """
 
 from flask import Blueprint, jsonify, request
+from activity_log import record
 from auth import require_auth
 
 simulation_bp = Blueprint('simulation', __name__)
@@ -75,6 +76,8 @@ def api_simulation_start():
         if not started:
             return jsonify({"status": "error", "message": message}), 400
 
+        record('simulation.start', f"Started the {scenario} simulation",
+               target_type='simulation', target_id=scenario)
         return jsonify({"status": "success", "message": message, **detail})
     except Exception as e:
         print(f"❌ Error starting simulation: {e}")
@@ -89,6 +92,7 @@ def api_simulation_stop():
     """Stop anything still moving, keeping the rows so the result can be read"""
     try:
         stopped = simulation_service.stop()
+        record('simulation.stop', 'Stopped the running simulation', target_type='simulation')
         return jsonify({
             "status": "success",
             "message": f"Stopped {stopped} simulation transfer(s)",
@@ -105,6 +109,7 @@ def api_simulation_cleanup():
     """Remove every simulation row and the files it generated"""
     try:
         result = simulation_service.cleanup()
+        record('simulation.cleanup', 'Cleared the simulation data', target_type='simulation')
         return jsonify({
             "status": "success",
             "message": (

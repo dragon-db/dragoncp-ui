@@ -8,6 +8,7 @@ import {
   useWebSocketStatus,
 } from "@/hooks/useConfig";
 import { SettingsPanel } from "@/components/settings/settings-panel";
+import { AccountPanel } from "@/components/settings/account-panel";
 import {
   useDiscordSettings,
   useTestDiscord,
@@ -33,6 +34,7 @@ import {
   IconRefresh,
   IconServer,
   IconSettings,
+  IconUserShield,
   IconWebhook,
 } from "@tabler/icons-react";
 
@@ -203,6 +205,10 @@ export function SettingsPage() {
             <IconWebhook className="h-4 w-4" />
             Automation
           </TabsTrigger>
+          <TabsTrigger value="account">
+            <IconUserShield className="h-4 w-4" />
+            Account
+          </TabsTrigger>
           <TabsTrigger value="diagnostics">
             <IconServer className="h-4 w-4" />
             Diagnostics
@@ -211,6 +217,10 @@ export function SettingsPage() {
 
         <TabsContent value="config" className="mt-4 space-y-4">
           <SettingsPanel />
+        </TabsContent>
+
+        <TabsContent value="account" className="mt-4 space-y-4">
+          <AccountPanel />
         </TabsContent>
 
         <TabsContent value="automation" className="mt-4 space-y-4">

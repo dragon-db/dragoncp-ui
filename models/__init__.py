@@ -9,6 +9,8 @@ from .backup import Backup
 from .backup_capture import BackupCapture
 from .webhook import WebhookNotification, SeriesWebhookNotification
 from .settings import AppSettings
+from .admin_account import AdminAccount, AdminAccountError
+from .activity import Activity
 
 __all__ = [
     'DatabaseManager',
@@ -17,6 +19,9 @@ __all__ = [
     'BackupCapture',
     'WebhookNotification',
     'SeriesWebhookNotification',
-    'AppSettings'
+    'AppSettings',
+    'AdminAccount',
+    'AdminAccountError',
+    'Activity'
 ]
 

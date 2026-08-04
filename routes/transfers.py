@@ -11,6 +11,7 @@ See security.py for the validation implementation.
 
 import time
 from flask import Blueprint, jsonify, request
+from activity_log import record
 from auth import require_auth
 from security import validate_path_component, assert_path_within_bounds, PathTraversalError
 from services.transfer_service import build_progress_stats
@@ -31,6 +32,29 @@ def init_transfer_routes(app_config, app_transfer_coordinator):
     global config, transfer_coordinator
     config = app_config
     transfer_coordinator = app_transfer_coordinator
+
+
+def _target_label(folder_name: str, season_name: str = None) -> str:
+    """How a run is named in the activity trail."""
+    if season_name:
+        return f"{folder_name} — {season_name}"
+    return folder_name or 'unknown'
+
+
+def _describe(transfer_id: str) -> str:
+    """
+    Name a run from its id, for an entry written about an existing transfer.
+
+    Read before the action where the action removes the row: an entry saying
+    which sync was deleted is the only place that name survives.
+    """
+    try:
+        row = transfer_coordinator.transfer_model.get(transfer_id)
+        if row:
+            return _target_label(row.get('folder_name'), row.get('season_name'))
+    except Exception:
+        pass
+    return transfer_id
 
 
 @transfers_bp.route('/transfer', methods=['POST'])
@@ -145,6 +169,14 @@ def api_transfer():
             
             if transfer_started:
                 print(f"✅ Transfer {transfer_id} started successfully")
+                record(
+                    'transfer.start',
+                    f"Started a {media_type} sync of {_target_label(folder_name, season_name)}",
+                    target_type='transfer', target_id=transfer_id,
+                    target_label=_target_label(folder_name, season_name),
+                    detail={'media_type': media_type, 'operation': operation_type,
+                            'queued': transfer_state != 'running'},
+                )
                 # Verify the transfer was created in database
                 db_transfer = transfer_coordinator.get_transfer_status(transfer_id)
                 if db_transfer:
@@ -219,6 +251,9 @@ def api_cancel_transfer(transfer_id):
     """Cancel a transfer"""
     success = transfer_coordinator.cancel_transfer(transfer_id)
     if success:
+        record('transfer.cancel', f"Cancelled the sync of {_describe(transfer_id)}",
+               target_type='transfer', target_id=transfer_id,
+               target_label=_describe(transfer_id))
         return jsonify({"status": "success", "message": "Transfer cancelled"})
     else:
         return jsonify({"status": "error", "message": "Failed to cancel transfer"})
@@ -236,6 +271,9 @@ def api_pause_transfer(transfer_id):
     try:
         success, message = transfer_coordinator.pause_transfer(transfer_id)
         if success:
+            record('transfer.pause', f"Paused the sync of {_describe(transfer_id)}",
+                   target_type='transfer', target_id=transfer_id,
+                   target_label=_describe(transfer_id))
             return jsonify({"status": "success", "message": message})
         return jsonify({"status": "error", "message": message}), 400
     except Exception as e:
@@ -250,6 +288,9 @@ def api_resume_transfer(transfer_id):
     try:
         success, message = transfer_coordinator.resume_transfer(transfer_id)
         if success:
+            record('transfer.resume', f"Resumed the sync of {_describe(transfer_id)}",
+                   target_type='transfer', target_id=transfer_id,
+                   target_label=_describe(transfer_id))
             return jsonify({"status": "success", "message": message})
         return jsonify({"status": "error", "message": message}), 400
     except Exception as e:
@@ -418,6 +459,9 @@ def api_restart_transfer(transfer_id):
     try:
         success = transfer_coordinator.restart_transfer(transfer_id)
         if success:
+            record('transfer.restart', f"Restarted the sync of {_describe(transfer_id)}",
+                   target_type='transfer', target_id=transfer_id,
+                   target_label=_describe(transfer_id))
             return jsonify({"status": "success", "message": "Transfer restarted successfully"})
         else:
             return jsonify({"status": "error", "message": "Failed to restart transfer"})
@@ -440,9 +484,15 @@ def api_delete_transfer(transfer_id):
         if transfer['status'] == 'running':
             return jsonify({"status": "error", "message": "Cannot delete a running transfer. Please cancel it first."})
         
-        # Delete the transfer
+        # Named before the delete: afterwards there is no row to read it from,
+        # and an entry saying only an id would be useless to read back.
+        label = _target_label(transfer.get('folder_name'), transfer.get('season_name'))
+
         deleted = transfer_coordinator.transfer_model.delete(transfer_id)
         if deleted:
+            record('transfer.delete', f"Deleted the sync record for {label}",
+                   target_type='transfer', target_id=transfer_id, target_label=label,
+                   detail={'status_when_deleted': transfer.get('status')})
             return jsonify({"status": "success", "message": "Transfer deleted successfully"})
         else:
             return jsonify({"status": "error", "message": "Failed to delete transfer"})
@@ -487,6 +537,11 @@ def api_bulk_delete_transfers():
                 })
             deleted, skipped = model.delete_many(transfer_ids)
 
+        record('transfer.bulk_delete',
+               f"Deleted {deleted} sync record{'s' if deleted != 1 else ''}",
+               target_type='transfer',
+               detail={'deleted_count': deleted, 'skipped_running': len(skipped)})
+
         message = f"Deleted {deleted} transfer{'s' if deleted != 1 else ''}"
         if skipped:
             message += f", skipped {len(skipped)} still running"
@@ -508,6 +563,9 @@ def api_cleanup_transfers():
     """Remove duplicate transfers based on destination path, keeping only the latest successful transfer"""
     try:
         cleaned = transfer_coordinator.transfer_model.cleanup_duplicate_transfers()
+        record('transfer.cleanup',
+               f"Cleaned up {cleaned} duplicate sync record{'s' if cleaned != 1 else ''}",
+               target_type='transfer', detail={'removed_count': cleaned})
         return jsonify({
             "status": "success", 
             "message": f"Cleaned up {cleaned} duplicate transfers",

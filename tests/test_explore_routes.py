@@ -16,8 +16,20 @@ from flask import Flask
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+import auth
 import routes.explore as explore_routes
 from services.explore.service import ExploreError
+
+#: One signed-in administrator, as require_auth sees them.
+SIGNED_IN_PAYLOAD = {'sub': 'tester', 'uid': 1, 'tv': 1, 'src': 'db', 'type': 'access'}
+SIGNED_IN_IDENTITY = {
+    'account_id': 1,
+    'username': 'tester',
+    'role': 'admin',
+    'token_version': 1,
+    'must_change_password': False,
+    'source': 'db',
+}
 
 
 class FakeService:
@@ -64,13 +76,21 @@ class ExploreRouteTests(unittest.TestCase):
         app.register_blueprint(explore_routes.explore_bp, url_prefix='/api')
         self.client = app.test_client()
 
-        # require_auth resolves these from the auth module at call time.
+        # require_auth resolves these from the auth module at call time. A valid
+        # token is no longer enough on its own: the account behind it is looked
+        # up on every request, so the identity has to be stubbed as well.
         patcher_token = patch('auth.get_token_from_request', return_value='token')
-        patcher_valid = patch('auth.validate_token', return_value={'sub': 'tester'})
+        patcher_valid = patch('auth.validate_token', return_value=SIGNED_IN_PAYLOAD)
+        patcher_identity = patch(
+            'auth.resolve_identity',
+            return_value=(SIGNED_IN_IDENTITY, auth.REASON_OK),
+        )
         self.addCleanup(patcher_token.stop)
         self.addCleanup(patcher_valid.stop)
+        self.addCleanup(patcher_identity.stop)
         self.token = patcher_token.start()
         self.valid = patcher_valid.start()
+        patcher_identity.start()
 
     def test_every_endpoint_requires_a_session(self):
         self.token.return_value = None

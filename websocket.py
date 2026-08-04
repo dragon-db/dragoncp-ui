@@ -11,8 +11,8 @@ import threading
 from datetime import datetime, timedelta
 from typing import Any
 from flask import request, session
-from flask_socketio import join_room, leave_room
-from auth import validate_websocket_token
+from flask_socketio import join_room, leave_room, disconnect
+from auth import validate_websocket_token, websocket_identity_still_valid
 from env_flags import env_flag
 
 
@@ -20,6 +20,11 @@ from env_flags import env_flag
 WEBSOCKET_TIMEOUT_MIN = 5 * 60    # 5 minutes minimum
 WEBSOCKET_TIMEOUT_MAX = 65 * 60   # 65 minutes maximum (5 minutes longer than max client timeout)
 WEBSOCKET_TIMEOUT_DEFAULT = 35 * 60  # 35 minutes default
+
+# How often a live connection's account is re-checked while it keeps pinging.
+# Small enough that a disabled administrator loses their updates promptly,
+# large enough that a frequent ping does not turn into a read per ping.
+AUTH_RECHECK_SECONDS = 60
 
 
 # WebSocket connection tracking
@@ -158,9 +163,9 @@ def register_websocket_handlers(socketio):
                 transport,
             )
             return False
-        username = validate_websocket_token(auth_data)
-        
-        if not username:
+        identity = validate_websocket_token(auth_data)
+
+        if not identity:
             logger.warning(
                 'WebSocket connection rejected: sid=%s transport=%s reason=invalid-or-missing-token',
                 session_id[:8],
@@ -168,14 +173,23 @@ def register_websocket_handlers(socketio):
             )
             # Reject the connection
             return False
-        
-        # Store connection with authenticated user info
+
+        username = identity['username']
+
+        # Store connection with authenticated user info. The account id and
+        # token version come along so the cleanup thread can tell whether this
+        # connection is still backed by a live account - a socket authenticates
+        # once at handshake, and without this a disabled admin would keep
+        # receiving updates until they happened to disconnect.
         with websocket_connections_lock:
             websocket_connections[session_id] = {
                 'connected_at': datetime.now(),
                 'last_activity': datetime.now(),
                 'timeout_seconds': get_websocket_timeout_for_session(session),
                 'username': username,
+                'account_id': identity.get('account_id'),
+                'token_version': identity.get('token_version', 0),
+                'auth_source': identity.get('source', 'env'),
                 'transport': transport,
                 'origin': request.headers.get('Origin', ''),
             }
@@ -213,11 +227,46 @@ def register_websocket_handlers(socketio):
 
     @socketio.on('activity')
     def handle_activity():
-        """Handle client activity ping"""
+        """
+        Handle client activity ping, and take the chance to re-check the account.
+
+        A connection authenticates once at handshake. Re-checking here is what
+        makes disabling an administrator take effect on their live updates in
+        about a minute rather than whenever the cleanup sweep next runs. The
+        check is throttled because this ping is frequent and the account row is
+        read fresh each time.
+        """
         session_id = str(getattr(request, 'sid', ''))
+        now = datetime.now()
+
         with websocket_connections_lock:
-            if session_id in websocket_connections:
-                websocket_connections[session_id]['last_activity'] = datetime.now()
+            connection = websocket_connections.get(session_id)
+            if connection is None:
+                return
+            connection['last_activity'] = now
+
+            last_check = connection.get('last_auth_check')
+            if last_check is not None and (now - last_check).total_seconds() < AUTH_RECHECK_SECONDS:
+                return
+
+            connection['last_auth_check'] = now
+            account_id = connection.get('account_id')
+            token_version = connection.get('token_version', 0)
+            auth_source = connection.get('auth_source', 'env')
+            username = connection.get('username', 'unknown')
+
+        if websocket_identity_still_valid(account_id, token_version, auth_source):
+            return
+
+        logger.info(
+            'WebSocket dropped, account no longer valid: sid=%s user=%s',
+            session_id[:8],
+            username,
+        )
+        with websocket_connections_lock:
+            websocket_connections.pop(session_id, None)
+        _drop_subscriber(session_id)
+        disconnect()
 
     @socketio.on('transfer_logs_subscribe')
     def handle_transfer_logs_subscribe(data):
@@ -260,13 +309,18 @@ def register_websocket_handlers(socketio):
         if not data or not isinstance(data, dict):
             return {'success': False, 'message': 'Invalid auth data'}
         
-        username = validate_websocket_token(data)
-        
-        if username:
+        identity = validate_websocket_token(data)
+
+        if identity:
+            username = identity['username']
             with websocket_connections_lock:
                 if session_id in websocket_connections:
-                    websocket_connections[session_id]['username'] = username
-                    websocket_connections[session_id]['last_activity'] = datetime.now()
+                    connection = websocket_connections[session_id]
+                    connection['username'] = username
+                    connection['account_id'] = identity.get('account_id')
+                    connection['token_version'] = identity.get('token_version', 0)
+                    connection['auth_source'] = identity.get('source', 'env')
+                    connection['last_activity'] = datetime.now()
             logger.info('WebSocket re-authenticated: sid=%s user=%s', session_id[:8], username)
             return {'success': True, 'user': username}
         else:
@@ -285,10 +339,27 @@ def cleanup_stale_connections(socketio):
                 # Get timeout for this specific session (stored when connection was made)
                 session_timeout = connection_info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT)
                 timeout_threshold = current_time - timedelta(seconds=session_timeout)
-                
+
                 if connection_info['last_activity'] < timeout_threshold:
                     stale_connections.append(session_id)
-            
+                    continue
+
+                # A connection that has stopped pinging is not re-checked by the
+                # activity handler, so the account behind it is confirmed here
+                # too. Nothing that is still receiving updates should outlive
+                # the account that opened it.
+                if not websocket_identity_still_valid(
+                    connection_info.get('account_id'),
+                    connection_info.get('token_version', 0),
+                    connection_info.get('auth_source', 'env'),
+                ):
+                    logger.info(
+                        'Closing WebSocket for revoked account: sid=%s user=%s',
+                        session_id[:8],
+                        connection_info.get('username', 'unknown'),
+                    )
+                    stale_connections.append(session_id)
+
             for session_id in stale_connections:
                 connection_info = get_websocket_connection_snapshot().get(session_id, {})
                 username = connection_info.get('username', 'unknown')

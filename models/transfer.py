@@ -14,6 +14,24 @@ import re
 from datetime import datetime
 from typing import List, Dict, Optional
 
+from actor import Actor, current_actor
+
+
+def _starter_for(transfer_data: Dict) -> Actor:
+    """
+    Who is responsible for a run being started.
+
+    Resolved from context rather than passed in, so every route into a transfer
+    is covered without each one having to remember: a request attributes to the
+    signed-in person, a webhook or the scheduler to the automation that declared
+    itself with `acting_as`. A caller may still name one explicitly, which is
+    what a path that knows more than its context does.
+    """
+    explicit = transfer_data.get('started_by')
+    if isinstance(explicit, Actor):
+        return explicit
+    return current_actor()
+
 
 # Backstop for a pathological log (a sync spanning tens of thousands of files).
 # Progress lines are collapsed before they get here, so reaching this cap means
@@ -57,7 +75,9 @@ class Transfer:
         )
         
         print(f"📝 Parsed metadata: {parsed_data}")
-        
+
+        starter = _starter_for(transfer_data)
+
         try:
             with self.db.get_connection() as conn:
                 cursor = conn.execute('''
@@ -66,8 +86,9 @@ class Transfer:
                         source_path, dest_path, operation_type, status, progress,
                         queue_reason, rsync_process_id, parsed_title, parsed_season, start_time,
                         is_simulation, simulation_bwlimit,
-                        explore_files_from, explore_mode, explore_plan_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        explore_files_from, explore_mode, explore_plan_id,
+                        started_by_kind, started_by_name, started_by_account_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     transfer_data['transfer_id'],
                     transfer_data['media_type'],
@@ -89,7 +110,14 @@ class Transfer:
                     # restarted run rebuilds the same command.
                     transfer_data.get('explore_files_from'),
                     transfer_data.get('explore_mode'),
-                    transfer_data.get('explore_plan_id')
+                    transfer_data.get('explore_plan_id'),
+                    # Every path that starts a run funnels through here — the
+                    # manual one, webhooks, the scheduler, Explore, simulation —
+                    # so resolving the actor once at this point stamps them all.
+                    # A caller that already knows better can override.
+                    starter.kind,
+                    starter.name,
+                    starter.account_id
                 ))
                 conn.commit()
                 print(f"✅ Transfer record created successfully for {transfer_data['transfer_id']}")

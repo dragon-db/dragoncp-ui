@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { ActorBadge } from "@/components/activity/actor-badge";
 import { Button } from "@/components/ui/button";
 import { Chip, Fact, PathBlock, ProgressMeter } from "@/components/transfers/transfer-bits";
 import { TransferLogConsole } from "@/components/transfers/transfer-logs";
@@ -192,6 +193,24 @@ export function TransferDetailPanel({
           </div>
         </section>
       )}
+
+      {/* Who is answerable for this run. First, because when something has gone
+          wrong in the library this is the question being asked. */}
+      <section className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
+          Started by
+        </span>
+        {transfer.started_by_name ? (
+          <ActorBadge kind={transfer.started_by_kind} name={transfer.started_by_name} size="sm" />
+        ) : (
+          <span
+            className="text-xs text-muted-foreground"
+            title="This run predates activity recording, so nobody was captured. It is unknown rather than nobody."
+          >
+            not recorded
+          </span>
+        )}
+      </section>
 
       {/* Facts */}
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-4">

@@ -23,6 +23,8 @@ This document describes the current SQLite schema used by DragonCP.
 - `backup_capture_file`
 - `backup_capture_key`
 - `app_settings`
+- `admin_account`
+- `activity`
 
 ### Column Renames
 - `transfer_type` → `operation_type` (more descriptive)
@@ -50,6 +52,14 @@ Added in the same startup path, created with `CREATE TABLE IF NOT EXISTS`:
 `explore_snapshot` (the cached comparison), `explore_plan` (an evaluated
 operation awaiting approval) and `transfer_file` (what a run did, file by file).
 Each is documented in full below.
+
+### Account Table
+
+`admin_account` arrived with named administrators and is created the same way,
+with `CREATE TABLE IF NOT EXISTS` at startup. An existing database picks it up
+empty, and sign-in keeps using the environment-file credentials until the first
+account is added — so the upgrade needs no migration step and changes nothing
+until someone chooses to.
 
 ### Queue-Related Additions/Changes
 - `transfers.queue_reason` stores whether a queued transfer is blocked by `path` or `slot`
@@ -710,6 +720,131 @@ CREATE TABLE transfer_file (
 
 Distinct from `backup_file`: this records what a run *did*, keyed by transfer;
 `backup_file` indexes what is *on disk* in a backup directory, keyed by backup.
+
+---
+
+## Table: `admin_account`
+
+**Purpose:** Who is allowed to sign in to the web interface. Created and
+maintained from the server with `scripts/manage_admins.py`; there is no
+account-management UI.
+
+**Schema:**
+```sql
+CREATE TABLE admin_account (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'admin',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    token_version INTEGER NOT NULL DEFAULT 1,
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    last_login_at DATETIME,
+    password_changed_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+**Column Descriptions:**
+- `id` - the stable identity. Usernames can be renamed, so anything recording
+  who did something stores this alongside the name shown at the time
+- `username` - `COLLATE NOCASE`, so `Alice` and `alice` are the same account and
+  cannot both exist. Three to thirty-two characters, must start with a letter,
+  and may not start with `auto` or `system` (those prefixes are reserved for
+  automated actors, see `actor.py`)
+- `password_hash` - `pbkdf2:sha256` via `werkzeug.security`
+- `role` - reserved. Everyone is `'admin'` and nothing reads it; it exists so a
+  narrower role can arrive later without migrating every account
+- `is_active` - `0` disables sign-in without removing the row
+- `token_version` - carried in every sign-in token and compared on every
+  request. Incrementing it retires all tokens already issued for the account.
+  Bumped by disable, password change and rename
+- `must_change_password` - set when the password was chosen by whoever ran the
+  script rather than by the person using it. The application holds them at a
+  password screen until they replace it
+- `last_login_at` - stamped on each successful sign-in
+
+**Indexes:**
+- `idx_admin_account_active` on `is_active` - counting who can sign in, which
+  decides whether the environment-file fallback applies
+
+**Model:** `AdminAccount` in `models/admin_account.py`
+
+**Rows are never deleted.** The activity trail refers back to them, so a
+departed administrator is disabled and keeps their history. `rename` preserves
+`id` for the same reason — deleting and recreating would orphan the record.
+
+While no row has `is_active = 1`, sign-in falls back to `DRAGONCP_USERNAME` /
+`DRAGONCP_PASSWORD` from the environment file. See
+`../operations/admin-accounts.md`.
+
+---
+
+## Table: `activity`
+
+**Purpose:** Who did what, and when. Written for every consequential action;
+reads are deliberately not recorded.
+
+**Schema:**
+```sql
+CREATE TABLE activity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    actor_kind TEXT NOT NULL,
+    actor_name TEXT NOT NULL,
+    actor_account_id INTEGER,
+    action TEXT NOT NULL,
+    target_type TEXT,
+    target_id TEXT,
+    target_label TEXT,
+    summary TEXT NOT NULL,
+    detail TEXT,
+    outcome TEXT NOT NULL DEFAULT 'ok',
+    request_ip TEXT
+)
+```
+
+**Column Descriptions:**
+- `actor_kind` - `admin` (a person), `automated` (a named background process),
+  or `system` (nobody could be identified — which is a statement, not a blank)
+- `actor_name` - the name as it read at the time. A rename does not rewrite it
+- `actor_account_id` - the stable identity that survives a rename; NULL for
+  automation
+- `action` - from the closed vocabulary in `models/activity.py:ACTIONS`, e.g.
+  `backup.restore`. A test asserts every action used in the codebase is declared
+- `target_type` / `target_id` - what was acted on: `transfer`,
+  `backup_capture`, `notification`, `setting`, `account`, `connection`,
+  `simulation`, `explore_plan`
+- `target_label` - how that thing was named at the time. The only place the name
+  survives once the thing itself is deleted
+- `summary` - a finished sentence written at the call site, because the code
+  doing the work is the only place that knows what it did
+- `detail` - JSON extras, e.g. counts and bytes reclaimed
+- `outcome` - `ok`, `failed`, or `refused`
+- `request_ip` - honours one proxy hop via `X-Forwarded-For`
+
+**Indexes:**
+- `idx_activity_occurred` on `occurred_at DESC` - the default listing order
+- `idx_activity_actor` on `actor_account_id` - "everything this person did"
+- `idx_activity_action` on `action` - filtering by action and by family
+- `idx_activity_target` on `(target_type, target_id)` - one thing's story
+
+**Model:** `Activity` in `models/activity.py`
+
+Nothing in the application edits or deletes an entry. An audit record alterable
+from the console it audits is not worth keeping.
+
+**Related ownership columns**, added post-v2 via `_ensure_column`:
+- `transfers.started_by_kind` / `started_by_name` / `started_by_account_id` -
+  who started a run, stamped at the single choke point every path funnels
+  through (`Transfer.create`)
+- `backup_capture.restored_by_kind` / `restored_by_name` /
+  `restored_by_account_id` - who put a version back
+
+Both are NULL on rows that predate attribution. Those read as "not recorded" in
+the UI — unknown rather than nobody. Nothing was backfilled, because inventing
+an owner for a past action is what an audit trail exists to prevent.
 
 ---
 
