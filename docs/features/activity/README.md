@@ -38,13 +38,15 @@ Usernames may not begin with `auto` or `system` (enforced in `models/admin_accou
 
 ### The actor is ambient, not passed around
 
-`activity_log.record()` does not take an actor. It resolves one, in order of how specific the answer is:
+`activity_log.record()` normally takes no actor. It resolves one, in order of how specific the answer is:
 
 1. `g.current_actor` — the signed-in administrator, put there by `require_auth`
 2. a thread declaration made with `acting_as(...)`
 3. `system`
 
-This is why adding a new recorded action does not mean threading an actor parameter down through the service layer, and why a call site cannot attribute an action to the wrong person by passing the wrong argument.
+This is why adding a new recorded action does not mean threading an actor parameter down through the service layer, and why the ordinary call site cannot get attribution wrong: there is nothing to get wrong.
+
+There is an `actor=` override, used where the responsible party is known but the ambient answer would be absent or wrong — sign-in, which establishes the person before any of the above is set, and the restore worker, which runs on a thread the request does not reach. It is a narrow escape hatch, not the normal path.
 
 Background work declares itself once at its entry point:
 
@@ -73,7 +75,7 @@ For the same reason, the store being unset (tests, any context without a databas
 
 ### The vocabulary is closed
 
-`models/activity.py:ACTIONS` lists every action the application records, with a human label. Keeping it closed means the Activity screen can offer the full set as filters, and a typo at a call site shows up as an unknown action rather than quietly creating a category nobody filters by. A test asserts that every action used anywhere in the codebase is declared.
+`models/activity.py:ACTIONS` lists every action the application records, with a human label. Keeping it closed means the Activity screen can offer the full set as filters, and a typo at a call site shows up as an unknown action rather than quietly creating a category nobody filters by. A test asserts that every action recorded from `routes/`, `services/` and `app.py` — every production call site — is declared.
 
 ## Behaviour worth knowing
 

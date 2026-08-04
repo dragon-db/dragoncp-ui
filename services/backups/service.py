@@ -25,7 +25,7 @@ from .migrate import LegacyMigration
 from .restore import RestorePlanner, RestoreRunner
 from .retention import RetentionPolicy
 from .sorter import BackupSorter, SortedCapture, SortResult
-from activity_log import record
+from activity_log import OUTCOME_FAILED, OUTCOME_OK, record
 from actor import AUTO_RETENTION, acting_as, current_actor
 
 #: What counts as "still using the disk". Mirrors the transfer model's own
@@ -321,9 +321,15 @@ class BackupsService:
                 return False, message, plan.as_dict()
             self._restores_running[capture_id] = transfer_id
 
+        # Read here, not in the worker. `restore()` runs inside the request
+        # that asked for it, and the thread below has neither that request nor
+        # a declaration — so resolving the actor there would attribute every
+        # restore to `system` and lose the person who actually did it.
+        initiator = current_actor()
+
         threading.Thread(
             target=self._run_restore,
-            args=(transfer_id, capture_id, capture, plan),
+            args=(transfer_id, capture_id, capture, plan, initiator),
             daemon=True,
         ).start()
 
@@ -369,7 +375,7 @@ class BackupsService:
         return True, 'reserved', transfer_id
 
     def _run_restore(self, transfer_id: str, capture_id: str,
-                     capture: Dict, plan) -> None:
+                     capture: Dict, plan, initiator=None) -> None:
         def log(message: str) -> None:
             try:
                 self.transfer_model.add_log(transfer_id, message)
@@ -404,10 +410,12 @@ class BackupsService:
         finally:
             self._finish_restore(
                 transfer_id, capture_id, capture, plan, ok, message, summary,
+                initiator,
             )
 
     def _finish_restore(self, transfer_id: str, capture_id: str, capture: Dict,
-                        plan, ok: bool, message: str, summary: Dict) -> None:
+                        plan, ok: bool, message: str, summary: Dict,
+                        initiator=None) -> None:
         now = datetime.now().isoformat()
         try:
             self.transfer_model.update(transfer_id, {
@@ -436,7 +444,7 @@ class BackupsService:
                 # Stamped alongside the timestamp: "who put this back" is
                 # asked while looking at the version history, and restore is
                 # the one action here that overwrites the live library.
-                restorer = current_actor()
+                restorer = initiator or current_actor()
                 self.captures.update(capture_id, {
                     'restored_at': now,
                     'restored_by_kind': restorer.kind,
@@ -446,6 +454,21 @@ class BackupsService:
             except Exception as error:  # noqa: BLE001 - the restore itself succeeded
                 print(f"⚠️  Restore of {capture_id} succeeded but the restore time "
                       f"could not be recorded: {error}")
+
+        # Recorded here rather than when the request was accepted: a restore is
+        # asynchronous, so at acceptance nothing has been restored yet and the
+        # run may still fail. The entry names the person who asked for it and
+        # the outcome they actually got.
+        record(
+            'backup.restore',
+            (f"Restored {plan.slot_display} from a backup" if ok and not summary.get('failed')
+             else f"Failed to restore {plan.slot_display} from a backup"),
+            target_type='backup_capture', target_id=capture_id,
+            target_label=plan.slot_display,
+            detail={'files': summary.get('restored'), 'failed': summary.get('failed')},
+            outcome=OUTCOME_OK if ok and not summary.get('failed') else OUTCOME_FAILED,
+            actor=initiator,
+        )
 
         self._emit('transfer_complete', {
             'transfer_id': transfer_id,

@@ -60,8 +60,9 @@ class BackupCapture:
                     capture_id, library, title, season_number, episode_number,
                     release_year, slot_key, capture_path, captured_at,
                     source_transfer_id, source_ref, reason, kind,
-                    file_count, total_size, pinned, status, restored_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    file_count, total_size, pinned, status, restored_at,
+                    restored_by_kind, restored_by_name, restored_by_account_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 capture_id,
                 record.get('library'),
@@ -81,6 +82,12 @@ class BackupCapture:
                 1 if record.get('pinned') else 0,
                 record.get('status', 'present'),
                 record.get('restored_at'),
+                # Carried across the delete-and-reinsert, or a rebuild of the
+                # index would quietly erase who put a version back — the one
+                # question the restore attribution exists to answer.
+                record.get('restored_by_kind'),
+                record.get('restored_by_name'),
+                record.get('restored_by_account_id'),
             ))
 
             if files:

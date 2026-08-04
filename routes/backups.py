@@ -243,12 +243,7 @@ def api_backups_restore(capture_id):
     except ValueError as error:
         return _fail(str(error))
     try:
-        label = _capture_label(capture_id)
         ok, message, detail = _service().restore(capture_id, files)
-        if ok:
-            record('backup.restore', f"Restored {label} from a backup",
-                   target_type='backup_capture', target_id=capture_id, target_label=label,
-                   detail={'files': len(files) if files else None})
         if not ok:
             return jsonify({'status': 'error', 'message': message, 'plan': detail}), 400
         return jsonify({'status': 'success', 'message': message, **detail})
@@ -742,12 +737,7 @@ def api_restore_backup(backup_id):
             if not isinstance(entry, str) or not validate_relative_path(entry):
                 return _fail(f'Invalid file path rejected: {entry}')
     try:
-        label = _capture_label(backup_id)
         ok, message, _detail = _service().restore(backup_id, files)
-        if ok:
-            record('backup.restore', f"Restored {label} from a backup",
-                   target_type='backup_capture', target_id=backup_id, target_label=label,
-                   detail={'files': len(files) if files else None, 'legacy_endpoint': True})
         return (jsonify({'status': 'success', 'message': message})
                 if ok else _fail(message))
     except Exception as error:  # noqa: BLE001

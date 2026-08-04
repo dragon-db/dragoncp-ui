@@ -66,8 +66,9 @@ A valid token is not sufficient on its own. The account behind it is read on
 every request, so a protected endpoint also answers:
 
 - `401 ACCOUNT_DISABLED` — the account has been switched off
-- `401 SESSION_REVOKED` — the account was renamed, disabled, or had its password
-  changed since the token was issued
+- `401 SESSION_REVOKED` — the account was renamed or had its password changed
+  since the token was issued. A disabled account answers `ACCOUNT_DISABLED`
+  above, not this
 - `401 UNKNOWN_ACCOUNT` — no such account
 - `403 PASSWORD_CHANGE_REQUIRED` — the account still owes its first password
   change. Only `/auth/me`, `/auth/logout` and `/auth/change-password` remain

@@ -708,8 +708,19 @@ paths:
                     type: string
                   expires_at:
                     type: string
+                  refresh_expires_at:
+                    type: string
                   user:
                     type: string
+                  account_id:
+                    type: integer
+                    nullable: true
+                  role:
+                    type: string
+                  must_change_password:
+                    type: boolean
+                  is_fallback_account:
+                    type: boolean
         '400':
           description: >-
             Missing body, new password under 10 characters (WEAK_PASSWORD),

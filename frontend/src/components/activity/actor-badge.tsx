@@ -24,7 +24,17 @@ export function ActorBadge({ kind, name, className, size = "md" }: ActorBadgePro
   }
 
   const isPerson = kind === "admin";
+  // `system` means nobody could be identified, which is not the same as a named
+  // background job. It still carries the AUTO mark so it can never read as a
+  // colleague, but the tooltip says what it actually means rather than naming
+  // an automation that does not exist.
+  const isSystem = kind === "system";
   const Icon = isPerson ? IconUser : IconRobot;
+  const title = isPerson
+    ? `Signed in as ${name}`
+    : isSystem
+      ? "No responsible party was identified for this action"
+      : `Automated: ${name}`;
 
   return (
     <span
@@ -36,7 +46,7 @@ export function ActorBadge({ kind, name, className, size = "md" }: ActorBadgePro
           : "border-neutral-700 bg-neutral-800/60 text-neutral-300",
         className
       )}
-      title={isPerson ? `Signed in as ${name}` : `Automated: ${name}`}
+      title={title}
     >
       <Icon className={size === "sm" ? "size-3" : "size-3.5"} />
       <span className="truncate">

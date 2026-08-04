@@ -65,8 +65,8 @@ reset     Set a new password for someone who is locked out. The account must
           change it again at next sign-in unless --no-force-change is passed.
           Signs the account out everywhere.
 
-disable   Stop an account signing in, immediately, and sign it out of any
-          session and live connection it currently holds. This is what to do
+disable   Stop an account signing in. Their next request is refused at once;
+          a live updates connection drops within about a minute. This is what to do
           when an administrator leaves. It is reversible with `enable`.
 
 enable    Let a disabled account sign in again. It keeps its old password; use
@@ -317,7 +317,7 @@ def cmd_reset(args) -> int:
     )
 
     print(f"\n✅ Password reset for '{updated['username']}'.")
-    print("   They have been signed out of every session and live connection.")
+    print("   Their sessions are refused at once; live connections drop within a minute.")
     if updated['must_change_password']:
         print("   They will be asked to choose their own password when they sign in.")
 
@@ -345,7 +345,7 @@ def cmd_disable(args) -> int:
     updated = store.set_active(account['id'], False)
 
     print(f"\n✅ Disabled '{updated['username']}'.")
-    print("   They have been signed out immediately, including any live connection.")
+    print("   Their next request is refused; any live connection drops within a minute.")
     print("   Their recorded history is kept. Re-enable with:")
     print(f"   venv/bin/python scripts/manage_admins.py enable {updated['username']}")
 
@@ -392,14 +392,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--db',
         default='dragoncp.db',
-        help='Database file to act on (default: ./dragoncp.db)',
+        help='Database file to act on (default: ./dragoncp.db). Accepted either '
+             'before or after the command.',
     )
+
+    # Also offered on each subcommand, because `add alice --db x.db` is the
+    # order people reach for. SUPPRESS is essential: without it the subparser
+    # would apply its own default and silently overwrite a --db given before
+    # the command, pointing the run at the wrong database.
+    shared = argparse.ArgumentParser(add_help=False)
+    shared.add_argument('--db', default=argparse.SUPPRESS, help=argparse.SUPPRESS)
 
     subparsers = parser.add_subparsers(dest='command', required=True)
 
-    subparsers.add_parser('list', help='Show every account').set_defaults(func=cmd_list)
+    subparsers.add_parser('list', parents=[shared], help='Show every account').set_defaults(func=cmd_list)
 
-    show = subparsers.add_parser('show', help='Show one account in detail')
+    show = subparsers.add_parser('show', parents=[shared], help='Show one account in detail')
     show.add_argument('username')
     show.set_defaults(func=cmd_show)
 
@@ -420,7 +428,7 @@ def build_parser() -> argparse.ArgumentParser:
             help='Do not require a password change at next sign-in.',
         )
 
-    add = subparsers.add_parser('add', help='Create an account')
+    add = subparsers.add_parser('add', parents=[shared], help='Create an account')
     add.add_argument('username')
     add.add_argument(
         '--disabled',
@@ -434,23 +442,23 @@ def build_parser() -> argparse.ArgumentParser:
     add.set_defaults(func=cmd_add)
 
     rename = subparsers.add_parser(
-        'rename',
+        'rename', parents=[shared],
         help="Change an account's username, keeping its history",
     )
     rename.add_argument('old_username')
     rename.add_argument('new_username')
     rename.set_defaults(func=cmd_rename)
 
-    reset = subparsers.add_parser('reset', help="Set a new password for an account")
+    reset = subparsers.add_parser('reset', parents=[shared], help="Set a new password for an account")
     reset.add_argument('username')
     add_password_options(reset)
     reset.set_defaults(func=cmd_reset)
 
-    disable = subparsers.add_parser('disable', help='Stop an account signing in')
+    disable = subparsers.add_parser('disable', parents=[shared], help='Stop an account signing in')
     disable.add_argument('username')
     disable.set_defaults(func=cmd_disable)
 
-    enable = subparsers.add_parser('enable', help='Let a disabled account sign in again')
+    enable = subparsers.add_parser('enable', parents=[shared], help='Let a disabled account sign in again')
     enable.add_argument('username')
     enable.set_defaults(func=cmd_enable)
 

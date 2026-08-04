@@ -16,7 +16,7 @@ Four scripts ship in `scripts/`. They are run by hand from a shell on the machin
 
 `manage_admins.py` is the odd one out: it is meant to be run against a live installation, and its changes take effect on the next request without a restart. It has its own page — [admin-accounts.md](admin-accounts.md) — because it is the only supported way to add, rename, disable or reset an administrator, and is not covered further here.
 
-All three work on the same SQLite file the application uses. The app resolves its database as `dragoncp.db` in the project root (`models/database.py`), so that is the file to think about in every section below.
+All four work on the same SQLite file the application uses. The app resolves its database as `dragoncp.db` in the project root (`models/database.py`), so that is the file to think about in every section below.
 
 Run everything from the project checkout, using the project virtualenv. `compact_transfer_logs.py` imports application code, so a bare system Python will usually fail on it.
 

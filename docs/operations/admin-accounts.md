@@ -102,8 +102,11 @@ Afterwards, check it went to the right person:
 venv/bin/python scripts/manage_admins.py show priya
 ```
 
-`last sign-in` reports when the account was first used. A time you did not
-expect means somebody got there first — `reset` and start again.
+`last sign-in` reports the **most recent** successful sign-in, not the first.
+If the time is later than you expect, someone used it before the person you gave
+it to. But it is overwritten each time, so once the intended person signs in it
+no longer shows any earlier use — it is a quick sanity check during handover,
+not a reliable way to detect that an account was used by somebody else.
 
 ### Can an AI assistant create accounts?
 
@@ -171,7 +174,7 @@ It is bumped by `disable`, `reset`, `rename`, and by a person changing their own
 
 | Action | Effect on someone already signed in |
 | --- | --- |
-| `disable` | Next request fails with `ACCOUNT_DISABLED`. Their live-updates connection is dropped within about a minute. |
+| `disable` | Next request fails with `ACCOUNT_DISABLED`, immediately. Their live-updates connection is dropped within about a minute — this script runs as a separate process and cannot reach the running application's connections, so the application notices on its next check rather than being told. |
 | `reset` | Next request fails with `SESSION_REVOKED`. |
 | `rename` | Next request fails with `SESSION_REVOKED`; they sign in again under the new name. |
 | `enable` | Nothing — their old password still works. Use `reset` if it should change too. |

@@ -171,8 +171,10 @@ class RecordingTests(ActivityTestCase):
         # quietly creating a category nobody filters by.
         import re
         used = set()
-        for path in list((REPO_ROOT / 'routes').glob('*.py')) + \
-                    list((REPO_ROOT / 'services').rglob('*.py')) + [REPO_ROOT / 'app.py']:
+        for path in sorted(REPO_ROOT.rglob('*.py')):
+            parts = set(path.parts)
+            if parts & {'venv', 'tests', '__pycache__', 'demo', 'node_modules'}:
+                continue
             used |= set(re.findall(r"record\w*\(\s*'([a-z_]+\.[a-z_]+)'", path.read_text()))
 
         self.assertTrue(used, 'no recorded actions found at all')
@@ -186,6 +188,59 @@ class RecordingTests(ActivityTestCase):
                 action.endswith(('.list', '.view', '.browse', '.read', '.get')),
                 f'{action} looks like a read',
             )
+
+
+class ThreadedWorkTests(ActivityTestCase):
+    """
+    Work that outlives the request that asked for it.
+
+    A restore is accepted and then run on its own thread. The thread has neither
+    the request nor a declaration, so resolving the actor there returns `system`
+    — which silently attributed every restore to nobody in particular. The actor
+    has to be read while the request is still in scope and carried across.
+    """
+
+    def test_resolving_an_actor_inside_a_worker_loses_the_person(self):
+        # The behaviour that made this a bug rather than a preference.
+        import threading
+        from flask import Flask, g
+
+        app = Flask(__name__)
+        seen = {}
+
+        with app.test_request_context('/'):
+            g.current_actor = admin_actor('alice', 1)
+            self.assertEqual(current_actor().name, 'alice')
+
+            thread = threading.Thread(target=lambda: seen.update(actor=current_actor()))
+            thread.start()
+            thread.join()
+
+        self.assertEqual(seen['actor'].kind, ACTOR_SYSTEM)
+
+    def test_an_actor_captured_in_the_request_survives_into_the_worker(self):
+        import threading
+        from flask import Flask, g
+
+        app = Flask(__name__)
+
+        with app.test_request_context('/'):
+            g.current_actor = admin_actor('alice', 1)
+            captured = current_actor()          # read while the request is live
+
+        def worker():
+            activity_log.record('backup.restore', 'Restored a backup',
+                                target_type='backup_capture', target_id='cap_1',
+                                actor=captured)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+
+        entry = self.only()
+        self.assertEqual(entry['actor_kind'], ACTOR_ADMIN)
+        self.assertEqual(entry['actor_name'], 'alice')
+        self.assertEqual(entry['actor_account_id'], 1)
 
 
 class TransferOwnershipTests(ActivityTestCase):

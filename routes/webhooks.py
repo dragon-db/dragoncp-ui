@@ -10,7 +10,7 @@ from datetime import datetime
 from flask import Blueprint, jsonify, request, Response, g
 import requests
 import json
-from activity_log import record
+from activity_log import record, record_failure
 from actor import AUTO_WEBHOOK_RENAME, webhook_actor
 from auth import require_auth
 from webhook_auth import require_webhook_auth
@@ -825,13 +825,18 @@ def api_series_webhook_sync_batch():
                 "message": "notification_ids must be strings"
             }), 400
 
-        record('notification.sync_batch',
-               f"Synced a group of {len(notification_ids)} notification(s) as one transfer",
-               target_type='notification',
-               detail={'notification_count': len(notification_ids)})
-
         success, message, transfer_ids = transfer_coordinator.sync_notification_group(
             notification_ids
+        )
+
+        # After the call, and reflecting what it actually returned: recording
+        # "synced" up front made a refused or failed batch read as a success.
+        (record if success else record_failure)(
+            'notification.sync_batch',
+            f"{'Synced' if success else 'Failed to sync'} a group of "
+            f"{len(notification_ids)} notification(s) as one transfer",
+            target_type='notification',
+            detail={'notification_count': len(notification_ids)},
         )
 
         return jsonify({
@@ -1684,8 +1689,12 @@ def api_rename_notification_verify(notification_id):
                 "message": result.get('message', 'Rename notification not found')
             }), 404
 
-        record('notification.verify_rename', f"Verified the renamed files for {notification_id}",
-               target_type='notification', target_id=notification_id)
+        (record if success else record_failure)(
+            'notification.verify_rename',
+            f"{'Verified' if success else 'Could not verify'} the renamed files "
+            f"for {notification_id}",
+            target_type='notification', target_id=notification_id,
+        )
         return jsonify({
             "status": "success" if success else "error",
             "result": result

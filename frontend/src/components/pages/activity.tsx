@@ -101,16 +101,21 @@ export function ActivityPage() {
   // One list per dropdown, used both to render the options and to tell the
   // Select how to label the selected one. Deriving both from the same array is
   // what keeps the closed menu and the open menu saying the same thing.
-  const actorItems = useMemo(
-    () => [
-      { value: ANY, label: "Anyone" },
-      ...(filters?.actors ?? []).map((a) => ({
+  const actorItems = useMemo(() => {
+    // The server groups actors by kind, name AND account id, so one name can
+    // come back more than once — a name reused after a rename, or entries
+    // written with and without an account id. The filter matches on name, so
+    // duplicates would be two identical options and two identical React keys.
+    const byName = new Map<string, { value: string; label: string }>();
+    for (const a of filters?.actors ?? []) {
+      if (byName.has(a.actor_name)) continue;
+      byName.set(a.actor_name, {
         value: a.actor_name,
         label: a.actor_kind === "admin" ? a.actor_name : `AUTO / ${a.actor_name}`,
-      })),
-    ],
-    [filters]
-  );
+      });
+    }
+    return [{ value: ANY, label: "Anyone" }, ...byName.values()];
+  }, [filters]);
 
   const entries = data?.entries ?? [];
   const total = data?.total ?? 0;

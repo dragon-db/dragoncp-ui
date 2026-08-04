@@ -113,16 +113,34 @@ def get_auth_config() -> Dict[str, Any]:
             "Missing JWT secret. Set JWT_SECRET_KEY (preferred) or SECRET_KEY in config/environment."
         )
 
+    def _int(key: str, default: int) -> int:
+        """
+        A whole number from the environment file, or the default.
+
+        A typo in one of these used to raise straight out of get_auth_config(),
+        which every sign-in and every authenticated request calls — so
+        `LOGIN_MAX_ATTEMPTS=five` locked the whole application out rather than
+        just being ignored.
+        """
+        raw = env_config.get(key)
+        if raw is None or str(raw).strip() == '':
+            return default
+        try:
+            return int(str(raw).strip())
+        except (TypeError, ValueError):
+            print(f"⚠️  {key}={raw!r} is not a whole number; using {default}")
+            return default
+
     return {
         'username': env_config.get('DRAGONCP_USERNAME', 'admin'),
         'password_hash': env_config.get('DRAGONCP_PASSWORD_HASH', ''),
         'password_plain': env_config.get('DRAGONCP_PASSWORD', ''),
         'jwt_secret': jwt_secret,
-        'jwt_expiry_hours': int(env_config.get('JWT_EXPIRY_HOURS', '24')),
+        'jwt_expiry_hours': _int('JWT_EXPIRY_HOURS', 24),
         'jwt_algorithm': 'HS256',
-        'login_max_attempts': int(env_config.get('LOGIN_MAX_ATTEMPTS', '5')),
-        'login_window_minutes': int(env_config.get('LOGIN_WINDOW_MINUTES', '15')),
-        'login_lockout_minutes': int(env_config.get('LOGIN_LOCKOUT_MINUTES', '15')),
+        'login_max_attempts': _int('LOGIN_MAX_ATTEMPTS', 5),
+        'login_window_minutes': _int('LOGIN_WINDOW_MINUTES', 15),
+        'login_lockout_minutes': _int('LOGIN_LOCKOUT_MINUTES', 15),
     }
 
 
@@ -209,9 +227,13 @@ def _check_env_password(password: str) -> bool:
 
     if config['password_plain']:
         # Constant-time comparison so the fallback does not leak the password
-        # one character at a time.
+        # one character at a time. Compared as bytes: compare_digest refuses
+        # str containing non-ASCII, so a password with an accent in it raised
+        # TypeError out of the sign-in handler instead of simply not matching.
         import hmac
-        return hmac.compare_digest(password, config['password_plain'])
+        return hmac.compare_digest(
+            password.encode('utf-8'), config['password_plain'].encode('utf-8')
+        )
 
     return False
 
