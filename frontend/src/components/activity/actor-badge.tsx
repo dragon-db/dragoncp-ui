@@ -50,7 +50,13 @@ export function ActorBadge({ kind, name, className, size = "md" }: ActorBadgePro
     >
       <Icon className={size === "sm" ? "size-3" : "size-3.5"} />
       <span className="truncate">
-        {isPerson ? name : <><span className="opacity-60">AUTO</span> {name}</>}
+        {isPerson ? (
+          name
+        ) : (
+          <>
+            <span className="opacity-60">AUTO</span> {name}
+          </>
+        )}
       </span>
     </span>
   );

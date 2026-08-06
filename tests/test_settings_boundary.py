@@ -448,7 +448,7 @@ class ConfigRouteTests(unittest.TestCase):
 
     def test_the_flat_shape_the_legacy_ui_reads_is_still_returned(self):
         """
-        The static UI is what production serves. It reads a flat key -> value
+        The deprecated compatibility client reads a flat key -> value
         map and would show an empty settings form without one.
         """
         body = self.client.get('/api/config').get_json()

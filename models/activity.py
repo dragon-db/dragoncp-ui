@@ -10,6 +10,7 @@ bury the entries that matter under noise.
 """
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
@@ -81,6 +82,23 @@ def _row_to_dict(row) -> Dict[str, Any]:
         except (TypeError, ValueError):
             entry['detail'] = None
     return entry
+
+
+def _normalise_timestamp(value: str, field: str) -> str:
+    """Convert an ISO timestamp to the UTC text format SQLite stores here."""
+    raw = str(value).strip()
+    if raw.endswith(('Z', 'z')):
+        raw = f'{raw[:-1]}+00:00'
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f'{field} must be a valid ISO timestamp') from error
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.replace(tzinfo=None).strftime('%Y-%m-%d %H:%M:%S')
 
 
 class Activity:
@@ -194,10 +212,10 @@ class Activity:
             params.append(outcome)
         if since:
             clauses.append('occurred_at >= ?')
-            params.append(since)
+            params.append(_normalise_timestamp(since, 'since'))
         if until:
             clauses.append('occurred_at <= ?')
-            params.append(until)
+            params.append(_normalise_timestamp(until, 'until'))
         if search:
             clauses.append('(summary LIKE ? OR target_label LIKE ? OR actor_name LIKE ?)')
             like = f'%{search}%'

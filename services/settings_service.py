@@ -215,10 +215,9 @@ class SettingsService:
         """
         Every visible setting as a plain key -> value map.
 
-        The shape the legacy static UI reads. It is what production still
-        serves, so the current API returns this alongside the grouped payload
-        rather than breaking that page. Sensitive values are redacted; env
-        secrets marked hidden are omitted entirely, as they are in `describe`.
+        Deprecated compatibility shape retained for a browser-only rollback
+        during the React cutover. Sensitive values are redacted; env secrets
+        marked hidden are omitted entirely, as they are in `describe`.
         """
         values: Dict[str, str] = {}
         for setting in registry.SETTINGS:
@@ -233,7 +232,7 @@ class SettingsService:
 
     def env_only(self) -> Dict[str, str]:
         """
-        What the environment file holds, for the legacy UI's comparison column.
+        What the environment file holds, for the retired UI's comparison column.
 
         It used to contrast the env file against a per-browser overlay. There is
         no overlay any more, so this is simply the env-backed settings — which

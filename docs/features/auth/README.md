@@ -1,10 +1,10 @@
 # Authentication
 
-DragonCP supports any number of named administrators. Each signs in with their own username and password, and everything the web interface does afterwards is carried by a short-lived token that the browser attaches to each request and to its live-updates connection. Accounts live in the database and are created, renamed, disabled and reset from the server with `scripts/manage_admins.py`; while no account exists there, the credentials in the environment file are accepted as a single fallback administrator, exactly as they were before named accounts. The three webhook receiver endpoints are the exception to all of this: Radarr and Sonarr cannot log in, so those endpoints are protected instead by a shared secret signature, a source-address allowlist, or both. A separate set of checks guards the folder and file names that arrive in requests and webhook payloads, so that no caller can steer a copy, rename, or restore outside the configured media and backup directories.
+DragonCP supports any number of named administrators. Each signs in with their own username and password, and everything the web interface does afterwards is carried by a short-lived token that the browser attaches to each request and to its live-updates connection. Accounts live in the database and are created, renamed, disabled and reset from the server with `scripts/manage_admins.py`; while no enabled account exists there, the credentials in the environment file are accepted as a single fallback administrator, exactly as they were before named accounts. The three webhook receiver endpoints are the exception to all of this: Radarr and Sonarr cannot log in, so those endpoints are protected instead by a shared secret signature, a source-address allowlist, or both. A separate set of checks guards the folder and file names that arrive in requests and webhook payloads, so that no caller can steer a copy, rename, or restore outside the configured media and backup directories.
 
 **Managing accounts is documented in [../../operations/admin-accounts.md](../../operations/admin-accounts.md).** That is the page to read to add, rename, disable or reset an administrator; this one covers how sign-in works.
 
-Last updated: 2026-08-03
+Last updated: 2026-08-06
 Primary files: `auth.py`, `routes/auth.py`, `models/admin_account.py`, `login_guard.py`, `actor.py`, `webhook_auth.py`, `security.py`, `websocket.py`
 
 ## Where it lives
@@ -33,7 +33,7 @@ Accounts live in the `admin_account` table. `auth.py` holds a pointer to it, set
 
 The environment file is the fallback. `auth.py:_load_env_file()` reads `dragoncp_env.env`, or `.env` if the first is absent, and caches the result for the life of the process. `get_auth_config()` turns that into the working config: `DRAGONCP_USERNAME` (defaulting to `admin`), `DRAGONCP_PASSWORD_HASH`, `DRAGONCP_PASSWORD`, `JWT_SECRET_KEY` (falling back to `SECRET_KEY`, then to the same two names in the process environment), `JWT_EXPIRY_HOURS` (defaulting to `24`), and the three `LOGIN_*` throttle settings. If no JWT secret can be found anywhere, `get_auth_config()` raises rather than signing tokens with a guessable key.
 
-`env_fallback_active()` is the single rule that decides whether those environment credentials are accepted: **true while no enabled account exists in the database.** That covers a fresh install, an upgrade from the single-operator setup, and a lockout where every account has been disabled. Adding or enabling the first account switches it off, and sessions opened against the fallback stop validating at that moment. On the plain-text branch the comparison is `hmac.compare_digest`, deliberately constant-time so the fallback does not leak its password one character at a time.
+`env_fallback_active()` is the single rule that decides whether those environment credentials are accepted: **true while no enabled account exists in the database.** That covers a fresh install, an upgrade from the single-operator setup, and a lockout where every account has been disabled. Adding or enabling the first account switches it off, and sessions opened against the fallback stop validating at that moment. If a disabled database row has the same username as the configured fallback, the fallback password is still checked while fallback mode is active; the disabled row's password remains unusable. On the plain-text branch the comparison is `hmac.compare_digest`, deliberately constant-time so the fallback does not leak its password one character at a time.
 
 A username that does not exist is still checked against a throwaway hash (`_waste_time_like_a_real_check`) so that a wrong username costs the same time as a wrong password and cannot be told apart by how quickly it is rejected.
 
@@ -44,7 +44,7 @@ A username that does not exist is still checked against a throwaway hash (`_wast
 - `generate_token()` builds the **access token**: claims `sub` (username), `uid` (the stable account id), `tv` (the account's token version), `src` (`db` or `env`), `role`, `iat`, `exp`, and `type: 'access'`, signed HS256, expiring after `JWT_EXPIRY_HOURS`.
 - `generate_refresh_token()` builds the **refresh token**: the same claims but `type: 'refresh'` and a hard-coded 7-day expiry.
 
-`uid` and `tv` are what make sessions revocable. `uid` is the identity that survives a rename; `tv` is compared against the account row on every request, so bumping it retires every token already issued. See [Sessions end when the account changes](../../operations/admin-accounts.md#sessions-end-when-the-account-changes).
+`uid` and `tv` are what make sessions revocable. `uid` is the identity that survives a rename; `tv` is compared against the account row on every request, so bumping it retires every token already issued. Environment-fallback tokens use a durable aggregate generation derived from the account table, preventing a fallback token issued before an account lifecycle change from becoming valid again during a later lockout. See [Sessions end when the account changes](../../operations/admin-accounts.md#sessions-end-when-the-account-changes).
 
 Both are returned along with `expires_at` and `refresh_expires_at`. The `type` claim is what keeps the two apart: `validate_token()` decodes and verifies the signature and expiry, then rejects the token if its `type` does not match the type the caller asked for. A refresh token therefore cannot be presented as an access token, even though both are signed with the same secret.
 
@@ -80,7 +80,7 @@ On success it stashes the username on `g.current_user`, the stable id on `g.curr
 
 `actor.py` names the party behind every action, so nothing the application does is anonymous. An actor is one of three kinds — `admin` (a signed-in person, shown under their own username), `automated` (a named background process, shown as `AUTO / <name>`), or `system` (the application itself). Usernames are forbidden from starting with `auto` or `system` so the two can never be confused.
 
-`require_auth` puts the person on `g.current_actor`; background entry points pass one of the named constants instead. Phase 1 establishes this vocabulary and resolves it per request; writing it onto a stored activity trail is phase 2.
+`require_auth` puts the person on `g.current_actor`; background entry points pass one of the named constants instead. `activity_log.record()` writes that resolved identity to the activity trail.
 
 ### Sign-in throttling
 
@@ -98,12 +98,12 @@ Live progress is delivered over Socket.IO. `websocket.py:register_websocket_hand
 
 A query-string token is accepted for the handshake only if the environment flag `ALLOW_QUERY_TOKEN_AUTH` is truthy (`1`, `true`, `yes`, `on`); it defaults to off.
 
-Accepted connections are recorded in an in-process map under a lock, along with the username, the account id, the token version, the auth source, transport, origin, connect time, last activity, and a per-session timeout. Clients send an `activity` event to keep the timestamp fresh; a background thread started by `start_cleanup_thread()` disconnects sessions idle past their timeout (default 35 minutes, capped at 65) every five minutes.
+Accepted connections are recorded in an in-process map under a lock, along with the username, the account id, the token version, the auth source, transport, origin, connect time, last activity, and a per-session timeout. Clients send an `activity` event to keep the timestamp fresh; a background thread started by `start_cleanup_thread()` runs every five seconds. Each sweep disconnects revoked identities and sessions idle past their timeout (default 35 minutes, capped at 65).
 
 A socket authenticates once at handshake, so without further checks a disabled administrator would keep receiving updates until they happened to disconnect. Two things close that gap, both calling `auth.py:websocket_identity_still_valid()` with the account id and token version recorded at handshake:
 
-- The `activity` ping re-checks the account, throttled to once a minute per connection (`AUTH_RECHECK_SECONDS`). A revoked account is dropped from the map and disconnected. This is the fast path — roughly a minute for an active client.
-- The cleanup sweep re-checks connections that have stopped pinging, so a quiet socket cannot outlive its account either.
+- The `activity` ping re-checks the account, throttled to once a minute per connection (`AUTH_RECHECK_SECONDS`). A revoked account is dropped from the map and disconnected.
+- The independent cleanup sweep re-checks every identity every five seconds, so revocation is bounded even when the client is quiet or its activity pings are throttled.
 
 Because the connection is authenticated once at handshake time, a token refresh would otherwise leave the socket holding a stale identity. The `authenticate` event handles that: the client re-sends the new token, `validate_websocket_token()` re-checks it, and the stored username, account id, token version and activity timestamp are updated. The handler acknowledges with `{success: true, user}` or `{success: false, message}`. Note it does **not** disconnect on failure — it just declines to update; the activity re-check is what closes a socket whose account has gone.
 
@@ -155,7 +155,7 @@ The service layer repeats the checks rather than trusting its callers. `services
 ## Behaviour worth knowing
 
 - **Tokens are revoked per account, not per session.** Every token carries the account's `token_version`, and every request compares it against the row, so disabling an account, renaming it, or changing its password retires all of that account's tokens at once. What there is *no* mechanism for is retiring one session while leaving the others: `POST /auth/logout` still only writes a log line, and a leaked token stays usable until its `exp` unless something bumps the account's version. Changing `JWT_SECRET_KEY` and restarting still invalidates everything for everyone.
-- **The fallback account cannot be revoked this way,** because it has no row to bump. Its sessions end when a real account is added or enabled — `env_fallback_active()` goes false and every fallback token stops resolving — or when `JWT_SECRET_KEY` changes.
+- **Fallback sessions use a database-backed generation.** Adding, enabling, disabling, resetting or renaming accounts advances the aggregate generation carried in newly issued fallback tokens. An older fallback token therefore cannot become valid again when all accounts are later disabled. Adding or enabling an account also ends fallback mode immediately.
 - **Account changes take effect immediately; environment changes still need a restart.** Accounts are read from the database on every request, so `manage_admins.py` needs no restart. `auth.py` still caches the parsed env file in `_env_config_cache` on first read and never invalidates it, so changing `DRAGONCP_PASSWORD`, `JWT_SECRET_KEY` or the `LOGIN_*` throttle settings does require one.
 - **Refresh tokens are not rotated and their 7-day life is not configurable.** `JWT_EXPIRY_HOURS` affects only the access token. Refresh returns a new access token and nothing else, so exactly seven days after login the operator must log in again regardless of activity.
 - **Every authenticated request reads the account row.** This is a local SQLite read and deliberately uncached — the same pattern the settings resolver uses — and it is the price of revocation working at all. It has not been profiled under load.

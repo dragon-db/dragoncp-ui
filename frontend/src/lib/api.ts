@@ -192,10 +192,7 @@ export const authApi = {
    * Succeeding signs out every other session for this account, so the response
    * carries a replacement token pair for this one.
    */
-  changePassword: async (
-    currentPassword: string,
-    newPassword: string
-  ): Promise<LoginResponse> => {
+  changePassword: async (currentPassword: string, newPassword: string): Promise<LoginResponse> => {
     const response = await api.post<LoginResponse>("/auth/change-password", {
       current_password: currentPassword,
       new_password: newPassword,
@@ -261,10 +258,7 @@ export interface ActivityQuery {
  * mistaken for a colleague — the server forbids usernames that would blur that
  * line, and this is the other half of the same rule.
  */
-export function actorLabel(entry: {
-  actor_kind: string;
-  actor_name: string;
-}): string {
+export function actorLabel(entry: { actor_kind: string; actor_name: string }): string {
   return entry.actor_kind === "admin" ? entry.actor_name : `AUTO / ${entry.actor_name}`;
 }
 

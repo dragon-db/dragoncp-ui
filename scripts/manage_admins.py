@@ -23,8 +23,8 @@ Usage:
     venv/bin/python scripts/manage_admins.py disable <username>
     venv/bin/python scripts/manage_admins.py enable <username>
 
-Every command accepts --db to point at a database other than the default
-./dragoncp.db.
+Every command accepts --db either before or after the command name to point at a
+database other than the default ./dragoncp.db.
 
 Handing a password to someone else
 ----------------------------------

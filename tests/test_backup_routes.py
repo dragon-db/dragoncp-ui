@@ -498,7 +498,7 @@ class BackupRouteTests(unittest.TestCase):
     # ---- the legacy surface ----
 
     def test_the_old_endpoints_still_list_and_restore(self):
-        """The legacy static UI is still what production serves."""
+        """The deprecated routes remain usable during the cutover soak."""
         capture = self.displace(f"{SHOW} - S01E01 - Old.mkv")
 
         listing = self.client.get('/api/backups').get_json()

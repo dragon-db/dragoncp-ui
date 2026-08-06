@@ -275,10 +275,10 @@ export interface SettingsResponse {
 /**
  * The flat key -> value map.
  *
- * Still returned by `/api/config` alongside the grouped payload, because the
- * legacy static UI reads it and that UI is what production serves. New code
- * should use `SettingsResponse` — the flat shape cannot say which store a
- * value came from or whether it can be written.
+ * Still returned by `/api/config` alongside the grouped payload as a deprecated
+ * cutover compatibility shape. New code should use `SettingsResponse` — the
+ * flat shape cannot say which store a value came from or whether it can be
+ * written.
  */
 export interface AppConfig {
   [key: string]: string | number | undefined;

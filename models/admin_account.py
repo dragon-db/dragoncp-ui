@@ -139,6 +139,22 @@ class AdminAccount:
             row = conn.execute('SELECT COUNT(*) AS total FROM admin_account').fetchone()
         return int(row['total'] if row else 0)
 
+    def fallback_token_version(self) -> int:
+        """
+        A durable generation for sessions issued to the environment fallback.
+
+        Every account mutation that retires sessions increments a row's token
+        version. Summing those versions means a fallback session minted before
+        any account-table change cannot become valid again when the fallback is
+        re-enabled later. Rows are never deleted, so this generation is
+        monotonic for the lifetime of the database.
+        """
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                'SELECT COALESCE(SUM(token_version), 0) AS version FROM admin_account'
+            ).fetchone()
+        return int(row['version'] if row else 0)
+
     # ----- writes ----------------------------------------------------------
 
     def create(

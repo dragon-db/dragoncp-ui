@@ -15,8 +15,8 @@ info:
     and `routes/`. Every blueprint is registered under the `/api` prefix, which
     is part of the server URL below, so paths here are written without it.
 
-    `GET /` is not listed: it renders the legacy HTML page and is not an API
-    route.
+    `GET /` is not listed: it serves the React application shell and is not an
+    API route.
 
     Endpoint count: 100 method+path operations.
 
@@ -210,9 +210,9 @@ components:
       description: |
         Settings, in two shapes at once.
 
-        Top-level keys are the flat key -> value map the legacy static UI reads.
-        `groups` is the same data shaped for the React Settings screen, with the
-        store and editability of each setting attached.
+        `groups` is the data shaped for the React Settings screen, with the
+        store and editability of each setting attached. Top-level flat keys are
+        a deprecated compatibility shape retained through the cutover soak.
 
         Environment secrets are omitted entirely rather than redacted — there is
         nothing a reader could do with a redacted value they cannot change.
@@ -815,8 +815,8 @@ paths:
     get:
       tags: [Configuration]
       summary: >-
-        Return every setting, grouped for the React UI and flat for the legacy UI.
-        Each grouped setting says which store owns it and whether it can be changed here
+        Return every setting grouped for React, plus a deprecated flat compatibility
+        shape. Each grouped setting says which store owns it and whether it can be changed here
       responses:
         '200':
           description: Configuration object
@@ -855,8 +855,8 @@ paths:
     post:
       tags: [Configuration]
       summary: >-
-        Kept for the legacy static UI. There is no per-browser override layer left to
-        clear, so this reports success and changes nothing
+        Deprecated cutover compatibility endpoint. There is no per-browser override
+        layer left to clear, so this reports success and changes nothing
       responses:
         '200':
           $ref: '#/components/responses/Success'
@@ -867,7 +867,7 @@ paths:
     get:
       tags: [Configuration]
       summary: >-
-        Return the environment-backed settings alone — the legacy UI's comparison column
+        Deprecated cutover compatibility endpoint returning environment-backed settings
       responses:
         '200':
           description: Configuration object
@@ -2736,9 +2736,9 @@ paths:
             determined. The body carries `applied: false` and the reason in
             `message`.
 
-  # ---- Legacy backup endpoints -------------------------------------------
-  # Kept because the static UI is what production serves. Backed by the same
-  # store, with a capture id in place of the old backup id.
+  # ---- Deprecated backup compatibility endpoints -------------------------
+  # Retained for one React cutover soak. Backed by the same store, with a
+  # capture id in place of the old backup id.
 
   /backups:
     get:

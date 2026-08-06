@@ -5,8 +5,8 @@ DragonCP Backup Routes
 Two surfaces over one store:
 
   * the current API, shaped around slots and versions, which the React page uses
-  * a compatibility layer at the old paths, so the legacy static UI keeps
-    listing and restoring against the new tree instead of breaking
+  * a deprecated compatibility layer at the old paths, retained through the
+    React cutover soak period for a browser-only rollback
 
 SECURITY: relative paths in a restore selection are validated here with
 security.validate_relative_path and again inside the planner. Everything else
@@ -613,13 +613,12 @@ def api_backups_migration_apply():
 
 
 # ===========================================================================
-# Compatibility — the legacy static UI's endpoints, backed by the new store
+# Deprecated compatibility endpoints, backed by the new store
 # ===========================================================================
 #
-# The legacy UI is still what production serves. Rather than let its Backups
-# page break, these map captures into the shape it already renders. A capture
-# id takes the place of the old backup id everywhere, so its list -> files ->
-# plan -> restore flow keeps working against the new tree.
+# These map captures into the retired UI's response shape. A capture id takes
+# the place of the old backup id everywhere, so a browser-only rollback can use
+# its list -> files -> plan -> restore flow against the new tree.
 
 def _as_legacy_backup(capture: Dict) -> Dict:
     season = capture.get('season_number')

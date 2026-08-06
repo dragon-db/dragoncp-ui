@@ -1,6 +1,6 @@
 # DragonCP API Reference
 
-Last updated: 2026-08-01
+Last updated: 2026-08-06
 
 Purpose: human-friendly reference for every backend HTTP API endpoint implemented by the Python server.
 
@@ -373,8 +373,9 @@ and nothing edits or removes an entry.
 ## 2) Configuration and SSH Endpoints
 
 ### GET `/config`
-What it does: returns every setting, in two shapes at once — grouped for the React
-Settings screen, and as a flat key -> value map for the legacy static UI.
+What it does: returns every setting, grouped for the React Settings screen. A
+deprecated flat key -> value compatibility shape is also present during the
+cutover soak.
 
 Each grouped setting carries `store` (`env` or `db`) and `editable`, so a client can
 show the environment-file half read-only instead of offering a field that silently does
@@ -445,7 +446,7 @@ Errors: `400` with `message` naming the invalid value. Nothing in the payload is
 written.
 
 ### POST `/config/reset`
-What it does: kept for the legacy static UI, which still calls it. There is no longer a
+What it does: deprecated cutover compatibility endpoint. There is no longer a
 per-browser override layer to clear, so it reports success and changes nothing.
 
 Auth: required.
@@ -453,8 +454,8 @@ Auth: required.
 Input: none.
 
 ### GET `/config/env-only`
-What it does: returns the environment-backed settings alone, which is what the legacy
-UI's comparison column shows. Secrets are redacted; hidden env secrets are omitted.
+What it does: deprecated cutover compatibility endpoint returning the
+environment-backed settings alone. Secrets are redacted; hidden env secrets are omitted.
 
 Auth: required.
 
@@ -1911,10 +1912,10 @@ Refusals come back `409` with `applied: false` and the reason in `message` — a
 transfer is active, or whether one is active could not be determined. A refusal
 is never reported as a success with a zero count.
 
-### Legacy endpoints
+### Deprecated compatibility endpoints
 
-Kept because the static UI is what production serves. They are backed by the
-same store, with a capture id in place of the old backup id.
+Retained for one React cutover soak and backed by the same store, with a capture
+id in place of the old backup id. Compatibility traffic is marked in Activity.
 
 | Endpoint | Notes |
 |---|---|
@@ -2556,4 +2557,4 @@ Total covered: 100 method+path API endpoints.
 
 Counts verified against the `@*_bp.route`/`@app.route` decorators in `routes/`
 and `app.py`, counting one per method+path. `GET /` is excluded: it serves the
-legacy UI page and is not an API route.
+React application shell and is not an API route.

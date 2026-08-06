@@ -34,14 +34,11 @@ export function ChangePasswordForm({ forced = false, onChanged }: ChangePassword
       <div className="flex items-start gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4">
         <IconAlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
         <div className="space-y-1">
-          <p className="text-sm font-medium text-amber-200">
-            This is the fallback sign-in
-          </p>
+          <p className="text-sm font-medium text-amber-200">This is the fallback sign-in</p>
           <p className="text-xs leading-relaxed text-amber-200/70">
-            You are signed in with the credentials from the server's environment file,
-            which are used only while no real accounts exist. There is no stored
-            password to change here. Create proper accounts on the server, then sign in
-            as one of those.
+            You are signed in with the credentials from the server's environment file, which are
+            used only while no real accounts exist. There is no stored password to change here.
+            Create proper accounts on the server, then sign in as one of those.
           </p>
         </div>
       </div>
@@ -185,8 +182,8 @@ export function ChangePasswordForm({ forced = false, onChanged }: ChangePassword
       </div>
 
       <p className="text-xs leading-relaxed text-muted-foreground">
-        Changing your password signs out every other browser and live connection using
-        this account. This one stays signed in.
+        Changing your password signs out every other browser and live connection using this account.
+        This one stays signed in.
       </p>
     </form>
   );

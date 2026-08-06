@@ -73,6 +73,8 @@ def api_activity():
             offset=offset,
         )
         return jsonify({'status': 'success', **result})
+    except ValueError as error:
+        return _fail(str(error), 400)
     except Exception as error:  # noqa: BLE001
         print(f"❌ Error reading the activity trail: {error}")
         return _fail(f'Failed to read activity: {error}', 500)

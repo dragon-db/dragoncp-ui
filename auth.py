@@ -174,11 +174,19 @@ def _env_identity() -> Optional[Dict[str, Any]]:
     config = get_auth_config()
     if not (config['password_hash'] or config['password_plain']):
         return None
+    fallback_version = 0
+    if _account_store is not None:
+        try:
+            fallback_version = _account_store.fallback_token_version()
+        except Exception:
+            # Match env_fallback_active(): a database read failure must not turn
+            # the recovery credential into a lockout.
+            fallback_version = 0
     return {
         'account_id': None,
         'username': config['username'],
         'role': 'admin',
-        'token_version': 0,
+        'token_version': fallback_version,
         'must_change_password': False,
         'source': SOURCE_ENV,
     }
@@ -254,17 +262,29 @@ def authenticate(username: str, password: str) -> Optional[Dict[str, Any]]:
     if _account_store is not None:
         account = _account_store.find_by_username(username)
 
-        if account is not None:
-            if not account['is_active']:
-                # Disabled accounts fail like a wrong password rather than
-                # announcing that the account exists but is switched off.
-                _waste_time_like_a_real_check(password)
-                print(f"🔒 Sign-in refused for disabled account: {username}")
-                return None
-
+        if account is not None and account['is_active']:
             if check_password_hash(account['password_hash'], password):
                 return _identity_from_account(account)
 
+            return None
+
+        if account is not None:
+            # A disabled row normally owns its name and must not fall through
+            # to some other credential. The one exception is the configured
+            # fallback account itself: when every database account is disabled,
+            # that credential is the documented lockout-recovery path. Its
+            # password is still checked independently; the disabled row's own
+            # password never starts working again.
+            env_identity = _env_identity() if env_fallback_active() else None
+            if (
+                env_identity is not None
+                and username.lower() == env_identity['username'].lower()
+                and _check_env_password(password)
+            ):
+                return env_identity
+
+            _waste_time_like_a_real_check(password)
+            print(f"🔒 Sign-in refused for disabled account: {username}")
             return None
 
     if env_fallback_active():
@@ -407,6 +427,9 @@ def resolve_identity(payload: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]],
 
         if (payload.get('sub') or '').lower() != env_identity['username'].lower():
             return None, REASON_UNKNOWN_ACCOUNT
+
+        if int(payload.get('tv', -1)) != int(env_identity['token_version']):
+            return None, REASON_REVOKED
 
         return env_identity, REASON_OK
 

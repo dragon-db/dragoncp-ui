@@ -76,23 +76,21 @@ export function AccountPanel() {
         </CardHeader>
         <CardContent className="space-y-3 text-sm leading-relaxed text-neutral-300">
           <p>
-            There is no screen for creating administrators, on purpose: being able to
-            reach the server is the permission, and that is a stronger boundary than one
-            this page could enforce. Someone with access to the machine runs these from
-            the project directory:
+            There is no screen for creating administrators, on purpose: being able to reach the
+            server is the permission, and that is a stronger boundary than one this page could
+            enforce. Someone with access to the machine runs these from the project directory:
           </p>
           <pre className="overflow-x-auto rounded-lg border border-neutral-800 bg-black/40 p-3 font-mono text-xs text-neutral-300">
-{`venv/bin/python scripts/manage_admins.py list
+            {`venv/bin/python scripts/manage_admins.py list
 venv/bin/python scripts/manage_admins.py add <username>
 venv/bin/python scripts/manage_admins.py rename <old> <new>
 venv/bin/python scripts/manage_admins.py reset <username>
 venv/bin/python scripts/manage_admins.py disable <username>`}
           </pre>
           <p className="text-neutral-400">
-            Changes apply straight away — no restart. Accounts are never deleted, because
-            the record of what they did points back at them; a departing administrator is
-            disabled instead, which signs them out immediately and keeps their history
-            readable.
+            Changes apply straight away — no restart. Accounts are never deleted, because the record
+            of what they did points back at them; a departing administrator is disabled instead,
+            which signs them out immediately and keeps their history readable.
           </p>
         </CardContent>
       </Card>

@@ -40,6 +40,7 @@ map; `INDEX.md` is the catalogue.
 | A configuration key: what reads it, what it defaults to, what wins | `reference/configuration.md` | `getting-started/installation.md` |
 | Where files land on disk, destination paths, name normalization | `reference/path-handling.md` | `features/transfers/README.md` |
 | Deployment, systemd, gunicorn, socket drops in production | `operations/runtime-and-deployment.md` | `architecture/system-overview.md` |
+| Why the old HTML UI was removed, how React is served, or how to roll the cutover back | `operations/legacy-ui-retirement.md` | `operations/frontend-deployment.md` |
 | Reading the backend log, or working out why a sync went quiet | `operations/logging.md` | `features/queue/README.md` |
 | Something behaves oddly — check whether it is already known | `operations/known-issues.md` | `operations/logging.md` |
 | Picking up work, or leaving it for the next session | `../TASKS.md` | `plans/task-manager.md` |

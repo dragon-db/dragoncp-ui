@@ -41,7 +41,8 @@ function Timeline({ transfer, now }: { transfer: Transfer; now: number }) {
   const paused = parseTimestamp(transfer.paused_at);
   const ended = parseTimestamp(transfer.end_time);
 
-  const stages: Array<{ label: string; at: number | null; span: string | null; tone?: string }> = [];
+  const stages: Array<{ label: string; at: number | null; span: string | null; tone?: string }> =
+    [];
 
   if (created != null) {
     stages.push({
@@ -221,10 +222,16 @@ export function TransferDetailPanel({
           value={transfer.operation_type === "file" ? "single file" : "folder"}
           mono
         />
-        <Fact label={transfer.end_time ? "Ran for" : "Running for"} value={formatDuration(elapsed)} mono />
+        <Fact
+          label={transfer.end_time ? "Ran for" : "Running for"}
+          value={formatDuration(elapsed)}
+          mono
+        />
         <Fact
           label="Transferred"
-          value={transfer.bytes_transferred != null ? formatBytes(transfer.bytes_transferred) : undefined}
+          value={
+            transfer.bytes_transferred != null ? formatBytes(transfer.bytes_transferred) : undefined
+          }
           mono
         />
         <Fact
@@ -261,23 +268,28 @@ export function TransferDetailPanel({
         </section>
       )}
 
-      <TransferLogConsole
-        logs={logs}
-        title={title}
-        live={running}
-        loading={logsLoading}
-      />
+      <TransferLogConsole logs={logs} title={title} live={running} loading={logsLoading} />
 
       {/* Actions */}
       <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
         {running && (
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => actions.onPause(transfer)}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => actions.onPause(transfer)}
+          >
             <IconPlayerPause className="mr-1.5 size-3.5" />
             Pause
           </Button>
         )}
         {paused && (
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => actions.onResume(transfer)}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => actions.onResume(transfer)}
+          >
             <IconPlayerPlay className="mr-1.5 size-3.5" />
             Resume
           </Button>
@@ -294,7 +306,12 @@ export function TransferDetailPanel({
           </Button>
         )}
         {(running || paused || queued) && (
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => actions.onStop(transfer)}>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => actions.onStop(transfer)}
+          >
             <IconCircleX className="mr-1.5 size-3.5" />
             Stop
           </Button>

@@ -221,8 +221,8 @@ export function ActivityPage() {
               <IconHistory className="size-8 text-neutral-600" />
               <p className="text-sm font-medium text-neutral-300">Nothing recorded yet</p>
               <p className="max-w-sm text-xs text-neutral-500">
-                Actions are recorded from the moment this was switched on. Anything done
-                before then has no entry — it was never captured, rather than hidden.
+                Actions are recorded from the moment this was switched on. Anything done before then
+                has no entry — it was never captured, rather than hidden.
               </p>
             </div>
           )}

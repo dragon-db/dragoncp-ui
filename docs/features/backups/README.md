@@ -9,7 +9,7 @@ the same slot's history.
 That last part is why there is no separate "undo". Undoing a restore is
 restoring the version the restore itself created.
 
-Last updated: 2026-08-02
+Last updated: 2026-08-06
 Primary files: `services/backups/`, `models/backup_capture.py`, `routes/backups.py`,
 `services/transfer_coordinator.py`
 
@@ -340,10 +340,10 @@ accept that the other instance's backup page is stale until you do.
   produce two captures that could not be told apart — the pair whose order
   matters most.
 
-- **The legacy endpoints still work.** The static UI is what production serves,
-  so `/api/backups`, `/api/backups/<id>/files|plan|restore|delete` and
-  `/api/backups/reindex` are kept, backed by the new store, with a capture id in
-  place of the old backup id. One deliberate difference survives at those
+- **The deprecated compatibility endpoints still work during the React cutover
+  soak.** `/api/backups`, `/api/backups/<id>/files|plan|restore|delete` and
+  `/api/backups/reindex` are backed by the new store, with a capture id in place
+  of the old backup id. One deliberate difference survives at those
   paths: the old page sends `"files": []` to mean "everything", so the legacy
   plan route normalises it, while the current API rejects an empty list because
   ticking nothing is not a request to restore everything.
@@ -421,7 +421,7 @@ All endpoints require authentication. Full contracts:
 | `POST /api/backups/migration/plan` | Preview adopting the old folders |
 | `POST /api/backups/migration/apply` | `{"confirm": true}` |
 
-Legacy paths kept for the static UI: `GET /api/backups`,
+Deprecated paths retained for a browser-only rollback: `GET /api/backups`,
 `GET /api/backups/<id>`, `GET /api/backups/<id>/files`,
 `POST /api/backups/<id>/plan|restore|delete`, `POST /api/backups/reindex`.
 

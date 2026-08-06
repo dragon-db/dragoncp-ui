@@ -287,16 +287,17 @@ If you use systemd, set `Environment=PORT=8080` in your service unit and restart
 ```
 dragoncp_ui/
 ├── app.py                    # Main Flask application
-├── database.py               # Database operations
+├── frontend_serving.py       # Same-origin React build and SPA routing
+├── models/                   # SQLite persistence models
+├── routes/                   # HTTP API blueprints
+├── services/                 # Transfer, queue, backup and Explore logic
 ├── dragoncp_env.env          # Environment configuration (create from sample)
 ├── dragoncp_env_sample.env   # Sample environment file
 ├── start.py                  # Smart startup script with venv support
 ├── start.sh                  # Linux launcher
-├── templates/
-│   └── index.html           # Main HTML template
-├── static/
-│   ├── app.js               # Frontend JavaScript
-│   └── style.css            # CSS styles
+├── frontend/
+│   ├── src/                  # React/TypeScript application
+│   └── dist/                 # Generated production build served by Flask
 ├── requirements.txt         # Python dependencies
 ├── README.md               # Main documentation
 └── docs/

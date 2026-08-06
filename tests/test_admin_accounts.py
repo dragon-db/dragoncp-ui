@@ -20,6 +20,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -211,6 +212,17 @@ class EnvFallbackTests(AccountTestCase):
         self.assertTrue(auth.env_fallback_active())
         self.assertIsNotNone(auth.authenticate('envadmin', 'env-fallback-password'))
 
+    def test_fallback_recovers_when_a_disabled_account_has_the_same_name(self):
+        account = self.make_account('envadmin', 'database-password')
+        self.store.set_active(account['id'], False)
+
+        self.assertTrue(auth.env_fallback_active())
+        self.assertIsNone(auth.authenticate('envadmin', 'database-password'))
+
+        identity = auth.authenticate('envadmin', 'env-fallback-password')
+        self.assertIsNotNone(identity)
+        self.assertEqual(identity['source'], auth.SOURCE_ENV)
+
     def test_fallback_session_stops_validating_once_a_real_account_exists(self):
         identity = auth.authenticate('envadmin', 'env-fallback-password')
         token, _ = auth.generate_token(identity)
@@ -224,6 +236,25 @@ class EnvFallbackTests(AccountTestCase):
         resolved, reason = auth.resolve_identity(payload)
         self.assertIsNone(resolved)
         self.assertEqual(reason, auth.REASON_REVOKED)
+
+    def test_a_revoked_fallback_session_does_not_resurrect_after_lockout(self):
+        identity = auth.authenticate('envadmin', 'env-fallback-password')
+        token, _ = auth.generate_token(identity)
+        payload = auth.validate_token(token)
+
+        account = self.make_account('alice')
+        self.store.set_active(account['id'], False)
+
+        resolved, reason = auth.resolve_identity(payload)
+        self.assertIsNone(resolved)
+        self.assertEqual(reason, auth.REASON_REVOKED)
+
+        replacement = auth.authenticate('envadmin', 'env-fallback-password')
+        replacement_token, _ = auth.generate_token(replacement)
+        replacement_payload = auth.validate_token(replacement_token)
+        resolved, reason = auth.resolve_identity(replacement_payload)
+        self.assertEqual(reason, auth.REASON_OK)
+        self.assertEqual(resolved['source'], auth.SOURCE_ENV)
 
 
 class SignInTests(AccountTestCase):
@@ -331,6 +362,41 @@ class SessionRevocationTests(AccountTestCase):
         self.assertFalse(auth.websocket_identity_still_valid(
             identity['account_id'], identity['token_version'], identity['source']
         ))
+
+    def test_revoked_live_connection_is_reaped_on_the_fast_sweep(self):
+        import websocket
+
+        account = self.make_account('alice', 'correct-horse-battery')
+        identity = auth.authenticate('alice', 'correct-horse-battery')
+
+        class FakeServer:
+            def __init__(self):
+                self.disconnected = []
+
+            def disconnect(self, sid, namespace):
+                self.disconnected.append((sid, namespace))
+
+        class FakeSocketIO:
+            server = FakeServer()
+
+        with websocket.websocket_connections_lock:
+            websocket.websocket_connections['review-sid'] = {
+                'connected_at': datetime.now(),
+                'last_activity': datetime.now(),
+                'timeout_seconds': websocket.WEBSOCKET_TIMEOUT_DEFAULT,
+                'username': identity['username'],
+                'account_id': identity['account_id'],
+                'token_version': identity['token_version'],
+                'auth_source': identity['source'],
+            }
+        self.addCleanup(websocket.websocket_connections.clear)
+
+        self.store.set_active(account['id'], False)
+
+        socketio = FakeSocketIO()
+        self.assertEqual(websocket.reap_stale_connections(socketio), 1)
+        self.assertEqual(socketio.server.disconnected, [('review-sid', '/')])
+        self.assertNotIn('review-sid', websocket.websocket_connections)
 
 
 class LoginGuardTests(unittest.TestCase):

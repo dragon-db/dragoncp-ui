@@ -4,7 +4,7 @@ Every consequential action in DragonCP is recorded against whoever is answerable
 
 Reads are deliberately not recorded. Browsing the library is nobody's business to answer for, and recording it would bury the actions that matter.
 
-Last updated: 2026-08-03
+Last updated: 2026-08-06
 Primary files: `activity_log.py`, `actor.py`, `models/activity.py`, `routes/activity.py`, `frontend/src/components/pages/activity.tsx`
 
 ## Where it lives
@@ -75,7 +75,7 @@ For the same reason, the store being unset (tests, any context without a databas
 
 ### The vocabulary is closed
 
-`models/activity.py:ACTIONS` lists every action the application records, with a human label. Keeping it closed means the Activity screen can offer the full set as filters, and a typo at a call site shows up as an unknown action rather than quietly creating a category nobody filters by. A test asserts that every action recorded from `routes/`, `services/` and `app.py` — every production call site — is declared.
+`models/activity.py:ACTIONS` lists every action the application records, with a human label. Keeping it closed means the Activity screen can offer the full set as filters, and a typo at a call site shows up as an unknown action rather than quietly creating a category nobody filters by. A test scans production Python sources and asserts that every literal action passed to `record()` is declared.
 
 ## Behaviour worth knowing
 
@@ -87,9 +87,9 @@ For the same reason, the store being unset (tests, any context without a databas
 - **`request_ip` honours one proxy hop** via `X-Forwarded-For`, the same as the sign-in throttle. Behind the Vite dev proxy that header is not set, so dev entries all show the proxy's address.
 - **Simulation runs are attributed to the person who started them**, and there is deliberately no `AUTO / simulation` actor. A person clicked the button, so the person is the honest answer; the rows are already flagged `is_simulation` for telling them apart. For the same reason there is no `AUTO / queue`: promotion does not begin anything, and the run it releases already carries whoever asked for it. A name in the closed set that nothing can produce would offer a filter that always comes back empty.
 - **A rename is attributed to `AUTO / webhook-rename`,** even though it arrives on the series or anime endpoint. It is its own kind of automated work with its own failure modes, and naming it separately is what lets the trail answer "what has the rename path been doing" without wading through ordinary syncs.
-- **The legacy backup endpoints record too.** `/backups/<id>/restore`, `/backups/<id>/delete` and `/backups/reindex` exist for the old static UI and do the same work as their modern counterparts; their entries carry `legacy_endpoint: true` in the detail so the two surfaces can be told apart.
+- **The deprecated backup compatibility endpoints record too.** `/backups/<id>/restore`, `/backups/<id>/delete` and `/backups/reindex` remain for the React cutover soak and do the same work as their current counterparts; their entries carry `legacy_endpoint: true` so compatibility traffic can be identified before those routes are removed.
 - **Previews, plans and dry runs are not recorded**, because they change nothing: the backup and retention previews, the Explore plan and dry run, the media and notification dry runs, and the legacy config reset (which is a no-op that returns a message). Token refresh is not recorded either — it is not a user action, and every refresh would be noise.
-- **Timestamps are UTC**, written by SQLite's `CURRENT_TIMESTAMP` without a zone marker. The UI appends `Z` before parsing.
+- **Timestamps are UTC**, written by SQLite's `CURRENT_TIMESTAMP` without a zone marker. The API accepts ISO-8601 `since` and `until` values, normalises offsets to UTC and converts them to SQLite's `YYYY-MM-DD HH:MM:SS` comparison shape. Invalid timestamps return `400`. The UI appends `Z` before parsing stored values.
 
 ## Where it shows in the UI
 

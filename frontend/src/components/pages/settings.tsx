@@ -9,6 +9,7 @@ import {
 } from "@/hooks/useConfig";
 import { SettingsPanel } from "@/components/settings/settings-panel";
 import { AccountPanel } from "@/components/settings/account-panel";
+import { BackendLogPanel } from "@/components/settings/backend-log-panel";
 import {
   useDiscordSettings,
   useTestDiscord,
@@ -67,6 +68,7 @@ export function SettingsPage() {
     manual_sync_thumbnail_url: "",
   });
 
+  /* eslint-disable react-hooks/set-state-in-effect -- query payloads intentionally reset controlled form drafts */
   useEffect(() => {
     const settings = webhookSettingsQuery.data?.settings;
     if (!settings) return;
@@ -89,6 +91,7 @@ export function SettingsPage() {
       manual_sync_thumbnail_url: settings.manual_sync_thumbnail_url ?? "",
     });
   }, [discordSettingsQuery.data]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const connectionState = sshStatusQuery.data ? "Connected" : "Disconnected";
 
@@ -444,6 +447,8 @@ export function SettingsPage() {
               />
             </CardContent>
           </Card>
+
+          <BackendLogPanel />
         </TabsContent>
       </Tabs>
     </div>

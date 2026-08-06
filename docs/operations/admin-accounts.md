@@ -1,6 +1,6 @@
 # Administrator Accounts
 
-Last updated: 2026-08-03
+Last updated: 2026-08-06
 Primary files: `scripts/manage_admins.py`, `models/admin_account.py`, `auth.py`, `login_guard.py`, `routes/auth.py`
 
 ## Purpose
@@ -174,7 +174,7 @@ It is bumped by `disable`, `reset`, `rename`, and by a person changing their own
 
 | Action | Effect on someone already signed in |
 | --- | --- |
-| `disable` | Next request fails with `ACCOUNT_DISABLED`, immediately. Their live-updates connection is dropped within about a minute — this script runs as a separate process and cannot reach the running application's connections, so the application notices on its next check rather than being told. |
+| `disable` | Next request fails with `ACCOUNT_DISABLED`, immediately. Their live-updates connection is dropped within about five seconds — this script runs as a separate process and cannot reach the running application's connections, so the application notices on its independent identity sweep rather than being told. |
 | `reset` | Next request fails with `SESSION_REVOKED`. |
 | `rename` | Next request fails with `SESSION_REVOKED`; they sign in again under the new name. |
 | `enable` | Nothing — their old password still works. Use `reset` if it should change too. |
@@ -182,7 +182,7 @@ It is bumped by `disable`, `reset`, `rename`, and by a person changing their own
 
 This is what makes "we removed their access" true at the moment you run the command, rather than true within a day. The account row is read fresh on each request with no cache, the same way application settings are read.
 
-Live connections are covered too: the account is re-checked on the client's activity ping, throttled to once a minute (`AUTH_RECHECK_SECONDS` in `websocket.py`), and again by the connection cleanup sweep for connections that have gone quiet.
+Live connections are covered too: the account is re-checked on the client's activity ping, throttled to once a minute (`AUTH_RECHECK_SECONDS` in `websocket.py`), and independently for every connection by a cleanup sweep every five seconds.
 
 ## Why accounts are never deleted
 
@@ -202,7 +202,9 @@ That single rule covers three situations:
 - **An upgrade** from the single-operator setup. Nothing changes until the first account is added.
 - **A lockout.** If every account is disabled or the last password is lost, the environment credentials work again — no hand-editing of the database.
 
-Adding or enabling the first account switches the fallback off, and any session opened against it stops validating at that moment. That handover is intended: it is what stops a stale fallback session outliving the introduction of real accounts.
+Adding or enabling the first account switches the fallback off, and any session opened against it stops validating at that moment. Account lifecycle changes also advance the durable generation carried by fallback tokens. If every account is disabled later, a token issued during an earlier fallback period does not become valid again; the operator must sign in to receive a current token.
+
+If the only database row has the same username as the configured fallback and is disabled, the environment password is still accepted while fallback mode is active. The disabled row's database password remains rejected. This preserves the lockout-recovery path without silently re-enabling that account.
 
 A fallback session cannot change its password through the browser — there is no stored password to change. The application says so and points at this script.
 
@@ -251,11 +253,11 @@ Every action has an actor, and an actor is one of three kinds:
 | `automated` | `AUTO / <name>` | `AUTO / auto-sync`, `AUTO / webhook-movies`, `AUTO / retention` |
 | `system` | `AUTO / system` | the application itself, outside any request or job |
 
-The named automation is a closed set in `actor.py` (`AUTO_SYNC_SCHEDULER`, `AUTO_WEBHOOK_MOVIES`, `AUTO_WEBHOOK_SERIES`, `AUTO_WEBHOOK_ANIME`, `AUTO_WEBHOOK_RENAME`, `AUTO_RETENTION`, `AUTO_SIMULATION`, `AUTO_QUEUE`), so the trail can be filtered by it rather than by free text.
+The named automation is a closed set in `actor.py` (`AUTO_SYNC_SCHEDULER`, `AUTO_WEBHOOK_MOVIES`, `AUTO_WEBHOOK_SERIES`, `AUTO_WEBHOOK_ANIME`, `AUTO_WEBHOOK_RENAME`, `AUTO_RETENTION`), so the trail can be filtered by it rather than by free text. Simulations remain attributed to the person who started them, and queue promotion preserves the original starter.
 
 Inside an authenticated request the actor is on `g.current_actor`, put there by `require_auth`. Background code passes an explicit automated actor instead.
 
-**Phase 1 establishes this vocabulary and resolves the actor for every request. Writing it onto a stored activity trail is phase 2.**
+The resolved actor is written to the stored activity trail and to ownership fields on transfers and restores. See [Activity and attribution](../features/activity/README.md).
 
 ---
 

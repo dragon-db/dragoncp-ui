@@ -199,9 +199,9 @@ certificate that a tool already running on the host issues for free.
 
 ## 7. Open items to settle first
 
-- **The React app is not the production UI yet.** `AGENTS.md` records that the
-  served UI is still the legacy Flask/static one. An installed PWA is sticky —
-  decide the cutover before putting an icon on a home screen.
+- **React production cutover completed on 2026-08-06.** Flask now serves the
+  built React shell same-origin; validate that release in production before
+  adding a sticky installed PWA cache.
 - **962 KB of unsplit JS** (plus 161 KB CSS) is tolerable over Tailscale on
   first load and cached after, but route-level code splitting through TanStack
   Router would cut both install and update cost. Worth doing alongside.

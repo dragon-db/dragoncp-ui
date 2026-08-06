@@ -131,8 +131,8 @@ What remains:
   the file or reading it on the host.
 - **Rotated logs are not downloadable.** `/api/logs/download` serves only the
   live file.
-- **The React frontend has no log viewer.** The only caller of these endpoints
-  in the repository is the legacy `static/modules/log-viewer.js`.
+- ~~**The React frontend has no log viewer.**~~ Fixed during the legacy UI
+  retirement. Settings → Diagnostics now calls both authenticated log endpoints.
 
 ---
 
@@ -219,9 +219,8 @@ What remains:
   `start.py` cannot run the test suite.
 - **`tests/` has no `__init__.py`**, so `python -m unittest discover` fails;
   only pytest works.
-- **`start.py`'s frontend build step does nothing.** It prints a message and
-  returns — `./start.sh` never runs `npm install` or `npm run build` despite the
-  step numbering.
+- ~~**`start.py`'s frontend build step does nothing.**~~ Fixed during the React
+  cutover. It now reuses a current build or runs `npm ci` and `npm run build`.
 - **The queue's own test file is untracked.** `test/test_queue_behaviors.py`
   (singular `test/`) is a hand-rolled script outside git, so the most
   concurrency-sensitive subsystem has no tracked coverage.

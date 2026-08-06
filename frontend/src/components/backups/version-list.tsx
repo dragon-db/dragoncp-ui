@@ -126,11 +126,7 @@ export function VersionRow({
           </span>
         )}
         {capture.restored_at && capture.restored_by_name && (
-          <ActorBadge
-            kind={capture.restored_by_kind}
-            name={capture.restored_by_name}
-            size="sm"
-          />
+          <ActorBadge kind={capture.restored_by_kind} name={capture.restored_by_name} size="sm" />
         )}
 
         <div className="ml-auto flex items-center gap-1">

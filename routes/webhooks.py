@@ -304,9 +304,9 @@ def api_webhook_series_receiver():
         record(
                 'notification.received',
                 f"Received a series notification for "
-                f"{parsed_data.get('title') or 'an unknown title'}",
+                f"{parsed_data.get('series_title') or 'an unknown title'}",
                 target_type='notification', target_id=notification_id,
-                target_label=parsed_data.get('title'),
+                target_label=parsed_data.get('series_title'),
                 detail={'media_type': 'series'},
             )
         
@@ -450,10 +450,10 @@ def api_webhook_anime_receiver():
         # automatic sync, would be recorded as coming from nowhere.
         record(
                 'notification.received',
-                f"Received a anime notification for "
-                f"{parsed_data.get('title') or 'an unknown title'}",
+                f"Received an anime notification for "
+                f"{parsed_data.get('series_title') or 'an unknown title'}",
                 target_type='notification', target_id=notification_id,
-                target_label=parsed_data.get('title'),
+                target_label=parsed_data.get('series_title'),
                 detail={'media_type': 'anime'},
             )
         

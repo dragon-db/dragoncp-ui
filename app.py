@@ -11,13 +11,14 @@ import sys
 import time
 from typing import Any, cast
 
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, g
+from flask import Flask, request, jsonify, session, g
 from flask_socketio import SocketIO
 
 from logging_setup import configure_logging, get_log_file_path
+from frontend_serving import serve_frontend
 
 # Import configuration and managers
-from config import DragonCPConfig, APP_VERSION
+from config import DragonCPConfig
 from ssh import SSHManager
 from websocket import (
     register_websocket_handlers,
@@ -25,7 +26,6 @@ from websocket import (
     start_cleanup_thread,
     websocket_connections,
 )
-from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT
 from auth import require_auth, set_account_store, get_auth_config
 import login_guard
 import activity_log
@@ -132,8 +132,10 @@ def _is_simple_websocket_available() -> bool:
 # than a marker list here and a different judgement in each route.
 
 
-# Initialize Flask app
-app = Flask(__name__)
+# Initialize Flask without its implicit `/static` route. The production browser
+# app is the Vite build under frontend/dist; the retired client happened to use
+# a directory named static and must not remain reachable by accident.
+app = Flask(__name__, static_folder=None)
 app.config['SECRET_KEY'] = _early_secret_key
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['LOG_FILE_PATH'] = str(get_log_file_path())
@@ -350,7 +352,7 @@ def after_request(response):
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
 
-    if not request.path.startswith('/static/'):
+    if not request.path.startswith('/assets/'):
         request_started_at = getattr(g, 'request_started_at', None)
         elapsed_ms = -1
         if request_started_at is not None:
@@ -367,20 +369,13 @@ def after_request(response):
     return response
 
 
-# ===== CONTEXT PROCESSORS =====
-
-@app.context_processor
-def inject_app_version():
-    """Inject APP_VERSION into all templates for cache busting"""
-    return {'APP_VERSION': APP_VERSION}
-
-
 # ===== SIMPLE ROUTES (non-blueprint) =====
 
-@app.route('/')
-def index():
-    """Main page"""
-    return render_template('index.html')
+@app.route('/', defaults={'frontend_path': ''})
+@app.route('/<path:frontend_path>')
+def frontend_app(frontend_path):
+    """Serve the built React SPA and fall client-side routes back to index.html."""
+    return serve_frontend(frontend_path)
 
 
 @app.route('/api/config', methods=['GET', 'POST'])
@@ -399,10 +394,9 @@ def api_config():
     read.
     """
     if request.method == 'GET':
-        # The grouped payload for the React page, plus the flat key -> value map
-        # the legacy static UI reads. That UI is still what production serves,
-        # so it keeps working; it simply cannot change the env-backed half any
-        # more, which was already true and merely invisible before.
+        # The grouped payload for the React page, plus the deprecated flat
+        # key -> value compatibility shape. Keeping both during the cutover
+        # allows a browser-only rollback without changing the settings store.
         return jsonify({
             "status": "success",
             **settings_service.flat(),
@@ -565,10 +559,10 @@ def api_ssh_config():
 @require_auth
 def api_env_config():
     """
-    The environment-file half, flat. Read by the legacy static UI's comparison
-    column, which contrasted the file against a per-browser overlay. There is no
-    overlay now, so this is just the env-backed settings — which is what that
-    column was showing all along.
+    Deprecated compatibility endpoint returning the environment-file half.
+
+    The retired UI compared this with a per-browser overlay. There is no overlay
+    now, so this is simply the current env-backed settings.
     """
     return jsonify(settings_service.env_only())
 
@@ -577,7 +571,7 @@ def api_env_config():
 @require_auth
 def api_reset_config():
     """
-    Kept for the legacy static UI, which has a "Reset to Env" button.
+    Deprecated compatibility endpoint for the retired UI's "Reset to Env".
 
     There is nothing left to reset: the per-browser overlay it cleared is gone,
     so environment settings already ARE the environment values. Answering 200
@@ -610,14 +604,6 @@ def _get_runtime_port() -> int:
     return parsed_port
 
 if __name__ == '__main__':
-    # Create templates and static directories if they don't exist
-    # Check TEST_MODE before creating app directories
-    if test_mode_enabled():
-        logger.info('TEST_MODE enabled: skipping template/static directory creation')
-    else:
-        os.makedirs('templates', exist_ok=True)
-        os.makedirs('static', exist_ok=True)
-    
     runtime_port = _get_runtime_port()
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
     test_mode = test_mode_enabled()

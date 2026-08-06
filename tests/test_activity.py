@@ -319,6 +319,42 @@ class QueryTests(ActivityTestCase):
     def test_search_matches_the_summary(self):
         self.assertEqual(len(self.entries(search='Retention')), 1)
 
+    def test_iso_timestamp_filters_match_sqlite_utc_rows(self):
+        with self.db.get_connection() as conn:
+            conn.execute(
+                "UPDATE activity SET occurred_at = '2026-08-04 18:26:29'"
+            )
+            conn.commit()
+
+        self.assertEqual(
+            len(self.entries(since='2026-08-04T00:00:00Z')),
+            4,
+        )
+        self.assertEqual(
+            len(self.entries(until='2026-08-04T23:59:59+00:00')),
+            4,
+        )
+        self.assertEqual(
+            len(self.entries(since='2026-08-05T00:00:00Z')),
+            0,
+        )
+
+    def test_timestamp_filters_convert_offsets_to_utc(self):
+        with self.db.get_connection() as conn:
+            conn.execute(
+                "UPDATE activity SET occurred_at = '2026-08-04 18:26:29'"
+            )
+            conn.commit()
+
+        self.assertEqual(
+            len(self.entries(since='2026-08-04T23:56:00+05:30')),
+            4,
+        )
+
+    def test_invalid_timestamp_filter_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'since must be a valid ISO timestamp'):
+            self.activity.query(since='not-a-timestamp')
+
     def test_one_thing_reads_as_a_story_in_order(self):
         story = self.activity.for_target('backup_capture', 'cap_1')
         self.assertEqual([e['action'] for e in story], ['backup.restore', 'backup.delete'])
