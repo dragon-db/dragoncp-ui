@@ -59,7 +59,7 @@ media.
 | Explore — moving superseded/removed local files into backup before a run | `services/explore/executor.py:87` | Skipped, printed as `TEST_MODE: would move to backup`. **This gate is load-bearing:** the rsync is dry, so moving the local copies anyway would strand them — old copy gone, new one never fetched |
 | Explore transfer rsync | `services/transfer_service.py:838` | `--dry-run` inserted into the same command the real run uses |
 | Config file write | `config.py:124` | Printed; in-memory config still updates |
-| React production build | `start.py:build_frontend` | Unchanged by test mode; writes only under `frontend/dist/`, never a media path |
+| React production build | `start.py:build_frontend` | Unchanged by test mode; writes production assets under `frontend/dist/` and may regenerate `frontend/src/routeTree.gen.ts`; neither location is a media path |
 
 Two paths need no gate because they are never destructive:
 

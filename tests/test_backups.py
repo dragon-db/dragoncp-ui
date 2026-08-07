@@ -18,6 +18,7 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -1182,6 +1183,36 @@ class RestoreTests(BackupsTestCase):
             self.captures.get(capture['capture_id']), plan, ok, 'failed', summary,
         )
         self.assertIsNone(self.captures.get(capture['capture_id'])['restored_at'])
+
+    def test_partial_restore_cannot_report_completed_when_runner_returns_true(self):
+        capture = self.back_up(f"{SHOW} - S01E01 - Old.mkv")
+        plan = self.service.planner.plan(capture['capture_id'])
+
+        class FakeSocketIO:
+            def __init__(self):
+                self.events = []
+
+            def emit(self, event, payload):
+                self.events.append((event, payload))
+
+        socketio = FakeSocketIO()
+        self.service.socketio = socketio
+        summary = {'restored': 1, 'failed': 1, 'captured': 'replacement-capture'}
+
+        with patch.object(self.service, '_apply_retention_quietly') as retention:
+            self.service._finish_restore(
+                'partial_transfer', capture['capture_id'], capture, plan, True,
+                'Restored 1 file; 1 failed', summary,
+            )
+
+        transfer = self.service.transfer_model.get('partial_transfer')
+        self.assertEqual(transfer['status'], 'failed')
+        self.assertTrue(transfer['progress'].startswith('Restore incomplete:'))
+        self.assertIsNone(self.captures.get(capture['capture_id'])['restored_at'])
+        retention.assert_not_called()
+        complete = [payload for event, payload in socketio.events if event == 'transfer_complete']
+        self.assertEqual(complete[0]['status'], 'failed')
+        self.assertTrue(complete[0]['message'].startswith('Restore incomplete:'))
 
     # ---- queueing ----
 

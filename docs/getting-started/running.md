@@ -85,8 +85,9 @@ also missing, it aborts.
 **[5.5/6] Frontend build.** Compares `frontend/dist/index.html` with the package
 files, Vite config, HTML entry point and everything under `frontend/src/`. A
 current build is reused. A missing or stale build runs `npm ci` when
-`node_modules/` is absent, then `npm run build`; startup stops if npm is missing,
-the command fails, times out, or does not produce the index.
+`node_modules/` is absent or its recorded package-lock digest differs, then
+`npm run build`; startup stops if npm is missing, the command fails, times out,
+or does not produce the index.
 
 **[6/6] Start.** Prints the access URL, then runs `python app.py` as a
 subprocess and returns its exit code. Ctrl-C is caught and reported cleanly.

@@ -417,10 +417,16 @@ class BackupsService:
                         plan, ok: bool, message: str, summary: Dict,
                         initiator=None) -> None:
         now = datetime.now().isoformat()
+        completion_succeeded = ok and not summary.get('failed')
+        completion_status = 'completed' if completion_succeeded else 'failed'
+        completion_message = message
+        if ok and not completion_succeeded:
+            completion_message = f"Restore incomplete: {message}"
+
         try:
             self.transfer_model.update(transfer_id, {
-                'status': 'completed' if ok else 'failed',
-                'progress': message,
+                'status': completion_status,
+                'progress': completion_message,
                 'end_time': now,
             })
         except Exception as error:  # noqa: BLE001 - the queue must still be released
@@ -439,7 +445,7 @@ class BackupsService:
         # A partial restore is not recorded as one. Some files went back and
         # some did not, and the honest thing is to leave it looking un-restored
         # so it is obvious the run has to be repeated.
-        if ok and not summary.get('failed'):
+        if completion_succeeded:
             try:
                 # Stamped alongside the timestamp: "who put this back" is
                 # asked while looking at the version history, and restore is
@@ -461,19 +467,19 @@ class BackupsService:
         # the outcome they actually got.
         record(
             'backup.restore',
-            (f"Restored {plan.slot_display} from a backup" if ok and not summary.get('failed')
+            (f"Restored {plan.slot_display} from a backup" if completion_succeeded
              else f"Failed to restore {plan.slot_display} from a backup"),
             target_type='backup_capture', target_id=capture_id,
             target_label=plan.slot_display,
             detail={'files': summary.get('restored'), 'failed': summary.get('failed')},
-            outcome=OUTCOME_OK if ok and not summary.get('failed') else OUTCOME_FAILED,
+            outcome=OUTCOME_OK if completion_succeeded else OUTCOME_FAILED,
             actor=initiator,
         )
 
         self._emit('transfer_complete', {
             'transfer_id': transfer_id,
-            'status': 'completed' if ok else 'failed',
-            'message': message,
+            'status': completion_status,
+            'message': completion_message,
             'folder_name': plan.slot_display,
         })
 
@@ -487,7 +493,7 @@ class BackupsService:
         with self._lock:
             self._restores_running.pop(capture_id, None)
 
-        if ok and summary.get('captured'):
+        if completion_succeeded and summary.get('captured'):
             self._apply_retention_quietly()
 
     def _emit(self, event: str, payload: Dict) -> None:

@@ -126,10 +126,14 @@ def get_auth_config() -> Dict[str, Any]:
         if raw is None or str(raw).strip() == '':
             return default
         try:
-            return int(str(raw).strip())
+            parsed = int(str(raw).strip())
         except (TypeError, ValueError):
             print(f"⚠️  {key}={raw!r} is not a whole number; using {default}")
             return default
+        if parsed < 1:
+            print(f"⚠️  {key}={raw!r} is not a whole number; using {default}")
+            return default
+        return parsed
 
     return {
         'username': env_config.get('DRAGONCP_USERNAME', 'admin'),
@@ -230,18 +234,20 @@ def _check_env_password(password: str) -> bool:
     """Verify a password against the environment file's credentials."""
     config = get_auth_config()
 
-    if config['password_hash']:
-        return check_password_hash(config['password_hash'], password)
+    try:
+        if config['password_hash']:
+            return check_password_hash(config['password_hash'], password)
 
-    if config['password_plain']:
-        # Constant-time comparison so the fallback does not leak the password
-        # one character at a time. Compared as bytes: compare_digest refuses
-        # str containing non-ASCII, so a password with an accent in it raised
-        # TypeError out of the sign-in handler instead of simply not matching.
-        import hmac
-        return hmac.compare_digest(
-            password.encode('utf-8'), config['password_plain'].encode('utf-8')
-        )
+        if config['password_plain']:
+            # Constant-time comparison so the fallback does not leak the password
+            # one character at a time. Compared as bytes: compare_digest refuses
+            # str containing non-ASCII, while malformed Unicode cannot be encoded.
+            import hmac
+            return hmac.compare_digest(
+                password.encode('utf-8'), config['password_plain'].encode('utf-8')
+            )
+    except UnicodeEncodeError:
+        return False
 
     return False
 

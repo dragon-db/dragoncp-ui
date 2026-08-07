@@ -104,6 +104,15 @@ def get_websocket_connection_snapshot():
         }
 
 
+def _pop_connection_if_unchanged(session_id: str, stale_snapshot: dict):
+    """Remove a connection only if it still matches the state that failed a check."""
+    with websocket_connections_lock:
+        current = websocket_connections.get(session_id)
+        if current != stale_snapshot:
+            return None
+        return websocket_connections.pop(session_id)
+
+
 def get_cleanup_thread_status():
     """Return whether the websocket cleanup thread is currently running."""
     with cleanup_thread_lock:
@@ -259,6 +268,7 @@ def register_websocket_handlers(socketio):
             token_version = connection.get('token_version', 0)
             auth_source = connection.get('auth_source', 'env')
             username = connection.get('username', 'unknown')
+            checked_snapshot = connection.copy()
 
         if websocket_identity_still_valid(account_id, token_version, auth_source):
             return
@@ -268,8 +278,8 @@ def register_websocket_handlers(socketio):
             session_id[:8],
             username,
         )
-        with websocket_connections_lock:
-            websocket_connections.pop(session_id, None)
+        if _pop_connection_if_unchanged(session_id, checked_snapshot) is None:
+            return
         _drop_subscriber(session_id)
         disconnect()
 
@@ -343,7 +353,7 @@ def reap_stale_connections(socketio, current_time=None):
         timeout_threshold = current_time - timedelta(seconds=session_timeout)
 
         if connection_info['last_activity'] < timeout_threshold:
-            stale_connections.append(session_id)
+            stale_connections.append((session_id, connection_info))
             continue
 
         if not websocket_identity_still_valid(
@@ -356,15 +366,19 @@ def reap_stale_connections(socketio, current_time=None):
                 session_id[:8],
                 connection_info.get('username', 'unknown'),
             )
-            stale_connections.append(session_id)
+            stale_connections.append((session_id, connection_info))
 
     cleaned = 0
-    for session_id in stale_connections:
-        connection_info = get_websocket_connection_snapshot().get(session_id, {})
+    for session_id, stale_snapshot in stale_connections:
+        connection_info = _pop_connection_if_unchanged(session_id, stale_snapshot)
+        if connection_info is None:
+            continue
         username = connection_info.get('username', 'unknown')
         try:
             socketio.server.disconnect(sid=session_id, namespace='/')
         except Exception:
+            with websocket_connections_lock:
+                websocket_connections.setdefault(session_id, connection_info)
             logger.exception(
                 'Failed to disconnect stale WebSocket connection: sid=%s user=%s',
                 session_id[:8],
@@ -372,8 +386,8 @@ def reap_stale_connections(socketio, current_time=None):
             )
             continue
 
+        _drop_subscriber(session_id)
         with websocket_connections_lock:
-            connection_info = websocket_connections.pop(session_id, connection_info)
             active_connections = len(websocket_connections)
         cleaned += 1
         logger.info(

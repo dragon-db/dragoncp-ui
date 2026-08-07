@@ -34,7 +34,7 @@ frontend in its own container while keeping the backend on the host.
 - Compose file: `docker-compose.yml`
 - Frontend image build: `frontend/Dockerfile`
 - nginx reverse proxy config: `frontend/nginx.conf`
-- Default frontend URL: `http://localhost:5002`
+- Default frontend URL: `http://<server-address>:5002`
 
 ### How the container works
 

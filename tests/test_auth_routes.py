@@ -150,6 +150,20 @@ class AuthRouteTests(unittest.TestCase):
         self.assertTrue(body['is_fallback_account'])
         self.assertIsNone(body['account_id'])
 
+    def test_malformed_unicode_password_reaches_the_normal_unauthenticated_path(self):
+        response = self.login('envadmin', '\ud800')
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.get_json()['code'], 'INVALID_CREDENTIALS')
+
+    def test_malformed_unicode_stored_fallback_password_is_refused(self):
+        malformed_config = dict(TEST_AUTH_CONFIG, password_plain='\ud800')
+        with patch.object(auth, 'get_auth_config', return_value=malformed_config):
+            response = self.login('envadmin', 'ordinary-password')
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.get_json()['code'], 'INVALID_CREDENTIALS')
+
     def test_a_new_account_is_asked_to_choose_its_own_password(self):
         self.make_account('alice')  # must_change_password defaults to True
 

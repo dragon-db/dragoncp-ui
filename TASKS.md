@@ -75,9 +75,18 @@ Notes:
   comments were already satisfied by the branch.
 - 2026-08-06 (verification): 509 backend tests and 2 subtests pass; frontend
   formatting, ESLint, TypeScript and the Vite production build pass.
-- Handoff: implementation is complete. On deployment, build `frontend/dist`,
-  restart the single-worker Gunicorn service, then run the production checklist
-  in the retirement doc before ending the compatibility soak.
+- 2026-08-07 (review follow-up): verified all ten new PR findings against the
+  branch and fixed each one. The behavior fixes cover positive-only auth
+  settings, malformed fallback passwords, partial restore completion,
+  lockfile-aware frontend installs, and refreshed WebSocket identity races;
+  the remaining changes are small deployment, documentation, and UI typing or
+  styling corrections.
+- 2026-08-07 (verification): all 518 backend tests pass; frontend formatting,
+  ESLint, TypeScript and the Vite production build pass.
+- Handoff: the review follow-up is implemented and validated locally. Commit
+  and push it when requested; on deployment, build `frontend/dist`, restart the
+  single-worker Gunicorn service, then run the production checklist in the
+  retirement doc before ending the compatibility soak.
 
 ### TASK-014 — Backup and restore rework
 Status: done (unreleased)      Priority: high

@@ -39,6 +39,7 @@ export interface RuntimeStatusResponse {
 }
 
 export type BackendLogLevel = "ERROR" | "WARNING" | "INFO" | "DEBUG" | "ALL";
+export type BackendLogEntryLevel = "CRITICAL" | Exclude<BackendLogLevel, "ALL">;
 
 export interface BackendLogResponse {
   status: string;
@@ -49,7 +50,7 @@ export interface BackendLogResponse {
   size_bytes?: number;
   last_modified?: string;
   message?: string;
-  lines: Array<{ level: Exclude<BackendLogLevel, "ALL">; text: string }>;
+  lines: Array<{ level: BackendLogEntryLevel; text: string }>;
 }
 
 interface LegacyDebugResponse {

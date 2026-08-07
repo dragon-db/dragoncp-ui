@@ -22,6 +22,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +59,53 @@ TEST_AUTH_CONFIG = {
     'login_window_minutes': 15,
     'login_lockout_minutes': 15,
 }
+
+
+class AuthConfigParsingTests(unittest.TestCase):
+    def read_config(self, values):
+        env = {'JWT_SECRET_KEY': 'test-secret', **values}
+        with patch.object(auth, '_load_env_file', return_value=env), \
+                patch('builtins.print') as warning:
+            return auth.get_auth_config(), warning
+
+    def test_nonpositive_auth_settings_use_their_defaults(self):
+        expected = {
+            'jwt_expiry_hours': 24,
+            'login_max_attempts': 5,
+            'login_window_minutes': 15,
+            'login_lockout_minutes': 15,
+        }
+        keys = {
+            'JWT_EXPIRY_HOURS': 'jwt_expiry_hours',
+            'LOGIN_MAX_ATTEMPTS': 'login_max_attempts',
+            'LOGIN_WINDOW_MINUTES': 'login_window_minutes',
+            'LOGIN_LOCKOUT_MINUTES': 'login_lockout_minutes',
+        }
+
+        for invalid in ('0', '-2'):
+            with self.subTest(value=invalid):
+                config, warning = self.read_config({key: invalid for key in keys})
+                for setting, result_key in keys.items():
+                    self.assertEqual(config[result_key], expected[result_key])
+                    self.assertTrue(any(setting in str(call) for call in warning.call_args_list))
+
+    def test_positive_and_blank_auth_settings_keep_existing_behavior(self):
+        keys = {
+            'JWT_EXPIRY_HOURS': 'jwt_expiry_hours',
+            'LOGIN_MAX_ATTEMPTS': 'login_max_attempts',
+            'LOGIN_WINDOW_MINUTES': 'login_window_minutes',
+            'LOGIN_LOCKOUT_MINUTES': 'login_lockout_minutes',
+        }
+        positive, warning = self.read_config({key: '1' for key in keys})
+        self.assertTrue(all(positive[result_key] == 1 for result_key in keys.values()))
+        warning.assert_not_called()
+
+        blank, warning = self.read_config({key: ' ' for key in keys})
+        self.assertEqual(blank['jwt_expiry_hours'], 24)
+        self.assertEqual(blank['login_max_attempts'], 5)
+        self.assertEqual(blank['login_window_minutes'], 15)
+        self.assertEqual(blank['login_lockout_minutes'], 15)
+        warning.assert_not_called()
 
 
 class AccountTestCase(unittest.TestCase):
@@ -397,6 +445,85 @@ class SessionRevocationTests(AccountTestCase):
         self.assertEqual(websocket.reap_stale_connections(socketio), 1)
         self.assertEqual(socketio.server.disconnected, [('review-sid', '/')])
         self.assertNotIn('review-sid', websocket.websocket_connections)
+
+    def test_reaper_preserves_a_connection_refreshed_during_validation(self):
+        import websocket
+
+        identity = {'username': 'alice', 'account_id': 7, 'token_version': 1, 'source': 'db'}
+
+        class FakeServer:
+            def __init__(self):
+                self.disconnected = []
+
+            def disconnect(self, sid, namespace):
+                self.disconnected.append((sid, namespace))
+
+        class FakeSocketIO:
+            server = FakeServer()
+
+        with websocket.websocket_connections_lock:
+            websocket.websocket_connections['refresh-sid'] = {
+                'connected_at': datetime.now(),
+                'last_activity': datetime.now(),
+                'timeout_seconds': websocket.WEBSOCKET_TIMEOUT_DEFAULT,
+                'username': identity['username'],
+                'account_id': identity['account_id'],
+                'token_version': identity['token_version'],
+                'auth_source': identity['source'],
+            }
+        self.addCleanup(websocket.websocket_connections.clear)
+
+        def refresh_identity(*_args):
+            with websocket.websocket_connections_lock:
+                websocket.websocket_connections['refresh-sid']['token_version'] = 2
+            return False
+
+        socketio = FakeSocketIO()
+        with patch.object(websocket, 'websocket_identity_still_valid', refresh_identity):
+            self.assertEqual(websocket.reap_stale_connections(socketio), 0)
+
+        self.assertEqual(socketio.server.disconnected, [])
+        self.assertEqual(websocket.websocket_connections['refresh-sid']['token_version'], 2)
+
+    def test_activity_check_preserves_a_connection_refreshed_during_validation(self):
+        import websocket
+
+        class FakeSocketIO:
+            def __init__(self):
+                self.handlers = {}
+
+            def on(self, event):
+                def register(handler):
+                    self.handlers[event] = handler
+                    return handler
+                return register
+
+        socketio = FakeSocketIO()
+        websocket.register_websocket_handlers(socketio)
+        with websocket.websocket_connections_lock:
+            websocket.websocket_connections['activity-sid'] = {
+                'connected_at': datetime.now(),
+                'last_activity': datetime.now(),
+                'timeout_seconds': websocket.WEBSOCKET_TIMEOUT_DEFAULT,
+                'username': 'alice',
+                'account_id': 7,
+                'token_version': 1,
+                'auth_source': 'db',
+            }
+        self.addCleanup(websocket.websocket_connections.clear)
+
+        def refresh_identity(*_args):
+            with websocket.websocket_connections_lock:
+                websocket.websocket_connections['activity-sid']['token_version'] = 2
+            return False
+
+        with patch.object(websocket, 'request', SimpleNamespace(sid='activity-sid')), \
+                patch.object(websocket, 'websocket_identity_still_valid', refresh_identity), \
+                patch.object(websocket, 'disconnect') as disconnect_socket:
+            socketio.handlers['activity']()
+
+        disconnect_socket.assert_not_called()
+        self.assertEqual(websocket.websocket_connections['activity-sid']['token_version'], 2)
 
 
 class LoginGuardTests(unittest.TestCase):
