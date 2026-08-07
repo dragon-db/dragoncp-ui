@@ -104,11 +104,20 @@ def get_websocket_connection_snapshot():
         }
 
 
-def _pop_connection_if_unchanged(session_id: str, stale_snapshot: dict):
-    """Remove a connection only if it still matches the state that failed a check."""
+def _pop_connection_if_unchanged(session_id: str, stale_snapshot: dict,
+                                 *, identity_only: bool = False):
+    """Remove a connection if the relevant checked state has not changed."""
     with websocket_connections_lock:
         current = websocket_connections.get(session_id)
-        if current != stale_snapshot:
+        if identity_only:
+            identity_fields = ('account_id', 'token_version', 'auth_source')
+            unchanged = current is not None and all(
+                current.get(field) == stale_snapshot.get(field)
+                for field in identity_fields
+            )
+        else:
+            unchanged = current == stale_snapshot
+        if not unchanged:
             return None
         return websocket_connections.pop(session_id)
 
@@ -278,7 +287,9 @@ def register_websocket_handlers(socketio):
             session_id[:8],
             username,
         )
-        if _pop_connection_if_unchanged(session_id, checked_snapshot) is None:
+        if _pop_connection_if_unchanged(
+            session_id, checked_snapshot, identity_only=True,
+        ) is None:
             return
         _drop_subscriber(session_id)
         disconnect()
@@ -353,7 +364,7 @@ def reap_stale_connections(socketio, current_time=None):
         timeout_threshold = current_time - timedelta(seconds=session_timeout)
 
         if connection_info['last_activity'] < timeout_threshold:
-            stale_connections.append((session_id, connection_info))
+            stale_connections.append((session_id, connection_info, False))
             continue
 
         if not websocket_identity_still_valid(
@@ -366,11 +377,13 @@ def reap_stale_connections(socketio, current_time=None):
                 session_id[:8],
                 connection_info.get('username', 'unknown'),
             )
-            stale_connections.append((session_id, connection_info))
+            stale_connections.append((session_id, connection_info, True))
 
     cleaned = 0
-    for session_id, stale_snapshot in stale_connections:
-        connection_info = _pop_connection_if_unchanged(session_id, stale_snapshot)
+    for session_id, stale_snapshot, identity_only in stale_connections:
+        connection_info = _pop_connection_if_unchanged(
+            session_id, stale_snapshot, identity_only=identity_only,
+        )
         if connection_info is None:
             continue
         username = connection_info.get('username', 'unknown')

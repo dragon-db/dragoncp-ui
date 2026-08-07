@@ -485,6 +485,60 @@ class SessionRevocationTests(AccountTestCase):
         self.assertEqual(socketio.server.disconnected, [])
         self.assertEqual(websocket.websocket_connections['refresh-sid']['token_version'], 2)
 
+    def test_reaper_removes_revoked_connection_after_concurrent_activity(self):
+        import websocket
+
+        class FakeServer:
+            def __init__(self):
+                self.disconnected = []
+
+            def disconnect(self, sid, namespace):
+                self.disconnected.append((sid, namespace))
+
+        class FakeSocketIO:
+            def __init__(self):
+                self.handlers = {}
+                self.server = FakeServer()
+
+            def on(self, event):
+                def register(handler):
+                    self.handlers[event] = handler
+                    return handler
+                return register
+
+        socketio = FakeSocketIO()
+        websocket.register_websocket_handlers(socketio)
+        with websocket.websocket_connections_lock:
+            websocket.websocket_connections['ping-sid'] = {
+                'connected_at': datetime.now(),
+                'last_activity': datetime(2026, 1, 1, 0, 9),
+                'last_auth_check': datetime.now(),
+                'timeout_seconds': websocket.WEBSOCKET_TIMEOUT_DEFAULT,
+                'username': 'alice',
+                'account_id': 7,
+                'token_version': 1,
+                'auth_source': 'db',
+            }
+        self.addCleanup(websocket.websocket_connections.clear)
+
+        def fail_after_activity(*_args):
+            socketio.handlers['activity']()
+            return False
+
+        with patch.object(websocket, 'request', SimpleNamespace(sid='ping-sid')), \
+                patch.object(
+                    websocket, 'websocket_identity_still_valid', fail_after_activity,
+                ):
+            self.assertEqual(
+                websocket.reap_stale_connections(
+                    socketio, current_time=datetime(2026, 1, 1, 0, 10),
+                ),
+                1,
+            )
+
+        self.assertEqual(socketio.server.disconnected, [('ping-sid', '/')])
+        self.assertNotIn('ping-sid', websocket.websocket_connections)
+
     def test_activity_check_preserves_a_connection_refreshed_during_validation(self):
         import websocket
 

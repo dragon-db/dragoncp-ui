@@ -83,10 +83,15 @@ Notes:
   styling corrections.
 - 2026-08-07 (verification): all 518 backend tests pass; frontend formatting,
   ESLint, TypeScript and the Vite production build pass.
-- Handoff: the review follow-up is implemented and validated locally. Commit
-  and push it when requested; on deployment, build `frontend/dist`, restart the
-  single-worker Gunicorn service, then run the production checklist in the
-  retirement doc before ending the compatibility soak.
+- 2026-08-07 (WebSocket follow-up): revocation cleanup now compares only the
+  account identity fields, so an activity ping cannot keep a revoked socket
+  alive. Idle-timeout cleanup still compares the full connection snapshot, and
+  the full 519-test backend suite passes.
+- Handoff: the latest WebSocket review follow-up is implemented and validated
+  locally. Commit and push it when requested; on deployment, build
+  `frontend/dist`, restart the single-worker Gunicorn service, then run the
+  production checklist in the retirement doc before ending the compatibility
+  soak.
 
 ### TASK-014 — Backup and restore rework
 Status: done (unreleased)      Priority: high
