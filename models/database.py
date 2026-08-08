@@ -431,8 +431,102 @@ class DatabaseManager:
                 )
             ''')
 
+            # ==========================================
+            # Table: admin_account — who is allowed to sign in
+            # ==========================================
+            # Accounts are created and maintained from the server with
+            # scripts/manage_admins.py; there is no account-management UI. Rows
+            # are never deleted, because the activity trail refers back to them:
+            # a departed admin is disabled and keeps their history.
+            #
+            # `id` is the stable identity. Usernames can be renamed, so anything
+            # recording who did something stores this id alongside the name it
+            # displayed at the time.
+            #
+            # `token_version` is what makes a disable or a password change take
+            # effect immediately. Sign-in tokens carry the value they were minted
+            # with, every request compares it against the row, and bumping it
+            # here retires every token already issued for that account.
+            #
+            # `role` is reserved. Everyone is 'admin' today and nothing reads it;
+            # it exists so a narrower role can arrive later without migrating
+            # every account.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS admin_account (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'admin',
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    token_version INTEGER NOT NULL DEFAULT 1,
+                    must_change_password INTEGER NOT NULL DEFAULT 0,
+                    last_login_at DATETIME,
+                    password_changed_at DATETIME,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # ==========================================
+            # Table: activity — who did what, and when
+            # ==========================================
+            # The record of every consequential action, whoever took it. Reads
+            # are not recorded: browsing the library is not something anyone
+            # needs held to account, and recording it would bury the actions
+            # that matter.
+            #
+            # The actor is stored three ways on purpose. `actor_account_id` is
+            # the stable identity that survives a rename; `actor_name` is the
+            # name as it read at the time, so old entries keep saying what they
+            # said; `actor_kind` separates a person from automation without
+            # having to recognise names.
+            #
+            # `summary` is a finished sentence written at the call site, because
+            # the code doing the work is the only place that knows what it did.
+            # Rendering one later from ids would mean re-deriving facts that may
+            # no longer exist — a restored capture that has since been pruned
+            # still needs to read correctly.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS activity (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    occurred_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    actor_kind TEXT NOT NULL,
+                    actor_name TEXT NOT NULL,
+                    actor_account_id INTEGER,
+                    action TEXT NOT NULL,
+                    target_type TEXT,
+                    target_id TEXT,
+                    target_label TEXT,
+                    summary TEXT NOT NULL,
+                    detail TEXT,
+                    outcome TEXT NOT NULL DEFAULT 'ok',
+                    request_ip TEXT
+                )
+            ''')
+
+            # Who started a run. Stamped on the row as well as recorded in the
+            # activity trail, because "who started this" is asked while looking
+            # at the transfer itself, and a join per row to answer it would be
+            # the wrong shape for a list that pages.
+            self._ensure_column(conn, 'transfers', 'started_by_kind', "TEXT")
+            self._ensure_column(conn, 'transfers', 'started_by_name', "TEXT")
+            self._ensure_column(conn, 'transfers', 'started_by_account_id', "INTEGER")
+
+            # Who put a version back. Restore is the most consequential thing
+            # the backups screen can do — it replaces what is in the library —
+            # so the answer belongs next to the capture, not only in the trail.
+            self._ensure_column(conn, 'backup_capture', 'restored_by_kind', "TEXT")
+            self._ensure_column(conn, 'backup_capture', 'restored_by_name', "TEXT")
+            self._ensure_column(conn, 'backup_capture', 'restored_by_account_id', "INTEGER")
+
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_occurred ON activity(occurred_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_actor ON activity(actor_account_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_action ON activity(action)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_target ON activity(target_type, target_id)')
+
             conn.execute('CREATE INDEX IF NOT EXISTS idx_transfer_file_transfer ON transfer_file(transfer_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_explore_plan_expiry ON explore_plan(expires_at)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_admin_account_active ON admin_account(is_active)')
 
             conn.commit()
         

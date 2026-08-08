@@ -46,6 +46,10 @@ export interface Capture {
   status: "present" | "files_removed";
   /** When this version was last put back into the library, if it ever was. */
   restored_at: string | null;
+  /** Who put it back. Absent for a restore that predates attribution. */
+  restored_by_kind?: "admin" | "automated" | "system" | null;
+  restored_by_name?: string | null;
+  restored_by_account_id?: number | null;
   /** Present on the detail endpoints only. */
   files?: CaptureFile[];
   slot_keys?: string[];

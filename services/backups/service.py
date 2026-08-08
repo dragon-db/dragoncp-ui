@@ -25,6 +25,8 @@ from .migrate import LegacyMigration
 from .restore import RestorePlanner, RestoreRunner
 from .retention import RetentionPolicy
 from .sorter import BackupSorter, SortedCapture, SortResult
+from activity_log import OUTCOME_FAILED, OUTCOME_OK, record
+from actor import AUTO_RETENTION, acting_as, current_actor
 
 #: What counts as "still using the disk". Mirrors the transfer model's own
 #: definition; stated here so the guard does not depend on a helper's name
@@ -319,9 +321,15 @@ class BackupsService:
                 return False, message, plan.as_dict()
             self._restores_running[capture_id] = transfer_id
 
+        # Read here, not in the worker. `restore()` runs inside the request
+        # that asked for it, and the thread below has neither that request nor
+        # a declaration — so resolving the actor there would attribute every
+        # restore to `system` and lose the person who actually did it.
+        initiator = current_actor()
+
         threading.Thread(
             target=self._run_restore,
-            args=(transfer_id, capture_id, capture, plan),
+            args=(transfer_id, capture_id, capture, plan, initiator),
             daemon=True,
         ).start()
 
@@ -367,7 +375,7 @@ class BackupsService:
         return True, 'reserved', transfer_id
 
     def _run_restore(self, transfer_id: str, capture_id: str,
-                     capture: Dict, plan) -> None:
+                     capture: Dict, plan, initiator=None) -> None:
         def log(message: str) -> None:
             try:
                 self.transfer_model.add_log(transfer_id, message)
@@ -402,15 +410,23 @@ class BackupsService:
         finally:
             self._finish_restore(
                 transfer_id, capture_id, capture, plan, ok, message, summary,
+                initiator,
             )
 
     def _finish_restore(self, transfer_id: str, capture_id: str, capture: Dict,
-                        plan, ok: bool, message: str, summary: Dict) -> None:
+                        plan, ok: bool, message: str, summary: Dict,
+                        initiator=None) -> None:
         now = datetime.now().isoformat()
+        completion_succeeded = ok and not summary.get('failed')
+        completion_status = 'completed' if completion_succeeded else 'failed'
+        completion_message = message
+        if ok and not completion_succeeded:
+            completion_message = f"Restore incomplete: {message}"
+
         try:
             self.transfer_model.update(transfer_id, {
-                'status': 'completed' if ok else 'failed',
-                'progress': message,
+                'status': completion_status,
+                'progress': completion_message,
                 'end_time': now,
             })
         except Exception as error:  # noqa: BLE001 - the queue must still be released
@@ -429,17 +445,41 @@ class BackupsService:
         # A partial restore is not recorded as one. Some files went back and
         # some did not, and the honest thing is to leave it looking un-restored
         # so it is obvious the run has to be repeated.
-        if ok and not summary.get('failed'):
+        if completion_succeeded:
             try:
-                self.captures.update(capture_id, {'restored_at': now})
+                # Stamped alongside the timestamp: "who put this back" is
+                # asked while looking at the version history, and restore is
+                # the one action here that overwrites the live library.
+                restorer = initiator or current_actor()
+                self.captures.update(capture_id, {
+                    'restored_at': now,
+                    'restored_by_kind': restorer.kind,
+                    'restored_by_name': restorer.name,
+                    'restored_by_account_id': restorer.account_id,
+                })
             except Exception as error:  # noqa: BLE001 - the restore itself succeeded
                 print(f"⚠️  Restore of {capture_id} succeeded but the restore time "
                       f"could not be recorded: {error}")
 
+        # Recorded here rather than when the request was accepted: a restore is
+        # asynchronous, so at acceptance nothing has been restored yet and the
+        # run may still fail. The entry names the person who asked for it and
+        # the outcome they actually got.
+        record(
+            'backup.restore',
+            (f"Restored {plan.slot_display} from a backup" if completion_succeeded
+             else f"Failed to restore {plan.slot_display} from a backup"),
+            target_type='backup_capture', target_id=capture_id,
+            target_label=plan.slot_display,
+            detail={'files': summary.get('restored'), 'failed': summary.get('failed')},
+            outcome=OUTCOME_OK if completion_succeeded else OUTCOME_FAILED,
+            actor=initiator,
+        )
+
         self._emit('transfer_complete', {
             'transfer_id': transfer_id,
-            'status': 'completed' if ok else 'failed',
-            'message': message,
+            'status': completion_status,
+            'message': completion_message,
             'folder_name': plan.slot_display,
         })
 
@@ -453,7 +493,7 @@ class BackupsService:
         with self._lock:
             self._restores_running.pop(capture_id, None)
 
-        if ok and summary.get('captured'):
+        if completion_succeeded and summary.get('captured'):
             self._apply_retention_quietly()
 
     def _emit(self, event: str, payload: Dict) -> None:
@@ -662,7 +702,14 @@ class BackupsService:
         return self.retention.save(keep=keep, grace_hours=grace_hours, enabled=enabled)
 
     def _apply_retention_quietly(self) -> None:
-        """Run retention after a capture is added, reporting to the log only."""
+        """
+        Run retention after a capture is added, reporting to the log only.
+
+        This deletes backups without anyone asking it to, which is exactly
+        the kind of thing that later reads as "who deleted my backup?".
+        It runs on the transfer pipeline's thread, so it names itself
+        rather than inheriting whoever happened to start the sync.
+        """
         if not self.retention.enabled():
             return
         try:
@@ -672,6 +719,16 @@ class BackupsService:
             return
         if result.deleted:
             reclaimed_gb = result.reclaimed / 1e9
+            with acting_as(AUTO_RETENTION):
+                record(
+                    'backup.retention_apply',
+                    f"Retention removed {len(result.deleted)} old backup version(s), "
+                    f"reclaiming {result.reclaimed / 1e9:.2f} GB",
+                    target_type='backup_capture',
+                    detail={'deleted_count': len(result.deleted),
+                            'reclaimed_bytes': result.reclaimed,
+                            'automatic': True},
+                )
             print(
                 f"🧹 Backup retention removed {len(result.deleted)} old version(s), "
                 f"reclaiming {reclaimed_gb:.2f} GB"

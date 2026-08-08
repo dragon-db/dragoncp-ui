@@ -11,8 +11,8 @@ import threading
 from datetime import datetime, timedelta
 from typing import Any
 from flask import request, session
-from flask_socketio import join_room, leave_room
-from auth import validate_websocket_token
+from flask_socketio import join_room, leave_room, disconnect
+from auth import validate_websocket_token, websocket_identity_still_valid
 from env_flags import env_flag
 
 
@@ -20,6 +20,17 @@ from env_flags import env_flag
 WEBSOCKET_TIMEOUT_MIN = 5 * 60    # 5 minutes minimum
 WEBSOCKET_TIMEOUT_MAX = 65 * 60   # 65 minutes maximum (5 minutes longer than max client timeout)
 WEBSOCKET_TIMEOUT_DEFAULT = 35 * 60  # 35 minutes default
+
+# How often a live connection's account is re-checked while it keeps pinging.
+# Small enough that a disabled administrator loses their updates promptly,
+# large enough that a frequent ping does not turn into a read per ping.
+AUTH_RECHECK_SECONDS = 60
+
+# Account changes are made by a separate CLI process, so the web process cannot
+# be called directly at the mutation boundary. Sweep the handful of live admin
+# sockets frequently instead; with 1-3 operators this is well below one SQLite
+# read per second and gives revocation a small, deterministic upper bound.
+AUTH_SWEEP_SECONDS = 5
 
 
 # WebSocket connection tracking
@@ -93,6 +104,24 @@ def get_websocket_connection_snapshot():
         }
 
 
+def _pop_connection_if_unchanged(session_id: str, stale_snapshot: dict,
+                                 *, identity_only: bool = False):
+    """Remove a connection if the relevant checked state has not changed."""
+    with websocket_connections_lock:
+        current = websocket_connections.get(session_id)
+        if identity_only:
+            identity_fields = ('account_id', 'token_version', 'auth_source')
+            unchanged = current is not None and all(
+                current.get(field) == stale_snapshot.get(field)
+                for field in identity_fields
+            )
+        else:
+            unchanged = current == stale_snapshot
+        if not unchanged:
+            return None
+        return websocket_connections.pop(session_id)
+
+
 def get_cleanup_thread_status():
     """Return whether the websocket cleanup thread is currently running."""
     with cleanup_thread_lock:
@@ -158,9 +187,9 @@ def register_websocket_handlers(socketio):
                 transport,
             )
             return False
-        username = validate_websocket_token(auth_data)
-        
-        if not username:
+        identity = validate_websocket_token(auth_data)
+
+        if not identity:
             logger.warning(
                 'WebSocket connection rejected: sid=%s transport=%s reason=invalid-or-missing-token',
                 session_id[:8],
@@ -168,14 +197,23 @@ def register_websocket_handlers(socketio):
             )
             # Reject the connection
             return False
-        
-        # Store connection with authenticated user info
+
+        username = identity['username']
+
+        # Store connection with authenticated user info. The account id and
+        # token version come along so the cleanup thread can tell whether this
+        # connection is still backed by a live account - a socket authenticates
+        # once at handshake, and without this a disabled admin would keep
+        # receiving updates until they happened to disconnect.
         with websocket_connections_lock:
             websocket_connections[session_id] = {
                 'connected_at': datetime.now(),
                 'last_activity': datetime.now(),
                 'timeout_seconds': get_websocket_timeout_for_session(session),
                 'username': username,
+                'account_id': identity.get('account_id'),
+                'token_version': identity.get('token_version', 0),
+                'auth_source': identity.get('source', 'env'),
                 'transport': transport,
                 'origin': request.headers.get('Origin', ''),
             }
@@ -213,11 +251,48 @@ def register_websocket_handlers(socketio):
 
     @socketio.on('activity')
     def handle_activity():
-        """Handle client activity ping"""
+        """
+        Handle client activity ping, and take the chance to re-check the account.
+
+        A connection authenticates once at handshake. Re-checking here provides
+        another prompt check between independent cleanup sweeps. The activity
+        path is throttled because this ping is frequent and the account row is
+        read fresh each time.
+        """
         session_id = str(getattr(request, 'sid', ''))
+        now = datetime.now()
+
         with websocket_connections_lock:
-            if session_id in websocket_connections:
-                websocket_connections[session_id]['last_activity'] = datetime.now()
+            connection = websocket_connections.get(session_id)
+            if connection is None:
+                return
+            connection['last_activity'] = now
+
+            last_check = connection.get('last_auth_check')
+            if last_check is not None and (now - last_check).total_seconds() < AUTH_RECHECK_SECONDS:
+                return
+
+            connection['last_auth_check'] = now
+            account_id = connection.get('account_id')
+            token_version = connection.get('token_version', 0)
+            auth_source = connection.get('auth_source', 'env')
+            username = connection.get('username', 'unknown')
+            checked_snapshot = connection.copy()
+
+        if websocket_identity_still_valid(account_id, token_version, auth_source):
+            return
+
+        logger.info(
+            'WebSocket dropped, account no longer valid: sid=%s user=%s',
+            session_id[:8],
+            username,
+        )
+        if _pop_connection_if_unchanged(
+            session_id, checked_snapshot, identity_only=True,
+        ) is None:
+            return
+        _drop_subscriber(session_id)
+        disconnect()
 
     @socketio.on('transfer_logs_subscribe')
     def handle_transfer_logs_subscribe(data):
@@ -260,13 +335,18 @@ def register_websocket_handlers(socketio):
         if not data or not isinstance(data, dict):
             return {'success': False, 'message': 'Invalid auth data'}
         
-        username = validate_websocket_token(data)
-        
-        if username:
+        identity = validate_websocket_token(data)
+
+        if identity:
+            username = identity['username']
             with websocket_connections_lock:
                 if session_id in websocket_connections:
-                    websocket_connections[session_id]['username'] = username
-                    websocket_connections[session_id]['last_activity'] = datetime.now()
+                    connection = websocket_connections[session_id]
+                    connection['username'] = username
+                    connection['account_id'] = identity.get('account_id')
+                    connection['token_version'] = identity.get('token_version', 0)
+                    connection['auth_source'] = identity.get('source', 'env')
+                    connection['last_activity'] = datetime.now()
             logger.info('WebSocket re-authenticated: sid=%s user=%s', session_id[:8], username)
             return {'success': True, 'user': username}
         else:
@@ -274,52 +354,76 @@ def register_websocket_handlers(socketio):
             return {'success': False, 'message': 'Invalid token'}
 
 
+def reap_stale_connections(socketio, current_time=None):
+    """Disconnect idle sockets and sockets whose account is no longer valid."""
+    current_time = current_time or datetime.now()
+    stale_connections = []
+
+    for session_id, connection_info in get_websocket_connection_snapshot().items():
+        session_timeout = connection_info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT)
+        timeout_threshold = current_time - timedelta(seconds=session_timeout)
+
+        if connection_info['last_activity'] < timeout_threshold:
+            stale_connections.append((session_id, connection_info, False))
+            continue
+
+        if not websocket_identity_still_valid(
+            connection_info.get('account_id'),
+            connection_info.get('token_version', 0),
+            connection_info.get('auth_source', 'env'),
+        ):
+            logger.info(
+                'Closing WebSocket for revoked account: sid=%s user=%s',
+                session_id[:8],
+                connection_info.get('username', 'unknown'),
+            )
+            stale_connections.append((session_id, connection_info, True))
+
+    cleaned = 0
+    for session_id, stale_snapshot, identity_only in stale_connections:
+        connection_info = _pop_connection_if_unchanged(
+            session_id, stale_snapshot, identity_only=identity_only,
+        )
+        if connection_info is None:
+            continue
+        username = connection_info.get('username', 'unknown')
+        try:
+            socketio.server.disconnect(sid=session_id, namespace='/')
+        except Exception:
+            with websocket_connections_lock:
+                websocket_connections.setdefault(session_id, connection_info)
+            logger.exception(
+                'Failed to disconnect stale WebSocket connection: sid=%s user=%s',
+                session_id[:8],
+                username,
+            )
+            continue
+
+        _drop_subscriber(session_id)
+        with websocket_connections_lock:
+            active_connections = len(websocket_connections)
+        cleaned += 1
+        logger.info(
+            'Cleaning stale WebSocket connection: sid=%s user=%s active_connections=%s',
+            session_id[:8],
+            connection_info.get('username', username),
+            active_connections,
+        )
+
+    if cleaned:
+        logger.info('Cleaned up %s stale WebSocket connection(s)', cleaned)
+    return cleaned
+
+
 def cleanup_stale_connections(socketio):
-    """Cleanup stale WebSocket connections"""
+    """Continuously enforce socket idle timeouts and account revocation."""
     while True:
         try:
-            current_time = datetime.now()
-            
-            stale_connections = []
-            for session_id, connection_info in get_websocket_connection_snapshot().items():
-                # Get timeout for this specific session (stored when connection was made)
-                session_timeout = connection_info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT)
-                timeout_threshold = current_time - timedelta(seconds=session_timeout)
-                
-                if connection_info['last_activity'] < timeout_threshold:
-                    stale_connections.append(session_id)
-            
-            for session_id in stale_connections:
-                connection_info = get_websocket_connection_snapshot().get(session_id, {})
-                username = connection_info.get('username', 'unknown')
-                try:
-                    socketio.server.disconnect(sid=session_id, namespace='/')
-                except Exception:
-                    logger.exception(
-                        'Failed to disconnect stale WebSocket connection: sid=%s user=%s',
-                        session_id[:8],
-                        username,
-                    )
-                    continue
+            reap_stale_connections(socketio)
+        except Exception as error:  # noqa: BLE001 - the reaper must stay alive
+            logger.exception('Error in cleanup_stale_connections: %s', error)
 
-                with websocket_connections_lock:
-                    connection_info = websocket_connections.pop(session_id, connection_info)
-                    active_connections = len(websocket_connections)
-                logger.info(
-                    'Cleaning stale WebSocket connection: sid=%s user=%s active_connections=%s',
-                    session_id[:8],
-                    connection_info.get('username', username),
-                    active_connections,
-                )
-            
-            if stale_connections:
-                logger.info('Cleaned up %s stale WebSocket connection(s)', len(stale_connections))
-                
-        except Exception as e:
-            logger.exception('Error in cleanup_stale_connections: %s', e)
-        
-        # Sleep for 5 minutes before next cleanup
-        time.sleep(5 * 60)
+        time.sleep(AUTH_SWEEP_SECONDS)
 
 
 def start_cleanup_thread(socketio):

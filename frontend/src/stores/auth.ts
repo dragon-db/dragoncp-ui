@@ -1,15 +1,45 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+export interface SessionIdentity {
+  token: string;
+  refreshToken: string;
+  user: string;
+  expiresAt: string;
+  accountId?: number | null;
+  role?: string;
+  mustChangePassword?: boolean;
+  isFallbackAccount?: boolean;
+}
+
 interface AuthState {
   token: string | null;
   refreshToken: string | null;
   user: string | null;
   isAuthenticated: boolean;
   expiresAt: string | null;
-  login: (token: string, refreshToken: string, user: string, expiresAt: string) => void;
+  /**
+   * The account's stable id. Usernames can be renamed, so anything that needs
+   * to refer to a person across a rename refers to this instead.
+   */
+  accountId: number | null;
+  role: string | null;
+  /**
+   * Set when the password was chosen by whoever created the account rather than
+   * by the person using it. The app holds them at the change-password screen
+   * until they pick their own.
+   */
+  mustChangePassword: boolean;
+  /**
+   * Signed in with the credentials from the server's environment file, because
+   * no real account exists yet. Such a session cannot change its own password.
+   */
+  isFallbackAccount: boolean;
+  login: (identity: SessionIdentity) => void;
   logout: () => void;
   updateToken: (token: string, expiresAt: string) => void;
+  updateSession: (identity: SessionIdentity) => void;
+  setMustChangePassword: (value: boolean) => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -20,14 +50,22 @@ export const useAuthStore = create<AuthState>()(
       user: null,
       isAuthenticated: false,
       expiresAt: null,
+      accountId: null,
+      role: null,
+      mustChangePassword: false,
+      isFallbackAccount: false,
 
-      login: (token, refreshToken, user, expiresAt) =>
+      login: (identity) =>
         set({
-          token,
-          refreshToken,
-          user,
+          token: identity.token,
+          refreshToken: identity.refreshToken,
+          user: identity.user,
           isAuthenticated: true,
-          expiresAt,
+          expiresAt: identity.expiresAt,
+          accountId: identity.accountId ?? null,
+          role: identity.role ?? null,
+          mustChangePassword: identity.mustChangePassword ?? false,
+          isFallbackAccount: identity.isFallbackAccount ?? false,
         }),
 
       logout: () =>
@@ -37,6 +75,10 @@ export const useAuthStore = create<AuthState>()(
           user: null,
           isAuthenticated: false,
           expiresAt: null,
+          accountId: null,
+          role: null,
+          mustChangePassword: false,
+          isFallbackAccount: false,
         }),
 
       updateToken: (token, expiresAt) =>
@@ -44,6 +86,23 @@ export const useAuthStore = create<AuthState>()(
           token,
           expiresAt,
         }),
+
+      // Changing a password retires every token the account had, including the
+      // one in this browser, so the server hands back a fresh pair to adopt.
+      updateSession: (identity) =>
+        set({
+          token: identity.token,
+          refreshToken: identity.refreshToken,
+          user: identity.user,
+          isAuthenticated: true,
+          expiresAt: identity.expiresAt,
+          accountId: identity.accountId ?? null,
+          role: identity.role ?? null,
+          mustChangePassword: identity.mustChangePassword ?? false,
+          isFallbackAccount: identity.isFallbackAccount ?? false,
+        }),
+
+      setMustChangePassword: (value) => set({ mustChangePassword: value }),
     }),
     {
       name: "dragoncp-auth",
@@ -53,6 +112,10 @@ export const useAuthStore = create<AuthState>()(
         user: state.user,
         isAuthenticated: state.isAuthenticated,
         expiresAt: state.expiresAt,
+        accountId: state.accountId,
+        role: state.role,
+        mustChangePassword: state.mustChangePassword,
+        isFallbackAccount: state.isFallbackAccount,
       }),
     }
   )

@@ -25,12 +25,24 @@ from flask import Flask
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+import auth
 import routes.backups as backup_routes
 from models.backup_capture import BackupCapture
 from models.database import DatabaseManager
 from models.settings import AppSettings
 from services.backups.service import BackupsService
 from services.settings_service import SettingsService
+
+#: One signed-in administrator, as require_auth sees them.
+SIGNED_IN_PAYLOAD = {'sub': 'tester', 'uid': 1, 'tv': 1, 'src': 'db', 'type': 'access'}
+SIGNED_IN_IDENTITY = {
+    'account_id': 1,
+    'username': 'tester',
+    'role': 'admin',
+    'token_version': 1,
+    'must_change_password': False,
+    'source': 'db',
+}
 
 SHOW = 'Example Show (2024)'
 
@@ -115,12 +127,20 @@ class BackupRouteTests(unittest.TestCase):
         app.register_blueprint(backup_routes.backups_bp, url_prefix='/api')
         self.client = app.test_client()
 
+        # A valid token is no longer enough on its own: the account behind it is
+        # looked up on every request, so the identity has to be stubbed too.
         patcher_token = patch('auth.get_token_from_request', return_value='token')
-        patcher_valid = patch('auth.validate_token', return_value={'sub': 'tester'})
+        patcher_valid = patch('auth.validate_token', return_value=SIGNED_IN_PAYLOAD)
+        patcher_identity = patch(
+            'auth.resolve_identity',
+            return_value=(SIGNED_IN_IDENTITY, auth.REASON_OK),
+        )
         self.addCleanup(patcher_token.stop)
         self.addCleanup(patcher_valid.stop)
+        self.addCleanup(patcher_identity.stop)
         self.token = patcher_token.start()
         patcher_valid.start()
+        patcher_identity.start()
 
     # ---- fixtures ----
 
@@ -478,7 +498,7 @@ class BackupRouteTests(unittest.TestCase):
     # ---- the legacy surface ----
 
     def test_the_old_endpoints_still_list_and_restore(self):
-        """The legacy static UI is still what production serves."""
+        """The deprecated routes remain usable during the cutover soak."""
         capture = self.displace(f"{SHOW} - S01E01 - Old.mkv")
 
         listing = self.client.get('/api/backups').get_json()

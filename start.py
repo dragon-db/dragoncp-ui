@@ -7,7 +7,7 @@ This script handles PYTHON-LEVEL setup:
   - Requirements.txt validation and installation
   - Environment file setup
   - Directory creation
-  - Frontend build (placeholder)
+  - React frontend build
   - Backend application startup
 
 For system-level checks (Python, rsync), see start.sh
@@ -19,6 +19,7 @@ import sys
 import shutil
 import subprocess
 import re
+import hashlib
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Set
 
@@ -32,7 +33,7 @@ VENV_NAMES = ["venv", "env", ".venv", ".env"]
 REQUIREMENTS_FILE = "requirements.txt"
 ENV_FILE = "dragoncp_env.env"
 SAMPLE_ENV_FILE = "dragoncp_env_sample.env"
-REQUIRED_DIRS = ["templates", "static", "logs"]
+REQUIRED_DIRS = ["logs"]
 
 # Colors for terminal output
 class Colors:
@@ -450,32 +451,84 @@ def create_directories() -> bool:
 
 
 # ============================================================================
-# FRONTEND BUILD (PLACEHOLDER)
+# FRONTEND BUILD
 # ============================================================================
 
-def build_frontend() -> bool:
-    """
-    Build frontend application (placeholder for future React integration)
-    Currently does nothing, returns True
-    """
-    # Placeholder for future frontend build
-    # When React frontend is added, this will:
-    # 1. Check if node/npm is available
-    # 2. Check if node_modules exists, run npm install if not
-    # 3. Run npm run build
-    # 4. Verify build output exists
-    
-    frontend_path = Path("frontend")
-    
-    if frontend_path.exists() and (frontend_path / "package.json").exists():
-        print_header("[5.5/6] Building frontend (placeholder)...")
-        print_info("Frontend build will be implemented when React app is added")
-        # TODO: Implement frontend build when React is integrated
-        # - Check for node/npm
-        # - Run npm install if node_modules missing
-        # - Run npm run build
-        # - Verify dist/build directory exists
-    
+def build_frontend(frontend_path: Path = Path("frontend")) -> bool:
+    """Build the React app when its production output is missing or stale."""
+    package_file = frontend_path / "package.json"
+    package_lock_file = frontend_path / "package-lock.json"
+    node_modules_path = frontend_path / "node_modules"
+    installed_lock_digest_file = node_modules_path / ".dragoncp-package-lock.sha256"
+    output_file = frontend_path / "dist" / "index.html"
+
+    if not package_file.exists():
+        print_error("frontend/package.json is missing")
+        return False
+    if not package_lock_file.exists():
+        print_error("frontend/package-lock.json is missing")
+        return False
+
+    print_header("[5.5/6] Checking React frontend build...")
+
+    source_paths = [
+        package_file,
+        package_lock_file,
+        frontend_path / "index.html",
+        frontend_path / "vite.config.ts",
+        *list((frontend_path / "src").rglob("*")),
+    ]
+    newest_source = max(
+        (path.stat().st_mtime for path in source_paths if path.is_file()),
+        default=0,
+    )
+    try:
+        current_lock_digest = hashlib.sha256(package_lock_file.read_bytes()).hexdigest()
+        installed_lock_digest = (
+            installed_lock_digest_file.read_text(encoding="utf-8").strip()
+            if installed_lock_digest_file.is_file()
+            else None
+        )
+    except OSError as error:
+        print_error(f"Could not inspect frontend dependencies: {error}")
+        return False
+
+    dependencies_current = (
+        node_modules_path.is_dir()
+        and installed_lock_digest == current_lock_digest
+    )
+    if (
+        dependencies_current
+        and output_file.is_file()
+        and output_file.stat().st_mtime >= newest_source
+    ):
+        print_success("React production build is current")
+        return True
+
+    npm = shutil.which("npm")
+    if not npm:
+        print_error("npm is required because frontend/dist is missing or stale")
+        return False
+
+    try:
+        if not dependencies_current:
+            print_info("Installing frontend dependencies with npm ci")
+            subprocess.run([npm, "ci"], cwd=frontend_path, check=True, timeout=600)
+            installed_lock_digest_file.write_text(
+                f"{current_lock_digest}\n", encoding="utf-8"
+            )
+
+        print_info("Building the React production app")
+        subprocess.run([npm, "run", "build"], cwd=frontend_path, check=True, timeout=600)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        print_error(f"Frontend build failed: {error}")
+        return False
+
+    if not output_file.is_file():
+        print_error("Frontend build completed without creating frontend/dist/index.html")
+        return False
+
+    print_success("React production build is ready")
     return True
 
 

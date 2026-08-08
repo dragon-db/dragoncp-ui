@@ -1,12 +1,15 @@
 # Runtime Stability Implementation
 
-Last updated: 2026-03-14
+Last updated: 2026-08-06
 Related issues: `#38`, `#39`
 Branch context: `feature/runtime-stability`
 
 ## Purpose
 
-This document records the production-runtime and Socket.IO stability work completed for the runtime-stability feature so other agents can quickly review what changed and why.
+This document records the production-runtime and Socket.IO stability work
+completed for the runtime-stability feature, plus the current React serving
+contract. The supported production process is still one Gunicorn worker with
+threads; that same Flask process now serves `frontend/dist/`.
 
 ## Objectives Covered
 
@@ -37,7 +40,10 @@ This document records the production-runtime and Socket.IO stability work comple
 - Improved connection, disconnect, re-authentication, and stale-cleanup logging.
 - Extended debug endpoints to expose runtime metadata, cleanup-thread status, transport type, and connection details.
 
-### 3. Legacy production UI Socket.IO stability
+### 3. Historical legacy UI Socket.IO stability
+
+This work applied to the client retired on 2026-08-06 and is kept only as the
+history behind the React socket settings:
 
 - Fixed the legacy client reconnect behavior so it no longer disables reconnection.
 - Adjusted transport preference to allow safer fallback behavior.
@@ -85,10 +91,6 @@ This document records the production-runtime and Socket.IO stability work comple
 - `routes/debug.py`
 - `requirements.txt`
 
-### Legacy production UI realtime client
-
-- `static/modules/websocket-manager.js`
-
 ### React alignment
 
 - `frontend/src/services/socket.ts`
@@ -124,6 +126,8 @@ This document records the production-runtime and Socket.IO stability work comple
 ## Remaining Operator Validation
 
 - Install updated Python dependencies inside the project venv.
+- Run `npm ci && npm run build` inside `frontend/`; the production service
+  deliberately does not install Node dependencies while restarting.
 - Update the production systemd service to use the committed Gunicorn-based ExecStart.
 - Restart the service and verify:
   - login
@@ -134,7 +138,10 @@ This document records the production-runtime and Socket.IO stability work comple
 
 ## Notes For Future Agents
 
-- The legacy Flask/static UI is still the active production UI; treat it as the primary runtime path.
-- The React client has been aligned but is not yet the served production UI.
+- React is the production UI. Flask serves its build on `/`, with `/api` and
+  `/socket.io` on the same origin. See
+  [legacy-ui-retirement.md](legacy-ui-retirement.md).
+- `frontend/dist/` is generated and ignored by Git. A missing build is a deploy
+  error; `/` returns `503 FRONTEND_BUILD_MISSING` rather than another UI.
 - The app is intentionally single-worker today; do not raise worker count without redesigning process-local Socket.IO/background coordination.
 - Same-origin proxying is the preferred future path if the app is later exposed through Traefik or Cloudflared.

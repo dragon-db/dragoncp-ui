@@ -1,7 +1,7 @@
 # Running the App
 
-Last updated: 2026-07-28
-Primary files: `start.sh`, `start.py`, `app.py`, `frontend/package.json`, `frontend/vite.config.ts`
+Last updated: 2026-08-06
+Primary files: `start.sh`, `start.py`, `app.py`, `frontend_serving.py`, `frontend/package.json`, `frontend/vite.config.ts`
 
 ## Purpose
 
@@ -79,12 +79,15 @@ treated as satisfied by any installed version.
 defaults - answering no exits so the file can be edited first. If the sample is
 also missing, it aborts.
 
-**[5/6] Directories.** Creates `templates`, `static` and `logs` if absent.
+**[5/6] Directories.** Creates `logs` if absent. The retired `templates/` and
+`static/` directories are no longer runtime inputs.
 
-**[5.5/6] Frontend build.** This is a **placeholder**. When `frontend/` and
-`frontend/package.json` exist it prints a message and does nothing else. The
-launcher does not run `npm install` or `npm run build`. Build the frontend
-yourself (see below) or use the dev server.
+**[5.5/6] Frontend build.** Compares `frontend/dist/index.html` with the package
+files, Vite config, HTML entry point and everything under `frontend/src/`. A
+current build is reused. A missing or stale build runs `npm ci` when
+`node_modules/` is absent or its recorded package-lock digest differs, then
+`npm run build`; startup stops if npm is missing, the command fails, times out,
+or does not produce the index.
 
 **[6/6] Start.** Prints the access URL, then runs `python app.py` as a
 subprocess and returns its exit code. Ctrl-C is caught and reported cleanly.
@@ -130,9 +133,10 @@ progress figures to mean anything.
 rename and leaves the file alone. Until 2026-07-29 the rename service had no
 notion of test mode at all and renamed real media whatever the flag said.
 
-**Directories are not created.** The destination directory, the dynamic backup
-directory and its `.rsync-partial` subdirectory are printed rather than created.
-`app.py` also skips creating `templates/` and `static/` on direct startup.
+**Media directories are not created.** The destination directory, the dynamic
+backup directory and its `.rsync-partial` subdirectory are printed rather than
+created. Building the browser app is unaffected; it writes only under
+`frontend/dist/`.
 
 **Configuration is not written to disk.** `DragonCPConfig.save_config` prints
 what it would have written to `dragoncp_env.env` instead of writing it. The
@@ -234,6 +238,10 @@ Serve the built files instead, and the dev client is not there at all:
 Both need a rebuild to pick up code changes — that is the trade for a page that
 stays where you left it. `preview` does not inherit `server.proxy`, so
 `vite.config.ts` declares the same proxy twice on purpose.
+
+The normal production Gunicorn service no longer needs either extra server:
+Flask serves the same `dist/` directory directly on the backend port. See
+[legacy-ui-retirement.md](../operations/legacy-ui-retirement.md).
 
 ### The two proxy targets
 

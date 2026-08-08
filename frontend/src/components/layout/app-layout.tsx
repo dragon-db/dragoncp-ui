@@ -41,7 +41,7 @@ export function AppLayout({ children }: AppLayoutProps) {
 
   return (
     <SidebarProvider
-      className="app-ambient h-svh overflow-hidden"
+      className="h-svh overflow-hidden app-ambient"
       style={{ "--sidebar-width": "14.125rem" } as CSSProperties}
     >
       <AppSidebar />

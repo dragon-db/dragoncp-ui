@@ -34,9 +34,7 @@ export function useSimulationStatus(pollWhileActive: boolean) {
   return useQuery({
     queryKey: ["simulation", "status"],
     queryFn: async () => {
-      const response = await api.get<{ status: string } & SimulationStatus>(
-        "/simulation/status"
-      );
+      const response = await api.get<{ status: string } & SimulationStatus>("/simulation/status");
       return response.data;
     },
     refetchInterval: pollWhileActive ? 3000 : false,
@@ -47,13 +45,7 @@ export function useStartSimulation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({
-      scenario,
-      confirmBusy,
-    }: {
-      scenario: string;
-      confirmBusy?: boolean;
-    }) => {
+    mutationFn: async ({ scenario, confirmBusy }: { scenario: string; confirmBusy?: boolean }) => {
       const response = await api.post<{ status: string; message: string; run_id?: string }>(
         "/simulation/start",
         { scenario, confirm_busy: confirmBusy }

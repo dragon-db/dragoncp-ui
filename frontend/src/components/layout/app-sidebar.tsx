@@ -29,6 +29,7 @@ import {
   IconDeviceTv,
   IconBrandNetflix,
   IconArchive,
+  IconHistory,
   IconSettings,
   IconLogout,
   IconChevronRight,
@@ -72,6 +73,7 @@ const mediaItems: NavItem[] = [
 
 const systemItems: NavItem[] = [
   { to: "/backups", label: "Backups", icon: IconArchive },
+  { to: "/activity", label: "Activity", icon: IconHistory },
   { to: "/settings", label: "Settings", icon: IconSettings },
 ];
 

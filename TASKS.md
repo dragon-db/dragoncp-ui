@@ -45,6 +45,54 @@ Notes:
 
 ## In progress
 
+### TASK-016 — Retire the legacy HTML UI
+Status: done (unreleased)      Priority: high
+Tags: frontend, deployment, auth, activity           Branch: multi-admin-accounts
+Docs: [docs/operations/legacy-ui-retirement.md](docs/operations/legacy-ui-retirement.md)
+
+Plan: verify that the React application covers the operator workflows still
+available in the Flask template/static client, define the production serving
+cutover, fix non-legacy blockers found during PR #58 review, and document a
+retirement path that does not strand production on an unserved build.
+
+Steps:
+- [x] Inventory legacy and React operator capabilities
+- [x] Decide whether retirement is safe in this PR and record any prerequisites
+- [x] Fix confirmed PR defects that do not depend on the legacy UI
+- [x] Update runtime, frontend, auth, and activity documentation
+- [x] Verify backend tests and the production frontend build
+
+Notes:
+- 2026-08-06 (audit): React covered every retired operator workflow except the
+  backend application-log viewer. The viewer was added to Settings Diagnostics.
+- 2026-08-06 (cutover): Flask now serves the generated React build same-origin;
+  the template/static client is removed. Deprecated config, media and backup
+  contracts remain for one production soak so rollback does not need a database
+  rollback.
+- 2026-08-06 (review): fixed fallback-token resurrection, same-name fallback
+  lockout recovery, bounded WebSocket revocation, ISO activity filters and
+  incorrect series/anime activity labels. The ActorBadge and `--db` review
+  comments were already satisfied by the branch.
+- 2026-08-06 (verification): 509 backend tests and 2 subtests pass; frontend
+  formatting, ESLint, TypeScript and the Vite production build pass.
+- 2026-08-07 (review follow-up): verified all ten new PR findings against the
+  branch and fixed each one. The behavior fixes cover positive-only auth
+  settings, malformed fallback passwords, partial restore completion,
+  lockfile-aware frontend installs, and refreshed WebSocket identity races;
+  the remaining changes are small deployment, documentation, and UI typing or
+  styling corrections.
+- 2026-08-07 (verification): all 518 backend tests pass; frontend formatting,
+  ESLint, TypeScript and the Vite production build pass.
+- 2026-08-07 (WebSocket follow-up): revocation cleanup now compares only the
+  account identity fields, so an activity ping cannot keep a revoked socket
+  alive. Idle-timeout cleanup still compares the full connection snapshot, and
+  the full 519-test backend suite passes.
+- Handoff: the latest WebSocket review follow-up is implemented and validated
+  locally. Commit and push it when requested; on deployment, build
+  `frontend/dist`, restart the single-worker Gunicorn service, then run the
+  production checklist in the retirement doc before ending the compatibility
+  soak.
+
 ### TASK-014 — Backup and restore rework
 Status: done (unreleased)      Priority: high
 Tags: backend, frontend, backups                     Branch: backup-and-rename

@@ -8,12 +8,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  IconArrowsMaximize,
-  IconArrowDown,
-  IconEraser,
-  IconTerminal2,
-} from "@tabler/icons-react";
+import { IconArrowsMaximize, IconArrowDown, IconEraser, IconTerminal2 } from "@tabler/icons-react";
 
 /**
  * rsync writes one progress line per tick, so a log is mostly repetition of the

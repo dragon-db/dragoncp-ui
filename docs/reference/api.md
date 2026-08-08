@@ -1,6 +1,6 @@
 # DragonCP API Reference
 
-Last updated: 2026-08-01
+Last updated: 2026-08-06
 
 Purpose: human-friendly reference for every backend HTTP API endpoint implemented by the Python server.
 
@@ -61,6 +61,18 @@ Authorization: Bearer <access-token>
 ```
 
 For normal HTTP requests, query token auth (`?token=...`) is not supported.
+
+A valid token is not sufficient on its own. The account behind it is read on
+every request, so a protected endpoint also answers:
+
+- `401 ACCOUNT_DISABLED` — the account has been switched off
+- `401 SESSION_REVOKED` — the account was renamed or had its password changed
+  since the token was issued. A disabled account answers `ACCOUNT_DISABLED`
+  above, not this
+- `401 UNKNOWN_ACCOUNT` — no such account
+- `403 PASSWORD_CHANGE_REQUIRED` — the account still owes its first password
+  change. Only `/auth/me`, `/auth/logout` and `/auth/change-password` remain
+  reachable until it does.
 
 Public endpoints (no JWT required):
 - `POST /auth/login`
@@ -134,13 +146,26 @@ Output JSON (success):
   "refresh_token": "<jwt-refresh-token>",
   "expires_at": "2026-02-28T10:00:00+00:00",
   "refresh_expires_at": "2026-03-07T10:00:00+00:00",
-  "user": "admin"
+  "user": "admin",
+  "account_id": 1,
+  "role": "admin",
+  "must_change_password": false,
+  "is_fallback_account": false
 }
 ```
 
+`account_id` is the stable identity, which survives a username change; it is
+`null` for the environment-file fallback account. `must_change_password` means
+the password was set by whoever created the account — the frontend holds the
+person at a password screen until they replace it.
+
 Error behavior:
 - `400` if JSON/body/credentials are missing.
-- `401` if credentials are invalid.
+- `401` if credentials are invalid, or the account is disabled (the two are
+  deliberately indistinguishable).
+- `429` with `retry_after` in seconds when too many attempts have failed. The
+  attempt that trips the limit gets this rather than a `401`, and a correct
+  password during the cooldown still fails.
 - `503` if backend auth is not configured.
 
 ### POST `/auth/logout`
@@ -173,11 +198,61 @@ Output JSON:
   "status": "success",
   "valid": true,
   "user": "admin",
+  "account_id": 1,
+  "role": "admin",
+  "must_change_password": false,
+  "is_fallback_account": false,
   "remaining_seconds": 3600
 }
 ```
 
 If no/invalid token, still returns `status: success` with `valid: false` and a message.
+A well-formed token whose account has since been disabled, renamed, or had its
+password changed also reports `valid: false`, with `code` naming the reason.
+
+### GET `/auth/me`
+What it does: reports who the caller is signed in as.
+
+Auth: required.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "user": "admin",
+  "account_id": 1,
+  "role": "admin",
+  "must_change_password": false,
+  "is_fallback_account": false,
+  "can_change_password": true
+}
+```
+
+### POST `/auth/change-password`
+What it does: changes the caller's **own** password. There is no endpoint for
+changing anyone else's — that is `scripts/manage_admins.py` on the server.
+
+Auth: required.
+
+Input JSON:
+```json
+{
+  "current_password": "<current>",
+  "new_password": "<new>"
+}
+```
+
+Output JSON: the same shape as `/auth/login`. Changing a password retires every
+token the account held, including the caller's, so a replacement token pair
+comes back for this browser to adopt. Every other session for that account is
+signed out, including its live connection.
+
+Error behavior:
+- `400` if the body is missing, the new password is under 10 characters
+  (`WEAK_PASSWORD`), it matches the current one (`PASSWORD_UNCHANGED`), or the
+  caller is the environment-file fallback account (`FALLBACK_ACCOUNT`, which has
+  no stored password to change).
+- `401` if the current password is wrong, or there is no session.
 
 ### POST `/auth/refresh`
 What it does: exchanges a valid refresh token for a new access token.
@@ -212,17 +287,95 @@ Output JSON:
 {
   "status": "success",
   "auth_configured": true,
+  "account_count": 2,
+  "using_fallback_account": false,
   "message": "Authentication is configured"
 }
 ```
 
+`using_fallback_account` is true while no enabled administrator exists in the
+database, which is when the environment-file credentials are accepted.
+
 ---
+
+### GET `/activity`
+What it does: reads the activity trail — who did what, and when — newest first.
+
+Auth: required.
+
+Query parameters, all optional and combined with AND:
+
+| Parameter | Meaning |
+| --- | --- |
+| `actor` | a username, or an automation name such as `auto-sync` |
+| `actor_kind` | `admin`, `automated` or `system` |
+| `account_id` | the stable account id, which survives a rename |
+| `action` | one exact action, e.g. `backup.restore` |
+| `group` | an action family, e.g. `backup` |
+| `target_type` | `transfer`, `backup_capture`, `notification`, `setting`, `account`, `connection`, `simulation`, `explore_plan` |
+| `target_id` | one specific thing |
+| `outcome` | `ok`, `failed` or `refused` |
+| `since` / `until` | ISO timestamps |
+| `search` | matches the summary, the thing acted on, or the actor |
+| `limit` / `offset` | paging; limit is capped at 200 |
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "entries": [
+    {
+      "id": 12,
+      "occurred_at": "2026-08-03 15:09:38",
+      "actor_kind": "admin",
+      "actor_name": "priya",
+      "actor_account_id": 3,
+      "action": "backup.restore",
+      "target_type": "backup_capture",
+      "target_id": "cap_9",
+      "target_label": "Example Show S01E02",
+      "summary": "Restored Example Show S01E02 from a backup",
+      "detail": {"files": 1},
+      "outcome": "ok",
+      "request_ip": "10.0.0.4"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+`actor_kind` is what separates a person from automation. `actor_name` is the
+name as it read at the time — a rename does not rewrite it — while
+`actor_account_id` is the stable identity that still resolves to the person.
+`system` means nobody could be identified, which is a statement rather than a
+blank.
+
+### GET `/activity/for/<target_type>/<target_id>`
+What it does: everything recorded against one thing, oldest first — its story.
+
+Auth: required.
+
+### GET `/activity/filters`
+What it does: what the activity screen can filter by.
+
+Auth: required.
+
+Output JSON: `actors` (every actor seen in the trail, including people whose
+accounts have since been disabled — which is why accounts are disabled rather
+than deleted), `actions` (the closed vocabulary with human labels and their
+group), and `total`.
+
+The activity trail is read-only over HTTP. Nothing writes to it through the API
+and nothing edits or removes an entry.
 
 ## 2) Configuration and SSH Endpoints
 
 ### GET `/config`
-What it does: returns every setting, in two shapes at once — grouped for the React
-Settings screen, and as a flat key -> value map for the legacy static UI.
+What it does: returns every setting, grouped for the React Settings screen. A
+deprecated flat key -> value compatibility shape is also present during the
+cutover soak.
 
 Each grouped setting carries `store` (`env` or `db`) and `editable`, so a client can
 show the environment-file half read-only instead of offering a field that silently does
@@ -293,7 +446,7 @@ Errors: `400` with `message` naming the invalid value. Nothing in the payload is
 written.
 
 ### POST `/config/reset`
-What it does: kept for the legacy static UI, which still calls it. There is no longer a
+What it does: deprecated cutover compatibility endpoint. There is no longer a
 per-browser override layer to clear, so it reports success and changes nothing.
 
 Auth: required.
@@ -301,8 +454,8 @@ Auth: required.
 Input: none.
 
 ### GET `/config/env-only`
-What it does: returns the environment-backed settings alone, which is what the legacy
-UI's comparison column shows. Secrets are redacted; hidden env secrets are omitted.
+What it does: deprecated cutover compatibility endpoint returning the
+environment-backed settings alone. Secrets are redacted; hidden env secrets are omitted.
 
 Auth: required.
 
@@ -1759,10 +1912,10 @@ Refusals come back `409` with `applied: false` and the reason in `message` — a
 transfer is active, or whether one is active could not be determined. A refusal
 is never reported as a success with a zero count.
 
-### Legacy endpoints
+### Deprecated compatibility endpoints
 
-Kept because the static UI is what production serves. They are backed by the
-same store, with a capture id in place of the old backup id.
+Retained for one React cutover soak and backed by the same store, with a capture
+id in place of the old backup id. Compatibility traffic is marked in Activity.
 
 | Endpoint | Notes |
 |---|---|
@@ -2388,7 +2541,8 @@ backup and had nothing to download — it is recorded as a completed
 ## Full Endpoint Coverage Checklist
 
 This document covers all `/api/*` routes currently implemented in backend Python route decorators:
-- 5 auth endpoints
+- 7 auth endpoints
+- 3 activity endpoints
 - 8 config/SSH endpoints
 - 8 media endpoints
 - 13 transfer endpoints (including `pause`, `resume` and `bulk-delete`)
@@ -2399,8 +2553,8 @@ This document covers all `/api/*` routes currently implemented in backend Python
 - 2 server log endpoints
 - 9 explore endpoints
 
-Total covered: 95 method+path API endpoints.
+Total covered: 100 method+path API endpoints.
 
 Counts verified against the `@*_bp.route`/`@app.route` decorators in `routes/`
 and `app.py`, counting one per method+path. `GET /` is excluded: it serves the
-legacy UI page and is not an API route.
+React application shell and is not an API route.

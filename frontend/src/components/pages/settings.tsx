@@ -8,6 +8,8 @@ import {
   useWebSocketStatus,
 } from "@/hooks/useConfig";
 import { SettingsPanel } from "@/components/settings/settings-panel";
+import { AccountPanel } from "@/components/settings/account-panel";
+import { BackendLogPanel } from "@/components/settings/backend-log-panel";
 import {
   useDiscordSettings,
   useTestDiscord,
@@ -33,6 +35,7 @@ import {
   IconRefresh,
   IconServer,
   IconSettings,
+  IconUserShield,
   IconWebhook,
 } from "@tabler/icons-react";
 
@@ -65,6 +68,7 @@ export function SettingsPage() {
     manual_sync_thumbnail_url: "",
   });
 
+  /* eslint-disable react-hooks/set-state-in-effect -- query payloads intentionally reset controlled form drafts */
   useEffect(() => {
     const settings = webhookSettingsQuery.data?.settings;
     if (!settings) return;
@@ -87,6 +91,7 @@ export function SettingsPage() {
       manual_sync_thumbnail_url: settings.manual_sync_thumbnail_url ?? "",
     });
   }, [discordSettingsQuery.data]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const connectionState = sshStatusQuery.data ? "Connected" : "Disconnected";
 
@@ -203,6 +208,10 @@ export function SettingsPage() {
             <IconWebhook className="h-4 w-4" />
             Automation
           </TabsTrigger>
+          <TabsTrigger value="account">
+            <IconUserShield className="h-4 w-4" />
+            Account
+          </TabsTrigger>
           <TabsTrigger value="diagnostics">
             <IconServer className="h-4 w-4" />
             Diagnostics
@@ -211,6 +220,10 @@ export function SettingsPage() {
 
         <TabsContent value="config" className="mt-4 space-y-4">
           <SettingsPanel />
+        </TabsContent>
+
+        <TabsContent value="account" className="mt-4 space-y-4">
+          <AccountPanel />
         </TabsContent>
 
         <TabsContent value="automation" className="mt-4 space-y-4">
@@ -434,6 +447,8 @@ export function SettingsPage() {
               />
             </CardContent>
           </Card>
+
+          <BackendLogPanel />
         </TabsContent>
       </Tabs>
     </div>

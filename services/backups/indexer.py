@@ -89,6 +89,12 @@ class BackupIndexer:
             'pinned': carried.get('pinned', 0),
             'status': 'present',
             'restored_at': carried.get('restored_at'),
+            # Carried with the timestamp, not separately: a rebuild that
+            # kept 'when' but dropped 'who' would leave the version list
+            # saying it was restored by nobody.
+            'restored_by_kind': carried.get('restored_by_kind'),
+            'restored_by_name': carried.get('restored_by_name'),
+            'restored_by_account_id': carried.get('restored_by_account_id'),
         }
 
         slot_keys: List[str] = []
@@ -292,6 +298,9 @@ class BackupIndexer:
                 'reason': row.get('reason'),
                 'source_transfer_id': row.get('source_transfer_id'),
                 'restored_at': row.get('restored_at'),
+                'restored_by_kind': row.get('restored_by_kind'),
+                'restored_by_name': row.get('restored_by_name'),
+                'restored_by_account_id': row.get('restored_by_account_id'),
             }
         return carried
 
@@ -305,5 +314,8 @@ class BackupIndexer:
                     'reason': existing.get('reason'),
                     'source_transfer_id': existing.get('source_transfer_id'),
                     'restored_at': existing.get('restored_at'),
+                    'restored_by_kind': existing.get('restored_by_kind'),
+                    'restored_by_name': existing.get('restored_by_name'),
+                    'restored_by_account_id': existing.get('restored_by_account_id'),
                 })
         return None

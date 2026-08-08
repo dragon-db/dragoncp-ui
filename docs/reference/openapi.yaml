@@ -15,10 +15,10 @@ info:
     and `routes/`. Every blueprint is registered under the `/api` prefix, which
     is part of the server URL below, so paths here are written without it.
 
-    `GET /` is not listed: it renders the legacy HTML page and is not an API
-    route.
+    `GET /` is not listed: it serves the React application shell and is not an
+    API route.
 
-    Endpoint count: 95 method+path operations.
+    Endpoint count: 100 method+path operations.
 
     ## Authentication
 
@@ -210,9 +210,9 @@ components:
       description: |
         Settings, in two shapes at once.
 
-        Top-level keys are the flat key -> value map the legacy static UI reads.
-        `groups` is the same data shaped for the React Settings screen, with the
-        store and editability of each setting attached.
+        `groups` is the data shaped for the React Settings screen, with the
+        store and editability of each setting attached. Top-level flat keys are
+        a deprecated compatibility shape retained through the cutover soak.
 
         Environment secrets are omitted entirely rather than redacted — there is
         nothing a reader could do with a redacted value they cannot change.
@@ -627,8 +627,187 @@ paths:
                     type: string
                   auth_configured:
                     type: boolean
+                  account_count:
+                    type: integer
+                  using_fallback_account:
+                    type: boolean
+                    description: >-
+                      True while no enabled administrator exists in the database,
+                      which is when the environment-file credentials are accepted.
                   message:
                     type: string
+
+  /auth/me:
+    get:
+      tags: [Authentication]
+      summary: Report who the caller is signed in as
+      responses:
+        '200':
+          description: The caller's identity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  user:
+                    type: string
+                  account_id:
+                    type: integer
+                    nullable: true
+                    description: Stable identity; survives a username change. Null for the fallback account.
+                  role:
+                    type: string
+                  must_change_password:
+                    type: boolean
+                  is_fallback_account:
+                    type: boolean
+                  can_change_password:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/change-password:
+    post:
+      tags: [Authentication]
+      summary: >-
+        Change your own password. There is no endpoint for changing anyone
+        else's — that is scripts/manage_admins.py on the server
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password:
+                  type: string
+                new_password:
+                  type: string
+                  minLength: 10
+      responses:
+        '200':
+          description: >-
+            Password changed. Retires every token the account held, including the
+            caller's, so a replacement token pair is returned for this browser to
+            adopt. Every other session for the account is signed out.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
+                  token:
+                    type: string
+                  refresh_token:
+                    type: string
+                  expires_at:
+                    type: string
+                  refresh_expires_at:
+                    type: string
+                  user:
+                    type: string
+                  account_id:
+                    type: integer
+                    nullable: true
+                  role:
+                    type: string
+                  must_change_password:
+                    type: boolean
+                  is_fallback_account:
+                    type: boolean
+        '400':
+          description: >-
+            Missing body, new password under 10 characters (WEAK_PASSWORD),
+            unchanged from the current one (PASSWORD_UNCHANGED), or the caller is
+            the environment-file fallback account (FALLBACK_ACCOUNT)
+        '401':
+          description: The current password is wrong, or there is no session
+
+  # ==================== ACTIVITY ====================
+
+  /activity:
+    get:
+      tags: [Activity]
+      summary: >-
+        Read the activity trail — who did what, and when — newest first.
+        Read-only; nothing writes to or edits the trail through the API
+      parameters:
+        - { name: actor, in: query, schema: { type: string }, description: A username, or an automation name such as auto-sync }
+        - { name: actor_kind, in: query, schema: { type: string, enum: [admin, automated, system] } }
+        - { name: account_id, in: query, schema: { type: integer }, description: Stable account id; survives a rename }
+        - { name: action, in: query, schema: { type: string }, description: One exact action, e.g. backup.restore }
+        - { name: group, in: query, schema: { type: string }, description: An action family, e.g. backup }
+        - { name: target_type, in: query, schema: { type: string } }
+        - { name: target_id, in: query, schema: { type: string } }
+        - { name: outcome, in: query, schema: { type: string, enum: [ok, failed, refused] } }
+        - { name: since, in: query, schema: { type: string } }
+        - { name: until, in: query, schema: { type: string } }
+        - { name: search, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: offset, in: query, schema: { type: integer, default: 0 } }
+      responses:
+        '200':
+          description: A page of the trail, with the total behind it
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        occurred_at: { type: string }
+                        actor_kind: { type: string, enum: [admin, automated, system] }
+                        actor_name: { type: string }
+                        actor_account_id: { type: integer, nullable: true }
+                        action: { type: string }
+                        target_type: { type: string, nullable: true }
+                        target_id: { type: string, nullable: true }
+                        target_label: { type: string, nullable: true }
+                        summary: { type: string }
+                        detail: { type: object, nullable: true }
+                        outcome: { type: string, enum: [ok, failed, refused] }
+                        request_ip: { type: string, nullable: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /activity/for/{target_type}/{target_id}:
+    get:
+      tags: [Activity]
+      summary: Everything recorded against one thing, oldest first
+      parameters:
+        - { name: target_type, in: path, required: true, schema: { type: string } }
+        - { name: target_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          $ref: '#/components/responses/Success'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /activity/filters:
+    get:
+      tags: [Activity]
+      summary: >-
+        What the activity screen can filter by. Actors come from the trail, so
+        someone whose account was disabled still appears
+      responses:
+        '200':
+          $ref: '#/components/responses/Success'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   # ==================== CONFIGURATION AND SSH ====================
 
@@ -636,8 +815,8 @@ paths:
     get:
       tags: [Configuration]
       summary: >-
-        Return every setting, grouped for the React UI and flat for the legacy UI.
-        Each grouped setting says which store owns it and whether it can be changed here
+        Return every setting grouped for React, plus a deprecated flat compatibility
+        shape. Each grouped setting says which store owns it and whether it can be changed here
       responses:
         '200':
           description: Configuration object
@@ -676,8 +855,8 @@ paths:
     post:
       tags: [Configuration]
       summary: >-
-        Kept for the legacy static UI. There is no per-browser override layer left to
-        clear, so this reports success and changes nothing
+        Deprecated cutover compatibility endpoint. There is no per-browser override
+        layer left to clear, so this reports success and changes nothing
       responses:
         '200':
           $ref: '#/components/responses/Success'
@@ -688,7 +867,7 @@ paths:
     get:
       tags: [Configuration]
       summary: >-
-        Return the environment-backed settings alone — the legacy UI's comparison column
+        Deprecated cutover compatibility endpoint returning environment-backed settings
       responses:
         '200':
           description: Configuration object
@@ -2557,9 +2736,9 @@ paths:
             determined. The body carries `applied: false` and the reason in
             `message`.
 
-  # ---- Legacy backup endpoints -------------------------------------------
-  # Kept because the static UI is what production serves. Backed by the same
-  # store, with a capture id in place of the old backup id.
+  # ---- Deprecated backup compatibility endpoints -------------------------
+  # Retained for one React cutover soak. Backed by the same store, with a
+  # capture id in place of the old backup id.
 
   /backups:
     get:

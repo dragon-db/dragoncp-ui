@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/layout/page-header";
+import { actorLabel } from "@/lib/api";
 import { PageTabsList } from "@/components/layout/page-tabs";
 import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
 import {
@@ -131,8 +132,22 @@ function TransferRow({
 
   // Each fact is its own element so narrow screens wrap them rather than
   // truncating the line.
+  //
+  // Who started it reads as text here rather than as the badge the detail view
+  // uses: this line is for scanning, and a coloured pill per row would compete
+  // with the status. The "AUTO /" prefix is what keeps automation distinct from
+  // a colleague either way. Runs from before attribution have no name and are
+  // simply left out — better a missing fact than an invented one.
+  const startedBy = transfer.started_by_name
+    ? `by ${actorLabel({
+        actor_kind: transfer.started_by_kind ?? "system",
+        actor_name: transfer.started_by_name,
+      })}`
+    : undefined;
+
   const facts = [
     transfer.season_name || undefined,
+    startedBy,
     running ? formatSpeed(transfer.speed_bps) : undefined,
     eta ? `ETA ${eta}` : undefined,
     size ? `${size.value} ${size.unit}` : undefined,

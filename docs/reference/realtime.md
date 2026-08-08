@@ -1,6 +1,6 @@
 # Realtime (Socket.IO) Reference
 
-Last updated: 2026-07-28
+Last updated: 2026-08-06
 Primary files: `websocket.py`, `app.py`, `services/transfer_service.py`, `services/transfer_coordinator.py`, `services/queue_manager.py`, `services/backups/service.py`, `services/rename_service.py`, `routes/webhooks.py`, `frontend/src/services/socket.ts`, `frontend/src/hooks/useRuntime.ts`
 
 ## Realtime is opt-in
@@ -119,14 +119,16 @@ The client's countdown uses `WEBSOCKET_TIMEOUT_MINUTES` from `GET /api/config`, 
 
 ### The idle sweeper
 
-`start_cleanup_thread(socketio)` is called once during startup in `app.py` and starts a single daemon thread named `dragoncp-websocket-cleanup` (it refuses to start a second one if the first is alive). The loop in `cleanup_stale_connections()`:
+`start_cleanup_thread(socketio)` is called once during startup in `app.py` and starts a single daemon thread named `dragoncp-websocket-cleanup` (it refuses to start a second one if the first is alive). Every five seconds the loop calls `reap_stale_connections()`:
 
 1. Takes a snapshot of the connection map.
-2. For each connection, compares `last_activity` against that connection's own `timeout_seconds`.
-3. For anything past its deadline, calls `socketio.server.disconnect(sid=..., namespace='/')`, removes the entry, and logs it.
-4. Sleeps **5 minutes** and repeats.
+2. Re-validates the account id, auth source and token version recorded at handshake.
+3. Compares `last_activity` against that connection's own `timeout_seconds`.
+4. For a revoked or expired connection, calls `socketio.server.disconnect(sid=..., namespace='/')`, removes the entry, and logs it.
 
-So a connection can sit idle for up to its timeout plus almost five more minutes before the sweeper notices. In practice the browser's own countdown usually disconnects first.
+Revocation and an expired idle deadline therefore have at most about five
+seconds of sweep delay. In practice the browser's own countdown usually
+disconnects an ordinary idle session first.
 
 ### Timeout constants and how configurable they are
 
@@ -137,6 +139,7 @@ Defined at the top of `websocket.py`:
 | `WEBSOCKET_TIMEOUT_DEFAULT` | 35 minutes | Used when the session carries no configured timeout |
 | `WEBSOCKET_TIMEOUT_MAX` | 65 minutes | Hard ceiling on any computed timeout |
 | `WEBSOCKET_TIMEOUT_MIN` | 5 minutes | Declared but never referenced anywhere in the codebase |
+| `AUTH_SWEEP_SECONDS` | 5 seconds | Maximum interval between independent identity/idle sweeps |
 
 These are literals in the source. **There is no environment variable or setting that changes them** — the only tunable is the per-session value.
 
@@ -171,7 +174,8 @@ Two smaller mismatches found while checking the above:
 ## Not verified
 
 - **Not verified**: behaviour under multiple backend workers. The connection map, the sweeper thread and the queue manager's state are all process-local, and `socketio_runtime_info` names `gunicorn --config deploy/gunicorn.conf.py app:app` as the recommended production server, but I did not read that config or test a multi-worker run, so I cannot say how emits and idle cleanup behave across workers.
-- **Not verified**: the legacy Jinja UI under `templates/` and `static/`. I only traced the React client in `frontend/`.
+- **Not verified**: behaviour across a real process restart with an active
+  browser and transfer; release validation for the React cutover covers this.
 
 ## Related documentation
 

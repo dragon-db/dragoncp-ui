@@ -19,6 +19,9 @@ Environment=LOG_LEVEL=INFO
 # Production runtime: single-worker Gunicorn with threaded worker class.
 # Do not increase workers above 1 without redesigning process-local Socket.IO
 # and background coordination state.
+# Build the React app during deployment (`npm ci && npm run build` in frontend/).
+# Refuse to start an API-only service if that deploy step was missed.
+ExecStartPre=/usr/bin/test -f frontend/dist/index.html
 ExecStart=/home/<username>/dev/dragoncp-ui/venv/bin/gunicorn --config deploy/gunicorn.conf.py app:app
 
 Restart=always

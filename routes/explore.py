@@ -23,6 +23,7 @@ from functools import wraps
 
 from flask import Blueprint, g, jsonify, request
 
+from activity_log import record
 from auth import require_auth
 from services.explore.service import ExploreError, ExploreService
 
@@ -198,4 +199,6 @@ def api_execute():
         override=bool(data.get('override')),
         confirm_text=data.get('confirm_text'),
     )
+    record('explore.transfer', 'Ran an approved Explore plan',
+           target_type='explore_plan', target_id=plan_id)
     return jsonify({'status': 'success', **result})

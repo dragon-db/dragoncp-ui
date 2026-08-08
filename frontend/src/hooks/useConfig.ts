@@ -38,6 +38,21 @@ export interface RuntimeStatusResponse {
   };
 }
 
+export type BackendLogLevel = "ERROR" | "WARNING" | "INFO" | "DEBUG" | "ALL";
+export type BackendLogEntryLevel = "CRITICAL" | Exclude<BackendLogLevel, "ALL">;
+
+export interface BackendLogResponse {
+  status: string;
+  log_file: string;
+  level: BackendLogLevel;
+  limit: number;
+  line_count: number;
+  size_bytes?: number;
+  last_modified?: string;
+  message?: string;
+  lines: Array<{ level: BackendLogEntryLevel; text: string }>;
+}
+
 interface LegacyDebugResponse {
   status: string;
   debug_info: {
@@ -255,5 +270,48 @@ export function useWebSocketStatus() {
       return response.data;
     },
     refetchInterval: 5000,
+  });
+}
+
+export function useBackendLogs({
+  level,
+  search,
+  autoRefresh,
+}: {
+  level: BackendLogLevel;
+  search: string;
+  autoRefresh: boolean;
+}) {
+  return useQuery({
+    queryKey: ["backend-logs", level, search],
+    queryFn: async () => {
+      const response = await api.get<BackendLogResponse>("/logs", {
+        params: { level, search: search || undefined, limit: 300 },
+      });
+      return response.data;
+    },
+    refetchInterval: autoRefresh ? 5000 : false,
+  });
+}
+
+export function useDownloadBackendLogs() {
+  return useMutation({
+    mutationFn: async () => {
+      const response = await api.get<Blob>("/logs/download", { responseType: "blob" });
+      const disposition = String(response.headers["content-disposition"] ?? "");
+      const match = disposition.match(
+        /filename\*?=(?:UTF-8'')?["']?([^"';]+)|filename=["']?([^"';]+)/i
+      );
+      const filename = decodeURIComponent(match?.[1] ?? match?.[2] ?? "dragoncp.log");
+      const url = URL.createObjectURL(response.data);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      return filename;
+    },
   });
 }

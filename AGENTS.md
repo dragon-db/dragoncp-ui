@@ -10,9 +10,11 @@
 
 ## Current UI Reality
 
-- The currently served production UI is the legacy Flask/static UI from `templates/index.html` and `static/`.
-- The React frontend in `frontend/` exists and should stay aligned, but it is not the active production UI yet.
-- When fixing realtime issues, update the legacy Socket.IO client first, then mirror the same behavior in the React client.
+- The production UI is the React application under `frontend/`.
+- Flask serves `frontend/dist/` on the same origin and port as `/api` and
+  `/socket.io`; build it before starting production Gunicorn.
+- The Jinja/static client was retired on 2026-08-06. Do not recreate a second
+  browser implementation; update the React client.
 
 ## Runtime Expectations
 
@@ -27,6 +29,8 @@
 - Direct `python app.py` startup is acceptable for local debug/test only.
 - Production should not rely on `allow_unsafe_werkzeug`.
 - Production should use the committed systemd example at `deploy/dragoncp-ui.service.example` as the reference shape.
+- Production deployment must run `npm ci && npm run build` inside `frontend/`;
+  the systemd example refuses to start when `frontend/dist/index.html` is absent.
 
 ## Networking Assumptions
 

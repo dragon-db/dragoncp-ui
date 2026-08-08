@@ -1,7 +1,7 @@
 # Settings Screen
 
-Last updated: 2026-08-02
-Primary files: `settings_registry.py`, `services/settings_service.py`, `frontend/src/components/settings/settings-panel.tsx`, `frontend/src/components/pages/settings.tsx`, `frontend/src/hooks/useConfig.ts`, `app.py`, `config.py`, `routes/webhooks.py`, `models/settings.py`, `websocket.py`
+Last updated: 2026-08-06
+Primary files: `settings_registry.py`, `services/settings_service.py`, `frontend/src/components/settings/settings-panel.tsx`, `frontend/src/components/settings/backend-log-panel.tsx`, `frontend/src/components/pages/settings.tsx`, `frontend/src/hooks/useConfig.ts`, `app.py`, `config.py`, `routes/webhooks.py`, `routes/logs.py`, `models/settings.py`, `websocket.py`
 
 ## Where a setting lives
 
@@ -23,10 +23,9 @@ different places — Core Config to a per-browser Flask session that background
 threads never read, Automation to the database. That session store is gone.
 Everything writable now goes to one place.
 
-**The legacy static UI still works.** It reads a flat key -> value map from
-`GET /api/config`, which is returned alongside the grouped payload, and it
-still calls `/api/config/env-only` and `/api/config/reset`. Its settings form
-now reports which fields it could not change rather than claiming a full save.
+The retired UI's flat `GET /api/config` shape, `/api/config/env-only`, and
+`/api/config/reset` remain as deprecated compatibility contracts for one React
+cutover soak. New clients use only the grouped configuration payload.
 
 
 ## Purpose
@@ -67,7 +66,12 @@ The SSH tile polls `GET /api/runtime/status` every 5 seconds. If that endpoint r
 
 ### Tabs
 
-`Core Config`, `Automation`, `Diagnostics`.
+`Core Config`, `Automation`, `Account`, `Diagnostics`.
+
+The Account tab shows the signed-in identity and supports self-service password
+changes. Diagnostics contains SSH and Socket.IO state plus the backend log
+viewer, with level/search filters, manual or automatic refresh, and an
+authenticated full-log download.
 
 ## Core Config tab
 

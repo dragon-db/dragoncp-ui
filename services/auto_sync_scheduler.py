@@ -9,6 +9,7 @@ import threading
 from datetime import datetime
 from typing import Dict, Optional
 from services.sync_logger import log_sync, log_batch, log_validation, log_state_change
+from actor import AUTO_SYNC_SCHEDULER, acting_as
 
 
 class AutoSyncJob:
@@ -111,10 +112,15 @@ class AutoSyncScheduler:
                 # Notification stays in PENDING during batching window
                 self._update_notification_status(notification_id, 'pending', scheduled_time)
                 
-                # Start job execution thread
+                # Start job execution thread. The whole job runs declared as
+                # the scheduler, so the transfer it starts and anything it
+                # records are attributed to automation rather than falling
+                # through to an anonymous system actor. Declared at the thread
+                # boundary rather than inside the job so the scope closes even
+                # when the job raises.
                 threading.Thread(
-                    target=self._execute_job, 
-                    args=(job, media_type), 
+                    target=self._run_job_as_scheduler,
+                    args=(job, media_type),
                     daemon=True
                 ).start()
     
@@ -158,8 +164,20 @@ class AutoSyncScheduler:
         except Exception as e:
             print(f"❌ Error updating notification status: {e}")
     
+    def _run_job_as_scheduler(self, job: 'AutoSyncJob', media_type: str):
+        """Run one job with the scheduler named as the responsible actor."""
+        with acting_as(AUTO_SYNC_SCHEDULER):
+            self._execute_job(job, media_type)
+
     def _execute_job(self, job: AutoSyncJob, media_type: str):
-        """Execute auto-sync job after wait time"""
+        """
+        Execute auto-sync job after wait time.
+
+        Runs on its own thread with no request behind it, so it says who it is
+        once here: everything started underneath — the transfer row, anything
+        recorded along the way — is attributed to the scheduler rather than
+        falling through to an anonymous system actor.
+        """
         try:
             # Wait until scheduled time
             while time.time() < job.scheduled_time:

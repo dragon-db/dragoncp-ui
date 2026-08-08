@@ -1,7 +1,7 @@
 # DragonCP Frontend Reference
 
-Last updated: 2026-07-28
-Primary files: `frontend/src/`, `frontend/package.json`, `frontend/components.json`, `frontend/vite.config.ts`
+Last updated: 2026-08-06
+Primary files: `frontend/src/`, `frontend/package.json`, `frontend/components.json`, `frontend/vite.config.ts`, `frontend_serving.py`, `app.py`, `start.py`
 
 ## Purpose
 
@@ -50,6 +50,17 @@ backend: `dev` is `http://localhost:5050`, `prod` is `http://localhost:5000`
 overrides both. The chosen target is printed at startup. `npm run dev:prod`
 picks `prod` and pins port 5181.
 
+### Production serving
+
+`npm run build` writes the production application to `frontend/dist/`. Flask
+serves that directory same-origin with `/api` and `/socket.io`; extensionless
+client routes fall back to `index.html`, while API paths and missing assets
+retain real HTTP errors. Hashed `/assets/*` files are immutable for one year and
+the shell is not cached. `./start.sh` rebuilds when the output is absent or
+older than the source; the example systemd unit requires a build before start.
+See [Legacy UI retirement](../operations/legacy-ui-retirement.md) for the
+cutover, validation and rollback contract.
+
 ## Base UI, not Radix
 
 The shadcn components in this project wrap `@base-ui/react` primitives. The two
@@ -69,7 +80,8 @@ directly (`render={<Link to={...} />}`).
 frontend/
 ├── src/
 │   ├── components/
-│   │   ├── auth/           # login-form
+│   │   ├── activity/       # person-versus-automation badge
+│   │   ├── auth/           # login, password change and forced-change gate
 │   │   ├── dashboard/      # system-ticker, storage-strip, transfers-panel,
 │   │   │                   #   webhook-rail, disk-utils
 │   │   ├── dry-run/        # dry-run-report (view, summary, dialog)
@@ -78,7 +90,8 @@ frontend/
 │   │   │                   #   stat-tiles, realtime-status,
 │   │   │                   #   backend-unavailable-overlay
 │   │   ├── pages/          # dashboard, transfers, webhooks, explore,
-│   │   │                   #   backups, settings
+│   │   │                   #   backups, activity, settings
+│   │   ├── settings/       # generated settings, account and backend logs
 │   │   ├── transfers/      # transfer-bits, transfer-detail, transfer-logs,
 │   │   │                   #   simulation-panel, confirm-dialog
 │   │   ├── webhooks/       # webhook-bits, episode-details, auto-sync-panel,
@@ -115,6 +128,7 @@ routes/
     ├── transfers.tsx       → components/pages/transfers.tsx
     ├── webhooks.tsx        → components/pages/webhooks.tsx
     ├── backups.tsx         → components/pages/backups.tsx
+    ├── activity.tsx        → components/pages/activity.tsx
     ├── settings.tsx        → components/pages/settings.tsx
     └── media/
         ├── index.tsx       # redirects to /media/movies
@@ -136,9 +150,10 @@ pair wraps TanStack Query around the Axios client in `lib/api.ts`.
 
 | File | Exported hooks |
 |---|---|
-| `useAuth.ts` | `useLogin`, `useLogout`, `useVerifyAuth`, `useAuthStatus` |
+| `useActivity.ts` | `useActivity`, `useActivityFilters`, `useActivityForTarget` |
+| `useAuth.ts` | `useLogin`, `useLogout`, `useChangePassword`, `useVerifyAuth`, `useAuthStatus` |
 | `useBackups.ts` | `useBackups`, `useBackupDetails`, `useBackupFiles`, `useRestoreBackup`, `useDeleteBackup`, `usePlanRestoreBackup`, `useReindexBackups` |
-| `useConfig.ts` | `useAppConfig`, `useUpdateConfig`, `useResetConfig`, `useEnvOnlyConfig`, `useSSHConfig`, `useSSHStatus`, `useRuntimeStatus`, `useSSHConnect`, `useSSHAutoConnect`, `useSSHDisconnect`, `useLocalDiskUsage`, `useRemoteDiskUsage`, `useDebugInfo`, `useWebSocketStatus` |
+| `useConfig.ts` | `useSettings`, `useUpdateSettings`, SSH/runtime/disk diagnostic hooks, `useWebSocketStatus`, `useBackendLogs`, `useDownloadBackendLogs` |
 | `useExplore.ts` | `useExploreTree`, `useExploreRefresh`, `useExploreSeason`, `useExploreHistory`, `useExploreBackups`, `useExplorePlan`, `useExploreDryRun`, `useExploreExecute`, `useExploreLibraries` |
 | `use-media-query.ts` | `useMediaQuery` — follows any CSS media query, no network |
 | `use-mobile.ts` | `useIsMobile` — viewport breakpoint check, no network |

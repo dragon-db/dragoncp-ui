@@ -5,15 +5,18 @@ Primary files: `scripts/migrate_v1_to_v2.py`, `scripts/verify_v2_schema.py`, `sc
 
 ## Purpose
 
-Three scripts ship in `scripts/`. They are run by hand from a shell on the machine that holds the database. None of them is called by the application, and none of them is wired into startup.
+Four scripts ship in `scripts/`. They are run by hand from a shell on the machine that holds the database. None of them is called by the application, and none of them is wired into startup.
 
 | Script | Writes to the database? | Safe while the app runs? |
 | --- | --- | --- |
 | `migrate_v1_to_v2.py` | Yes — drops and recreates tables | No |
 | `verify_v2_schema.py` | No — reads only | Yes |
 | `compact_transfer_logs.py` | Only with `--apply` | No, when applying |
+| `manage_admins.py` | Yes — one row in `admin_account` | Yes, by design |
 
-All three work on the same SQLite file the application uses. The app resolves its database as `dragoncp.db` in the project root (`models/database.py`), so that is the file to think about in every section below.
+`manage_admins.py` is the odd one out: it is meant to be run against a live installation, and its changes take effect on the next request without a restart. It has its own page — [admin-accounts.md](admin-accounts.md) — because it is the only supported way to add, rename, disable or reset an administrator, and is not covered further here.
+
+All four work on the same SQLite file the application uses. The app resolves its database as `dragoncp.db` in the project root (`models/database.py`), so that is the file to think about in every section below.
 
 Run everything from the project checkout, using the project virtualenv. `compact_transfer_logs.py` imports application code, so a bare system Python will usually fail on it.
 

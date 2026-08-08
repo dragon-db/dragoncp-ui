@@ -74,7 +74,7 @@
   --well: oklch(0.97 0 0);
   --elevated: oklch(0.94 0 0);
   --foreground-2: oklch(0.45 0 0);
-  --foreground-3: oklch(0.60 0 0);
+  --foreground-3: oklch(0.6 0 0);
 }
 
 .dark {

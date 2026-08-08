@@ -1,15 +1,17 @@
 # Backend Logging
 
-Last updated: 2026-07-28
-Primary files: `logging_setup.py`, `services/sync_logger.py`, `routes/logs.py`
+Last updated: 2026-08-06
+Primary files: `logging_setup.py`, `services/sync_logger.py`, `routes/logs.py`, `frontend/src/components/settings/backend-log-panel.tsx`
 
 ## Purpose
 
 Everything the backend has to say about itself ends up in one file. That
 includes normal `logging` calls, every `print()` the application makes, warnings,
 and tracebacks from threads that died without catching their own exception. The
-log viewer endpoints read that same file, so what an operator sees in the browser
-and what they see over SSH is the same text.
+log viewer endpoints read that same file, so what an operator sees in Settings →
+Diagnostics → Backend logs and what they see over SSH is the same text. The
+React viewer supports severity and text filters, automatic or manual refresh,
+and an authenticated full-file download.
 
 ## Where The Log File Lives
 

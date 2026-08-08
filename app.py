@@ -11,13 +11,14 @@ import sys
 import time
 from typing import Any, cast
 
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, g
+from flask import Flask, request, jsonify, session, g
 from flask_socketio import SocketIO
 
 from logging_setup import configure_logging, get_log_file_path
+from frontend_serving import serve_frontend
 
 # Import configuration and managers
-from config import DragonCPConfig, APP_VERSION
+from config import DragonCPConfig
 from ssh import SSHManager
 from websocket import (
     register_websocket_handlers,
@@ -25,11 +26,13 @@ from websocket import (
     start_cleanup_thread,
     websocket_connections,
 )
-from websocket import WEBSOCKET_TIMEOUT_MAX, WEBSOCKET_TIMEOUT_DEFAULT
-from auth import require_auth
+from auth import require_auth, set_account_store, get_auth_config
+import login_guard
+import activity_log
+from activity_log import record
 
 # Import models
-from models import DatabaseManager
+from models import DatabaseManager, AdminAccount, Activity
 from models.webhook import RenameNotification
 
 from env_flags import env_flag, test_mode_enabled
@@ -46,6 +49,7 @@ from routes import (
     simulation_bp,
     init_media_routes, init_transfer_routes, init_backup_routes,
     explore_bp, init_explore_routes,
+    activity_bp, init_activity_routes,
     init_webhook_routes, init_debug_routes, init_simulation_routes
 )
 
@@ -128,8 +132,10 @@ def _is_simple_websocket_available() -> bool:
 # than a marker list here and a different judgement in each route.
 
 
-# Initialize Flask app
-app = Flask(__name__)
+# Initialize Flask without its implicit `/static` route. The production browser
+# app is the Vite build under frontend/dist; the retired client happened to use
+# a directory named static and must not remain reachable by accident.
+app = Flask(__name__, static_folder=None)
 app.config['SECRET_KEY'] = _early_secret_key
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['LOG_FILE_PATH'] = str(get_log_file_path())
@@ -208,6 +214,42 @@ ssh_manager = None
 db_manager = DatabaseManager()
 transfer_coordinator = TransferCoordinator(config, db_manager, socketio)
 
+# Who is allowed to sign in. Accounts live in the database and are maintained
+# from the server with scripts/manage_admins.py; the credentials in the
+# environment file stay as a fallback for as long as no account there can sign
+# in. Wiring the store into the auth layer is what switches the application from
+# a single environment-file operator to named administrators.
+admin_accounts = AdminAccount(db_manager)
+set_account_store(admin_accounts)
+
+# The record of who did what. Wiring the store here is what switches recording
+# on; without it every call to activity_log.record() is a no-op, which is what
+# keeps tests and any database-less context working.
+activity_model = Activity(db_manager)
+activity_log.set_store(activity_model)
+init_activity_routes(activity_model)
+
+try:
+    _auth_config = get_auth_config()
+    login_guard.configure(
+        max_attempts=_auth_config['login_max_attempts'],
+        window_seconds=_auth_config['login_window_minutes'] * 60,
+        lockout_seconds=_auth_config['login_lockout_minutes'] * 60,
+    )
+except Exception as error:  # noqa: BLE001 - fall back to the built-in limits
+    logger.warning('Could not read sign-in throttle settings (%s); using defaults.', error)
+
+if admin_accounts.count_enabled() == 0:
+    logger.warning(
+        'No administrator accounts exist in the database. Sign-in is using the '
+        'fallback credentials from the environment file. Create real accounts '
+        'with: venv/bin/python scripts/manage_admins.py add <username>'
+    )
+else:
+    logger.info(
+        '%d administrator account(s) enabled.', admin_accounts.count_enabled()
+    )
+
 # Settings read across both stores — the env file for what an installation is
 # built with, the database for what an operator changes while running it. The
 # coordinator owns it so every background service reads through the same one.
@@ -279,6 +321,7 @@ app.register_blueprint(debug_bp, url_prefix='/api')
 app.register_blueprint(logs_bp, url_prefix='/api')
 app.register_blueprint(simulation_bp, url_prefix='/api')
 app.register_blueprint(explore_bp, url_prefix='/api')
+app.register_blueprint(activity_bp, url_prefix='/api')
 
 logger.info('Backend logging file: %s', LOG_FILE_PATH)
 
@@ -309,7 +352,7 @@ def after_request(response):
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
 
-    if not request.path.startswith('/static/'):
+    if not request.path.startswith('/assets/'):
         request_started_at = getattr(g, 'request_started_at', None)
         elapsed_ms = -1
         if request_started_at is not None:
@@ -326,20 +369,13 @@ def after_request(response):
     return response
 
 
-# ===== CONTEXT PROCESSORS =====
-
-@app.context_processor
-def inject_app_version():
-    """Inject APP_VERSION into all templates for cache busting"""
-    return {'APP_VERSION': APP_VERSION}
-
-
 # ===== SIMPLE ROUTES (non-blueprint) =====
 
-@app.route('/')
-def index():
-    """Main page"""
-    return render_template('index.html')
+@app.route('/', defaults={'frontend_path': ''})
+@app.route('/<path:frontend_path>')
+def frontend_app(frontend_path):
+    """Serve the built React SPA and fall client-side routes back to index.html."""
+    return serve_frontend(frontend_path)
 
 
 @app.route('/api/config', methods=['GET', 'POST'])
@@ -358,10 +394,9 @@ def api_config():
     read.
     """
     if request.method == 'GET':
-        # The grouped payload for the React page, plus the flat key -> value map
-        # the legacy static UI reads. That UI is still what production serves,
-        # so it keeps working; it simply cannot change the env-backed half any
-        # more, which was already true and merely invisible before.
+        # The grouped payload for the React page, plus the deprecated flat
+        # key -> value compatibility shape. Keeping both during the cutover
+        # allows a browser-only rollback without changing the settings store.
         return jsonify({
             "status": "success",
             **settings_service.flat(),
@@ -375,6 +410,11 @@ def api_config():
     saved, refused, errors = settings_service.set_many(data)
     if errors:
         return jsonify({"status": "error", "message": "; ".join(errors)}), 400
+
+    if saved:
+        record('settings.update',
+               f"Changed settings: {', '.join(sorted(saved))}",
+               target_type='setting', detail={'keys': sorted(saved)})
 
     message = f"Saved {len(saved)} setting(s)" if saved else "Nothing to save"
     if refused:
@@ -431,6 +471,8 @@ def api_connect():
         explore_service.set_ssh_manager(ssh_manager)
         init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
         
+        record('ssh.connect', f"Connected to the media server at {host}",
+               target_type='connection', target_label=host)
         return jsonify({"status": "success", "message": "Connected successfully"})
     else:
         print("❌ SSH connection failed")
@@ -445,6 +487,8 @@ def api_disconnect():
     
     if ssh_manager:
         ssh_manager.disconnect()
+        record('ssh.disconnect', 'Disconnected from the media server',
+               target_type='connection')
         ssh_manager = None
     
     session['ssh_connected'] = False
@@ -515,10 +559,10 @@ def api_ssh_config():
 @require_auth
 def api_env_config():
     """
-    The environment-file half, flat. Read by the legacy static UI's comparison
-    column, which contrasted the file against a per-browser overlay. There is no
-    overlay now, so this is just the env-backed settings — which is what that
-    column was showing all along.
+    Deprecated compatibility endpoint returning the environment-file half.
+
+    The retired UI compared this with a per-browser overlay. There is no overlay
+    now, so this is simply the current env-backed settings.
     """
     return jsonify(settings_service.env_only())
 
@@ -527,7 +571,7 @@ def api_env_config():
 @require_auth
 def api_reset_config():
     """
-    Kept for the legacy static UI, which has a "Reset to Env" button.
+    Deprecated compatibility endpoint for the retired UI's "Reset to Env".
 
     There is nothing left to reset: the per-browser overlay it cleared is gone,
     so environment settings already ARE the environment values. Answering 200
@@ -560,14 +604,6 @@ def _get_runtime_port() -> int:
     return parsed_port
 
 if __name__ == '__main__':
-    # Create templates and static directories if they don't exist
-    # Check TEST_MODE before creating app directories
-    if test_mode_enabled():
-        logger.info('TEST_MODE enabled: skipping template/static directory creation')
-    else:
-        os.makedirs('templates', exist_ok=True)
-        os.makedirs('static', exist_ok=True)
-    
     runtime_port = _get_runtime_port()
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
     test_mode = test_mode_enabled()

@@ -22,12 +22,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  formatSizePair,
-  formatSpeed,
-  formatEta,
-  transferPercent,
-} from "@/lib/transfer-progress";
+import { formatSizePair, formatSpeed, formatEta, transferPercent } from "@/lib/transfer-progress";
 import {
   IconTransfer,
   IconPlus,
@@ -251,9 +246,7 @@ export function TransfersPanel() {
 
   const handlePauseAll = async () => {
     const targets = activeRows.filter((t) => t.status === "running");
-    const results = await Promise.allSettled(
-      targets.map((t) => pauseTransfer.mutateAsync(t.id))
-    );
+    const results = await Promise.allSettled(targets.map((t) => pauseTransfer.mutateAsync(t.id)));
     const failed = results.filter((r) => r.status === "rejected").length;
     if (failed) {
       toast.error(`Paused ${targets.length - failed} of ${targets.length} transfers`);

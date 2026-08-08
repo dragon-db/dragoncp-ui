@@ -72,6 +72,17 @@ export interface Transfer {
   log_count: number;
   logs?: string[];
   rsync_process_id?: number;
+  /**
+   * Who started this run. `started_by_kind` separates a person from automation;
+   * `started_by_account_id` is the stable identity that survives a rename, while
+   * `started_by_name` is the name as it read at the time.
+   *
+   * All three are absent on runs that predate attribution — those show as
+   * "unrecorded" rather than being guessed at.
+   */
+  started_by_kind?: "admin" | "automated" | "system" | null;
+  started_by_name?: string | null;
+  started_by_account_id?: number | null;
   /** Structured rsync progress, parsed server-side from --info=progress2 output. */
   progress_percent?: number | null;
   bytes_transferred?: number | null;
@@ -264,10 +275,10 @@ export interface SettingsResponse {
 /**
  * The flat key -> value map.
  *
- * Still returned by `/api/config` alongside the grouped payload, because the
- * legacy static UI reads it and that UI is what production serves. New code
- * should use `SettingsResponse` — the flat shape cannot say which store a
- * value came from or whether it can be written.
+ * Still returned by `/api/config` alongside the grouped payload as a deprecated
+ * cutover compatibility shape. New code should use `SettingsResponse` — the
+ * flat shape cannot say which store a value came from or whether it can be
+ * written.
  */
 export interface AppConfig {
   [key: string]: string | number | undefined;

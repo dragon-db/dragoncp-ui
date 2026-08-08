@@ -1,6 +1,6 @@
 # Configuration
 
-Last updated: 2026-08-02
+Last updated: 2026-08-06
 Primary files: `settings_registry.py`, `services/settings_service.py`, `config.py`, `app.py`, `auth.py`, `webhook_auth.py`, `logging_setup.py`, `websocket.py`, `ssh.py`, `models/settings.py`, `deploy/gunicorn.conf.py`
 
 Every setting DragonCP reads, where it comes from, and what an operator sees
@@ -45,13 +45,12 @@ and were ignored by the machinery that used them.
 `DragonCPConfig.save_config` went with it — it rewrote the whole env file from
 a dict, dropping every comment, and nothing called it.
 
-`POST /api/config/reset` and `GET /api/config/env-only` are **kept**, because
-the legacy static UI calls both and that UI is what production serves. They now
-mean what is left of what they meant: `env-only` returns the environment half,
-and `reset` answers honestly that there is nothing to reset. For the same
-reason `GET /api/config` returns the flat key -> value map **as well as** the
-grouped payload — the old page reads the flat one, the React page reads the
-groups.
+`POST /api/config/reset` and `GET /api/config/env-only` are deprecated but kept
+for one React cutover soak. They mean what is left of their former contracts:
+`env-only` returns the environment half, and `reset` answers honestly that
+there is nothing to reset. For the same rollback reason `GET /api/config`
+temporarily returns the old flat key -> value map **as well as** the grouped
+payload consumed by React.
 
 ### Moving a setting across
 

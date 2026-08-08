@@ -194,8 +194,8 @@ export function SimulationPanel({ onStarted }: { onStarted?: () => void }) {
         >
           <div className="px-4 py-3 text-[12.5px] text-muted-foreground">
             {onBoard} simulated transfer{onBoard === 1 ? "" : "s"} — watch them in{" "}
-            <span className="font-medium text-foreground">Activity</span>, then clear them when
-            you are done. Clearing removes the rows and the generated files.
+            <span className="font-medium text-foreground">Activity</span>, then clear them when you
+            are done. Clearing removes the rows and the generated files.
           </div>
         </SectionCard>
       )}
