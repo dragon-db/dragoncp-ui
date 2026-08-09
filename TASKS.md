@@ -780,6 +780,31 @@ Steps:
 - [x] `--backup` silently ignored without `--apply` — it now says so
 - [ ] work through the remaining findings by section
 
+### TASK-017 — Three open issues that Explore appears to have closed
+Status: planned      Priority: low
+Tags: triage, explore
+Docs: [docs/features/explore/README.md](docs/features/explore/README.md)
+
+Plan: check these against the shipped Explore page and close them, or record
+what is still missing. Read only — nothing here has been actioned.
+
+Steps:
+- [ ] **#23** "sync a single episode without the whole season" — Explore's
+      Download operation ticks individual episodes and runs with
+      `--ignore-existing`. Confirm this is what was wanted before closing
+- [ ] **#31** "No seasons found for Season XX in Media Browser" — that page is
+      retired and the endpoints behind the error were deleted with it, so the
+      report cannot be reproduced. Likely obsolete rather than fixed
+- [ ] **#25** "upgraded media missing from Recently Updated / Not Synced" — that
+      list was built on the retired sync-status badges. Explore labels every
+      episode from a real file comparison, so `upgraded` is a first-class state.
+      Check the operator still has the view they were asking for
+
+Notes:
+- 2026-08-09 (claude): spotted while looking for QOL work, not verified against
+  the running UI. Each is a claim about what Explore now does, and the issue
+  author is the one who can say whether it matches what they asked for.
+
 ### TASK-005 — Close the remaining documentation gaps
 Status: backlog      Priority: low
 Tags: docs
