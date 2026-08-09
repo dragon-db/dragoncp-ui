@@ -379,8 +379,25 @@ REPLACE = 'replace'               # the stranded copy wins; displace the one in 
 DECISIONS = (KEEP_EXISTING, REPLACE)
 
 
+
+def _with_rival_note(error: str, pending_replacement: Optional[Dict]) -> str:
+    """
+    Add what the operator has to know when a replace fails half way.
+
+    By this point the copy that was in the library has been captured and
+    deleted, so the episode is in the backup area and nowhere else. That is
+    recoverable, but only by someone who knows to go and do it — so the failure
+    has to say it rather than reporting a bare rename error.
+    """
+    if not pending_replacement:
+        return error
+    return (
+        f"{error}. The copy that was in place has already been moved to Backups, "
+        'so this episode is not in your library right now — restore it from there.'
+    )
+
 def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
-                 decisions: Optional[Dict[str, str]] = None,
+                 decisions: Optional[Dict[str, Dict]] = None,
                  keep_a_copy=None) -> Dict:
     """
     Carry out a plan, one file at a time.
@@ -392,10 +409,16 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
 
     A file whose place is already taken is only touched if `decisions` names it,
     because which of two copies to keep is a judgement about quality that this
-    code cannot make. Either way a media file is about to stop existing in the
-    library, so `keep_a_copy(library_relative_path, absolute_path)` is called
-    first and must return (ok, message); a false answer aborts that file and
-    leaves both copies alone.
+    code cannot make. Each decision is `{'choice': ..., 'rival': <path>}`, and
+    the rival is the one the preview displayed: the plan is rebuilt from the
+    disk here, so if a different copy has appeared in the meantime the decision
+    no longer describes what the operator agreed to and is refused rather than
+    applied to a file they never saw.
+
+    Either way a media file is about to stop existing in the library, so
+    `keep_a_copy(library_relative_path, absolute_path)` is called first and must
+    return (ok, message); a false answer aborts that file and leaves both copies
+    alone.
 
     A file that fails is reported and the rest still run.
     """
@@ -415,7 +438,8 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
             return False, str(error)
 
     for action in plan.actions:
-        decision = decisions.get(action.relative_path)
+        instruction = decisions.get(action.relative_path) or {}
+        decision = instruction.get('choice')
 
         if action.needs_decision and decision not in DECISIONS:
             failed.append({
@@ -423,6 +447,23 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
                 'error': 'another copy of this is already in place and no choice was made',
             })
             continue
+
+        # The decision was made about a specific other copy. If the one on disk
+        # is no longer that copy, the choice was made about something else.
+        if action.needs_decision and instruction.get('rival') != action.rival.relative_path:
+            failed.append({
+                'relative_path': action.relative_path,
+                'error': (
+                    'the copy already in place has changed since you looked, so '
+                    'your choice was about a different file — check it again'
+                ),
+            })
+            continue
+
+        # Set once the copy that was in place has been captured and removed,
+        # which is the point after which a failure leaves the library holding
+        # neither copy.
+        pending_replacement: Optional[Dict] = None
 
         source_rel = action.relative_path
         source = os.path.join(local_root, action.relative_path)
@@ -489,11 +530,15 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
             except OSError as error:
                 failed.append({'relative_path': action.relative_path, 'error': str(error)})
                 continue
-            replaced.append({
+            # Recorded only once the move it makes room for has succeeded.
+            # Until then the library has neither copy, and saying "replaced"
+            # for a swap that never completed would be the wrong half of the
+            # story.
+            pending_replacement = {
                 'relative_path': action.rival.relative_path,
                 'replaced_by': action.relative_path,
                 'size': action.rival.size,
-            })
+            }
 
         # The wrapper case has to go via a staging name inside the season
         # folder: the destination is a directory that still contains the file,
@@ -504,7 +549,8 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
         if not wraps and os.path.lexists(destination):
             failed.append({
                 'relative_path': action.relative_path,
-                'error': 'something now occupies the destination',
+                'error': _with_rival_note('something now occupies the destination',
+                                          pending_replacement),
             })
             continue
 
@@ -521,7 +567,8 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
                     os.rename(staged, source)
                     failed.append({
                         'relative_path': action.relative_path,
-                        'error': 'the folder holding it could not be cleared',
+                        'error': _with_rival_note('the folder holding it could not be cleared',
+                                                  pending_replacement),
                     })
                     continue
                 os.rename(staged, destination)
@@ -531,10 +578,15 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
                 if action.wrapper:
                     removed_here = _prune_empty(wrapper, local_root)
         except OSError as error:
-            failed.append({'relative_path': action.relative_path, 'error': str(error)})
+            failed.append({
+                'relative_path': action.relative_path,
+                'error': _with_rival_note(str(error), pending_replacement),
+            })
             continue
 
         directories_removed += removed_here
+        if pending_replacement:
+            replaced.append(pending_replacement)
         moved.append({
             'relative_path': action.relative_path,
             'destination': action.destination,

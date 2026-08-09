@@ -174,7 +174,18 @@ class BackupsService:
             self.layout.prune_empty_dirs(os.path.dirname(capture_path))
             return False, f"Could not keep a copy of the file: {error}", None
 
-        self.indexer.reindex_capture(actual_id)
+        try:
+            self.indexer.reindex_capture(actual_id)
+        except Exception as error:  # noqa: BLE001 - see below; must not propagate
+            # A copy nothing has indexed is a copy nobody can find: it does not
+            # appear on the Backups page and no restore can reach it. Reporting
+            # success here would let the caller delete the library file and
+            # leave the only remaining copy invisible. So the copy is undone and
+            # this fails, which costs nothing — the original is still in place.
+            shutil.rmtree(capture_path, ignore_errors=True)
+            self.layout.prune_empty_dirs(os.path.dirname(capture_path))
+            return False, f"Kept a copy but could not index it: {error}", None
+
         return True, 'kept', actual_id
 
     def _reserve_capture_dir(self, slot_dir: str, capture_id: str) -> Tuple[str, str]:

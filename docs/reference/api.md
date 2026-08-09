@@ -2349,7 +2349,12 @@ Input JSON:
 ```json
 {
   "season": "Season 05",
-  "decisions": {"<stranded relative_path>": "keep_existing"}
+  "decisions": {
+    "<stranded relative_path>": {
+      "choice": "keep_existing",
+      "rival": "<the rival relative_path the preview showed>"
+    }
+  }
 }
 ```
 
@@ -2357,6 +2362,10 @@ Both optional. `season` narrows the scope. `decisions` answers the contested
 files: `keep_existing` deletes the stranded copy and leaves the one in place,
 `replace` does the opposite. A contested file with no decision is left alone and
 reported in `failed` — the run never guesses which copy to keep.
+
+`rival` must be the copy the preview displayed. The plan is rebuilt from disk
+here, so if a different copy has appeared since, the decision no longer describes
+what was agreed to and that file is refused rather than acted on.
 
 The plan is rebuilt server-side from the disk as it is now, so the body cannot
 name a file to move; a decision only selects between two files the server itself

@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -224,7 +225,7 @@ class RepairTests(unittest.TestCase):
         service = self.repair_service()
         result = service.repair_apply(
             'tvshows', self.SERIES,
-            decisions={stranded: 'keep_existing'})
+            decisions={stranded: {'choice': 'keep_existing', 'rival': existing}})
 
         self.assertEqual(result['deleted_count'], 1)
         self.assertEqual(result['moved_count'], 0)
@@ -248,7 +249,8 @@ class RepairTests(unittest.TestCase):
         stranded = self.stranded('Season 01', stranded_name, size=20 * MB)
 
         result = self.repair_service().repair_apply(
-            'tvshows', self.SERIES, decisions={stranded: 'replace'})
+            'tvshows', self.SERIES,
+            decisions={stranded: {'choice': 'replace', 'rival': existing}})
 
         self.assertEqual(result['moved_count'], 1)
         self.assertEqual(result['replaced_count'], 1)
@@ -279,12 +281,67 @@ class RepairTests(unittest.TestCase):
         self.assertTrue(self.exists(contested))
         self.assertFalse(self.exists(clean))
 
+    def test_a_decision_about_a_copy_that_has_since_changed_is_refused(self):
+        """
+        The choice was made looking at one specific other copy. If a different
+        one is there by the time it runs, the choice was about something else —
+        and this deletes files, so it asks again rather than assuming.
+        """
+        self.placed('Season 01', 'Show - S01E01 - A [Bluray-1080p].mkv')
+        stranded = self.stranded('Season 01', 'Show - S01E01 - A [WEBDL-720p].mkv')
+
+        result = self.repair_service().repair_apply(
+            'tvshows', self.SERIES,
+            decisions={stranded: {
+                'choice': 'keep_existing',
+                'rival': f"{self.SERIES}/Season 01/Show - S01E01 - A [something else].mkv",
+            }})
+
+        self.assertEqual(result['deleted_count'], 0)
+        self.assertEqual(result['failed_count'], 1)
+        self.assertIn('has changed since you looked', result['failed'][0]['error'])
+        self.assertTrue(self.exists(stranded))
+
+    def test_a_replace_that_cannot_finish_says_where_the_other_copy_went(self):
+        """
+        Once the copy in place is captured and removed, a later failure leaves
+        the episode only in Backups. The operator has to be told that, or they
+        are left with a rename error and a missing episode.
+        """
+        existing = self.placed('Season 01', 'Show - S01E01 - A [WEBDL-720p].mkv')
+        stranded = self.stranded('Season 01', 'Show - S01E01 - A [Bluray-1080p].mkv')
+
+        service = self.repair_service()
+        real_rename = os.rename
+        calls = {'n': 0}
+
+        def flaky(src, dst):
+            # Let the rival's removal and the staging rename through, then fail
+            # the one that would put the stranded copy in place.
+            calls['n'] += 1
+            if calls['n'] >= 2:
+                raise OSError('disk went away')
+            return real_rename(src, dst)
+
+        with unittest.mock.patch('services.explore.repair.os.rename', flaky):
+            result = service.repair_apply(
+                'tvshows', self.SERIES,
+                decisions={stranded: {'choice': 'replace', 'rival': existing}})
+
+        self.assertEqual(result['moved_count'], 0)
+        # Not reported as a completed replacement, because it did not complete.
+        self.assertEqual(result['replaced_count'], 0)
+        self.assertEqual(result['failed_count'], 1)
+        self.assertIn('already been moved to Backups', result['failed'][0]['error'])
+        # And the copy that was displaced really is recoverable.
+        self.assertIn('Show - S01E01 - A [WEBDL-720p].mkv', self.backup_filenames())
+
     def test_nothing_is_deleted_when_the_copy_cannot_be_preserved(self):
         """
         The backup capture is what makes deletion reversible, so a failure to
         capture has to stop the deletion rather than proceed without it.
         """
-        self.placed('Season 01', 'Show - S01E01 - A [Bluray-1080p].mkv')
+        rival = self.placed('Season 01', 'Show - S01E01 - A [Bluray-1080p].mkv')
         stranded = self.stranded('Season 01', 'Show - S01E01 - A [WEBDL-720p].mkv')
 
         service = self.repair_service()
@@ -292,7 +349,8 @@ class RepairTests(unittest.TestCase):
         del self.coordinator.backups
 
         result = service.repair_apply(
-            'tvshows', self.SERIES, decisions={stranded: 'keep_existing'})
+            'tvshows', self.SERIES,
+            decisions={stranded: {'choice': 'keep_existing', 'rival': rival}})
 
         self.assertEqual(result['deleted_count'], 0)
         self.assertEqual(result['failed_count'], 1)

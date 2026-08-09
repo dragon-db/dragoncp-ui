@@ -3320,9 +3320,17 @@ paths:
                     stranded one. A contested file with no decision is left
                     alone and reported in `failed`. The losing copy is captured
                     into the backup area first, so either answer is reversible.
+                    `rival` must be the copy the preview showed; if the disk no
+                    longer agrees, the decision is refused rather than applied
+                    to a file nobody looked at.
                   additionalProperties:
-                    type: string
-                    enum: [keep_existing, replace]
+                    type: object
+                    required: [choice, rival]
+                    properties:
+                      choice:
+                        type: string
+                        enum: [keep_existing, replace]
+                      rival: { type: string }
       responses:
         '200':
           description: "moved / deleted / replaced / failed, with counts, freed bytes and folders removed"

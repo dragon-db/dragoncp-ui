@@ -15,7 +15,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatBytes } from "@/lib/explore-format";
-import type { ExploreRepairAction, ExploreRepairPlan, RepairDecision } from "@/lib/explore-types";
+import type {
+  ExploreRepairAction,
+  ExploreRepairPlan,
+  RepairChoice,
+  RepairDecision,
+} from "@/lib/explore-types";
 
 function basename(path: string): string {
   const parts = path.split("/");
@@ -65,11 +70,11 @@ function ContestedRow({
 }: {
   action: ExploreRepairAction;
   decision: RepairDecision | undefined;
-  onDecide: (choice: RepairDecision | undefined) => void;
+  onDecide: (choice: RepairChoice | undefined) => void;
 }) {
   const rival = action.rival!;
-  const strandedWins = decision === "replace";
-  const existingWins = decision === "keep_existing";
+  const strandedWins = decision?.choice === "replace";
+  const existingWins = decision?.choice === "keep_existing";
 
   return (
     <li className="rounded-md border border-amber-500/35 bg-amber-500/[0.05] p-2.5">
@@ -81,6 +86,7 @@ function ContestedRow({
       <div className="mt-2 flex flex-col gap-1.5">
         <button
           type="button"
+          aria-pressed={existingWins}
           onClick={() => onDecide(existingWins ? undefined : "keep_existing")}
           className={cn(
             "flex min-w-0 items-center gap-2 rounded border px-2 py-1.5 text-left text-[12px] transition-colors",
@@ -102,6 +108,7 @@ function ContestedRow({
 
         <button
           type="button"
+          aria-pressed={strandedWins}
           onClick={() => onDecide(strandedWins ? undefined : "replace")}
           className={cn(
             "flex min-w-0 items-center gap-2 rounded border px-2 py-1.5 text-left text-[12px] transition-colors",
@@ -152,6 +159,7 @@ export function RepairDialog({
   onOpenChange,
   plan,
   loading,
+  error,
   submitting,
   decisions,
   onDecide,
@@ -161,9 +169,11 @@ export function RepairDialog({
   onOpenChange: (open: boolean) => void;
   plan: ExploreRepairPlan | null;
   loading: boolean;
+  /** Why the plan could not be read. Distinct from a plan that found nothing. */
+  error: string | null;
   submitting: boolean;
   decisions: Record<string, RepairDecision>;
-  onDecide: (relativePath: string, choice: RepairDecision | undefined) => void;
+  onDecide: (relativePath: string, choice: RepairChoice | undefined) => void;
   onConfirm: () => void;
 }) {
   const actions = plan?.actions ?? [];
@@ -176,8 +186,10 @@ export function RepairDialog({
   const undecided = contested.length - decided.length;
 
   const willMove =
-    clean.length + decided.filter((a) => decisions[a.relative_path] === "replace").length;
-  const willDelete = decided.filter((a) => decisions[a.relative_path] === "keep_existing").length;
+    clean.length + decided.filter((a) => decisions[a.relative_path]?.choice === "replace").length;
+  const willDelete = decided.filter(
+    (a) => decisions[a.relative_path]?.choice === "keep_existing"
+  ).length;
   const nothingToDo = willMove === 0 && willDelete === 0;
 
   return (
@@ -195,6 +207,11 @@ export function RepairDialog({
         <div className="max-h-[52vh] overflow-y-auto px-5 py-4">
           {loading ? (
             <p className="text-[12.5px] text-muted-foreground">Checking what is out of place…</p>
+          ) : error ? (
+            <p className="flex items-start gap-2 rounded-md border border-rose-500/40 bg-rose-500/8 p-3 text-[12.5px] text-rose-100">
+              <IconAlertTriangle className="mt-px size-4 flex-none" />
+              {error}
+            </p>
           ) : blocker ? (
             <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/8 p-3 text-[12.5px] text-amber-100">
               <IconAlertTriangle className="mt-px size-4 flex-none" />
@@ -267,7 +284,14 @@ export function RepairDialog({
             </Button>
             <Button
               size="sm"
-              disabled={loading || submitting || Boolean(blocker) || nothingToDo || undecided > 0}
+              disabled={
+                loading ||
+                submitting ||
+                Boolean(error) ||
+                Boolean(blocker) ||
+                nothingToDo ||
+                undecided > 0
+              }
               onClick={onConfirm}
             >
               {willDelete > 0 && willMove === 0 && <IconTrash className="mr-1.5 size-3.5" />}

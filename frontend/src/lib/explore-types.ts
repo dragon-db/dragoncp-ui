@@ -233,7 +233,17 @@ export interface ExploreRepairRival {
 }
 
 /** What to do with a stranded file whose place is already taken. */
-export type RepairDecision = "keep_existing" | "replace";
+export type RepairChoice = "keep_existing" | "replace";
+
+/**
+ * A choice, tied to the copy the preview showed it was about. The server
+ * rebuilds the plan from disk and refuses the decision if that copy has
+ * changed, so the choice can never land on a file nobody looked at.
+ */
+export interface RepairDecision {
+  choice: RepairChoice;
+  rival: string;
+}
 
 /** One stranded file and where the repair would put it. */
 export interface ExploreRepairAction {

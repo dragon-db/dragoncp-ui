@@ -1041,12 +1041,22 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
         open={Boolean(repairScope)}
         plan={repairPlan.data ?? null}
         loading={repairPlan.isPending}
+        error={
+          repairPlan.isError
+            ? messageFrom(repairPlan.error, "Could not check what is out of place here.")
+            : null
+        }
         submitting={repair.isPending}
         decisions={repairChoices}
         onDecide={(path, choice) =>
           setRepairChoices((current) => {
             const next = { ...current };
-            if (choice) next[path] = choice;
+            // The rival the preview displayed travels with the choice: the
+            // server rebuilds the plan from disk and refuses if that copy has
+            // changed, so a decision can never land on a file nobody saw.
+            const rival = repairPlan.data?.actions.find((a) => a.relative_path === path)?.rival
+              ?.relative_path;
+            if (choice && rival) next[path] = { choice, rival };
             else delete next[path];
             return next;
           })

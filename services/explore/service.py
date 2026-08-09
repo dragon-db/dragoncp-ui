@@ -528,9 +528,15 @@ class ExploreService:
         if not plan.actions:
             raise ExploreError('Nothing here can be repaired automatically.', 400)
 
+        # Keep only decisions that name a file this plan actually holds, and
+        # normalise them to {'choice': ..., 'rival': ...}. The rival is what the
+        # preview showed; `apply_repair` refuses if the disk no longer agrees.
         decisions = {
-            path: choice for path, choice in (decisions or {}).items()
-            if choice in repair_mod.DECISIONS and plan.find(path) is not None
+            path: {'choice': value.get('choice'), 'rival': value.get('rival')}
+            for path, value in (decisions or {}).items()
+            if isinstance(value, dict)
+            and value.get('choice') in repair_mod.DECISIONS
+            and plan.find(path) is not None
         }
         if not plan.clean and not decisions:
             raise ExploreError(
