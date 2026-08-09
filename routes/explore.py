@@ -167,14 +167,25 @@ def api_repair_apply(media_type, folder):
     """
     Lift the stranded files back to where they belong.
 
-    The plan is rebuilt server-side from the disk as it is now; the request body
-    carries the scope and nothing else, so a client cannot name a file to move.
+    The plan is rebuilt server-side from the disk as it is now, so a client
+    cannot name a file to move. The body carries the scope and, for files whose
+    place is already taken by another copy, which of the two to keep — a choice
+    between two files the server itself found, not a path it will trust.
     """
     data = request.get_json(silent=True) or {}
     season = data.get('season') or None
-    result = explore_service.repair_apply(media_type, folder, season)
-    record('explore.repair',
-           f"Repaired {result['moved_count']} misplaced file(s) in {result['scope']}",
+    decisions = data.get('decisions')
+    if decisions is not None and not isinstance(decisions, dict):
+        return jsonify({'status': 'error', 'message': 'decisions must be an object'}), 400
+
+    result = explore_service.repair_apply(media_type, folder, season, decisions)
+
+    summary = f"Repaired {result['moved_count']} misplaced file(s)"
+    if result['deleted_count']:
+        summary += f", deleted {result['deleted_count']} redundant copy/copies"
+    if result['replaced_count']:
+        summary += f", replaced {result['replaced_count']}"
+    record('explore.repair', f"{summary} in {result['scope']}",
            target_type='explore_repair', target_id=f"{media_type}/{folder}")
     return jsonify({'status': 'success', **result})
 

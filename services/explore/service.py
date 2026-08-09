@@ -20,6 +20,7 @@ from . import compare as cmp
 from . import dryrun
 from . import planner
 from . import repair as repair_mod
+from services.backups import identity as backups_identity
 from .executor import ExploreExecutor, build_execution_spec
 from .identity import season_number_from_folder
 from .inventory import LocalInventory, RemoteInventory
@@ -505,14 +506,17 @@ class ExploreService:
         return payload
 
     def repair_apply(self, media_type: str, folder: str,
-                     season_label: Optional[str] = None) -> Dict:
+                     season_label: Optional[str] = None,
+                     decisions: Optional[Dict[str, str]] = None) -> Dict:
         """
         Carry out the repair.
 
         The plan is rebuilt here from the disk as it is now rather than taken
         from the caller. A repair moves files inside the media library, so the
         client does not get to name them — the same reason an Explore transfer
-        re-derives its own file list server-side.
+        re-derives its own file list server-side. `decisions` is the one thing
+        the caller does supply, and it only ever selects between two copies the
+        server itself found.
         """
         local_root, entries, scope = self._repair_entries(media_type, folder, season_label)
 
@@ -524,15 +528,49 @@ class ExploreService:
         if not plan.actions:
             raise ExploreError('Nothing here can be repaired automatically.', 400)
 
+        decisions = {
+            path: choice for path, choice in (decisions or {}).items()
+            if choice in repair_mod.DECISIONS and plan.find(path) is not None
+        }
+        if not plan.clean and not decisions:
+            raise ExploreError(
+                'Every file here already has another copy in place. Choose which '
+                'copy to keep for at least one of them.', 400)
+
         try:
             result = repair_mod.apply_repair(
-                local_root, plan, self.config.get_all_allowed_paths())
+                local_root, plan, self.config.get_all_allowed_paths(),
+                decisions=decisions,
+                keep_a_copy=self._keep_a_copy(media_type),
+            )
         except PathTraversalError as error:
             raise ExploreError(str(error), 400)
 
         result['scope'] = scope
         result['blocked'] = [b.as_dict() for b in plan.blocked]
         return result
+
+    def _keep_a_copy(self, media_type: str):
+        """
+        Hands the repair a way to preserve a file it is about to remove.
+
+        Routed through the backups service rather than reimplemented, so a file
+        deleted here lands in the same tree, is indexed the same way, and comes
+        back through the same restore as anything else. Without a backups
+        service there is nothing to preserve into, and refusing is the only safe
+        answer — a delete that cannot be undone is not one this offers.
+        """
+        backups = getattr(self.coordinator, 'backups', None)
+        library = backups_identity.library_for_media_type(media_type) if backups else None
+
+        def keep(relative_path: str, absolute_path: str):
+            if backups is None or not library:
+                return False, 'the backup area is not available'
+            ok, message, _ = backups.capture_library_file(
+                library, relative_path, absolute_path, 'explore_repair')
+            return ok, message
+
+        return keep
 
     def _repair_blocker(self, media_type: str, folder: str) -> Optional[str]:
         """

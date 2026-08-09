@@ -7,6 +7,7 @@ import type {
   ExplorePlan,
   ExploreRepairPlan,
   ExploreRepairResult,
+  RepairDecision,
   ExploreSeason,
   ExploreTree,
 } from "@/lib/explore-types";
@@ -112,10 +113,19 @@ export function useExploreRepairPlan(
 export function useExploreRepair(mediaType: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ folder, season }: { folder: string; season?: string | null }) => {
+    mutationFn: async ({
+      folder,
+      season,
+      decisions,
+    }: {
+      folder: string;
+      season?: string | null;
+      /** Only for files whose place is already taken, keyed by their path. */
+      decisions?: Record<string, RepairDecision>;
+    }) => {
       const response = await api.post<{ status: string } & ExploreRepairResult>(
         `/explore/repair/${mediaType}/${encodeURIComponent(folder)}`,
-        season ? { season } : {}
+        { ...(season ? { season } : {}), ...(decisions ? { decisions } : {}) }
       );
       return response.data;
     },

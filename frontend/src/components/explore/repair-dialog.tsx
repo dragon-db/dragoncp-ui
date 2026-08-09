@@ -1,4 +1,9 @@
-import { IconAlertTriangle, IconArrowNarrowRight, IconFolderOff } from "@tabler/icons-react";
+import {
+  IconAlertTriangle,
+  IconArrowNarrowRight,
+  IconFolderOff,
+  IconTrash,
+} from "@tabler/icons-react";
 import {
   Dialog,
   DialogContent,
@@ -8,8 +13,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { formatBytes } from "@/lib/explore-format";
-import type { ExploreRepairPlan } from "@/lib/explore-types";
+import type { ExploreRepairAction, ExploreRepairPlan, RepairDecision } from "@/lib/explore-types";
 
 function basename(path: string): string {
   const parts = path.split("/");
@@ -17,12 +23,129 @@ function basename(path: string): string {
 }
 
 /**
+ * A file that can simply be moved: nothing else holds its place.
+ */
+function CleanRow({ action }: { action: ExploreRepairAction }) {
+  return (
+    <li className="flex flex-col gap-1">
+      <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
+        <span className="min-w-0 flex-1 truncate text-foreground" title={action.name}>
+          {action.name}
+        </span>
+        <span className="flex-none font-mono text-[10.5px] text-muted-foreground tabular-nums">
+          {formatBytes(action.size)}
+        </span>
+      </div>
+      <div className="flex min-w-0 items-center gap-1.5 pl-1 text-[11.5px] text-emerald-300">
+        <IconArrowNarrowRight className="size-3.5 flex-none" />
+        <span className="min-w-0 truncate" title={action.destination}>
+          {action.season_folder ?? basename(action.destination)}
+        </span>
+        <IconFolderOff className="size-3 flex-none opacity-60" />
+        <span className="flex-none font-mono text-[10px] tracking-[0.06em] uppercase opacity-70">
+          folder removed
+        </span>
+      </div>
+    </li>
+  );
+}
+
+/**
+ * A file whose place is already held by another copy of the same thing.
+ *
+ * Both copies are named with their sizes, because that is usually the whole
+ * basis for the decision — a 9 GB Bluray beside a 3 GB web copy answers itself.
+ * Neither is pre-selected: there is no default here that is right often enough
+ * to be worth the times it would be wrong.
+ */
+function ContestedRow({
+  action,
+  decision,
+  onDecide,
+}: {
+  action: ExploreRepairAction;
+  decision: RepairDecision | undefined;
+  onDecide: (choice: RepairDecision | undefined) => void;
+}) {
+  const rival = action.rival!;
+  const strandedWins = decision === "replace";
+  const existingWins = decision === "keep_existing";
+
+  return (
+    <li className="rounded-md border border-amber-500/35 bg-amber-500/[0.05] p-2.5">
+      <p className="flex items-center gap-1.5 text-[11px] font-medium text-amber-100">
+        <IconAlertTriangle className="size-3.5 flex-none" />
+        This is already in your library — keep one
+      </p>
+
+      <div className="mt-2 flex flex-col gap-1.5">
+        <button
+          type="button"
+          onClick={() => onDecide(existingWins ? undefined : "keep_existing")}
+          className={cn(
+            "flex min-w-0 items-center gap-2 rounded border px-2 py-1.5 text-left text-[12px] transition-colors",
+            existingWins
+              ? "border-emerald-500/50 bg-emerald-500/10"
+              : "border-border hover:bg-accent/40"
+          )}
+        >
+          <span className="min-w-0 flex-1 truncate" title={rival.name}>
+            {rival.name}
+          </span>
+          <span className="flex-none font-mono text-[10px] tabular-nums opacity-70">
+            {formatBytes(rival.size)}
+          </span>
+          <span className="flex-none font-mono text-[9.5px] tracking-[0.08em] uppercase opacity-60">
+            in place
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onDecide(strandedWins ? undefined : "replace")}
+          className={cn(
+            "flex min-w-0 items-center gap-2 rounded border px-2 py-1.5 text-left text-[12px] transition-colors",
+            strandedWins
+              ? "border-emerald-500/50 bg-emerald-500/10"
+              : "border-border hover:bg-accent/40"
+          )}
+        >
+          <span className="min-w-0 flex-1 truncate" title={action.name}>
+            {action.name}
+          </span>
+          <span className="flex-none font-mono text-[10px] tabular-nums opacity-70">
+            {formatBytes(action.size)}
+          </span>
+          <span className="flex-none font-mono text-[9.5px] tracking-[0.08em] uppercase opacity-60">
+            stranded
+          </span>
+        </button>
+      </div>
+
+      <p className="mt-1.5 text-[11px] text-muted-foreground">
+        {existingWins ? (
+          <>
+            Keeping the one in place. The stranded copy is removed — {formatBytes(action.size)}{" "}
+            back.
+          </>
+        ) : strandedWins ? (
+          <>Using the stranded copy. The one in place is removed.</>
+        ) : (
+          <>Nothing happens to either until you pick one.</>
+        )}
+        {decision ? " The other is kept in Backups, so this can be undone." : ""}
+      </p>
+    </li>
+  );
+}
+
+/**
  * The confirmation in front of a repair.
  *
- * Every file it will touch is named, with the folder that comes down under it,
- * because "move 22 files" is not something anyone should approve without seeing
- * the list. What it refuses to touch is shown in the same dialog rather than
- * left out — a repair that silently covers 20 of 22 files reads as complete.
+ * Every file it will touch is named, because "move 22 files" is not something
+ * anyone should approve without seeing the list. What it refuses to touch is
+ * shown in the same dialog rather than left out — a repair that silently covers
+ * 20 of 22 files reads as complete.
  */
 export function RepairDialog({
   open,
@@ -30,6 +153,8 @@ export function RepairDialog({
   plan,
   loading,
   submitting,
+  decisions,
+  onDecide,
   onConfirm,
 }: {
   open: boolean;
@@ -37,11 +162,23 @@ export function RepairDialog({
   plan: ExploreRepairPlan | null;
   loading: boolean;
   submitting: boolean;
+  decisions: Record<string, RepairDecision>;
+  onDecide: (relativePath: string, choice: RepairDecision | undefined) => void;
   onConfirm: () => void;
 }) {
   const actions = plan?.actions ?? [];
   const blocked = plan?.blocked ?? [];
   const blocker = plan?.blocker ?? null;
+
+  const clean = actions.filter((a) => !a.needs_decision);
+  const contested = actions.filter((a) => a.needs_decision);
+  const decided = contested.filter((a) => decisions[a.relative_path]);
+  const undecided = contested.length - decided.length;
+
+  const willMove =
+    clean.length + decided.filter((a) => decisions[a.relative_path] === "replace").length;
+  const willDelete = decided.filter((a) => decisions[a.relative_path] === "keep_existing").length;
+  const nothingToDo = willMove === 0 && willDelete === 0;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -50,8 +187,8 @@ export function RepairDialog({
           <DialogTitle className="text-[15px]">Put these files back where they belong</DialogTitle>
           <DialogDescription className="text-[12.5px]">
             Each one is nested a level too deep, inside a folder named after itself, which is why
-            your media server cannot see it. Nothing is renamed and nothing is overwritten — the
-            file moves up and the empty folder is removed.
+            your media server cannot see it. Nothing is renamed, and anything removed is kept in
+            Backups first.
           </DialogDescription>
         </DialogHeader>
 
@@ -65,32 +202,23 @@ export function RepairDialog({
             </p>
           ) : (
             <div className="flex flex-col gap-4">
-              {actions.length > 0 && (
+              {contested.length > 0 && (
                 <ul className="flex flex-col gap-2">
-                  {actions.map((action) => (
-                    <li key={action.relative_path} className="flex flex-col gap-1">
-                      <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
-                        <span
-                          className="min-w-0 flex-1 truncate text-foreground"
-                          title={action.name}
-                        >
-                          {action.name}
-                        </span>
-                        <span className="flex-none font-mono text-[10.5px] text-muted-foreground tabular-nums">
-                          {formatBytes(action.size)}
-                        </span>
-                      </div>
-                      <div className="flex min-w-0 items-center gap-1.5 pl-1 text-[11.5px] text-emerald-300">
-                        <IconArrowNarrowRight className="size-3.5 flex-none" />
-                        <span className="min-w-0 truncate" title={action.destination}>
-                          {action.season_folder ?? basename(action.destination)}
-                        </span>
-                        <IconFolderOff className="size-3 flex-none opacity-60" />
-                        <span className="flex-none font-mono text-[10px] tracking-[0.06em] uppercase opacity-70">
-                          folder removed
-                        </span>
-                      </div>
-                    </li>
+                  {contested.map((action) => (
+                    <ContestedRow
+                      key={action.relative_path}
+                      action={action}
+                      decision={decisions[action.relative_path]}
+                      onDecide={(choice) => onDecide(action.relative_path, choice)}
+                    />
+                  ))}
+                </ul>
+              )}
+
+              {clean.length > 0 && (
+                <ul className="flex flex-col gap-2">
+                  {clean.map((action) => (
+                    <CleanRow key={action.relative_path} action={action} />
                   ))}
                 </ul>
               )}
@@ -123,10 +251,15 @@ export function RepairDialog({
 
         {/* `mx-0 mb-0` cancels the footer's `-mx-4 -mb-4`; see restore-dialog. */}
         <DialogFooter className="mx-0 mb-0 items-center gap-2 border-t border-border px-5 py-3 sm:justify-between">
-          <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
-            {actions.length > 0
-              ? `${actions.length} file${actions.length === 1 ? "" : "s"} · ${formatBytes(plan?.total_size ?? 0)}`
-              : ""}
+          <span className="min-w-0 font-mono text-[11px] text-muted-foreground tabular-nums">
+            {undecided > 0
+              ? `${undecided} still need a choice`
+              : [
+                  willMove > 0 ? `move ${willMove}` : "",
+                  willDelete > 0 ? `delete ${willDelete}` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
           </span>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
@@ -134,10 +267,11 @@ export function RepairDialog({
             </Button>
             <Button
               size="sm"
-              disabled={loading || submitting || Boolean(blocker) || actions.length === 0}
+              disabled={loading || submitting || Boolean(blocker) || nothingToDo || undecided > 0}
               onClick={onConfirm}
             >
-              {submitting ? "Moving…" : `Move ${actions.length || ""}`.trim()}
+              {willDelete > 0 && willMove === 0 && <IconTrash className="mr-1.5 size-3.5" />}
+              {submitting ? "Working…" : "Apply"}
             </Button>
           </div>
         </DialogFooter>

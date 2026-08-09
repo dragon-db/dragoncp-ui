@@ -223,6 +223,18 @@ export interface ExploreBackupRun {
   files: ExploreBackupFile[];
 }
 
+/** A copy of the same episode or film already sitting where it belongs. */
+export interface ExploreRepairRival {
+  relative_path: string;
+  name: string;
+  size: number;
+  /** True when it is literally the same filename — the plain wrapper case. */
+  same_name: boolean;
+}
+
+/** What to do with a stranded file whose place is already taken. */
+export type RepairDecision = "keep_existing" | "replace";
+
 /** One stranded file and where the repair would put it. */
 export interface ExploreRepairAction {
   relative_path: string;
@@ -232,6 +244,10 @@ export interface ExploreRepairAction {
   size: number;
   /** The folder it is buried in, which comes down once it moves. */
   wrapper: string;
+  /** What already holds this episode or film, if anything. */
+  rival: ExploreRepairRival | null;
+  /** True when `rival` is set: one of the two copies has to go. */
+  needs_decision: boolean;
 }
 
 /** A stranded file the repair will not touch, and why not in plain words. */
@@ -246,9 +262,14 @@ export interface ExploreRepairPlan {
   scope: string;
   actions: ExploreRepairAction[];
   blocked: ExploreRepairBlocker[];
+  /** Files that can simply be moved — excludes the contested ones. */
   action_count: number;
+  /** Files whose place is already held by another copy of the same thing. */
+  contested_count: number;
   blocked_count: number;
   total_size: number;
+  /** What deleting every contested stranded copy would free. */
+  reclaimable: number;
   /** Why the repair cannot run right now, or null. */
   blocker: string | null;
 }
@@ -256,12 +277,17 @@ export interface ExploreRepairPlan {
 export interface ExploreRepairResult {
   scope: string;
   moved: Array<{ relative_path: string; destination: string; size: number }>;
+  deleted: Array<{ relative_path: string; kept_instead: string; size: number }>;
+  replaced: Array<{ relative_path: string; replaced_by: string; size: number }>;
   failed: Array<{ relative_path: string; error: string }>;
   blocked: ExploreRepairBlocker[];
   moved_count: number;
+  deleted_count: number;
+  replaced_count: number;
   failed_count: number;
   directories_removed: number;
   moved_size: number;
+  freed_size: number;
 }
 
 export interface ExploreHistoryFile {

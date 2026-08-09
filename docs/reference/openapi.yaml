@@ -3277,7 +3277,10 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: "Repair plan: actions, blocked entries with reasons, and any blocker"
+          description: >-
+            Repair plan. Each action carries a `rival` (and `needs_decision`)
+            when another copy of the same episode or film is already in place,
+            found by identity rather than filename.
         '400':
           description: Invalid folder or season name
         '401':
@@ -3308,9 +3311,21 @@ paths:
               type: object
               properties:
                 season: { type: string, nullable: true }
+                decisions:
+                  type: object
+                  description: >-
+                    For contested files only, keyed by the stranded file's
+                    relative path. `keep_existing` deletes the stranded copy;
+                    `replace` removes the copy in place and promotes the
+                    stranded one. A contested file with no decision is left
+                    alone and reported in `failed`. The losing copy is captured
+                    into the backup area first, so either answer is reversible.
+                  additionalProperties:
+                    type: string
+                    enum: [keep_existing, replace]
       responses:
         '200':
-          description: "moved / failed / blocked, with counts and the folders removed"
+          description: "moved / deleted / replaced / failed, with counts, freed bytes and folders removed"
         '400':
           description: Nothing in scope can be repaired automatically
         '401':

@@ -286,22 +286,35 @@ Repair button. It previews first: every file it will move is named, with the
 folder that comes down under it, and the total. Nothing is renamed — the file
 takes the name it already has, one level up.
 
-Two rules shape what it will and will not do.
-
-**Nothing is overwritten.** A repair that displaced a file would need the whole
-backup machinery behind it to be safe, and a stranded copy is never worth that.
-If a real file already holds the destination, the stranded one stays put and is
-listed as left alone, with the reason.
+Three rules shape what it will and will not do.
 
 **A file is only moved when the destination is derivable.** Too *deep* is
 repairable: the series and season folders are right there in the path above it.
 Too *shallow* is not — an episode sitting loose in the series folder does not say
 which season it belongs to, and reading that off the filename would be a rename
-wearing a repair's clothes. Those are reported, never touched.
+wearing a repair's clothes. Those are reported, never touched. The same applies
+to a wrapper folder holding anything besides the file itself: it has to come
+down for the file to take its name.
 
-The same reasoning covers two stranded copies wanting one destination (which
-copy to keep is a decision, not a repair) and a wrapper folder holding anything
-besides the file itself (it has to come down for the file to take its name).
+**A copy already in place is found by identity, not by name.** This is the
+difference between the repair helping and the repair causing the problem it
+exists to prevent. A competing copy of an episode is almost never named the
+same — it is a different quality or release group — so comparing paths would
+report no conflict, move the file up, and leave the episode in the folder twice
+under two names for the media server to pick between. Episodes are matched on
+their `SxxEyy` code; for a film the folder *is* the slot, so any media file
+already in it is another copy of that film whatever it is called.
+
+**Nothing is destroyed, only displaced.** When both copies exist the run stops
+and asks: the dialog names both, with their sizes, and each one is kept or
+dropped by an explicit choice. There is no default — no rule about which copy
+wins is right often enough to be worth the times it would be wrong. Whichever
+copy loses is captured into the backup area first and appears on the Backups
+page, so both answers are undone by an ordinary restore.
+
+That second choice is the useful one in practice: when the copy already in place
+is the good one, the stranded file is not something to repair at all, it is
+wasted disk. Keeping the existing copy deletes it and reports the space back.
 
 Mechanically, the wrapper case has to go via a staging name inside the season
 folder: the destination *is* the directory that still contains the file, so it
@@ -434,7 +447,7 @@ PYTHONPATH=venv/lib/python3.12/site-packages python3 -m unittest \
   tests.test_explore_backups tests.test_explore_repair
 ```
 
-122 tests: the identity parser against real filename shapes from the library, the
+129 tests: the identity parser against real filename shapes from the library, the
 comparison labels, planning and safety, multi-season plans, re-fetching a file
 that already matches, reading rsync's itemised dry-run output and reconciling it
 with the plan, scoping backups to a series and season, an end-to-end run with the
@@ -442,10 +455,12 @@ ssh boundary faked, and the HTTP layer.
 
 The repair tests run against a real directory on disk — the repair is a rename
 and an rmdir, so faking the filesystem would test nothing. They cover the shape
-the bug actually produced, both refusals (occupied destination, two copies
+the bug actually produced, finding a rival copy by episode code rather than by
+filename, both decisions end to end (including that the losing copy really does
+land in the backup index and not merely on disk), the refusals (two copies
 wanting one path, a file above its season folder, a wrapper holding something
-else), the transfer guard in both directions, and that the whole thing works
-with the browse session down.
+else), that a failed capture aborts the deletion, the transfer guard in both
+directions, and that the whole thing works with the browse session down.
 
 The backup scoping was additionally checked against the 160 real backups in the
 production database — including "Alpha - Bravo", the series whose stored context

@@ -18,7 +18,9 @@ import threading
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
-from .identity import SlotIdentity, media_type_for_library, parse_capture_id
+from .identity import (
+    SlotIdentity, identify, media_type_for_library, new_capture_id, parse_capture_id,
+)
 from .indexer import BackupIndexer
 from .layout import BackupLayout, BackupPathNotConfigured, utc_now
 from .migrate import LegacyMigration
@@ -26,6 +28,7 @@ from .restore import RestorePlanner, RestoreRunner
 from .retention import RetentionPolicy
 from .sorter import BackupSorter, SortedCapture, SortResult
 from activity_log import OUTCOME_FAILED, OUTCOME_OK, record
+from security import PathTraversalError
 from actor import AUTO_RETENTION, acting_as, current_actor
 
 #: What counts as "still using the disk". Mirrors the transfer model's own
@@ -126,6 +129,71 @@ class BackupsService:
             self._apply_retention_quietly()
 
         return summary
+
+    def capture_library_file(self, library: str, library_relative_path: str,
+                             absolute_path: str, reason: str) -> Tuple[bool, str, Optional[str]]:
+        """
+        Keep a copy of a library file before something removes it.
+
+        The rule this whole feature is built on is that nothing is destroyed,
+        only displaced — so any caller about to delete or overwrite a file in
+        the library puts it here first, and it becomes the newest version of
+        its slot. Undoing that is an ordinary restore; there is no reverse code
+        path to get wrong.
+
+        Returns (ok, message, capture_id). A failure means nothing was copied
+        and the caller must not proceed with its removal.
+        """
+        identity = identify(library, library_relative_path)
+        if identity is None:
+            return False, (
+                f"Cannot work out which episode or film {os.path.basename(absolute_path)} "
+                'is, so there is nowhere to keep it.'
+            ), None
+
+        if not os.path.isfile(absolute_path):
+            return False, f"{os.path.basename(absolute_path)} is no longer there.", None
+
+        capture_id = str(new_capture_id(reason, utc_now()))
+        try:
+            slot_dir = self.layout.slot_dir(identity)
+            os.makedirs(slot_dir, exist_ok=True)
+            capture_path, actual_id = self._reserve_capture_dir(slot_dir, capture_id)
+        except (ValueError, OSError, BackupPathNotConfigured, PathTraversalError) as error:
+            return False, f"Could not make room to keep the file: {error}", None
+
+        target = os.path.join(capture_path, os.path.basename(absolute_path))
+        try:
+            shutil.copy2(absolute_path, target)
+            # Verified before the caller destroys anything. A short copy here
+            # would otherwise only be discovered once the original was gone.
+            if os.path.getsize(target) != os.path.getsize(absolute_path):
+                raise OSError('short copy')
+        except OSError as error:
+            shutil.rmtree(capture_path, ignore_errors=True)
+            self.layout.prune_empty_dirs(os.path.dirname(capture_path))
+            return False, f"Could not keep a copy of the file: {error}", None
+
+        self.indexer.reindex_capture(actual_id)
+        return True, 'kept', actual_id
+
+    def _reserve_capture_dir(self, slot_dir: str, capture_id: str) -> Tuple[str, str]:
+        """
+        A capture folder under an id nothing else already holds.
+
+        Checked against the index as well as the folder: the id is minted from
+        the clock, so two callers in the same millisecond with the same reason
+        land on the same id in different slots, where looking only at the target
+        folder would not see the clash. Same loop the restore runner uses, for
+        the same reason.
+        """
+        taken = set()
+        while True:
+            path, actual = self.layout.unique_capture_dir(slot_dir, capture_id, taken)
+            if not self.captures.get(actual):
+                os.makedirs(path, exist_ok=True)
+                return path, actual
+            taken.add(actual)
 
     def index_sorted(self, capture: SortedCapture) -> None:
         """Write the index row for a capture the sorter just created."""

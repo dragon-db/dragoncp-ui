@@ -2325,12 +2325,19 @@ Output JSON:
 }
 ```
 
+Each action carries a `rival` when another copy of the same episode or film is
+already in place, and `needs_decision` is then true. The rival is found by
+identity — the `SxxEyy` code, or for a film any media file in the movie folder —
+not by filename, because a competing copy is almost never named the same.
+`action_count` counts only the files that can simply be moved; `contested_count`
+counts the ones needing a choice, and `reclaimable` is what deleting all of those
+stranded copies would free.
+
 `blocked` holds files the repair will not touch, each with a `reason` written for
-a person. A file is blocked when its destination is already occupied by a real
-file, when two stranded copies want the same destination, when the folder around
-it holds anything else, or when it sits *above* its season folder and so carries
-nothing that says which season it belongs to. `blocker` is set when the repair
-cannot run at all right now — an active transfer against the same title.
+a person: two stranded copies wanting the same destination, a wrapper folder
+holding anything else, or a file sitting *above* its season folder and so
+carrying nothing that says which season it belongs to. `blocker` is set when the
+repair cannot run at all right now — an active transfer against the same title.
 
 ### POST `/explore/repair/{media_type}/{folder}`
 What it does: moves the misplaced files back into place and removes the folders
@@ -2338,8 +2345,24 @@ they were buried in. Nothing is renamed and nothing is overwritten.
 
 Auth: required.
 
-Input JSON: `{"season": "Season 05"}` — optional, narrows the scope. The plan is
-rebuilt server-side from the disk as it is now; the body cannot name a file.
+Input JSON:
+```json
+{
+  "season": "Season 05",
+  "decisions": {"<stranded relative_path>": "keep_existing"}
+}
+```
+
+Both optional. `season` narrows the scope. `decisions` answers the contested
+files: `keep_existing` deletes the stranded copy and leaves the one in place,
+`replace` does the opposite. A contested file with no decision is left alone and
+reported in `failed` — the run never guesses which copy to keep.
+
+The plan is rebuilt server-side from the disk as it is now, so the body cannot
+name a file to move; a decision only selects between two files the server itself
+found. Whichever copy loses is captured into the backup area before it is
+removed, so both answers are reversible by an ordinary restore. If that capture
+fails, nothing is deleted.
 
 Output JSON:
 ```json
@@ -2347,12 +2370,17 @@ Output JSON:
   "status": "success",
   "scope": "Example Series (2019) — Season 05",
   "moved": [{"relative_path": "...", "destination": "...", "size": 2165283996}],
+  "deleted": [{"relative_path": "...", "kept_instead": "...", "size": 734003200}],
+  "replaced": [{"relative_path": "...", "replaced_by": "...", "size": 524288000}],
   "failed": [],
   "blocked": [],
   "moved_count": 1,
+  "deleted_count": 1,
+  "replaced_count": 1,
   "failed_count": 0,
   "directories_removed": 1,
-  "moved_size": 2165283996
+  "moved_size": 2165283996,
+  "freed_size": 734003200
 }
 ```
 

@@ -498,7 +498,27 @@ Notes:
      navbar escapes this by being transparent, the status bar does not because
      it is filled.
 
-- Handoff: 539 backend tests pass; frontend typecheck, lint, format and the Vite
+- 2026-08-09 (operator + claude): the repair only compared **filenames** to
+  decide whether a destination was free, which is the one comparison that does
+  not work here. A competing copy of an episode is a different quality or
+  release group, so it carries a different name — the check would report no
+  conflict, move the file up, and leave the episode in the folder twice for the
+  media server to pick between. Exactly the duplication the repair exists to
+  prevent. Rivals are now matched on the `SxxEyy` code, and for a film on "any
+  media file already in the movie folder", since the folder is the slot.
+
+  Where both copies exist the run stops and asks, naming both with their sizes.
+  No default: no rule about which copy wins is right often enough to be worth
+  the times it would be wrong. Whichever loses is captured into the backup area
+  first, through `BackupsService.capture_library_file` rather than a second
+  delete path, so both answers are undone by an ordinary restore — and a failed
+  capture aborts the deletion rather than proceeding without it.
+
+  The operator's framing was the better one: when the copy in place is already
+  good, the stranded file is not something to *repair*, it is wasted disk, and
+  the action wanted is delete.
+
+- Handoff: 546 backend tests pass; frontend typecheck, lint, format and the Vite
   production build pass. What has NOT happened is running the repair against the
   real library — it has only been exercised against temporary directories. A
   read-only pass over the live library finds 8 stranded files (1 in TV Shows, 7

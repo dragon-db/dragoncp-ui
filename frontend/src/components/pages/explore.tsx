@@ -70,6 +70,7 @@ import type {
   ExploreSeason,
   ExploreSeriesSummary,
   ExploreStatus,
+  RepairDecision,
 } from "@/lib/explore-types";
 
 const LIBRARIES = [
@@ -160,6 +161,10 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
   const [repairScope, setRepairScope] = useState<{ folder: string; season: string | null } | null>(
     null
   );
+  // Which copy to keep, for the files whose place is already taken. Keyed by
+  // the stranded file's path and cleared with the dialog, so a choice made in
+  // one scope cannot leak into the next one.
+  const [repairChoices, setRepairChoices] = useState<Record<string, RepairDecision>>({});
 
   const isMobile = useIsMobile();
   // The actions panel is pinned open on a wide screen; below that it is a
@@ -442,13 +447,19 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
   const confirmRepair = useCallback(() => {
     if (!repairScope) return;
     repair.mutate(
-      { folder: repairScope.folder, season: repairScope.season },
+      { folder: repairScope.folder, season: repairScope.season, decisions: repairChoices },
       {
         onSuccess: (result) => {
-          const moved = result.moved_count;
+          const parts = [];
+          if (result.moved_count) parts.push(`moved ${result.moved_count} back into place`);
+          if (result.deleted_count)
+            parts.push(
+              `removed ${result.deleted_count} redundant (${formatBytes(result.freed_size)} freed)`
+            );
+          if (result.replaced_count) parts.push(`replaced ${result.replaced_count}`);
           toast.success(
-            `Moved ${moved} file${moved === 1 ? "" : "s"} back into place` +
-              (result.failed_count ? `, ${result.failed_count} could not be moved` : "")
+            (parts.join(", ") || "Nothing needed doing") +
+              (result.failed_count ? ` — ${result.failed_count} could not be done` : "")
           );
           if (result.failed_count) {
             for (const failure of result.failed) {
@@ -456,13 +467,14 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
             }
           }
           setRepairScope(null);
+          setRepairChoices({});
         },
         onError: (error: unknown) => {
           toast.error(messageFrom(error, "The repair could not be run."));
         },
       }
     );
-  }, [repair, repairScope]);
+  }, [repair, repairScope, repairChoices]);
 
   const primaryAction = useCallback(() => {
     if (!selectedSeries) return;
@@ -1014,8 +1026,19 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
         plan={repairPlan.data ?? null}
         loading={repairPlan.isPending}
         submitting={repair.isPending}
+        decisions={repairChoices}
+        onDecide={(path, choice) =>
+          setRepairChoices((current) => {
+            const next = { ...current };
+            if (choice) next[path] = choice;
+            else delete next[path];
+            return next;
+          })
+        }
         onOpenChange={(open) => {
-          if (!open) setRepairScope(null);
+          if (open) return;
+          setRepairScope(null);
+          setRepairChoices({});
         }}
         onConfirm={confirmRepair}
       />
