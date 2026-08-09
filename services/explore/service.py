@@ -19,6 +19,7 @@ from security import (
 from . import compare as cmp
 from . import dryrun
 from . import planner
+from . import repair as repair_mod
 from .executor import ExploreExecutor, build_execution_spec
 from .identity import season_number_from_folder
 from .inventory import LocalInventory, RemoteInventory
@@ -457,6 +458,117 @@ class ExploreService:
             'operation': record['operation'],
             'series': record['series'],
         }
+
+    # ---- repair -----------------------------------------------------------
+
+    def _repair_entries(self, media_type: str, folder: str,
+                        season_label: Optional[str]) -> Tuple[str, List, str]:
+        """
+        The local files for one series or season, and a name for that scope.
+
+        Local only — a repair never asks the remote anything, so it works with
+        the browse session down. That matters: the files it fixes are invisible
+        to the media server right now, and waiting on SSH to move a file that
+        never leaves the local disk would be a made-up dependency.
+        """
+        if media_type not in MEDIA_TYPES:
+            raise ExploreError(f"Unknown library '{media_type}'", 404)
+        if not validate_path_component(folder):
+            raise ExploreError('Invalid folder name', 400)
+        if season_label and not validate_path_component(season_label):
+            raise ExploreError('Invalid season name', 400)
+
+        local_root = self.config.get(LOCAL_KEYS[media_type])
+        if not local_root:
+            raise ExploreError(f"No local path configured for {LABELS[media_type]}", 409)
+
+        local = LocalInventory().read(media_type, local_root)
+        if not local.exists:
+            raise ExploreError(local.error or 'Could not read the local library', 502)
+
+        entries = local.in_series(folder)
+        scope = folder
+        # Movies have no season layer, so a season narrows nothing there.
+        if season_label and media_type != 'movies':
+            entries = [e for e in entries if e.season_folder == season_label]
+            scope = f"{folder} — {season_label}"
+
+        return local_root, entries, scope
+
+    def repair_plan(self, media_type: str, folder: str,
+                    season_label: Optional[str] = None) -> Dict:
+        """What repairing the stranded files here would do. Moves nothing."""
+        local_root, entries, scope = self._repair_entries(media_type, folder, season_label)
+        plan = repair_mod.plan_repair(media_type, local_root, entries, scope)
+        payload = plan.as_dict()
+        payload['blocker'] = self._repair_blocker(media_type, folder)
+        return payload
+
+    def repair_apply(self, media_type: str, folder: str,
+                     season_label: Optional[str] = None) -> Dict:
+        """
+        Carry out the repair.
+
+        The plan is rebuilt here from the disk as it is now rather than taken
+        from the caller. A repair moves files inside the media library, so the
+        client does not get to name them — the same reason an Explore transfer
+        re-derives its own file list server-side.
+        """
+        local_root, entries, scope = self._repair_entries(media_type, folder, season_label)
+
+        blocker = self._repair_blocker(media_type, folder)
+        if blocker:
+            raise ExploreError(blocker, 409)
+
+        plan = repair_mod.plan_repair(media_type, local_root, entries, scope)
+        if not plan.actions:
+            raise ExploreError('Nothing here can be repaired automatically.', 400)
+
+        try:
+            result = repair_mod.apply_repair(
+                local_root, plan, self.config.get_all_allowed_paths())
+        except PathTraversalError as error:
+            raise ExploreError(str(error), 400)
+
+        result['scope'] = scope
+        result['blocked'] = [b.as_dict() for b in plan.blocked]
+        return result
+
+    def _repair_blocker(self, media_type: str, folder: str) -> Optional[str]:
+        """
+        Why a repair must not run right now, or None.
+
+        Narrowed to this library and this title: a movie transfer has no bearing
+        on a stranded TV episode, and blocking on it would mean the repair is
+        never available on a busy instance. A transfer against the same title is
+        a different matter — it is writing into the very folders this is about
+        to rename inside.
+
+        Not being able to answer blocks too. This guards a rename on the media
+        library, so "the database did not respond" has to mean wait.
+        """
+        try:
+            active = [
+                transfer for transfer in self.coordinator.get_active_transfers()
+                if (transfer.get('media_type') or '') == media_type
+                and (transfer.get('folder_name') or '') == folder
+            ]
+        except Exception as error:  # noqa: BLE001 - cannot tell, so refuse
+            return (
+                f"Could not check whether any transfers are running ({error}). "
+                'Repair renames files in your media library, so it only runs '
+                'when this title is known to be idle.'
+            )
+
+        if not active:
+            return None
+
+        count = len(active)
+        noun = 'transfer is' if count == 1 else 'transfers are'
+        return (
+            f"{count} {noun} still active for {folder}. Repair moves files inside "
+            'that folder, so it waits until nothing else is writing there.'
+        )
 
     # ---- history ----------------------------------------------------------
 

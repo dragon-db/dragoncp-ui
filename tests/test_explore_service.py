@@ -88,6 +88,14 @@ class FakeCoordinator:
         self.backups = FakeBackups(backup_root)
         self.calls = []
         self.succeed = succeed
+        # What the repair guard reads. Set to raise to test the "cannot tell"
+        # branch, which has to refuse rather than proceed.
+        self.active = []
+
+    def get_active_transfers(self):
+        if isinstance(self.active, Exception):
+            raise self.active
+        return list(self.active)
 
     def start_transfer(self, transfer_id, source_path, dest_path, operation_type='folder',
                        media_type='', folder_name='', season_name=None,
@@ -114,6 +122,12 @@ class FakeConfig:
 
     def get_destination_paths(self):
         return [v for k, v in self.values.items() if k.endswith('_DEST_PATH') and v]
+
+    def get_all_allowed_paths(self):
+        """The same seven keys the real config treats as the security boundary."""
+        keys = ('MOVIE_PATH', 'TVSHOW_PATH', 'ANIME_PATH', 'MOVIE_DEST_PATH',
+                'TVSHOW_DEST_PATH', 'ANIME_DEST_PATH', 'BACKUP_PATH')
+        return [self.values[k] for k in keys if self.values.get(k)]
 
 
 def ep(series, folder, code, quality='WEBDL-1080p', group='HONE'):

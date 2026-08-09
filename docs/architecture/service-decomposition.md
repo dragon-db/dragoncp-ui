@@ -92,7 +92,7 @@ app.py
 
 | File | Endpoints | Lines |
 |------|-----------|-------|
-| `routes/media.py` | Media types, folder/season/episode listing, sync-status | 350 |
+| `routes/media.py` | Media types and the standalone rsync dry-run. Folder/season/episode listing and sync-status were retired with Browse Media | 174 |
 | `routes/transfers.py` | Start, status, cancel, restart, delete, list transfers | 350 |
 | `routes/backups.py` | List, view, restore, delete, plan, reindex backups | 130 |
 | `routes/webhooks.py` | Webhook receivers (movies/series/anime), notification management, Discord settings | 700 |

@@ -25,6 +25,7 @@ badge, count and action on the page comes from those four labels.
 | Turning a comparison into an operation + verdict | `services/explore/planner.py` |
 | Carrying a plan out | `services/explore/executor.py` |
 | Snapshots, plan tokens, per-file outcomes | `services/explore/store.py` |
+| Repairing files stranded a level too deep | `services/explore/repair.py` |
 | The facade the routes call | `services/explore/service.py` |
 | Endpoints, rate limiting, status codes | `routes/explore.py` |
 | The rsync command for a plan | `services/transfer_service.py` (`_start_explore_rsync`) |
@@ -217,9 +218,19 @@ earlier sync moved aside there and whether it is still recoverable. It answers
 the question you actually have at that moment — "I replaced that episode, can I
 get the old one back?" — without leaving the page.
 
-It is **read-only**. Putting a copy back means matching it to a destination file
-that may since have been renamed or re-encoded, and confirming what gets
-replaced; the Backups page already owns that, and the Restore button links to it.
+**Restoring works here.** "Restore this version" runs the Backups page's own
+planner and shows its own confirmation, so the library file being replaced is
+named the same way it would be there. The two screens cannot disagree because
+there is one planner behind both — the `backup_id` in this view is the capture
+id the `/backups/captures/{id}/plan` and `/restore` endpoints take.
+
+A run narrowed to a season here still restores the **whole capture**. The
+capture is what was saved; restoring half of it would leave the slot in a state
+nothing on either page can describe. Pinning, retention and deleting stay on the
+Backups page, which is what the link at the bottom of the panel is for.
+
+The file that a restore displaces is itself captured first, so a restore is
+undone by restoring the capture the restore created.
 
 ### Which backups belong to what you are looking at
 
@@ -262,14 +273,56 @@ Everything removed or superseded is **moved** into the transfer's backup
 directory, which the existing backup finaliser registers — so it is restorable
 from the Backups page.
 
+## Repairing misplaced files
+
+The old single-episode download built its destination with the filename included
+and then created it as a *directory*, leaving files at `Season 01/ep.mkv/ep.mkv`
+where no media server can see them. **There were 22 of these in the library when
+this was written** (3 in TV Shows, 19 in Anime), plus 4 nested `Season NN/Season
+NN` folders.
+
+Explore flags them per season and per series, and the warning now carries a
+Repair button. It previews first: every file it will move is named, with the
+folder that comes down under it, and the total. Nothing is renamed — the file
+takes the name it already has, one level up.
+
+Two rules shape what it will and will not do.
+
+**Nothing is overwritten.** A repair that displaced a file would need the whole
+backup machinery behind it to be safe, and a stranded copy is never worth that.
+If a real file already holds the destination, the stranded one stays put and is
+listed as left alone, with the reason.
+
+**A file is only moved when the destination is derivable.** Too *deep* is
+repairable: the series and season folders are right there in the path above it.
+Too *shallow* is not — an episode sitting loose in the series folder does not say
+which season it belongs to, and reading that off the filename would be a rename
+wearing a repair's clothes. Those are reported, never touched.
+
+The same reasoning covers two stranded copies wanting one destination (which
+copy to keep is a decision, not a repair) and a wrapper folder holding anything
+besides the file itself (it has to come down for the file to take its name).
+
+Mechanically, the wrapper case has to go via a staging name inside the season
+folder: the destination *is* the directory that still contains the file, so it
+cannot be emptied until the file leaves and cannot be written until it is
+emptied. Staging is a rename within one directory, so nothing is copied and
+there is no window where the file does not exist. If the folder will not clear,
+the file goes back where it was rather than sitting under a name nothing
+recognises.
+
+A repair refuses while a transfer is active **against the same title** — that
+transfer is writing into the folders being renamed inside. A transfer on another
+title, or another library, does not block it. If the check itself cannot be made,
+that blocks too: this guards a rename on the media library, so "the database did
+not respond" has to mean wait.
+
+It never touches the remote, so it works with the browse session down. That
+matters — these files are invisible to the media server right now, and making
+the fix wait on a connection it does not use would be a made-up dependency.
+
 ## Behaviour worth knowing
 
-**Misplaced files are detected, not repaired.** The old single-episode download
-built its destination with the filename included and then created it as a
-directory, leaving files at `Season 01/ep.mkv/ep.mkv` where no media server can
-see them. **There are 22 of these in the current library** (3 in TV Shows, 19 in
-Anime), plus 4 nested `Season NN/Season NN` folders. Explore flags them per
-season; moving them back is manual for now.
 
 **A run that only removes files is written down too.** It starts no rsync, so
 nothing in the normal pipeline would record it — it used to appear in no history
@@ -341,6 +394,8 @@ GET  /api/explore/series/<media_type>/<folder>   seasons
 GET  /api/explore/season/<...>/<season>          episodes with labels
 GET  /api/explore/history/<media_type>/<folder>  past runs + per-file records
 GET  /api/explore/backups/<media_type>/<folder>  backed-up copies, ?season= narrows
+GET  /api/explore/repair/<media_type>/<folder>  what a repair would move; moves nothing
+POST /api/explore/repair/<media_type>/<folder>  move misplaced files back into place
 POST /api/explore/plan                           evaluate; returns verdict + plan_id
 POST /api/explore/dry-run                        rehearse a plan; leaves it runnable
 POST /api/explore/transfer                       execute a plan by id
@@ -348,7 +403,13 @@ POST /api/explore/transfer                       execute a plan by id
 
 `/plan` takes `seasons: [...]` for the sync_seasons operation, and `codes: [...]`
 for download and replace. `/dry-run` and `/plan` are rate limited with the
-comparisons — both open an ssh connection and walk the remote.
+comparisons — both open an ssh connection and walk the remote. The two `repair`
+routes are the exception to everything above: local only, no ssh, no rate limit,
+and the POST body carries the scope and nothing else so it cannot name a file.
+
+Restoring a backed-up copy is not an Explore route. `backup_id` from
+`/explore/backups` is a capture id, and the Backups endpoints
+(`POST /api/backups/captures/<id>/plan`, then `/restore`) take it directly.
 
 Failures return real status codes: 400 bad input, 401 no session, 404 unknown
 library/series, 409 no browse session or expired plan, 422 needs override, 429
@@ -369,14 +430,22 @@ rate limited, 502 remote listing failed.
 PYTHONPATH=venv/lib/python3.12/site-packages python3 -m unittest \
   tests.test_explore_identity tests.test_explore_compare \
   tests.test_explore_planner tests.test_explore_service \
-  tests.test_explore_routes tests.test_explore_dryrun tests.test_explore_backups
+  tests.test_explore_routes tests.test_explore_dryrun \
+  tests.test_explore_backups tests.test_explore_repair
 ```
 
-105 tests: the identity parser against real filename shapes from the library, the
+122 tests: the identity parser against real filename shapes from the library, the
 comparison labels, planning and safety, multi-season plans, re-fetching a file
 that already matches, reading rsync's itemised dry-run output and reconciling it
 with the plan, scoping backups to a series and season, an end-to-end run with the
 ssh boundary faked, and the HTTP layer.
+
+The repair tests run against a real directory on disk — the repair is a rename
+and an rmdir, so faking the filesystem would test nothing. They cover the shape
+the bug actually produced, both refusals (occupied destination, two copies
+wanting one path, a file above its season folder, a wrapper holding something
+else), the transfer guard in both directions, and that the whole thing works
+with the browse session down.
 
 The backup scoping was additionally checked against the 160 real backups in the
 production database — including "Alpha - Bravo", the series whose stored context

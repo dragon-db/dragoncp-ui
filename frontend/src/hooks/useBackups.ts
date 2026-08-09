@@ -150,6 +150,10 @@ export function useRestoreCapture() {
       queryClient.invalidateQueries({ queryKey: [KEY] });
       // The restore runs as a transfer, so the Transfers views want it too.
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
+      // A restore swaps a file in the library, which is exactly what Explore
+      // compares against the remote. Invalidated here rather than at the call
+      // site so a restore started from either page tells the same story.
+      queryClient.invalidateQueries({ queryKey: ["explore"] });
     },
   });
 }

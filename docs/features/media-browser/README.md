@@ -6,12 +6,19 @@
 > were deleted along with the route change. Read
 > [`../explore/README.md`](../explore/README.md) for how browsing works today.
 >
-> **The backend described here is still live.** `routes/media.py` still serves
-> `/media-types`, `/folders`, `/seasons`, `/episodes`, `/sync-status` and the
-> dry-run endpoint, and `ssh.py` still owns the browse session that Explore also
-> uses. They are kept until Explore is proven in production — see TASK-010 — so
-> this document remains accurate about the server side and is the reference for
-> anything still calling those routes.
+> **The backend described here is mostly gone too.** `/folders`, `/seasons`,
+> `/episodes` and the three `/sync-status` routes were removed once Explore was
+> proven, along with `Transfer.get_sync_status()` and
+> `get_folder_sync_status_summary()` which existed only to serve them. What that
+> lost is the point: those endpoints derived a folder's badge from whether a
+> completed transfer row existed for it, so they could not tell "the files match"
+> from "we ran a transfer here once". `routes/media.py` still serves
+> `/media-types` and `/media/dry-run`, and `ssh.py` still owns the browse session
+> Explore also uses.
+>
+> Everything below about those six routes is **history**, kept because it
+> explains what the badges used to mean and why they were wrong. For the server
+> side as it is now, read [`../explore/README.md`](../explore/README.md).
 >
 > What Explore changed, and why: one `find` over the remote instead of a listing
 > call per folder; per-episode labels from a real comparison of both libraries

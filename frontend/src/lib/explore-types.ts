@@ -223,6 +223,47 @@ export interface ExploreBackupRun {
   files: ExploreBackupFile[];
 }
 
+/** One stranded file and where the repair would put it. */
+export interface ExploreRepairAction {
+  relative_path: string;
+  destination: string;
+  name: string;
+  season_folder: string | null;
+  size: number;
+  /** The folder it is buried in, which comes down once it moves. */
+  wrapper: string;
+}
+
+/** A stranded file the repair will not touch, and why not in plain words. */
+export interface ExploreRepairBlocker {
+  relative_path: string;
+  reason: string;
+  size: number;
+}
+
+export interface ExploreRepairPlan {
+  media_type: string;
+  scope: string;
+  actions: ExploreRepairAction[];
+  blocked: ExploreRepairBlocker[];
+  action_count: number;
+  blocked_count: number;
+  total_size: number;
+  /** Why the repair cannot run right now, or null. */
+  blocker: string | null;
+}
+
+export interface ExploreRepairResult {
+  scope: string;
+  moved: Array<{ relative_path: string; destination: string; size: number }>;
+  failed: Array<{ relative_path: string; error: string }>;
+  blocked: ExploreRepairBlocker[];
+  moved_count: number;
+  failed_count: number;
+  directories_removed: number;
+  moved_size: number;
+}
+
 export interface ExploreHistoryFile {
   action: string;
   rel_path: string;

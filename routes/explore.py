@@ -137,13 +137,46 @@ def api_history(media_type, folder):
 @require_auth
 @handled
 def api_backups(media_type, folder):
-    """Backed-up copies for this series or season. Read-only — restore is on
-    the Backups page, which owns the destination matching and the confirmation."""
+    """Backed-up copies for this series or season. Restoring one goes through
+    the Backups endpoints, which own the destination matching and the preview."""
     season = request.args.get('season') or None
     return jsonify({
         'status': 'success',
         'backups': explore_service.backups(media_type, folder, season),
     })
+
+
+# --- repair ----------------------------------------------------------------
+
+@explore_bp.route('/explore/repair/<media_type>/<path:folder>')
+@require_auth
+@handled
+def api_repair_plan(media_type, folder):
+    """What repairing the stranded files here would do. Moves nothing."""
+    season = request.args.get('season') or None
+    return jsonify({
+        'status': 'success',
+        'plan': explore_service.repair_plan(media_type, folder, season),
+    })
+
+
+@explore_bp.route('/explore/repair/<media_type>/<path:folder>', methods=['POST'])
+@require_auth
+@handled
+def api_repair_apply(media_type, folder):
+    """
+    Lift the stranded files back to where they belong.
+
+    The plan is rebuilt server-side from the disk as it is now; the request body
+    carries the scope and nothing else, so a client cannot name a file to move.
+    """
+    data = request.get_json(silent=True) or {}
+    season = data.get('season') or None
+    result = explore_service.repair_apply(media_type, folder, season)
+    record('explore.repair',
+           f"Repaired {result['moved_count']} misplaced file(s) in {result['scope']}",
+           target_type='explore_repair', target_id=f"{media_type}/{folder}")
+    return jsonify({'status': 'success', **result})
 
 
 # --- planning and execution ------------------------------------------------

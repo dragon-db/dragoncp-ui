@@ -172,7 +172,13 @@ export function RestoreDialog({
           </div>
         )}
 
-        <DialogFooter className="gap-2 border-t border-border/70 px-5 py-3.5">
+        {/*
+          `mx-0 mb-0` cancels the footer's own `-mx-4 -mb-4`, which is there to
+          undo DialogContent's default `p-4`. This dialog sets `p-0`, so there
+          is no padding to undo and those negative margins pull the footer
+          sixteen pixels outside the panel on three sides.
+        */}
+        <DialogFooter className="mx-0 mb-0 gap-2 border-t border-border/70 px-5 py-3.5">
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             Cancel
           </Button>

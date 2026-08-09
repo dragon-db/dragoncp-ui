@@ -366,7 +366,7 @@ Notes:
 
 ### TASK-010 — Explore rebuild
 Status: in progress      Priority: high
-Tags: backend, frontend, explore                     Branch: explore-page
+Tags: backend, frontend, explore                     Branch: explore-restore-and-cleanup
 Docs: [docs/features/explore/README.md](docs/features/explore/README.md), [docs/plans/explore-rebuild.md](docs/plans/explore-rebuild.md)
 
 Plan: replace Browse Media with a comparison-driven Explore page — inventory both
@@ -404,12 +404,13 @@ Steps:
       looked at, read-only, with a link through to the Backups page
 - [x] A removals-only run now writes a completed transfer row and indexes its
       backup — it previously appeared in no history and no backup list
-- [ ] Restore from Explore itself, once the Backups feature is reworked: the
-      destination match and the confirmation live there, so this stays a link
-      until that work lands
-- [ ] Retire the old `/api/folders|seasons|episodes|sync-status` endpoints and
-      `get_sync_status` / `get_folder_sync_status_summary` once this is proven
-- [ ] Repair action for the 22 misplaced files the old download bug left behind
+- [x] Restore from Explore itself — the backup panel's Restore button now runs
+      the Backups planner and shows its own confirmation, so one planner backs
+      both screens. A season-narrowed run restores the whole capture
+- [x] Retired the old `/api/folders|seasons|episodes|sync-status` endpoints and
+      `get_sync_status` / `get_folder_sync_status_summary`
+- [x] Repair action for the misplaced files the old download bug left behind:
+      preview, then move each file up out of the folder named after it
 
 Notes:
 - 2026-07-30 (claude): 63 tests cover identity (against real library filenames),
@@ -448,11 +449,63 @@ Notes:
   viewport grew to its content and long plans ran behind the footer. Swapped for
   a plain overflow container. The three page panes were unaffected; their parents
   have definite heights.
-- Handoff: verified end to end against the real remote under TEST_MODE, and the
-  mobile pass was checked on a 390px viewport rather than by reading CSS. Next:
-  retire the old browse endpoints once this is trusted in prod, then the repair
-  action for the 22 misplaced files. Consider `@tanstack/react-virtual` before
-  anyone opens a 500-episode series.
+- 2026-08-08 (claude): the three remaining steps are done on
+  `explore-restore-and-cleanup`.
+
+  **Restore in place.** The panel dead-ended at a link to the Backups page.
+  Everything needed already existed — `RestoreDialog` is purely presentational
+  and `backup_id` in Explore's payload is the capture id — so this is wiring,
+  not a second implementation. One planner backs both screens, which is the
+  point: they cannot describe the same restore differently. A restore now
+  invalidates the `explore` query keys as well, because swapping a library file
+  is exactly what Explore compares.
+
+  **Repair.** `services/explore/repair.py`, preview then apply. Writing it found
+  that the destination path *is* the wrapper directory in the shape this exists
+  to fix — `Season 01/ep.mkv/ep.mkv` wants to become the folder above it — so a
+  naive "is the destination free?" check blocks every real case, and the move
+  has to stage through a temporary name inside the season folder. It refuses to
+  overwrite anything, refuses when it cannot derive the destination (a file
+  *above* its season folder carries nothing saying which season it belongs to),
+  and refuses while a transfer is active against the same title. 17 tests
+  against a real directory on disk.
+
+  **Retirement.** The six browse endpoints and the two model methods behind them
+  are gone. Nothing in the frontend or the tests referenced them; only
+  `routes/media.py` and the docs did. `routes/media.py` drops from 531 to 174
+  lines and now holds only `/media-types` and `/media/dry-run` — **both of which
+  also have no callers**, left in place because retiring them was not part of
+  this task.
+
+- 2026-08-09 (claude): three defects found by using the page, all pre-existing
+  rather than introduced here — the restore work is simply the first thing that
+  put them in front of anyone.
+  1. A movie's restore heading read "Title (2024) (2024)". The label appends the
+     release year to the title, but the title is the library folder name and
+     Radarr already writes the year into it. The year is now added only when the
+     title does not carry it — which is the fallback case, where it is the only
+     thing separating two films sharing a name. An existing test had pinned the
+     bug: it used a title of "Example Film (2024)" and asserted the doubled
+     result was correct.
+  2. The restore dialog's footer sat outside the panel. `DialogFooter` carries
+     `-mx-4 -mb-4` to cancel `DialogContent`'s default `p-4`; this dialog sets
+     `p-0`, so there was no padding to cancel and the footer was pulled sixteen
+     pixels out on three sides. Only two dialogs set `p-0` and both are fixed.
+     The next one written will hit it again — the base component assumes a
+     padding its callers are free to remove.
+  3. Explore's status bar painted square corners over the rounded app shell.
+     The shell is only rounded from `md` up and has no `overflow-hidden`; the
+     navbar escapes this by being transparent, the status bar does not because
+     it is filled.
+
+- Handoff: 539 backend tests pass; frontend typecheck, lint, format and the Vite
+  production build pass. What has NOT happened is running the repair against the
+  real library — it has only been exercised against temporary directories. A
+  read-only pass over the live library finds 8 stranded files (1 in TV Shows, 7
+  in Anime, ~13.8 GiB) and refuses none of them. Do that with no transfers
+  running on the title, read the preview, then apply.
+  Still open: `@tanstack/react-virtual` before anyone opens a 500-episode
+  series, and a decision on the two orphaned media endpoints.
 
 ### TASK-011 — "Sync all" creates one transfer per episode
 Status: done (unreleased)      Priority: high
@@ -661,6 +714,26 @@ Notes:
   is not the production UI yet, and an installed PWA is sticky. The bundle is
   also one 962 KB chunk — route-level code splitting would cut install and
   update cost.
+- 2026-08-09 (claude): **step 1 will break realtime, and the cause is worth
+  knowing before it happens.** `CORS_ORIGINS` is passed to Socket.IO as an
+  explicit list, and passing a list replaces the library's default, which is to
+  accept the request's own origin. So every origin the app is served from has to
+  be listed by hand. Since the legacy UI was retired, Flask serves the React
+  build same-origin — so same-origin is now the normal case and is exactly the
+  one that silently fails when its port is missing.
+
+  It fails in a way that does not look like CORS: browsers omit `Origin` on a
+  same-origin GET but send it on every POST, so the Socket.IO handshake succeeds
+  and the first POST is rejected with a 400. The console shows a connect /
+  transport-error / reconnect loop forever, and realtime never works.
+
+  Putting `tailscale serve` in front changes the origin to `https://<name>.ts.net`,
+  which is not in any list. Either add it, or make the server accept its own
+  origin in addition to the configured ones — same-origin is what the check
+  exists to distinguish *from*, so allowing it is safe. Found on the dev backend,
+  whose list named ports the app is no longer served on. Production's list
+  happens to be correct.
+
 - Handoff: not started. Step 1 is a console toggle and costs nothing to try.
 
 ## Backlog

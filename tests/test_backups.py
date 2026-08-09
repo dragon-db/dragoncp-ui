@@ -271,7 +271,32 @@ class IdentityTests(unittest.TestCase):
         )
         self.assertEqual(
             SlotIdentity(library='movies', title=FILM, year='2024').display,
-            f"{FILM} (2024)",
+            FILM,
+        )
+
+    def test_a_movie_title_does_not_get_its_year_twice(self):
+        """
+        `title` is the library folder name, and Radarr writes it as
+        "Title (2024)" — so the year is already in there. This used to read
+        "Example Film (2024) (2024)" in the restore dialog's heading.
+        """
+        self.assertEqual(
+            SlotIdentity(library='movies', title='Example Film (2024)', year='2024').display,
+            'Example Film (2024)',
+        )
+
+    def test_a_movie_folder_named_without_a_year_still_gets_one(self):
+        """The parser falls back to the bare folder name; the year is then the
+        only thing distinguishing two films sharing a title, so it is shown."""
+        self.assertEqual(
+            SlotIdentity(library='movies', title='Example Film', year='2024').display,
+            'Example Film (2024)',
+        )
+
+    def test_a_movie_with_no_year_at_all_shows_just_its_title(self):
+        self.assertEqual(
+            SlotIdentity(library='movies', title='Example Film', year=None).display,
+            'Example Film',
         )
 
 

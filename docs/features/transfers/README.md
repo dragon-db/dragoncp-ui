@@ -292,10 +292,12 @@ with the same filter the list was showing. The `all_matching` form re-runs the
 query on the server, which is what lets "select all" mean every match rather
 than the rows a browser happened to have loaded.
 
-Deleting `completed` records has a consequence beyond the list: `get_sync_status`
-reads completed transfers to decide the SYNCED / OUT_OF_SYNC badges in Browse
-Media, so media covered by a deleted record shows as not yet synced. The
-confirmation in the UI says so.
+Deleting `completed` records used to have a consequence beyond the list:
+`get_sync_status` read them to decide the SYNCED / OUT_OF_SYNC badges in Browse
+Media, so media covered by a deleted record showed as not yet synced. That
+coupling is gone — both the badges and the method that produced them were retired
+with Browse Media. Explore compares the two libraries directly, so what it says
+does not depend on the transfer history surviving.
 
 `Transfer.get_active()` is the one definition of "still in flight": `running`,
 `pending`, `queued` and `paused`. `TransferCoordinator.get_active_transfers()`
@@ -406,10 +408,10 @@ full definition.
 | `start_time`, `end_time`, `created_at`, `updated_at` | Lifecycle timestamps |
 | `is_simulation`, `simulation_bwlimit` | Simulation rows only |
 
-Reads elsewhere: `Transfer.get_sync_status()` and
-`get_folder_sync_status_summary()` query completed transfers by
-media type/folder/season to decide whether the media browser shows a folder as
-`SYNCED`, `OUT_OF_SYNC` or `NO_INFO`.
+`Transfer.get_sync_status()` and `get_folder_sync_status_summary()` used to
+read this table to badge folders in Browse Media. Both were deleted with the
+endpoints they served: a completed transfer row says a transfer once finished,
+not that the files still match.
 
 ## API
 
