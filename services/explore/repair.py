@@ -301,11 +301,33 @@ def _find_rival(media_type: str, local_root: str, entry: FileEntry,
 
 
 def _holds_only(directory: str, path: str) -> bool:
-    """Whether `directory` contains `path` and nothing else at all."""
+    """
+    Whether `directory` contains `path` and nothing else at all.
+
+    Empty directories count. They hold no files, so ignoring them looks
+    harmless — but the wrapper has to be *removed* for the file to take its
+    name, and `os.rmdir` will not remove a directory that still has one. The
+    plan would promise a move that the run could only fail, which is the one
+    thing the preview exists to prevent.
+
+    Directories on the way down to the file itself are expected and do not
+    count against it.
+    """
+    on_the_way = set()
+    current = os.path.dirname(path)
+    while current.startswith(directory):
+        on_the_way.add(current)
+        if current == directory:
+            break
+        current = os.path.dirname(current)
+
     try:
-        for root, _, names in os.walk(directory):
+        for root, dirs, names in os.walk(directory):
             for name in names:
                 if os.path.join(root, name) != path:
+                    return False
+            for name in dirs:
+                if os.path.join(root, name) not in on_the_way:
                     return False
     except OSError:
         return False

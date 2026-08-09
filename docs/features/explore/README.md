@@ -330,9 +330,17 @@ title, or another library, does not block it. If the check itself cannot be made
 that blocks too: this guards a rename on the media library, so "the database did
 not respond" has to mean wait.
 
-It never touches the remote, so it works with the browse session down. That
-matters — these files are invisible to the media server right now, and making
-the fix wait on a connection it does not use would be a made-up dependency.
+**The repair endpoints never touch the remote**, and are deliberately built to
+work with the browse session down — a file that is invisible to the media server
+should not wait on a connection the fix does not use.
+
+The *page* is another matter, and today it does not deliver that. Explore shows
+"no browse session" when SSH is down, and opening a title re-compares against
+the remote, so there is currently no way to reach the Repair button offline. The
+capability is in the API and covered by tests; only the screen gates it. Making
+it reachable means serving the series and season views from the cached snapshot
+and disabling the actions that genuinely need the remote — a change worth making
+deliberately rather than as a side effect.
 
 ## Behaviour worth knowing
 

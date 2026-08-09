@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
@@ -154,6 +154,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
   // shows its own loading state rather than delaying the click.
   const [restoreTarget, setRestoreTarget] = useState<ExploreBackupRun | null>(null);
   const [restorePlan, setRestorePlan] = useState<RestorePlan | null>(null);
+  const restoreRequest = useRef<string | null>(null);
 
   // The scope a repair was asked for: null means "not asked", a string or the
   // whole series otherwise. Held rather than derived from the selection so the
@@ -411,14 +412,27 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
    */
   const openRestore = useCallback(
     (run: ExploreBackupRun) => {
+      // Which capture the dialog is currently asking about. Opening one
+      // version, closing it and opening another before the first answer lands
+      // would otherwise show the first version's file list under the second
+      // one's heading — and that list is the whole confirmation, so it has to
+      // describe what the button will actually do. A ref rather than state:
+      // the answer arrives outside React's render cycle and only needs
+      // comparing, never rendering.
+      restoreRequest.current = run.backup_id;
       setRestoreTarget(run);
       setRestorePlan(null);
       planRestore.mutate(
         { captureId: run.backup_id },
         {
-          onSuccess: setRestorePlan,
+          onSuccess: (plan) => {
+            if (restoreRequest.current !== run.backup_id) return;
+            setRestorePlan(plan);
+          },
           onError: (error: unknown) => {
+            if (restoreRequest.current !== run.backup_id) return;
             toast.error(messageFrom(error, "Could not work out what this restore would do."));
+            restoreRequest.current = null;
             setRestoreTarget(null);
           },
         }
@@ -434,6 +448,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
       {
         onSuccess: (result) => {
           toast.success(result.message);
+          restoreRequest.current = null;
           setRestoreTarget(null);
           setRestorePlan(null);
         },
@@ -1015,6 +1030,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
         submitting={restore.isPending}
         onOpenChange={(open) => {
           if (open) return;
+          restoreRequest.current = null;
           setRestoreTarget(null);
           setRestorePlan(null);
         }}

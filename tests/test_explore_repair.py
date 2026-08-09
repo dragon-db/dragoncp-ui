@@ -70,21 +70,24 @@ class RepairTests(unittest.TestCase):
             found.extend(filenames)
         return found
 
-    def write_local(self, rel, size=10 * MB):
+    #: Small by default — most of these tests care where a file ends up, not how
+    #: big it is, and writing megabytes per file adds up across the suite. Tests
+    #: that assert on sizes pass their own.
+    def write_local(self, rel, size=4096):
         path = os.path.join(self.local_root, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'wb') as handle:
             handle.write(b'\0' * size)
         return path
 
-    def stranded(self, season, filename, size=10 * MB):
+    def stranded(self, season, filename, size=4096):
         """Write a file the way the old download bug did: inside a directory
         named after the file."""
         rel = f"{self.SERIES}/{season}/{filename}/{filename}"
         self.write_local(rel, size)
         return rel
 
-    def placed(self, season, filename, size=10 * MB):
+    def placed(self, season, filename, size=4096):
         rel = f"{self.SERIES}/{season}/{filename}"
         self.write_local(rel, size)
         return rel
@@ -368,6 +371,25 @@ class RepairTests(unittest.TestCase):
         self.assertEqual(os.path.getsize(os.path.join(self.local_root, destination)), 7 * MB)
         # The season folder itself survives — it still holds the episode.
         self.assertTrue(self.exists(f"{self.SERIES}/Season 01"))
+
+    def test_an_empty_folder_beside_it_blocks_the_move_at_preview_time(self):
+        """
+        `rmdir` will not remove a folder holding an empty subfolder, so the
+        wrapper could never come down and the move could only fail. Caught in
+        the preview rather than reported as a failure afterwards.
+        """
+        name = 'Show - S01E01 - Title.mkv'
+        rel = self.stranded('Season 01', name)
+        os.makedirs(os.path.join(self.local_root, self.SERIES, 'Season 01', name, 'subs'))
+
+        service = self.repair_service()
+        plan = service.repair_plan('tvshows', self.SERIES)
+        self.assertEqual(plan['action_count'], 0)
+        self.assertEqual(plan['blocked_count'], 1)
+
+        with self.assertRaises(ExploreError):
+            service.repair_apply('tvshows', self.SERIES)
+        self.assertTrue(self.exists(rel))
 
     def test_a_wrapper_holding_anything_else_is_reported_not_emptied(self):
         """The folder has to come down for the file to take its name, so a

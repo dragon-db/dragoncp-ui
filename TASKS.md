@@ -520,10 +520,18 @@ Notes:
 
 - Handoff: 546 backend tests pass; frontend typecheck, lint, format and the Vite
   production build pass. What has NOT happened is running the repair against the
-  real library — it has only been exercised against temporary directories. A
-  read-only pass over the live library finds 8 stranded files (1 in TV Shows, 7
-  in Anime, ~13.8 GiB) and refuses none of them. Do that with no transfers
-  running on the title, read the preview, then apply.
+  real library — it has only been exercised against temporary directories.
+
+  A read-only scan on **2026-08-09**, walking all three library roots in full,
+  found **8** stranded files (1 in TV Shows, 7 in Anime, ~13.8 GiB), and the
+  planner refuses none of them. Note this does not match the **22** recorded
+  when Explore was built: that figure is from the 2026-07-30 note above and was
+  never re-measured, so the gap is unexplained — some may have been tidied by
+  hand since, and the two counts may not have been counting the same thing.
+  Treat 8 as current and 22 as historical, and re-scan rather than trusting
+  either if it matters.
+
+  Run it with no transfers on the title, read the preview, then apply.
   Still open: `@tanstack/react-virtual` before anyone opens a 500-episode
   series, and a decision on the two orphaned media endpoints.
 
@@ -779,6 +787,36 @@ Steps:
 - [x] `compact_transfer_logs.py` lost-update window — compare-and-set on the log
 - [x] `--backup` silently ignored without `--apply` — it now says so
 - [ ] work through the remaining findings by section
+
+### TASK-018 — Let Explore work from its cached snapshot when the remote is down
+Status: planned      Priority: low
+Tags: frontend, explore
+Docs: [docs/features/explore/README.md](docs/features/explore/README.md)
+
+Plan: the repair endpoints are local-only and work with the browse session down
+— that is deliberate and tested. The page does not: it shows "no browse session"
+when SSH is off, and opening a title re-compares against the remote, so the
+Repair button cannot be reached. The one case this exists for is "the remote is
+unreachable and I want to fix files my media server cannot see", which is
+exactly when it is unavailable.
+
+Done looks like: with no session, Explore renders from the last snapshot, says
+plainly that it is showing a cached view and when it was taken, offers repair,
+and disables sync, dry-run, transfer and re-check rather than letting them fail.
+
+Steps:
+- [ ] Serve `series` and `season` from the stored snapshot instead of
+      re-comparing, when no session is available
+- [ ] Render the page from cache rather than returning the no-session screen,
+      with the staleness stated
+- [ ] Disable the remote-dependent actions individually, so nothing offered can
+      fail for a reason the screen already knows about
+
+Notes:
+- 2026-08-09 (review): raised on PR #59. Not fixed there — the API already
+  behaves correctly and the change is a feature (a cached mode for the whole
+  page), not a minimal correction. The documentation was corrected instead so it
+  no longer promises something the screen prevents.
 
 ### TASK-017 — Three open issues that Explore appears to have closed
 Status: planned      Priority: low

@@ -544,7 +544,7 @@ class ExploreService:
                 keep_a_copy=self._keep_a_copy(media_type),
             )
         except PathTraversalError as error:
-            raise ExploreError(str(error), 400)
+            raise ExploreError(str(error), 400) from error
 
         result['scope'] = scope
         result['blocked'] = [b.as_dict() for b in plan.blocked]
