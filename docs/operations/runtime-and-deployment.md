@@ -144,4 +144,15 @@ history behind the React socket settings:
 - `frontend/dist/` is generated and ignored by Git. A missing build is a deploy
   error; `/` returns `503 FRONTEND_BUILD_MISSING` rather than another UI.
 - The app is intentionally single-worker today; do not raise worker count without redesigning process-local Socket.IO/background coordination.
-- Same-origin proxying is the preferred future path if the app is later exposed through Traefik or Cloudflared.
+- Same-origin is no longer a future path — the app is exposed on a public
+  HTTPS hostname through a Cloudflare Tunnel pointed at port 5000. See
+  [public-access.md](public-access.md) for the settings that have to be right
+  before that is safe.
+- `./deploy.sh` is the supported way to apply a release: snapshot, build, test,
+  restart, verify. **The build stays a deploy step and must not move into the
+  unit file.** With `Restart=always` and a ten-second `RestartSec`, an
+  `ExecStartPre` that builds turns an application crash loop into a build loop;
+  a cold `npm ci` can also outrun the ninety-second start timeout, which would
+  make a slow registry into an outage. The unit only *checks* that
+  `frontend/dist/index.html` exists, so a missed build is a refusal to start
+  rather than a service quietly answering 503 to everyone.
