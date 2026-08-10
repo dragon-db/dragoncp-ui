@@ -700,7 +700,17 @@ Steps:
 Notes:
 - Verify on a fresh page load. A page left open across a Vite HMR cycle shows
   the same symptom for unrelated reasons and will send you chasing ghosts.
-- Handoff: the reverted attempt is in the PR #54 review discussion.
+- 2026-08-01 (codex): production diagnosis for a reported `Active WebSocket
+  sessions: 0` found no transport failure. The React runtime store defaults
+  realtime to off on every page load, and the observed browser session polled
+  websocket status without making any `/socket.io` request. Authenticated
+  polling connected through the frontend proxy and registered one session; a
+  direct WebSocket handshake through the same proxy returned HTTP 101. The
+  diagnostic session was closed and the registry returned to zero.
+- Handoff: the listener-rebind defect remains separate and unreproduced; the
+  reverted attempt is in the PR #54 review discussion. For a future zero-count
+  report, first distinguish the expected Polling state from a failed requested
+  realtime connection.
 
 ### TASK-013 — Install the React UI as a PWA on the phone
 Status: planned      Priority: medium
