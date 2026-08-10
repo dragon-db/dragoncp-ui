@@ -220,7 +220,16 @@ class BackupCapture:
 
         # Reclaiming space means finding what is big, not what is recent, so
         # the list can be ordered either way.
-        order = 'total_size DESC' if sort == 'size' else 'latest_captured_at DESC'
+        #
+        # Both carry a tie-break on the newest capture id, which is stamped to
+        # the millisecond. Without one, two versions written in the same
+        # millisecond — an ordinary season sync — sort arbitrarily, so the same
+        # page reloaded twice can list them in a different order. The id sorts
+        # lexicographically in timestamp order, so it also breaks the tie the
+        # right way round rather than merely consistently.
+        newest = 'MAX(c.capture_id) DESC'
+        order = (f'total_size DESC, {newest}' if sort == 'size'
+                 else f'latest_captured_at DESC, {newest}')
 
         query = f'''
             SELECT

@@ -1639,6 +1639,34 @@ class BulkDeleteTests(BackupsTestCase):
         by_recent = self.captures.slots(sort='recent')
         self.assertEqual(by_recent[0]['episode_number'], 2, 'newest first by default')
 
+    def test_versions_captured_in_the_same_millisecond_still_have_an_order(self):
+        """
+        A season sync writes several versions at once.
+
+        Timestamps are stamped to the millisecond, so two of them can tie — and
+        with nothing to break the tie the same list reloaded twice came back in
+        a different order. The capture id sorts in timestamp order, so it
+        settles it and settles it the right way round.
+        """
+        stamp = '2026-08-10T12:00:00.000Z'
+        for capture_id, episode in (('20260810T120000.000__a', 1),
+                                    ('20260810T120000.000__b', 2)):
+            self.captures.upsert({
+                'capture_id': capture_id, 'library': 'shows', 'title': SHOW,
+                'season_number': 1, 'episode_number': episode, 'kind': 'slot',
+                'capture_path': f"shows/{SHOW}/{capture_id}", 'captured_at': stamp,
+                'total_size': 100, 'file_count': 1,
+            }, [], [f"shows|{SHOW}|1|{episode}"])
+
+        orderings = {
+            tuple(row['slot_key'] for row in self.captures.slots(sort='recent'))
+            for _ in range(20)
+        }
+        self.assertEqual(len(orderings), 1, 'the same query must not shuffle')
+        self.assertEqual(self.captures.slots(sort='recent')[0]['episode_number'], 2,
+                         'the later capture id is the later capture')
+
+
 
 class RetentionSettingsTests(BackupsTestCase):
     """The rule has to survive a restart and be visible to background threads."""
