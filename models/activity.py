@@ -49,6 +49,7 @@ ACTIONS = {
     'notification.verify_rename': 'Verified a rename',
     # explore
     'explore.transfer': 'Ran an approved Explore plan',
+    'explore.repair': 'Moved misplaced files back into place',
     # settings and connection
     'settings.update': 'Changed settings',
     'settings.webhook_update': 'Changed webhook settings',

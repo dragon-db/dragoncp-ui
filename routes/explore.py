@@ -137,13 +137,57 @@ def api_history(media_type, folder):
 @require_auth
 @handled
 def api_backups(media_type, folder):
-    """Backed-up copies for this series or season. Read-only — restore is on
-    the Backups page, which owns the destination matching and the confirmation."""
+    """Backed-up copies for this series or season. Restoring one goes through
+    the Backups endpoints, which own the destination matching and the preview."""
     season = request.args.get('season') or None
     return jsonify({
         'status': 'success',
         'backups': explore_service.backups(media_type, folder, season),
     })
+
+
+# --- repair ----------------------------------------------------------------
+
+@explore_bp.route('/explore/repair/<media_type>/<path:folder>')
+@require_auth
+@handled
+def api_repair_plan(media_type, folder):
+    """What repairing the stranded files here would do. Moves nothing."""
+    season = request.args.get('season') or None
+    return jsonify({
+        'status': 'success',
+        'plan': explore_service.repair_plan(media_type, folder, season),
+    })
+
+
+@explore_bp.route('/explore/repair/<media_type>/<path:folder>', methods=['POST'])
+@require_auth
+@handled
+def api_repair_apply(media_type, folder):
+    """
+    Lift the stranded files back to where they belong.
+
+    The plan is rebuilt server-side from the disk as it is now, so a client
+    cannot name a file to move. The body carries the scope and, for files whose
+    place is already taken by another copy, which of the two to keep — a choice
+    between two files the server itself found, not a path it will trust.
+    """
+    data = request.get_json(silent=True) or {}
+    season = data.get('season') or None
+    decisions = data.get('decisions')
+    if decisions is not None and not isinstance(decisions, dict):
+        return jsonify({'status': 'error', 'message': 'decisions must be an object'}), 400
+
+    result = explore_service.repair_apply(media_type, folder, season, decisions)
+
+    summary = f"Repaired {result['moved_count']} misplaced file(s)"
+    if result['deleted_count']:
+        summary += f", deleted {result['deleted_count']} redundant copy/copies"
+    if result['replaced_count']:
+        summary += f", replaced {result['replaced_count']}"
+    record('explore.repair', f"{summary} in {result['scope']}",
+           target_type='explore_repair', target_id=f"{media_type}/{folder}")
+    return jsonify({'status': 'success', **result})
 
 
 # --- planning and execution ------------------------------------------------

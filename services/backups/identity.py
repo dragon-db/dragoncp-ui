@@ -181,9 +181,19 @@ class SlotIdentity:
 
     @property
     def display(self) -> str:
-        """Human label. 'Example Show — S01E01', 'Example Film (2024)'."""
+        """
+        Human label. 'Example Show — S01E01', 'Example Film (2024)'.
+
+        `title` is the library folder name as it is on disk, and Radarr writes
+        movie folders as "Title (2024)" — so the year is usually already in
+        there and appending it produced "Example Film (2024) (2024)". It is
+        added only when the title does not carry it, which is the case the
+        parser falls back to when a folder is named without a year.
+        """
         if self.is_movie:
-            return f"{self.title} ({self.year})" if self.year else self.title
+            if self.year and f"({self.year})" not in self.title:
+                return f"{self.title} ({self.year})"
+            return self.title
         code = self.slot_folder
         return f"{self.title} — {code}" if code else self.title
 

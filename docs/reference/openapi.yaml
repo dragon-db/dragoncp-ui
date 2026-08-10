@@ -989,155 +989,6 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /folders/{media_type}:
-    get:
-      tags: [Media Browsing]
-      summary: List remote folders for one media type
-      parameters:
-        - $ref: '#/components/parameters/MediaType'
-      responses:
-        '200':
-          description: Folder list with modification times
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  folders:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties: true
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /seasons/{media_type}/{folder_name}:
-    get:
-      tags: [Media Browsing]
-      summary: List season folders inside one series or anime folder
-      parameters:
-        - $ref: '#/components/parameters/MediaType'
-        - $ref: '#/components/parameters/FolderName'
-      responses:
-        '200':
-          description: Season list with modification times
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  seasons:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties: true
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /episodes/{media_type}/{folder_name}/{season_name}:
-    get:
-      tags: [Media Browsing]
-      summary: List the files inside one season folder
-      parameters:
-        - $ref: '#/components/parameters/MediaType'
-        - $ref: '#/components/parameters/FolderName'
-        - $ref: '#/components/parameters/SeasonName'
-      responses:
-        '200':
-          description: Episode file names
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  episodes:
-                    type: array
-                    items:
-                      type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /sync-status/{media_type}:
-    get:
-      tags: [Media Browsing]
-      summary: Compare every folder of one media type against its local copy
-      parameters:
-        - $ref: '#/components/parameters/MediaType'
-      responses:
-        '200':
-          description: Per-folder sync status keyed by folder name
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  sync_statuses:
-                    type: object
-                    additionalProperties: true
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /sync-status/{media_type}/{folder_name}:
-    get:
-      tags: [Media Browsing]
-      summary: Return the sync status of one folder, with season detail for series and anime
-      parameters:
-        - $ref: '#/components/parameters/MediaType'
-        - $ref: '#/components/parameters/FolderName'
-      responses:
-        '200':
-          description: Folder sync status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  folder_name:
-                    type: string
-                  sync_status:
-                    type: object
-                    additionalProperties: true
-                  seasons_sync_status:
-                    type: object
-                    additionalProperties: true
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /sync-status/{media_type}/{folder_name}/enhanced:
-    get:
-      tags: [Media Browsing]
-      summary: Return folder sync status with file counts, sizes and sample file metadata
-      parameters:
-        - $ref: '#/components/parameters/MediaType'
-        - $ref: '#/components/parameters/FolderName'
-      responses:
-        '200':
-          description: Enhanced folder sync status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  folder_name:
-                    type: string
-                  sync_status:
-                    type: object
-                    additionalProperties: true
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
   /media/dry-run:
     post:
       tags: [Media Browsing]
@@ -3383,7 +3234,7 @@ paths:
   /explore/backups/{media_type}/{folder}:
     get:
       tags: [Explore]
-      summary: Copies an earlier sync moved aside for this series or season (read-only)
+      summary: Copies an earlier sync moved aside for this series or season; backup_id is the capture id used by the /backups restore endpoints
       parameters:
         - name: media_type
           in: path
@@ -3402,6 +3253,93 @@ paths:
           description: "Backup runs; shown_count/shown_size describe what survives the season filter"
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /explore/repair/{media_type}/{folder}:
+    get:
+      tags: [Explore]
+      summary: What repairing the misplaced files here would do; moves nothing
+      description: >-
+        Local only. Works with the browse session down, because a repair never
+        asks the remote anything. `blocked` names what will not be touched and
+        why; `blocker` is set when the repair cannot run at all right now.
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+        - name: season
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: >-
+            Repair plan. Each action carries a `rival` (and `needs_decision`)
+            when another copy of the same episode or film is already in place,
+            found by identity rather than filename.
+        '400':
+          description: Invalid folder or season name
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown library
+    post:
+      tags: [Explore]
+      summary: Move the misplaced files back into place
+      description: >-
+        The plan is rebuilt server-side from the disk as it is now, so the body
+        cannot name a file to move. Nothing is renamed and nothing is
+        overwritten.
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                season: { type: string, nullable: true }
+                decisions:
+                  type: object
+                  description: >-
+                    For contested files only, keyed by the stranded file's
+                    relative path. `keep_existing` deletes the stranded copy;
+                    `replace` removes the copy in place and promotes the
+                    stranded one. A contested file with no decision is left
+                    alone and reported in `failed`. The losing copy is captured
+                    into the backup area first, so either answer is reversible.
+                    `rival` must be the copy the preview showed; if the disk no
+                    longer agrees, the decision is refused rather than applied
+                    to a file nobody looked at.
+                  additionalProperties:
+                    type: object
+                    required: [choice, rival]
+                    properties:
+                      choice:
+                        type: string
+                        enum: [keep_existing, replace]
+                      rival: { type: string }
+      responses:
+        '200':
+          description: "moved / deleted / replaced / failed, with counts, freed bytes and folders removed"
+        '400':
+          description: Nothing in scope can be repaired automatically
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A transfer is active against this title, or that could not be checked
 
   /explore/plan:
     post:

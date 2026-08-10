@@ -94,10 +94,14 @@ Some endpoints intentionally return raw JSON objects (without `status` wrapper),
 ## Canonical Status Values
 
 Sync status values:
-Used by sync-status APIs to indicate whether a media folder (or season) on the remote source and local destination are in sync when compared.
+Reported by Explore for a title or season, from a file-by-file comparison of the
+remote and local libraries. `PARTIAL_SYNC` is Explore's addition; the retired
+sync-status endpoints only had the other three, because they inferred state from
+transfer rows and could not see part of a season.
 - `SYNCED`
+- `PARTIAL_SYNC`
 - `OUT_OF_SYNC`
-- `NO_INFO`
+- `NO_INFO` — the comparison ran and the remote holds nothing for this title
 
 Transfer status values:
 - `pending`
@@ -552,131 +556,11 @@ Output JSON (array):
 ]
 ```
 
-### GET `/folders/{media_type}`
-What it does: lists remote folders for one media type.
-
-Auth: required.
-
-Path param:
-- `media_type`: `movies | tvshows | anime`
-
-Output JSON:
-```json
-{
-  "status": "success",
-  "folders": [
-    {"name":"Folder Name","modification_time":1730000000}
-  ]
-}
-```
-
-### GET `/seasons/{media_type}/{folder_name}`
-What it does: lists season folders inside a show/anime folder.
-
-Auth: required.
-
-Path params:
-- `media_type`: usually `tvshows` or `anime`
-- `folder_name`: series folder name
-
-Output JSON:
-```json
-{
-  "status": "success",
-  "seasons": [
-    {"name":"Season 01","modification_time":1730000000}
-  ]
-}
-```
-
-### GET `/episodes/{media_type}/{folder_name}/{season_name}`
-What it does: lists files (episodes) inside a season folder.
-
-Auth: required.
-
-Path params:
-- `media_type`
-- `folder_name`
-- `season_name`
-
-Output JSON:
-```json
-{
-  "status": "success",
-  "episodes": ["S01E01.mkv", "S01E02.mkv"]
-}
-```
-
-### GET `/sync-status/{media_type}`
-What it does: returns sync status for every folder in selected media type.
-
-Auth: required.
-
-Path param:
-- `media_type`: `movies | tvshows | anime`
-
-Output JSON:
-```json
-{
-  "status": "success",
-  "sync_statuses": {
-    "Some Folder": {
-      "status": "SYNCED",
-      "type": "movie",
-      "modification_time": 1730000000
-    }
-  }
-}
-```
-
-For series/anime, each folder can include season-level summary inside `sync_statuses`.
-
-### GET `/sync-status/{media_type}/{folder_name}`
-What it does: returns detailed sync status for one folder.
-
-Auth: required.
-
-Path params:
-- `media_type`
-- `folder_name`
-
-Output JSON (movie):
-```json
-{
-  "status": "success",
-  "folder_name": "Some Movie",
-  "sync_status": {
-    "status": "OUT_OF_SYNC",
-    "type": "movie",
-    "modification_time": 1730000000
-  }
-}
-```
-
-Output JSON (series/anime) includes `sync_status` summary and `seasons_sync_status` map.
-
-### GET `/sync-status/{media_type}/{folder_name}/enhanced`
-What it does: returns sync status with file counts, total sizes, and sample file metadata.
-
-Auth: required.
-
-Path params:
-- `media_type`
-- `folder_name`
-
-Output JSON:
-```json
-{
-  "status": "success",
-  "folder_name": "Some Series",
-  "sync_status": {
-    "status": "SYNCED",
-    "type": "series",
-    "seasons": [],
-    "most_recent_season": "Season 02"
-  }
-}
-```
+The folder, season, episode and sync-status endpoints that used to sit here
+were retired when Explore replaced Browse Media. They inferred a folder's state
+from whether a completed transfer row existed for it, which cannot tell "the
+files match" from "we ran a transfer here once". Explore compares both
+libraries file by file instead — see section 9.
 
 ### POST `/media/dry-run`
 What it does: simulates an rsync for a chosen media folder (no file changes).
@@ -2362,7 +2246,9 @@ Auth: required.
 
 ### GET `/explore/backups/{media_type}/{folder}`
 What it does: copies an earlier sync moved aside for this series, so they can be
-seen from the season you are looking at. **Read-only** — restoring is section 8.
+seen from the season you are looking at. Restoring one goes through the section 8
+endpoints — `POST /backups/captures/{capture_id}/plan` for the preview, then
+`/restore` — with `backup_id` here being that capture id.
 
 Query: `season=<season folder>` narrows to one season.
 
@@ -2403,6 +2289,112 @@ after narrowing to the requested season. Matching is on the backup's
 `folder_name` and each **file's** own parsed season — see
 [`../features/explore/README.md`](../features/explore/README.md) for why neither
 `context_series_title` nor the run's `season_name` can be used.
+
+### GET `/explore/repair/{media_type}/{folder}`
+What it does: says what repairing the misplaced files in this scope would do.
+Moves nothing. Local only — it works with the browse session down, because a
+repair never asks the remote anything.
+
+Query: `season=<season folder>` narrows to one season.
+
+Auth: required.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "plan": {
+    "media_type": "tvshows",
+    "scope": "Example Series (2019) — Season 05",
+    "actions": [
+      {
+        "relative_path": "Example Series (2019)/Season 05/Example - S05E05.mkv/Example - S05E05.mkv",
+        "destination": "Example Series (2019)/Season 05/Example - S05E05.mkv",
+        "name": "Example - S05E05.mkv",
+        "season_folder": "Season 05",
+        "size": 2165283996,
+        "wrapper": "Example Series (2019)/Season 05/Example - S05E05.mkv"
+      }
+    ],
+    "blocked": [],
+    "action_count": 1,
+    "blocked_count": 0,
+    "total_size": 2165283996,
+    "blocker": null
+  }
+}
+```
+
+Each action carries a `rival` when another copy of the same episode or film is
+already in place, and `needs_decision` is then true. The rival is found by
+identity — the `SxxEyy` code, or for a film any media file in the movie folder —
+not by filename, because a competing copy is almost never named the same.
+`action_count` counts only the files that can simply be moved; `contested_count`
+counts the ones needing a choice, and `reclaimable` is what deleting all of those
+stranded copies would free.
+
+`blocked` holds files the repair will not touch, each with a `reason` written for
+a person: two stranded copies wanting the same destination, a wrapper folder
+holding anything else, or a file sitting *above* its season folder and so
+carrying nothing that says which season it belongs to. `blocker` is set when the
+repair cannot run at all right now — an active transfer against the same title.
+
+### POST `/explore/repair/{media_type}/{folder}`
+What it does: moves the misplaced files back into place and removes the folders
+they were buried in. Nothing is renamed and nothing is overwritten.
+
+Auth: required.
+
+Input JSON:
+```json
+{
+  "season": "Season 05",
+  "decisions": {
+    "<stranded relative_path>": {
+      "choice": "keep_existing",
+      "rival": "<the rival relative_path the preview showed>"
+    }
+  }
+}
+```
+
+Both optional. `season` narrows the scope. `decisions` answers the contested
+files: `keep_existing` deletes the stranded copy and leaves the one in place,
+`replace` does the opposite. A contested file with no decision is left alone and
+reported in `failed` — the run never guesses which copy to keep.
+
+`rival` must be the copy the preview displayed. The plan is rebuilt from disk
+here, so if a different copy has appeared since, the decision no longer describes
+what was agreed to and that file is refused rather than acted on.
+
+The plan is rebuilt server-side from the disk as it is now, so the body cannot
+name a file to move; a decision only selects between two files the server itself
+found. Whichever copy loses is captured into the backup area before it is
+removed, so both answers are reversible by an ordinary restore. If that capture
+fails, nothing is deleted.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "scope": "Example Series (2019) — Season 05",
+  "moved": [{"relative_path": "...", "destination": "...", "size": 2165283996}],
+  "deleted": [{"relative_path": "...", "kept_instead": "...", "size": 734003200}],
+  "replaced": [{"relative_path": "...", "replaced_by": "...", "size": 524288000}],
+  "failed": [],
+  "blocked": [],
+  "moved_count": 1,
+  "deleted_count": 1,
+  "replaced_count": 1,
+  "failed_count": 0,
+  "directories_removed": 1,
+  "moved_size": 2165283996,
+  "freed_size": 734003200
+}
+```
+
+Errors: `409` if a transfer is active against this title or the check could not
+be made; `400` if nothing in scope can be repaired automatically.
 
 ### POST `/explore/plan`
 What it does: evaluates an operation against a fresh comparison, stores it, and
@@ -2544,16 +2536,17 @@ This document covers all `/api/*` routes currently implemented in backend Python
 - 7 auth endpoints
 - 3 activity endpoints
 - 8 config/SSH endpoints
-- 8 media endpoints
+- 2 media endpoints (`/media-types` and `/media/dry-run`; the rest were retired
+  with Browse Media)
 - 13 transfer endpoints (including `pause`, `resume` and `bulk-delete`)
 - 32 webhook-related endpoints (receivers, management, rename, settings, Discord)
-- 7 backup endpoints
+- 28 backup endpoints
 - 7 debug endpoints
 - 4 simulation endpoints
 - 2 server log endpoints
-- 9 explore endpoints
+- 11 explore endpoints (including `repair`)
 
-Total covered: 100 method+path API endpoints.
+Total covered: 117 method+path API endpoints.
 
 Counts verified against the `@*_bp.route`/`@app.route` decorators in `routes/`
 and `app.py`, counting one per method+path. `GET /` is excluded: it serves the

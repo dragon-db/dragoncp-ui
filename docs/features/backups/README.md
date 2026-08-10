@@ -44,6 +44,20 @@ Primary files: `services/backups/`, `models/backup_capture.py`, `routes/backups.
 
 ## How it works
 
+Most captures arrive the way steps 1–2 describe: rsync displaces a file during
+a transfer and what it displaced is sorted into the tree afterwards. There is
+one other door in, used when something removes a library file outside a
+transfer — today that is Explore's repair, choosing between two copies of the
+same episode.
+
+`BackupsService.capture_library_file(library, relative_path, absolute, reason)`
+copies one library file into its slot, verifies the copy, indexes it, and only
+then reports success. Callers must treat a failure as "do not delete": the
+capture is the thing that makes the removal reversible, so proceeding without
+it would turn a reversible choice into a permanent one. Anything arriving this
+way is an ordinary version of its slot afterwards — same page, same restore,
+same retention.
+
 ### 1. rsync displaces files into staging
 
 `TransferCoordinator` asks `BackupsService.staging_dir(transfer_id)` for a
@@ -376,7 +390,7 @@ Full column reference: [../../reference/database-schema.md](../../reference/data
 | `capture_path` | Relative to `BACKUP_PATH` |
 | `captured_at` | Explicit UTC, millisecond precision |
 | `source_transfer_id`, `source_ref` | Provenance; the transfer id is null after a rebuild |
-| `reason` | `sync_replace`, `sync_delete`, `restore_swap`, `explore_prune` |
+| `reason` | `sync_replace`, `sync_delete`, `restore_swap`, `explore_prune`, `explore_repair` |
 | `kind` | `slot`, `extras`, `unsorted` |
 | `file_count`, `total_size` | From the files inside |
 | `pinned` | Retention skips it |

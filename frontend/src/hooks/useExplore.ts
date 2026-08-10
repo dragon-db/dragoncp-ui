@@ -5,6 +5,9 @@ import type {
   ExploreDryRun,
   ExploreHistoryRun,
   ExplorePlan,
+  ExploreRepairPlan,
+  ExploreRepairResult,
+  RepairDecision,
   ExploreSeason,
   ExploreTree,
 } from "@/lib/explore-types";
@@ -78,9 +81,66 @@ export function useExploreHistory(
 }
 
 /**
+ * What repairing the stranded files in this scope would do. Moves nothing.
+ *
+ * Only asked for once the comparison has already said there are some, so it is
+ * enabled by the caller rather than run alongside every season view.
+ */
+export function useExploreRepairPlan(
+  mediaType: string,
+  folder: string | null,
+  season?: string | null
+) {
+  return useQuery({
+    queryKey: ["explore", "repair", mediaType, folder, season ?? null],
+    queryFn: async () => {
+      const response = await api.get<{ plan: ExploreRepairPlan }>(
+        `/explore/repair/${mediaType}/${encodeURIComponent(folder!)}`,
+        { params: season ? { season } : undefined }
+      );
+      return response.data.plan;
+    },
+    enabled: !!mediaType && !!folder,
+  });
+}
+
+/**
+ * Move the stranded files back where they belong.
+ *
+ * The request carries the scope only — the server rebuilds the plan from the
+ * disk as it is now, so nothing here can name a file to move.
+ */
+export function useExploreRepair(mediaType: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      folder,
+      season,
+      decisions,
+    }: {
+      folder: string;
+      season?: string | null;
+      /** Only for files whose place is already taken, keyed by their path. */
+      decisions?: Record<string, RepairDecision>;
+    }) => {
+      const response = await api.post<{ status: string } & ExploreRepairResult>(
+        `/explore/repair/${mediaType}/${encodeURIComponent(folder)}`,
+        { ...(season ? { season } : {}), ...(decisions ? { decisions } : {}) }
+      );
+      return response.data;
+    },
+    onSuccess: () => {
+      // The comparison counted those files as misplaced, so everything derived
+      // from it is now wrong until it re-reads.
+      queryClient.invalidateQueries({ queryKey: ["explore"] });
+    },
+  });
+}
+
+/**
  * Copies moved aside by an earlier sync for this series, or one of its seasons.
  *
- * Read-only here. Restoring lives on the Backups page, which owns matching the
+ * Restoring one goes through the Backups endpoints, which own matching the
  * saved copy back to a destination file and confirming the replacement.
  */
 export function useExploreBackups(

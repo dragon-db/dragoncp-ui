@@ -92,7 +92,7 @@ app.py
 
 | File | Endpoints | Lines |
 |------|-----------|-------|
-| `routes/media.py` | Media types, folder/season/episode listing, sync-status | 350 |
+| `routes/media.py` | Media types and the standalone rsync dry-run. Folder/season/episode listing and sync-status were retired with Browse Media | 174 |
 | `routes/transfers.py` | Start, status, cancel, restart, delete, list transfers | 350 |
 | `routes/backups.py` | List, view, restore, delete, plan, reindex backups | 130 |
 | `routes/webhooks.py` | Webhook receivers (movies/series/anime), notification management, Discord settings | 700 |
@@ -133,9 +133,15 @@ app.py
 
 ## Backward Compatibility
 
-The refactoring preserved all existing behaviour:
+**Historical — true of the October 2025 refactoring, not a description of the
+API today.** The point being recorded is that *this* change moved code without
+changing behaviour. Endpoints have been added and retired since on their own
+merits; the routes table above reflects those, and
+[`../reference/api.md`](../reference/api.md) is the current list.
 
-- Every API endpoint path and response shape is identical.
+As of that refactoring:
+
+- Every API endpoint path and response shape was identical before and after.
 - The SQLite database schema was not changed; existing data works without migration.
 - The frontend required zero modifications.
 - TEST_MODE simulation behaviour is preserved.
@@ -144,7 +150,10 @@ The refactoring preserved all existing behaviour:
 
 ## Verification Checklist
 
-The following should be confirmed after deploying the refactored version:
+**Historical — the list used when the refactored version was deployed in
+October 2025.** Kept for the record; it is not a checklist to run today. "Media
+browsing endpoints" refers to the folder/season/episode and sync-status routes,
+which have since been retired along with the page they served.
 
 - [ ] All imports resolve correctly
 - [ ] Flask app starts without errors

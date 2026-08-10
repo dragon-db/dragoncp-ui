@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
@@ -24,6 +24,7 @@ import {
   IconSearch,
   IconSettings,
   IconTestPipe,
+  IconTool,
   IconX,
 } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,8 @@ import {
   useExploreLibraries,
   useExplorePlan,
   useExploreRefresh,
+  useExploreRepair,
+  useExploreRepairPlan,
   useExploreSeason,
   useExploreTree,
   type PlanRequest,
@@ -53,6 +56,10 @@ import {
   type Density,
 } from "@/components/explore/contents-table";
 import { PlanDialog } from "@/components/explore/plan-dialog";
+import { RepairDialog } from "@/components/explore/repair-dialog";
+import { RestoreDialog } from "@/components/backups/restore-dialog";
+import { usePlanRestore, useRestoreCapture } from "@/hooks/useBackups";
+import type { RestorePlan } from "@/lib/backup-types";
 import { CountChips, StatusBadge } from "@/components/explore/explore-bits";
 import { formatBytes, formatWhen } from "@/lib/explore-format";
 import type {
@@ -63,6 +70,7 @@ import type {
   ExploreSeason,
   ExploreSeriesSummary,
   ExploreStatus,
+  RepairDecision,
 } from "@/lib/explore-types";
 
 const LIBRARIES = [
@@ -141,6 +149,24 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
   const [dryRun, setDryRun] = useState<ExploreDryRunReport | null>(null);
   const [dryRunError, setDryRunError] = useState<string | null>(null);
 
+  // The version being put back, and what the planner says that would do. Held
+  // separately because the plan arrives after the dialog opens — the dialog
+  // shows its own loading state rather than delaying the click.
+  const [restoreTarget, setRestoreTarget] = useState<ExploreBackupRun | null>(null);
+  const [restorePlan, setRestorePlan] = useState<RestorePlan | null>(null);
+  const restoreRequest = useRef<string | null>(null);
+
+  // The scope a repair was asked for: null means "not asked", a string or the
+  // whole series otherwise. Held rather than derived from the selection so the
+  // dialog keeps describing what it opened on if the selection moves behind it.
+  const [repairScope, setRepairScope] = useState<{ folder: string; season: string | null } | null>(
+    null
+  );
+  // Which copy to keep, for the files whose place is already taken. Keyed by
+  // the stranded file's path and cleared with the dialog, so a choice made in
+  // one scope cannot leak into the next one.
+  const [repairChoices, setRepairChoices] = useState<Record<string, RepairDecision>>({});
+
   const isMobile = useIsMobile();
   // The actions panel is pinned open on a wide screen; below that it is a
   // sheet, so anything that wants to show actions has to open it first.
@@ -165,6 +191,14 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
   const planMutation = useExplorePlan();
   const dryRunMutation = useExploreDryRun();
   const execute = useExploreExecute(mediaType);
+  const planRestore = usePlanRestore();
+  const restore = useRestoreCapture();
+  const repairPlan = useExploreRepairPlan(
+    mediaType,
+    repairScope?.folder ?? null,
+    repairScope?.season
+  );
+  const repair = useExploreRepair(mediaType);
 
   const series = useMemo(() => tree.data?.series ?? [], [tree.data]);
   const library = libraries.data?.find((entry) => entry.id === mediaType);
@@ -366,6 +400,96 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
     },
     [execute, plan]
   );
+
+  /**
+   * Putting a stored version back, from the season you are looking at.
+   *
+   * The planner is the same one the Backups page uses, so the preview names the
+   * exact library file this replaces before anything moves. A run that is
+   * narrowed to a season here still restores the whole capture — the capture is
+   * what was saved, and restoring half of it would leave the slot in a state
+   * nothing else on either page can describe.
+   */
+  const openRestore = useCallback(
+    (run: ExploreBackupRun) => {
+      // Which capture the dialog is currently asking about. Opening one
+      // version, closing it and opening another before the first answer lands
+      // would otherwise show the first version's file list under the second
+      // one's heading — and that list is the whole confirmation, so it has to
+      // describe what the button will actually do. A ref rather than state:
+      // the answer arrives outside React's render cycle and only needs
+      // comparing, never rendering.
+      restoreRequest.current = run.backup_id;
+      setRestoreTarget(run);
+      setRestorePlan(null);
+      planRestore.mutate(
+        { captureId: run.backup_id },
+        {
+          onSuccess: (plan) => {
+            if (restoreRequest.current !== run.backup_id) return;
+            setRestorePlan(plan);
+          },
+          onError: (error: unknown) => {
+            if (restoreRequest.current !== run.backup_id) return;
+            toast.error(messageFrom(error, "Could not work out what this restore would do."));
+            restoreRequest.current = null;
+            setRestoreTarget(null);
+          },
+        }
+      );
+    },
+    [planRestore]
+  );
+
+  const confirmRestore = useCallback(() => {
+    if (!restoreTarget) return;
+    restore.mutate(
+      { captureId: restoreTarget.backup_id },
+      {
+        onSuccess: (result) => {
+          toast.success(result.message);
+          restoreRequest.current = null;
+          setRestoreTarget(null);
+          setRestorePlan(null);
+        },
+        onError: (error: unknown) => {
+          toast.error(messageFrom(error, "Restore could not be started."));
+        },
+      }
+    );
+  }, [restore, restoreTarget]);
+
+  const confirmRepair = useCallback(() => {
+    if (!repairScope) return;
+    repair.mutate(
+      { folder: repairScope.folder, season: repairScope.season, decisions: repairChoices },
+      {
+        onSuccess: (result) => {
+          const parts = [];
+          if (result.moved_count) parts.push(`moved ${result.moved_count} back into place`);
+          if (result.deleted_count)
+            parts.push(
+              `removed ${result.deleted_count} redundant (${formatBytes(result.freed_size)} freed)`
+            );
+          if (result.replaced_count) parts.push(`replaced ${result.replaced_count}`);
+          toast.success(
+            (parts.join(", ") || "Nothing needed doing") +
+              (result.failed_count ? ` — ${result.failed_count} could not be done` : "")
+          );
+          if (result.failed_count) {
+            for (const failure of result.failed) {
+              toast.error(`${failure.relative_path.split("/").pop()} — ${failure.error}`);
+            }
+          }
+          setRepairScope(null);
+          setRepairChoices({});
+        },
+        onError: (error: unknown) => {
+          toast.error(messageFrom(error, "The repair could not be run."));
+        },
+      }
+    );
+  }, [repair, repairScope, repairChoices]);
 
   const primaryAction = useCallback(() => {
     if (!selectedSeries) return;
@@ -769,6 +893,9 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
             showBackups={showBackups}
             onToggleBackups={() => setShowBackups((value) => !value)}
             backups={backupsQuery.data}
+            onRestore={openRestore}
+            restoringId={restore.isPending ? (restoreTarget?.backup_id ?? null) : null}
+            onRepair={(folder, season) => setRepairScope({ folder, season })}
             onClearPick={() => setPicked(new Set())}
             onFocusTable={() => setPane("table")}
             onPlan={openPlan}
@@ -830,8 +957,12 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
         </div>
       )}
 
-      {/* ---- status bar ---- */}
-      <div className="flex h-8 flex-none items-center gap-3 border-t border-border bg-well px-3.5 font-mono text-[11px] text-foreground-3">
+      {/* ---- status bar ----
+          `md:rounded-b-xl` matches the inset shell, which is only rounded from
+          md up. The navbar at the top needs no equivalent: it is transparent,
+          so the shell's own background shows through its corners, while this
+          bar is filled and would otherwise paint square over them. */}
+      <div className="flex h-8 flex-none items-center gap-3 border-t border-border bg-well px-3.5 font-mono text-[11px] text-foreground-3 md:rounded-b-xl">
         {/* the whole path is readable by dragging it, not just its tail */}
         <span className={cn("min-w-0 flex-1", SCROLL_X)}>
           {remotePath ? <RemotePath path={remotePath} /> : "No library selected"}
@@ -862,6 +993,9 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
             showBackups={showBackups}
             onToggleBackups={() => setShowBackups((value) => !value)}
             backups={backupsQuery.data}
+            onRestore={openRestore}
+            restoringId={restore.isPending ? (restoreTarget?.backup_id ?? null) : null}
+            onRepair={(folder, season) => setRepairScope({ folder, season })}
             onClearPick={() => setPicked(new Set())}
             onFocusTable={() => {
               setPane("table");
@@ -887,6 +1021,52 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
         onDryRun={() => plan && runDryRun(plan.plan_id)}
         onOpenChange={setPlanOpen}
         onConfirm={confirmPlan}
+      />
+
+      <RestoreDialog
+        open={Boolean(restoreTarget)}
+        plan={restorePlan}
+        loading={planRestore.isPending && !restorePlan}
+        submitting={restore.isPending}
+        onOpenChange={(open) => {
+          if (open) return;
+          restoreRequest.current = null;
+          setRestoreTarget(null);
+          setRestorePlan(null);
+        }}
+        onConfirm={confirmRestore}
+      />
+
+      <RepairDialog
+        open={Boolean(repairScope)}
+        plan={repairPlan.data ?? null}
+        loading={repairPlan.isPending}
+        error={
+          repairPlan.isError
+            ? messageFrom(repairPlan.error, "Could not check what is out of place here.")
+            : null
+        }
+        submitting={repair.isPending}
+        decisions={repairChoices}
+        onDecide={(path, choice) =>
+          setRepairChoices((current) => {
+            const next = { ...current };
+            // The rival the preview displayed travels with the choice: the
+            // server rebuilds the plan from disk and refuses if that copy has
+            // changed, so a decision can never land on a file nobody saw.
+            const rival = repairPlan.data?.actions.find((a) => a.relative_path === path)?.rival
+              ?.relative_path;
+            if (choice && rival) next[path] = { choice, rival };
+            else delete next[path];
+            return next;
+          })
+        }
+        onOpenChange={(open) => {
+          if (open) return;
+          setRepairScope(null);
+          setRepairChoices({});
+        }}
+        onConfirm={confirmRepair}
       />
     </div>
   );
@@ -934,6 +1114,9 @@ interface InspectorProps {
   history?: ReturnType<typeof useExploreHistory>["data"];
   onToggleHistory: () => void;
   showBackups: boolean;
+  onRestore: (run: ExploreBackupRun) => void;
+  restoringId: string | null;
+  onRepair: (folder: string, season: string | null) => void;
   backups?: ExploreBackupRun[];
   onToggleBackups: () => void;
   onClearPick: () => void;
@@ -954,6 +1137,9 @@ function Inspector({
   history,
   onToggleHistory,
   showBackups,
+  onRestore,
+  restoringId,
+  onRepair,
   backups,
   onToggleBackups,
   onClearPick,
@@ -1082,10 +1268,16 @@ function Inspector({
           )}
 
           {season && season.misplaced.length > 0 && (
-            <MisplacedWarning count={season.misplaced.length} />
+            <MisplacedWarning
+              count={season.misplaced.length}
+              onRepair={() => onRepair(series.name, season.name)}
+            />
           )}
           {!season && series.misplaced_count > 0 && (
-            <MisplacedWarning count={series.misplaced_count} />
+            <MisplacedWarning
+              count={series.misplaced_count}
+              onRepair={() => onRepair(series.name, null)}
+            />
           )}
 
           <NamingWarning
@@ -1254,6 +1446,8 @@ function Inspector({
           <BackupSection
             open={showBackups}
             onToggle={onToggleBackups}
+            onRestore={onRestore}
+            restoringId={restoringId}
             runs={backups}
             scope={season && !isMovies ? season.name : series.name}
           />
@@ -1266,22 +1460,27 @@ function Inspector({
 /**
  * What an earlier sync moved aside here, and whether it is still recoverable.
  *
- * Read-only on purpose. Putting a copy back means matching it to a destination
- * file that may since have been renamed or re-encoded, and confirming what gets
- * replaced — that belongs on the Backups page, which already does it. This
- * answers the question you actually have while looking at a season: "I replaced
- * that episode, can I get the old one back?"
+ * This answers the question you actually have while looking at a season — "I
+ * replaced that episode, can I get the old one back?" — and now answers it in
+ * place. The confirmation is the Backups page's own restore dialog, driven by
+ * the same planner, so the file being replaced is named here exactly as it is
+ * named there. Anything larger than one version — pinning, retention, deleting
+ * — still belongs on the Backups page, which is why the link stays.
  */
 function BackupSection({
   open,
   onToggle,
   runs,
   scope,
+  onRestore,
+  restoringId,
 }: {
   open: boolean;
   onToggle: () => void;
   runs?: ExploreBackupRun[];
   scope: string;
+  onRestore: (run: ExploreBackupRun) => void;
+  restoringId: string | null;
 }) {
   const total = runs?.reduce((sum, run) => sum + run.shown_count, 0) ?? 0;
 
@@ -1368,18 +1567,26 @@ function BackupSection({
                       The saved copies were deleted — only the record is left.
                     </p>
                   ) : (
-                    <Link to="/backups" className="mt-2 block">
-                      <Button variant="outline" size="sm" className="h-6 w-full px-2 text-[11px]">
-                        <IconRestore className="mr-1.5 size-3.5" />
-                        Restore on the Backups page
-                      </Button>
-                    </Link>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={Boolean(restoringId)}
+                      onClick={() => onRestore(run)}
+                      className="mt-2 h-6 w-full px-2 text-[11px]"
+                    >
+                      <IconRestore className="mr-1.5 size-3.5" />
+                      {restoringId === run.backup_id ? "Restoring…" : "Restore this version"}
+                    </Button>
                   )}
                 </div>
               ))}
               <p className="text-[11px] text-muted-foreground">
-                Read-only here. Putting a copy back replaces a file in your library, so it is
-                confirmed on the Backups page.
+                Restoring shows you the exact library file it replaces first, and saves that file
+                before overwriting it. Pinning, retention and deleting live on the{" "}
+                <Link to="/backups" className="underline underline-offset-2 hover:text-foreground">
+                  Backups page
+                </Link>
+                .
               </p>
             </>
           )}
@@ -1414,7 +1621,7 @@ function Facts({ items }: { items: Array<[string, string, string?]> }) {
   );
 }
 
-function MisplacedWarning({ count }: { count: number }) {
+function MisplacedWarning({ count, onRepair }: { count: number; onRepair: () => void }) {
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/8 p-2.5">
       <p className="flex items-center gap-2 text-[12px] font-medium text-amber-100">
@@ -1422,9 +1629,18 @@ function MisplacedWarning({ count }: { count: number }) {
         {count} file{count === 1 ? " is" : "s are"} in the wrong place
       </p>
       <p className="mt-1 text-[11px] text-amber-50/75">
-        Nested one level too deep, so your media server cannot see them. Left alone here — they need
-        moving back by hand.
+        Nested one level too deep, inside a folder named after the file, so your media server cannot
+        see {count === 1 ? "it" : "them"}.
       </p>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onRepair}
+        className="mt-2 h-6 w-full border-amber-500/40 px-2 text-[11px] text-amber-100 hover:bg-amber-500/12"
+      >
+        <IconTool className="mr-1.5 size-3.5" />
+        Repair {count === 1 ? "it" : "them"}
+      </Button>
     </div>
   );
 }
