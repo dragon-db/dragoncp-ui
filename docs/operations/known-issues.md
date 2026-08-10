@@ -111,6 +111,16 @@ What remains:
 - **`ed25519` SSH keys cannot work on the browse path.** `ssh.py:155` uses
   `paramiko.RSAKey.from_private_key_file`.
 - **`DragonCPConfig.save_config()` has no callers** (`config.py:119`).
+- **The one-year immutable policy on hashed assets does nothing** — **verified**.
+  `frontend_serving.py` sets `public`, `max_age` and `immutable` on
+  `/assets/*` but never clears the `no-cache` that Flask's `send_from_directory`
+  applies by default, so the response carries
+  `Cache-Control: no-cache, public, max-age=31536000, immutable`. `no-cache`
+  wins: a conditional re-request returns `304`, confirming the browser
+  revalidates every asset on every page load instead of serving it from cache.
+  Invisible on a LAN; over a tunnel it is a round trip per asset per load. The
+  fix is one line — clear `response.cache_control.no_cache` before setting the
+  rest.
 
 ---
 
@@ -131,6 +141,16 @@ What remains:
   the file or reading it on the host.
 - **Rotated logs are not downloadable.** `/api/logs/download` serves only the
   live file.
+- **`config.py:65` warns about settings that are working correctly** —
+  **verified**. Every database-backed key with no environment-file value logs
+  `⚠️ Configuration key 'X' not found, using default: ''` on each read. The
+  empty string is that call's default, not the effective value: the registry
+  default and the consuming code both supply a real one. `BACKUP_RETENTION_*`
+  is the misleading case — the warning reads as though pruning is off, while
+  `services/backups/retention.py:100-103` treats an empty value as **enabled**.
+  `SSH_HOST_KEY_CHECKING`, `SSH_KEY_PATH`, `SSH_KNOWN_HOSTS_FILE`, `TEST_MODE`,
+  `SERIES_ANIME_SYNC_WAIT_TIME` and `WEBSOCKET_TIMEOUT_MINUTES` do the same. The
+  warnings should either report the resolved value or drop to debug.
 - ~~**The React frontend has no log viewer.**~~ Fixed during the legacy UI
   retirement. Settings → Diagnostics now calls both authenticated log endpoints.
 
