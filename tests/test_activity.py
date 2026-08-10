@@ -313,6 +313,23 @@ class QueryTests(ActivityTestCase):
         self.assertEqual(len(self.entries(action_group='backup')), 3)
         self.assertEqual(len(self.entries(action='backup.restore')), 1)
 
+    def test_filter_by_several_actions_at_once(self):
+        """
+        The Backups history filters to "everything that removed something".
+
+        Four separate actions do that and no prefix groups them, so the query
+        has to accept a set. Doing it in the client instead would page over
+        rows it then discarded, and report a total for the wrong set.
+        """
+        found = self.entries(action=['backup.delete', 'backup.retention_apply'])
+        self.assertEqual(
+            {entry['action'] for entry in found},
+            {'backup.delete', 'backup.retention_apply'},
+        )
+        self.assertEqual(
+            self.activity.query(action=['backup.delete', 'backup.retention_apply'])['total'], 2,
+            'the total has to describe the filtered set, not the whole table')
+
     def test_filter_by_what_was_acted_on(self):
         self.assertEqual(len(self.entries(target_type='backup_capture', target_id='cap_1')), 2)
 

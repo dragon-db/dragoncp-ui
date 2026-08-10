@@ -314,7 +314,7 @@ Query parameters, all optional and combined with AND:
 | `actor` | a username, or an automation name such as `auto-sync` |
 | `actor_kind` | `admin`, `automated` or `system` |
 | `account_id` | the stable account id, which survives a rename |
-| `action` | one exact action, e.g. `backup.restore` |
+| `action` | one exact action, e.g. `backup.restore`, or several separated by commas meaning any of them — `backup.delete,backup.retention_apply`. The total and the paging describe the filtered set |
 | `group` | an action family, e.g. `backup` |
 | `target_type` | `transfer`, `backup_capture`, `notification`, `setting`, `account`, `connection`, `simulation`, `explore_plan` |
 | `target_id` | one specific thing |

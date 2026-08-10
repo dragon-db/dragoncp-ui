@@ -24,12 +24,13 @@ from .identity import (
 from .indexer import BackupIndexer
 from .layout import BackupLayout, BackupPathNotConfigured, utc_now
 from .migrate import LegacyMigration
+from .reporting import describe_capture, summarise, summarise_created, summary_line
 from .restore import RestorePlanner, RestoreRunner
 from .retention import RetentionPolicy
 from .sorter import BackupSorter, SortedCapture, SortResult
 from activity_log import OUTCOME_FAILED, OUTCOME_OK, record
 from security import PathTraversalError
-from actor import AUTO_RETENTION, acting_as, current_actor
+from actor import AUTO_BACKUP, AUTO_RETENTION, acting_as, current_actor
 
 #: What counts as "still using the disk". Mirrors the transfer model's own
 #: definition; stated here so the guard does not depend on a helper's name
@@ -113,9 +114,11 @@ class BackupsService:
             summary['errors'].append(str(error))
             return summary
 
+        indexed: List[str] = []
         for capture in result.captures:
             try:
                 self.index_sorted(capture)
+                indexed.append(capture.capture_id)
             except Exception as error:  # noqa: BLE001 - files are placed; index is rebuildable
                 summary['errors'].append(f"{capture.capture_id}: {error}")
 
@@ -125,10 +128,48 @@ class BackupsService:
         summary['unsorted'] = result.unsorted_count
         summary['errors'].extend(result.errors)
 
+        self.record_captures_created(
+            indexed,
+            f"A sync of {transfer.get('folder_name') or transfer_id} replaced "
+            f"{len(indexed)} file(s), which are now restorable",
+            source=transfer_id,
+        )
+
         if result.captures:
             self._apply_retention_quietly()
 
         return summary
+
+    def record_captures_created(self, capture_ids: List[str], summary: str,
+                                source: Optional[str] = None) -> None:
+        """
+        Note that versions came into existence, and where from.
+
+        The trail already answers "where did my backup go". Without this it
+        cannot answer "where did this one come from", which is the question
+        asked by anyone looking at a version they do not remember creating.
+
+        Recorded once per batch rather than once per file: a season sync
+        displaces dozens of episodes, and a trail with one entry each buries
+        everything else on the page.
+        """
+        if not capture_ids:
+            return
+        items = []
+        for capture_id in capture_ids:
+            record_row = self.captures.get(capture_id)
+            if record_row:
+                items.append(self.describe_capture_for_removal(record_row))
+        if not items:
+            return
+        with acting_as(AUTO_BACKUP):
+            record(
+                'backup.capture',
+                summary,
+                target_type='backup_capture',
+                target_id=source,
+                detail=summarise_created(items),
+            )
 
     def capture_library_file(self, library: str, library_relative_path: str,
                              absolute_path: str, reason: str) -> Tuple[bool, str, Optional[str]]:
@@ -591,7 +632,7 @@ class BackupsService:
         self.captures.update(capture_id, {'pinned': 1 if pinned else 0})
         return True, 'Pinned' if pinned else 'Unpinned'
 
-    def delete_capture(self, capture_id: str) -> Tuple[bool, str]:
+    def delete_capture(self, capture_id: str) -> Tuple[bool, str, Optional[Dict]]:
         """
         Remove one version, files and index entry together.
 
@@ -599,17 +640,23 @@ class BackupsService:
         the source of truth and the index is derived from it, so a row removed
         without its files frees no space and comes straight back on the next
         rebuild — the entry looks deleted until it silently is not.
+
+        Returns (ok, message, removed) where `removed` describes what went, for
+        the caller to record. It is None on every failure path, so a caller
+        cannot report a deletion that did not happen.
         """
         record = self.captures.get(capture_id)
         if not record:
-            return False, 'Backup not found'
+            return False, 'Backup not found', None
+
+        described = self.describe_capture_for_removal(record)
 
         ok, error = self._remove_capture_files(record)
         if not ok:
-            return False, error
+            return False, error, None
 
         self.captures.delete(capture_id)
-        return True, 'Backup deleted'
+        return True, 'Backup deleted', described
 
     def _remove_capture_files(self, record: Dict) -> Tuple[bool, str]:
         """Remove one capture's folder and tidy the directories it emptied."""
@@ -674,23 +721,49 @@ class BackupsService:
             capture_ids, slot_keys, keep_newest, include_pinned,
         )
 
-        deleted, freed, errors = [], 0, []
+        deleted, deleted_items, freed, errors = [], [], 0, []
         for record in selected:
+            # Described first: after the files and the row are gone there is
+            # nothing left to read, and "deleted 12 versions" is not an answer
+            # to "which episode did I lose".
+            described = self.describe_capture_for_removal(record)
             ok, error = self._remove_capture_files(record)
             if not ok:
                 errors.append(f"{self._display(record)}: {error}")
                 continue
             self.captures.delete(record['capture_id'])
             deleted.append(record['capture_id'])
+            deleted_items.append(described)
             freed += record.get('total_size') or 0
 
         return {
             'deleted': deleted,
+            'deleted_items': deleted_items,
             'deleted_count': len(deleted),
             'reclaimed': freed,
             'skipped_pinned': skipped_pinned,
             'errors': errors,
         }
+
+    def describe_capture_for_removal(self, record: Dict) -> Dict:
+        """
+        One version, described well enough to be identified once it is gone.
+
+        Neither the file list nor the absolute path is allowed to fail the
+        deletion it is describing — the operator asked for space back, and a
+        record that is thinner than intended is better than a refusal.
+        """
+        try:
+            files = self.captures.files(record['capture_id'])
+        except Exception:  # noqa: BLE001
+            files = []
+        try:
+            capture_dir = self.layout.absolute(record.get('capture_path') or '')
+        except Exception:  # noqa: BLE001
+            capture_dir = None
+        return describe_capture(
+            record, files=files, display=self._display(record), capture_dir=capture_dir,
+        )
 
     def _select_for_delete(self, capture_ids: Optional[List[str]],
                            slot_keys: Optional[List[str]],
@@ -798,24 +871,59 @@ class BackupsService:
             return
         if result.deleted:
             reclaimed_gb = result.reclaimed / 1e9
+            named = summary_line(result.deleted_items)
             with acting_as(AUTO_RETENTION):
                 record(
                     'backup.retention_apply',
-                    f"Retention removed {len(result.deleted)} old backup version(s), "
-                    f"reclaiming {result.reclaimed / 1e9:.2f} GB",
+                    f"Retention removed {len(result.deleted)} old backup version(s) "
+                    f"({named}), reclaiming {reclaimed_gb:.2f} GB",
                     target_type='backup_capture',
-                    detail={'deleted_count': len(result.deleted),
-                            'reclaimed_bytes': result.reclaimed,
-                            'automatic': True},
+                    detail=summarise(
+                        result.deleted_items,
+                        automatic=True,
+                        reclaimed=result.reclaimed,
+                        extra={'keep': result.keep, 'grace_hours': result.grace_hours},
+                    ),
                 )
             print(
-                f"🧹 Backup retention removed {len(result.deleted)} old version(s), "
-                f"reclaiming {reclaimed_gb:.2f} GB"
+                f"🧹 Backup retention removed {len(result.deleted)} old version(s) "
+                f"({named}), reclaiming {reclaimed_gb:.2f} GB"
             )
             self._emit('backup_retention', {
                 'deleted': len(result.deleted),
                 'reclaimed': result.reclaimed,
+                'items': result.deleted_items[:10],
+                'summary': named,
             })
+            self._notify_deleted(result.deleted_items, result.reclaimed)
+
+    def _notify_deleted(self, items: List[Dict], reclaimed: int) -> None:
+        """
+        Tell the operator that something deleted their backups while they were
+        not looking.
+
+        This is the one deletion nobody asked for, on the one page whose whole
+        promise is that nothing is destroyed. Finding out days later by noticing
+        an absence is the failure this exists to prevent.
+
+        Never allowed to raise: the versions are already gone, and a webhook
+        that is down must not turn a completed sync into a failed one.
+        """
+        if not items:
+            return
+        notifier = getattr(self.coordinator, 'notification_service', None)
+        if notifier is None or not hasattr(notifier, 'send_backup_retention_notification'):
+            return
+        try:
+            notifier.send_backup_retention_notification({
+                'deleted_count': len(items),
+                'reclaimed_bytes': reclaimed,
+                'items': items,
+                'keep': self.retention.keep(),
+                'grace_hours': self.retention.grace_hours(),
+            })
+        except Exception as error:  # noqa: BLE001 - see docstring
+            print(f"⚠️  Could not send the backup retention notification: {error}")
 
     def migration_plan(self) -> Dict:
         report = self.migration.plan().as_dict()

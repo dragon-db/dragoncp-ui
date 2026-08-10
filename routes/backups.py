@@ -21,6 +21,7 @@ from flask import Blueprint, jsonify, request
 from activity_log import record
 from auth import require_auth
 from security import validate_relative_path
+from services.backups.reporting import summarise, summary_line
 
 backups_bp = Blueprint('backups', __name__)
 
@@ -287,10 +288,11 @@ def api_backups_delete(capture_id):
     """
     try:
         label = _capture_label(capture_id)
-        ok, message = _service().delete_capture(capture_id)
+        ok, message, removed = _service().delete_capture(capture_id)
         if ok:
             record('backup.delete', f"Deleted the backup of {label}",
-                   target_type='backup_capture', target_id=capture_id, target_label=label)
+                   target_type='backup_capture', target_id=capture_id, target_label=label,
+                   detail=summarise([removed] if removed else []))
             return jsonify({'status': 'success', 'message': message})
         # Unknown id is a 404 here as it is on the pin and detail routes; a
         # failure to remove the files is a 400.
@@ -373,14 +375,15 @@ def api_backups_delete_many():
             keep_newest=max(0, int(payload.get('keep_newest') or 0)),
             include_pinned=bool(payload.get('include_pinned')),
         )
+        removed = result.get('deleted_items') or []
         record('backup.bulk_delete',
-               f"Deleted {result['deleted_count']} backup version(s), "
+               f"Deleted {result['deleted_count']} backup version(s) "
+               f"({summary_line(removed)}), "
                f"reclaiming {result['reclaimed'] / 1e9:.2f} GB",
                target_type='backup_capture',
-               detail={'deleted_count': result['deleted_count'],
-                       'reclaimed_bytes': result['reclaimed'],
-                       'skipped_pinned': result['skipped_pinned'],
-                       'by_slot': bool(slot_keys)})
+               detail=summarise(removed, reclaimed=result['reclaimed'],
+                                extra={'skipped_pinned': result['skipped_pinned'],
+                                       'by_slot': bool(slot_keys)}))
 
         pinned_note = (
             f", {result['skipped_pinned']} pinned version(s) left alone"
@@ -411,8 +414,8 @@ def api_backups_clear_unsorted():
         record('backup.clear_unsorted',
                f"Cleared {result['deleted_count']} unidentified backup item(s)",
                target_type='backup_capture',
-               detail={'deleted_count': result['deleted_count'],
-                       'reclaimed_bytes': result['reclaimed']})
+               detail=summarise(result.get('deleted_items') or [],
+                                reclaimed=result['reclaimed']))
         return jsonify({
             'status': 'success',
             'message': (
@@ -544,12 +547,14 @@ def api_backups_retention_apply():
         return _fail(f'Invalid retention value: {error}')
     try:
         result = _service().retention_apply(keep=keep, grace_hours=grace)
+        removed = result.get('deleted_items') or []
         record('backup.retention_apply',
-               f"Applied the retention rule, removing {result['deleted_count']} old version(s)",
+               f"Applied the retention rule, removing {result['deleted_count']} "
+               f"old version(s) ({summary_line(removed)})",
                target_type='backup_capture',
-               detail={'deleted_count': result['deleted_count'],
-                       'reclaimed_bytes': result['reclaimed'],
-                       'keep': keep, 'grace_hours': grace})
+               detail=summarise(removed, reclaimed=result['reclaimed'],
+                                extra={'keep': result.get('keep', keep),
+                                       'grace_hours': result.get('grace_hours', grace)}))
         return jsonify({
             'status': 'success',
             'message': (
@@ -756,11 +761,12 @@ def api_delete_backup(backup_id):
     """
     try:
         label = _capture_label(backup_id)
-        ok, message = _service().delete_capture(backup_id)
+        ok, message, removed = _service().delete_capture(backup_id)
         if ok:
             record('backup.delete', f"Deleted the backup of {label}",
                    target_type='backup_capture', target_id=backup_id, target_label=label,
-                   detail={'legacy_endpoint': True})
+                   detail=summarise([removed] if removed else [],
+                                    extra={'legacy_endpoint': True}))
         return (jsonify({'status': 'success', 'message': message})
                 if ok else _fail(message))
     except Exception as error:  # noqa: BLE001

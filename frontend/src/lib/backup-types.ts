@@ -262,6 +262,105 @@ export interface RebuildResult {
   message: string;
 }
 
+/* ===== History =====
+ *
+ * What the Backups feature did, read back from the activity trail. The server
+ * describes every version it removes BEFORE removing it, because afterwards
+ * there is nothing left to read — so these entries are the only record of a
+ * file that no longer exists anywhere.
+ */
+
+/** One file inside a version an entry describes. */
+export interface HistoryFile {
+  name: string;
+  relative_path: string;
+  /** Where it lived in the media library. Absent for index-rebuilt versions. */
+  original_path: string | null;
+  /** Where the kept copy sat on the backup disk. */
+  backup_path: string | null;
+  file_size: number;
+  is_media: boolean;
+}
+
+/** One stored version an entry created or removed. */
+export interface HistoryItem {
+  capture_id: string;
+  display: string;
+  library: BackupLibrary | null;
+  title: string | null;
+  season_number: number | null;
+  episode_number: number | null;
+  release_year: string | null;
+  slot_key: string | null;
+  kind: CaptureKind | null;
+  reason: CaptureReason | string | null;
+  captured_at: string | null;
+  pinned: boolean;
+  total_size: number;
+  file_count: number;
+  capture_path: string;
+  /** The absolute folder on the backup disk, when the server could resolve it. */
+  capture_dir: string | null;
+  files: HistoryFile[];
+  files_omitted: number;
+}
+
+export interface HistoryDetail {
+  /** True when nothing and nobody asked for it — the retention sweep. */
+  automatic?: boolean;
+  items?: HistoryItem[];
+  /** Items beyond the recorded cap. Counted, never dropped silently. */
+  omitted?: number;
+  titles?: string[];
+  deleted_count?: number;
+  reclaimed_bytes?: number;
+  created_count?: number;
+  kept_bytes?: number;
+  keep?: number;
+  grace_hours?: number;
+  skipped_pinned?: number;
+  by_slot?: boolean;
+  legacy_endpoint?: boolean;
+}
+
+/** The filter chips above the history list. */
+export type HistoryLens = "all" | "removed" | "kept" | "restored";
+
+/** Which actions each lens covers. Empty means every backup action. */
+export const HISTORY_LENS_ACTIONS: Record<HistoryLens, string[]> = {
+  all: [],
+  removed: [
+    "backup.retention_apply",
+    "backup.delete",
+    "backup.bulk_delete",
+    "backup.clear_unsorted",
+  ],
+  kept: ["backup.capture"],
+  restored: ["backup.restore"],
+};
+
+export const HISTORY_ACTION_LABELS: Record<string, string> = {
+  "backup.capture": "Kept",
+  "backup.restore": "Restored",
+  "backup.delete": "Deleted",
+  "backup.bulk_delete": "Deleted",
+  "backup.clear_unsorted": "Cleared",
+  "backup.retention_apply": "Auto-deleted",
+  "backup.retention_save": "Rule changed",
+  "backup.pin": "Pinned",
+  "backup.unpin": "Unpinned",
+  "backup.rebuild_index": "Reindexed",
+  "backup.migrate": "Migrated",
+};
+
+/** Actions that destroyed something. Coloured and worded as such. */
+export const HISTORY_DESTRUCTIVE = new Set([
+  "backup.delete",
+  "backup.bulk_delete",
+  "backup.clear_unsorted",
+  "backup.retention_apply",
+]);
+
 export const LIBRARY_LABELS: Record<BackupLibrary, string> = {
   movies: "Movies",
   shows: "TV Shows",

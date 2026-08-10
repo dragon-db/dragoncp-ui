@@ -25,6 +25,7 @@ from datetime import timedelta
 from typing import Dict, List, Optional
 
 from .layout import BackupLayout, utc_now
+from .reporting import describe_capture
 
 DEFAULT_KEEP = 2
 DEFAULT_GRACE_HOURS = 24
@@ -61,6 +62,10 @@ class PruneResult:
     grace_hours: int
     candidates: List[PruneCandidate] = field(default_factory=list)
     deleted: List[str] = field(default_factory=list)
+    #: The same deletions, described in full — title, paths, files, size. Built
+    #: before anything is removed, because afterwards there is nothing left to
+    #: read. `deleted` stays a plain id list so existing callers are unaffected.
+    deleted_items: List[Dict] = field(default_factory=list)
     reclaimed: int = 0
     errors: List[str] = field(default_factory=list)
     applied: bool = False
@@ -74,6 +79,7 @@ class PruneResult:
             'candidate_count': len(self.candidates),
             'candidate_size': sum(c.total_size for c in self.candidates),
             'deleted': self.deleted,
+            'deleted_items': self.deleted_items,
             'deleted_count': len(self.deleted),
             'reclaimed': self.reclaimed,
             'errors': self.errors,
@@ -200,7 +206,14 @@ class RetentionPolicy:
 
     def apply(self, keep: Optional[int] = None,
               grace_hours: Optional[int] = None) -> PruneResult:
-        """Remove what the rule selects, reporting every deletion."""
+        """
+        Remove what the rule selects, reporting every deletion.
+
+        Each version is described before it is touched. This runs unattended
+        after a sync, so the entry it leaves behind is the only thing that will
+        ever say which episode went — reading the row and its files after
+        `delete()` would find nothing.
+        """
         result = self.candidates(keep=keep, grace_hours=grace_hours)
         result.applied = True
 
@@ -210,6 +223,8 @@ class RetentionPolicy:
             except Exception as error:  # noqa: BLE001
                 result.errors.append(f"{candidate.display}: {error}")
                 continue
+
+            described = self._describe(candidate, path)
 
             try:
                 shutil.rmtree(path, ignore_errors=False)
@@ -223,9 +238,30 @@ class RetentionPolicy:
             self.layout.prune_empty_dirs(path)
             self.captures.delete(candidate.capture_id)
             result.deleted.append(candidate.capture_id)
+            result.deleted_items.append(described)
             result.reclaimed += candidate.total_size
 
         return result
+
+    def _describe(self, candidate: PruneCandidate, capture_dir: str) -> Dict:
+        """
+        One about-to-be-deleted version, in full.
+
+        Failing to read the files must not stop the prune: the disk pressure
+        this exists to relieve is real, and a version that cannot be described
+        is still recorded by id, name and path.
+        """
+        try:
+            files = self.captures.files(candidate.capture_id)
+        except Exception:  # noqa: BLE001 - a thinner record beats no deletion
+            files = []
+        record = self.captures.get(candidate.capture_id) or {}
+        return describe_capture(
+            {**record, **candidate.as_dict()},
+            files=files,
+            display=candidate.display,
+            capture_dir=capture_dir,
+        )
 
     @staticmethod
     def _display(row: Dict) -> str:

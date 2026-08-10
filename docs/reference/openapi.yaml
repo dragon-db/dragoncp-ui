@@ -741,7 +741,7 @@ paths:
         - { name: actor, in: query, schema: { type: string }, description: A username, or an automation name such as auto-sync }
         - { name: actor_kind, in: query, schema: { type: string, enum: [admin, automated, system] } }
         - { name: account_id, in: query, schema: { type: integer }, description: Stable account id; survives a rename }
-        - { name: action, in: query, schema: { type: string }, description: One exact action, e.g. backup.restore }
+        - { name: action, in: query, schema: { type: string }, description: One exact action (backup.restore), or several comma-separated meaning any of them (backup.delete,backup.retention_apply) }
         - { name: group, in: query, schema: { type: string }, description: An action family, e.g. backup }
         - { name: target_type, in: query, schema: { type: string } }
         - { name: target_id, in: query, schema: { type: string } }

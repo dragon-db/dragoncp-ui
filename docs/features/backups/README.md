@@ -266,8 +266,35 @@ Three things protect a capture:
 
 A multi-episode capture is only pruned when it has fallen out of the window in
 **every** slot it belongs to; otherwise restoring the other episode would find
-nothing. Nothing is removed silently: every prune reports what went and how
-much was reclaimed.
+nothing.
+
+**Nothing is removed silently, and a count is not enough.** Retention is the
+only deletion in the application that nobody asked for — it runs by itself
+after a sync, on the one feature whose promise is that nothing is destroyed.
+`Removed 3 old versions` and `removed the only copy of the thing you were
+looking for` read identically, so every prune records the versions themselves:
+title, which version, when it was captured, its size, and the full path on both
+sides — where the file lived in the library and where the kept copy sat on the
+backup disk.
+
+That description is built **before** anything is deleted. Afterwards the folder
+and the index row are both gone and there is nothing left to read, so the entry
+is the only surviving record of a file that no longer exists anywhere.
+
+It is then announced three ways, because an unattended deletion that has to be
+gone looking for is one nobody finds:
+
+- **Discord**, through the same webhook as sync and rename notifications, so it
+  reaches whoever is not looking at the app. Never allowed to raise — the
+  versions are gone either way, and a webhook being down must not turn a
+  completed sync into a failed one.
+- **A banner on the Backups page**, until dismissed. Acknowledgement is stored
+  per browser rather than on the server: the question is "have *I* seen this",
+  and one administrator dismissing it should not hide it from another.
+- **The History tab**, permanently — see below.
+
+The same detail is recorded for manual deletions, so `who deleted my backup`
+has one answer whoever did it.
 
 Disk pressure is **shown and never acted on**. Pruning keyed to free space
 fires at unpredictable moments, which for a recovery tool is the wrong
@@ -466,6 +493,22 @@ the two are views of the same library.
 - **Housekeeping** — retention settings that **save to the database** and take
   effect without a restart; the index rebuild; the one-off migration; and the
   unidentified list.
+- **History tab** — the page answers two questions and they need two views.
+  *Library* is what is stored right now. *History* is what happened to
+  everything that is not, which the first cannot answer: by the time anybody
+  asks, the version and its index row are gone.
+
+  It reads the activity trail rather than a store of its own, because the trail
+  is already the record of who did what and a second one would immediately
+  disagree with it. Filters are **Everything**, **Deleted**, **Kept** and
+  **Restored**, sent to the server as a set of actions so the total and the
+  paging describe the filtered set. Expanding an entry shows each version it
+  touched with its full library path and its full backup path, both copyable.
+
+  Versions being *created* are recorded too, once per sync or repair rather
+  than once per file. Without that the trail could say where a backup went but
+  not where it came from, which is the question asked by anyone looking at a
+  version they do not remember making.
 - **Every deletion is previewed, and the preview is binding.** Retention's
   *Remove them now* is disabled until the current numbers have been previewed,
   and editing them clears the preview — otherwise previewing "keep 10" and then
