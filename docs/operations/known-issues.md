@@ -111,16 +111,21 @@ What remains:
 - **`ed25519` SSH keys cannot work on the browse path.** `ssh.py:155` uses
   `paramiko.RSAKey.from_private_key_file`.
 - **`DragonCPConfig.save_config()` has no callers** (`config.py:119`).
-- **The one-year immutable policy on hashed assets does nothing** — **verified**.
-  `frontend_serving.py` sets `public`, `max_age` and `immutable` on
-  `/assets/*` but never clears the `no-cache` that Flask's `send_from_directory`
-  applies by default, so the response carries
+- ~~**The one-year immutable policy on hashed assets does nothing.**~~ Fixed.
+  `frontend_serving.py` set `public`, `max_age` and `immutable` on `/assets/*`
+  but never cleared the `no-cache` that Flask's `send_from_directory` applies by
+  default, so the response carried
   `Cache-Control: no-cache, public, max-age=31536000, immutable`. `no-cache`
-  wins: a conditional re-request returns `304`, confirming the browser
-  revalidates every asset on every page load instead of serving it from cache.
-  Invisible on a LAN; over a tunnel it is a round trip per asset per load. The
-  fix is one line — clear `response.cache_control.no_cache` before setting the
-  rest.
+  won, and the browser revalidated every asset on every page load instead of
+  serving it from cache — invisible on a LAN, a round trip per asset per load
+  over the tunnel. It now clears `no_cache` first and the header reads
+  `public, max-age=31536000, immutable`.
+
+  Safe because asset filenames are content-hashed and the shell that points at
+  them is still served `no-cache`, so a new build is picked up on the next load.
+  `tests/test_frontend_serving.py` asserts both halves — no `no-cache` on
+  `/assets/*`, `no-cache` retained on the shell — and the assets half fails
+  against the old code.
 
 ---
 
