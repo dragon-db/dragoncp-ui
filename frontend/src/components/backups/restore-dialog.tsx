@@ -11,7 +11,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatBytes } from "@/lib/explore-format";
-import { FullPath, PathSwap } from "@/components/backups/full-path";
+import { FullPath, PathSwap } from "@/components/layout/full-path";
 import type { RestorePlan } from "@/lib/backup-types";
 
 /**

@@ -15,6 +15,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { formatBytes } from "@/lib/explore-format";
+import { FullPath } from "@/components/layout/full-path";
 import type {
   ExploreRepairAction,
   ExploreRepairPlan,
@@ -29,28 +30,24 @@ function basename(path: string): string {
 
 /**
  * A file that can simply be moved: nothing else holds its place.
+ *
+ * Both ends of the move are spelled out. This used to show the filename
+ * truncated and only the destination's season folder, so the one thing it did
+ * not say was where the file actually is — which is the whole subject of a
+ * repair, since the file being in the wrong place is the problem.
  */
 function CleanRow({ action }: { action: ExploreRepairAction }) {
   return (
-    <li className="flex flex-col gap-1">
-      <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
-        <span className="min-w-0 flex-1 truncate text-foreground" title={action.name}>
-          {action.name}
-        </span>
-        <span className="flex-none font-mono text-[10.5px] text-muted-foreground tabular-nums">
-          {formatBytes(action.size)}
-        </span>
+    <li className="flex flex-col gap-1.5 rounded-md border border-border/70 p-2.5">
+      <FullPath label="Now at" value={action.relative_path} meta={formatBytes(action.size)} />
+      <div className="flex min-w-0 items-start gap-1.5">
+        <IconArrowNarrowRight className="mt-3 size-3.5 flex-none text-emerald-300" />
+        <FullPath label="Moves to" value={action.destination} tone="ok" className="flex-1" />
       </div>
-      <div className="flex min-w-0 items-center gap-1.5 pl-1 text-[11.5px] text-emerald-300">
-        <IconArrowNarrowRight className="size-3.5 flex-none" />
-        <span className="min-w-0 truncate" title={action.destination}>
-          {action.season_folder ?? basename(action.destination)}
-        </span>
+      <p className="flex items-center gap-1.5 pl-1 font-mono text-[10px] tracking-[0.06em] text-muted-foreground uppercase">
         <IconFolderOff className="size-3 flex-none opacity-60" />
-        <span className="flex-none font-mono text-[10px] tracking-[0.06em] uppercase opacity-70">
-          folder removed
-        </span>
-      </div>
+        the folder it was buried in comes down
+      </p>
     </li>
   );
 }
@@ -95,8 +92,8 @@ function ContestedRow({
               : "border-border hover:bg-accent/40"
           )}
         >
-          <span className="min-w-0 flex-1 truncate" title={rival.name}>
-            {rival.name}
+          <span className="min-w-0 flex-1 font-mono text-[11.5px] leading-[1.45] break-all">
+            {rival.relative_path}
           </span>
           <span className="flex-none font-mono text-[10px] tabular-nums opacity-70">
             {formatBytes(rival.size)}
@@ -117,8 +114,8 @@ function ContestedRow({
               : "border-border hover:bg-accent/40"
           )}
         >
-          <span className="min-w-0 flex-1 truncate" title={action.name}>
-            {action.name}
+          <span className="min-w-0 flex-1 font-mono text-[11.5px] leading-[1.45] break-all">
+            {action.relative_path}
           </span>
           <span className="flex-none font-mono text-[10px] tabular-nums opacity-70">
             {formatBytes(action.size)}

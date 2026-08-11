@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatBytes, formatWhen } from "@/lib/explore-format";
-import { FullPath } from "@/components/backups/full-path";
+import { FullPath } from "@/components/layout/full-path";
 import type { DeleteCandidate, DeletePreview } from "@/lib/backup-types";
 
 /**

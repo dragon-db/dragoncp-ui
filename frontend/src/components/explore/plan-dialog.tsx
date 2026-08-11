@@ -310,11 +310,11 @@ function DryRunCard({
                 {report.files.map((file, index) => (
                   <li
                     key={`${file.rel}-${index}`}
-                    className="flex items-center gap-2 px-2.5 py-1 text-[11.5px]"
+                    className="flex items-start gap-2 px-2.5 py-1 text-[11.5px]"
                   >
                     <span
                       className={cn(
-                        "w-[68px] flex-none font-mono text-[9.5px] tracking-[0.08em] uppercase",
+                        "mt-px w-[68px] flex-none font-mono text-[9.5px] tracking-[0.08em] uppercase",
                         file.change === "new" && "text-amber-400",
                         file.change === "replaced" && "text-brand-hover",
                         file.change === "deleted" && "text-rose-300",
@@ -324,8 +324,8 @@ function DryRunCard({
                     >
                       {file.change}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-foreground">
-                      {shortName(file.rel)}
+                    <span className="min-w-0 flex-1 font-mono text-[11px] leading-[1.45] break-all text-foreground">
+                      {file.rel}
                     </span>
                     <span className="flex-none font-mono text-[10px] text-muted-foreground">
                       {formatBytes(file.size)}
@@ -398,21 +398,25 @@ function PlanGroupCard({ group }: { group: ExplorePlanGroup }) {
               <IconTrash className="mt-0.5 size-3.5 flex-none text-rose-400" />
             )}
             <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-2">
+              <span className="flex items-start gap-2">
                 {/* A movie has no episode number, so its "code" is the filename.
                     Printing that as a code chip repeats the name beside it. */}
                 {isEpisodeCode(action.code) && (
-                  <span className="flex-none font-mono text-[10.5px] font-semibold text-brand-hover">
+                  <span className="mt-px flex-none font-mono text-[10.5px] font-semibold text-brand-hover">
                     {action.code}
                   </span>
                 )}
-                <span className="min-w-0 truncate text-[12px] text-foreground">
-                  {action.rel ? shortName(action.rel) : shortName(action.local_rel ?? "")}
+                {/* The whole path, not its last segment. This is the list an
+                    operator approves before files are written into their
+                    library, and two files with the same name in different
+                    season folders are exactly the pair worth telling apart. */}
+                <span className="min-w-0 flex-1 font-mono text-[11.5px] leading-[1.45] break-all text-foreground">
+                  {action.rel || action.local_rel || ""}
                 </span>
               </span>
               {action.action === "supersede" && action.local_rel && (
-                <span className="block truncate font-mono text-[10px] text-muted-foreground">
-                  replaces {shortName(action.local_rel)} → backup
+                <span className="mt-0.5 block font-mono text-[10px] break-all text-muted-foreground">
+                  replaces {action.local_rel} → backup
                 </span>
               )}
               {action.action === "remove" && (
@@ -429,11 +433,6 @@ function PlanGroupCard({ group }: { group: ExplorePlanGroup }) {
       </ul>
     </div>
   );
-}
-
-function shortName(rel: string): string {
-  const parts = rel.split("/");
-  return parts[parts.length - 1] || rel;
 }
 
 /** `S02E07`, `S00E13` — anything else is a filename standing in for one. */

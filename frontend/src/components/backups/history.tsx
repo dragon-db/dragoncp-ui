@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
 import { ActorBadge } from "@/components/activity/actor-badge";
-import { FullName, FullPath } from "@/components/backups/full-path";
+import { FullName, FullPath } from "@/components/layout/full-path";
 import { cn } from "@/lib/utils";
 import { formatBytes, formatWhen } from "@/lib/explore-format";
 import { useBackupHistory } from "@/hooks/useBackups";

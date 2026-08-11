@@ -14,8 +14,9 @@ import {
   IconEye,
   IconHistory,
   IconLayoutList,
+  IconArrowsDiff,
+  IconFolderSearch,
   IconList,
-  IconMenu2,
   IconMovie,
   IconPlayerPlay,
   IconPlugConnected,
@@ -53,7 +54,7 @@ import {
   EpisodeRows,
   SeasonRows,
   TableShell,
-  type Density,
+  type ViewMode,
 } from "@/components/explore/contents-table";
 import { PlanDialog } from "@/components/explore/plan-dialog";
 import { RepairDialog } from "@/components/explore/repair-dialog";
@@ -124,7 +125,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | ExploreStatus>("all");
   const [sort, setSort] = useState<"recent" | "name">("recent");
-  const [density, setDensity] = useState<Density>("comfortable");
+  const [view, setView] = useState<ViewMode>("list");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
   const [selectedSeason, setSelectedSeason] = useState<string | null>(null);
@@ -183,11 +184,16 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
     showHistory ? selectedSeries : null,
     selectedSeason
   );
-  const backupsQuery = useExploreBackups(
-    mediaType,
-    showBackups ? selectedSeries : null,
-    selectedSeason
-  );
+  /*
+   * Loaded with the selection, not on opening the section.
+   *
+   * Gating this on `showBackups` meant the count on the header was unknown
+   * until you clicked it — so the one question it answers at a glance ("is
+   * there anything to put back here?") required the click that only makes
+   * sense once you already know the answer. It is one small index read per
+   * selection, and it makes opening the section instant as well.
+   */
+  const backupsQuery = useExploreBackups(mediaType, selectedSeries, selectedSeason);
   const planMutation = useExplorePlan();
   const dryRunMutation = useExploreDryRun();
   const execute = useExploreExecute(mediaType);
@@ -739,7 +745,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
             !selectedSeries && "hidden lg:flex"
           )}
         >
-          {/* Back, path, tally, actions and density all on one 34px strip is
+          {/* Back, path, tally, actions and the view switch all on one 34px strip is
               fine at desktop widths and unreadable on a phone, so below `sm`
               the path gets the strip to itself and the rest sits under it. */}
           <div className="flex flex-none flex-col border-b border-border bg-well sm:h-[34px] sm:flex-row sm:items-center sm:gap-2.5 sm:px-3">
@@ -806,26 +812,36 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
                   Actions
                 </Button>
               )}
+              {/*
+                Three views, not two row heights. Each answers a different
+                question, so the switch changes what a row tells you rather
+                than how tall it is. Labelled from `md` up, because "Compare"
+                and "Paths" are not guessable from a glyph the way a row-height
+                control was; the icon alone carries it on narrower windows.
+              */}
               <div className="hidden gap-0.5 rounded-md border border-border bg-elevated p-0.5 sm:inline-flex">
                 {(
                   [
-                    ["comfortable", IconList, "Comfortable rows"],
-                    ["compact", IconMenu2, "Compact rows"],
+                    ["list", IconList, "List", "One line per file"],
+                    ["compare", IconArrowsDiff, "Compare", "Local and remote side by side"],
+                    ["paths", IconFolderSearch, "Paths", "The full path on both sides"],
                   ] as const
-                ).map(([value, Icon, title]) => (
+                ).map(([value, Icon, label, title]) => (
                   <button
                     key={value}
                     type="button"
-                    title={title}
-                    onClick={() => setDensity(value)}
+                    title={`${label} — ${title}`}
+                    aria-pressed={view === value}
+                    onClick={() => setView(value)}
                     className={cn(
-                      "grid h-5 w-6 place-items-center rounded",
-                      density === value
+                      "flex h-5 items-center gap-1 rounded px-1.5 text-[10.5px] font-medium",
+                      view === value
                         ? "bg-brand/15 text-brand-foreground"
                         : "text-muted-foreground hover:text-foreground"
                     )}
                   >
                     <Icon className="size-3.5" />
+                    <span className="hidden md:inline">{label}</span>
                   </button>
                 ))}
               </div>
@@ -848,7 +864,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
               <EpisodeRows
                 episodes={episodes}
                 selected={picked}
-                density={density}
+                view={view}
                 cursor={cursor}
                 focused={pane === "table"}
                 onToggle={togglePick}
@@ -858,7 +874,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
               <SeasonRows
                 seasons={seasons}
                 selected={pickedSeasons}
-                density={density}
+                view={view}
                 cursor={cursor}
                 focused={pane === "table"}
                 onOpen={(season) => selectSeason(activeSeries.name, season)}
@@ -893,6 +909,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
             showBackups={showBackups}
             onToggleBackups={() => setShowBackups((value) => !value)}
             backups={backupsQuery.data}
+            backupsLoading={backupsQuery.isLoading}
             onRestore={openRestore}
             restoringId={restore.isPending ? (restoreTarget?.backup_id ?? null) : null}
             onRepair={(folder, season) => setRepairScope({ folder, season })}
@@ -993,6 +1010,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
             showBackups={showBackups}
             onToggleBackups={() => setShowBackups((value) => !value)}
             backups={backupsQuery.data}
+            backupsLoading={backupsQuery.isLoading}
             onRestore={openRestore}
             restoringId={restore.isPending ? (restoreTarget?.backup_id ?? null) : null}
             onRepair={(folder, season) => setRepairScope({ folder, season })}
@@ -1118,6 +1136,7 @@ interface InspectorProps {
   restoringId: string | null;
   onRepair: (folder: string, season: string | null) => void;
   backups?: ExploreBackupRun[];
+  backupsLoading?: boolean;
   onToggleBackups: () => void;
   onClearPick: () => void;
   onClearSeasons: () => void;
@@ -1141,6 +1160,7 @@ function Inspector({
   restoringId,
   onRepair,
   backups,
+  backupsLoading,
   onToggleBackups,
   onClearPick,
   onClearSeasons,
@@ -1449,6 +1469,7 @@ function Inspector({
             onRestore={onRestore}
             restoringId={restoringId}
             runs={backups}
+            loading={backupsLoading}
             scope={season && !isMovies ? season.name : series.name}
           />
         </div>
@@ -1471,6 +1492,7 @@ function BackupSection({
   open,
   onToggle,
   runs,
+  loading,
   scope,
   onRestore,
   restoringId,
@@ -1478,6 +1500,8 @@ function BackupSection({
   open: boolean;
   onToggle: () => void;
   runs?: ExploreBackupRun[];
+  /** Still being fetched, which is not the same as "there are none". */
+  loading?: boolean;
   scope: string;
   onRestore: (run: ExploreBackupRun) => void;
   restoringId: string | null;
@@ -1493,17 +1517,27 @@ function BackupSection({
       >
         <IconArchive className="size-3.5" />
         Backups
-        {total > 0 && (
-          <span className="rounded-full bg-brand/15 px-1.5 text-[9.5px] text-brand-foreground">
-            {total}
-          </span>
+        {/* Three states, not two: a count, a placeholder while it is being
+            fetched, and nothing at all when there genuinely are none. A bare
+            absence during loading reads as "no backups here", which is the one
+            wrong answer this badge can give. */}
+        {loading ? (
+          <span className="rounded-full bg-elevated px-1.5 text-[9.5px] text-foreground-3">…</span>
+        ) : (
+          total > 0 && (
+            <span className="rounded-full bg-brand/15 px-1.5 text-[9.5px] text-brand-foreground">
+              {total}
+            </span>
+          )
         )}
         <IconChevronRight className={cn("size-3 transition-transform", open && "rotate-90")} />
       </button>
 
       {open && (
         <div className="flex flex-col gap-2">
-          {!runs?.length ? (
+          {loading ? (
+            <p className="text-[12px] text-muted-foreground">Checking what was kept here…</p>
+          ) : !runs?.length ? (
             <p className="text-[12px] text-muted-foreground">
               Nothing has been replaced or removed in {scope}, so there is nothing to put back.
             </p>

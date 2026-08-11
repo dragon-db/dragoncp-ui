@@ -56,7 +56,7 @@ import {
   type SlotSummary,
 } from "@/lib/backup-types";
 import { BackupHistory } from "@/components/backups/history";
-import { FullPath } from "@/components/backups/full-path";
+import { FullPath } from "@/components/layout/full-path";
 import { VersionList } from "@/components/backups/version-list";
 import { RestoreDialog } from "@/components/backups/restore-dialog";
 import {

@@ -14,7 +14,7 @@ import { formatBytes, formatWhen } from "@/lib/explore-format";
 import { REASON_LABELS, type Capture, type CurrentOccupant } from "@/lib/backup-types";
 import { SectionEmpty } from "@/components/layout/section-card";
 import { ActorBadge } from "@/components/activity/actor-badge";
-import { FullPath } from "@/components/backups/full-path";
+import { FullPath } from "@/components/layout/full-path";
 
 /**
  * One item's version history.
