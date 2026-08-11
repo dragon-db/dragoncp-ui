@@ -6,7 +6,6 @@ import { cn } from "@/lib/utils";
 import { EpisodeLabel, StatusBadge } from "./explore-bits";
 import { formatBytes } from "@/lib/explore-format";
 import { EPISODE_CODE, containerOf, parseFilename } from "@/lib/media-filename";
-import { FullPath } from "@/components/layout/full-path";
 import type { ExploreEpisode, ExploreSeason } from "@/lib/explore-types";
 
 /**
@@ -27,13 +26,15 @@ import type { ExploreEpisode, ExploreSeason } from "@/lib/explore-types";
  *
  *   list     what is in here            (one line per file, most rows on screen)
  *   compare  what is actually different (local and remote side by side)
- *   paths    exactly which files        (the full path on both sides)
+ *   quality  what a sync would change   (resolution, source and size, both sides)
  *
  * The data for all three has always been sent; the table collapsed it with
  * `remote ?? local` and showed one value, which hid the difference the page
- * exists to reveal.
+ * exists to reveal. Quality goes one further and reads the file names, because
+ * "Upgraded" says the remote is different without saying whether that is 2160p
+ * replacing 1080p or the same 1080p at twice the size.
  */
-export type ViewMode = "list" | "compare" | "paths";
+export type ViewMode = "list" | "compare" | "quality";
 
 /**
  * The leading gutter that holds the tick box.
@@ -175,21 +176,222 @@ function CompareBlock({ episode }: { episode: ExploreEpisode }) {
   );
 }
 
-/** Where the file actually is, on each side, in full. */
-function PathsBlock({ episode }: { episode: ExploreEpisode }) {
+/** Where a resolution sits relative to the others. Unknown sorts lowest. */
+const RESOLUTION_RANK: Record<string, number> = {
+  "480p": 1,
+  "576p": 2,
+  "720p": 3,
+  "1080p": 4,
+  "1440p": 5,
+  "2160p": 6,
+};
+
+/**
+ * How good the source is, roughly.
+ *
+ * "Roughly" is the honest word: a good web release beats a bad disc rip, and no
+ * ordering of these tags is true in every case. It is used only to say which
+ * way a swap goes, never to recommend one.
+ */
+const SOURCE_RANK: Record<string, number> = {
+  hdtv: 1,
+  webrip: 2,
+  webdl: 3,
+  "web-dl": 3,
+  bluray: 4,
+  blurayremux: 5,
+  remux: 5,
+};
+
+interface Grade {
+  resolution: string | null;
+  source: string | null;
+  codec: string | null;
+  group: string | null;
+}
+
+/** What a filename says about the file's quality. Nulls where it says nothing. */
+function grade(name: string | null, isMovie: boolean): Grade | null {
+  if (!name) return null;
+  const parsed = parseFilename(name, isMovie);
+  const quality = parsed.quality ?? "";
+  const resolution = quality.match(/\d{3,4}p/i)?.[0]?.toLowerCase() ?? null;
+  // The word joined to the resolution: `WEBDL-1080p` -> `webdl`. Deliberately
+  // not anchored to the start — a quality tag can carry other words in front of
+  // it (`Dual-Audio WEBDL-1080p`), and anchoring dropped the source on every
+  // one of those. A bare `1080p` states no source at all.
+  const sourceRaw = quality.match(/([A-Za-z]+)-\d{3,4}p/)?.[1] ?? null;
+  return {
+    resolution,
+    source: sourceRaw ? sourceRaw.toLowerCase().replace(/\s/g, "") : null,
+    codec: parsed.codec,
+    group: parsed.group,
+  };
+}
+
+function rankOf(table: Record<string, number>, key: string | null): number | null {
+  if (!key) return null;
+  return table[key] ?? null;
+}
+
+/**
+ * What the two copies are, and which way a sync would move the quality.
+ *
+ * This answers the question the Sync column raises and never explains. A row
+ * labelled "Upgraded" says the remote is different, not whether it is 2160p
+ * replacing 1080p or the same 1080p from another group at twice the size — and
+ * those are opposite decisions.
+ *
+ * Everything here is read out of the filename, so where the name says nothing
+ * this says nothing rather than guessing.
+ */
+function QualityBlock({ episode }: { episode: ExploreEpisode }) {
+  const isMovie = episode.episode === null;
+  const local = grade(episode.local_name, isMovie);
+  const remote = grade(episode.remote_name, isMovie);
+
+  const resDelta = compareRank(RESOLUTION_RANK, local?.resolution, remote?.resolution);
+  const srcDelta = compareRank(SOURCE_RANK, local?.source, remote?.source);
+  const sizeDelta =
+    local && remote && episode.local_size !== null && episode.remote_size !== null
+      ? episode.remote_size - episode.local_size
+      : null;
+
   return (
-    <div className="mt-1.5 space-y-1.5 border-l border-border/70 pl-2.5">
-      {episode.local_path ? (
-        <FullPath label="Local" value={episode.local_path} />
+    <div className="mt-1.5 space-y-1 border-l border-border/70 pl-2.5">
+      <GradeRow side="Local" grade={local} size={episode.local_size} />
+      <GradeRow side="Remote" grade={remote} size={episode.remote_size} />
+      <Verdict
+        local={local}
+        remote={remote}
+        resDelta={resDelta}
+        srcDelta={srcDelta}
+        sizeDelta={sizeDelta}
+      />
+    </div>
+  );
+}
+
+/** -1 worse, 0 same, 1 better, null when either side cannot be read. */
+function compareRank(
+  table: Record<string, number>,
+  localKey: string | null | undefined,
+  remoteKey: string | null | undefined
+): number | null {
+  const a = rankOf(table, localKey ?? null);
+  const b = rankOf(table, remoteKey ?? null);
+  if (a === null || b === null) return null;
+  return Math.sign(b - a);
+}
+
+function GradeRow({
+  side,
+  grade: value,
+  size,
+}: {
+  side: "Local" | "Remote";
+  grade: Grade | null;
+  size: number | null;
+}) {
+  return (
+    <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+      <span
+        className={cn(
+          "w-[46px] flex-none font-mono text-[9px] tracking-[0.12em] uppercase",
+          side === "Local" ? "text-brand-hover/80" : "text-foreground-3"
+        )}
+      >
+        {side}
+      </span>
+      {!value ? (
+        <span className="text-[11.5px] text-muted-foreground/70 italic">not on this side</span>
       ) : (
-        <MissingSide label="Local" />
-      )}
-      {episode.remote_path ? (
-        <FullPath label="Remote" value={episode.remote_path} copyable={false} />
-      ) : (
-        <MissingSide label="Remote" />
+        <>
+          <Chip value={value.resolution?.toUpperCase()} strong />
+          <Chip value={value.source?.toUpperCase()} />
+          <Chip value={value.codec?.toUpperCase()} />
+          {value.group && (
+            <span className="font-mono text-[10px] text-foreground-3">{value.group}</span>
+          )}
+          {!value.resolution && !value.source && !value.codec && (
+            <span className="text-[11.5px] text-muted-foreground/70 italic">
+              the filename does not say
+            </span>
+          )}
+          <span className="ml-auto flex-none font-mono text-[10.5px] text-foreground-3 tabular-nums">
+            {formatBytes(size ?? 0)}
+          </span>
+        </>
       )}
     </div>
+  );
+}
+
+function Chip({ value, strong }: { value?: string | null; strong?: boolean }) {
+  if (!value) return null;
+  return (
+    <span
+      className={cn(
+        "flex-none rounded border px-1 py-px font-mono text-[9.5px] leading-[13px]",
+        strong
+          ? "border-brand/40 bg-brand/10 text-brand-foreground"
+          : "border-border/70 text-foreground-3"
+      )}
+    >
+      {value}
+    </span>
+  );
+}
+
+/** One sentence on what a sync would actually change here. */
+function Verdict({
+  local,
+  remote,
+  resDelta,
+  srcDelta,
+  sizeDelta,
+}: {
+  local: Grade | null;
+  remote: Grade | null;
+  resDelta: number | null;
+  srcDelta: number | null;
+  sizeDelta: number | null;
+}) {
+  if (!local || !remote) return null;
+
+  let text: string;
+  let tone = "text-muted-foreground";
+
+  if (resDelta === null && srcDelta === null) {
+    text = "The filenames do not say enough to compare quality.";
+  } else if (resDelta && resDelta > 0) {
+    text = `Higher resolution: ${remote.resolution?.toUpperCase()} replaces ${local.resolution?.toUpperCase()}.`;
+    tone = "text-emerald-300";
+  } else if (resDelta && resDelta < 0) {
+    text = `Lower resolution: ${remote.resolution?.toUpperCase()} replaces ${local.resolution?.toUpperCase()}.`;
+    tone = "text-amber-300";
+  } else if (srcDelta && srcDelta > 0) {
+    text = `Better source: ${remote.source?.toUpperCase()} replaces ${local.source?.toUpperCase()}.`;
+    tone = "text-emerald-300";
+  } else if (srcDelta && srcDelta < 0) {
+    text = `Weaker source: ${remote.source?.toUpperCase()} replaces ${local.source?.toUpperCase()}.`;
+    tone = "text-amber-300";
+  } else if (local.group && remote.group && local.group !== remote.group) {
+    text = `Same resolution and source, a different release (${remote.group}).`;
+  } else {
+    text = "Same quality on both sides.";
+  }
+
+  const size =
+    sizeDelta === null || sizeDelta === 0
+      ? null
+      : `${sizeDelta > 0 ? "+" : "−"}${formatBytes(Math.abs(sizeDelta))} on disk`;
+
+  return (
+    <p className={cn("pt-0.5 text-[11px]", tone)}>
+      {text}
+      {size && <span className="ml-1.5 font-mono text-foreground-3">{size}</span>}
+    </p>
   );
 }
 
@@ -274,35 +476,6 @@ function SeasonSide({
   );
 }
 
-/** Where a season's folder is on each side, spelled out. */
-function SeasonPathsBlock({ season }: { season: ExploreSeason }) {
-  return (
-    <div className="mt-1.5 space-y-1.5 border-l border-border/70 pl-2.5">
-      {season.local_folder ? (
-        <FullPath label="Local folder" value={season.local_folder} />
-      ) : (
-        <MissingSide label="Local folder" />
-      )}
-      {season.remote_folder ? (
-        <FullPath label="Remote folder" value={season.remote_folder} copyable={false} />
-      ) : (
-        <MissingSide label="Remote folder" />
-      )}
-    </div>
-  );
-}
-
-function MissingSide({ label }: { label: string }) {
-  return (
-    <div className="min-w-0">
-      <div className="mb-0.5 font-mono text-[9.5px] tracking-[0.14em] text-muted-foreground uppercase">
-        {label}
-      </div>
-      <span className="text-[11.5px] text-muted-foreground/70 italic">not on this side</span>
-    </div>
-  );
-}
-
 function relativeDate(unixSeconds: number | null): string {
   if (!unixSeconds) return "—";
   const days = Math.floor((Date.now() / 1000 - unixSeconds) / 86400);
@@ -383,7 +556,7 @@ export function SeasonRows({
                 label={`Select ${season.name}`}
                 onToggle={() => onToggle(season.name)}
               />
-              <Td className={cn(NAME_COL, view !== "list" && NAME_CELL)}>
+              <Td className={cn(NAME_COL, view === "compare" && NAME_CELL)}>
                 <div className="flex min-w-0 items-center gap-2">
                   <IconStack2
                     className={cn(
@@ -395,8 +568,11 @@ export function SeasonRows({
                     {season.name}
                   </span>
                 </div>
+                {/* No Quality block here: a season is a folder, and quality is
+                    read out of file names. The switch disables that option
+                    while this list is showing rather than offering one that
+                    renders nothing. */}
                 {view === "compare" && <SeasonCompareBlock season={season} />}
-                {view === "paths" && <SeasonPathsBlock season={season} />}
               </Td>
               <Td className="text-right font-mono text-[11px] text-foreground-3">
                 {season.counts.remote_total || season.counts.local_only || 0}
@@ -512,7 +688,7 @@ export function EpisodeRows({
                   )}
                 </div>
                 {view === "compare" && <CompareBlock episode={episode} />}
-                {view === "paths" && <PathsBlock episode={episode} />}
+                {view === "quality" && <QualityBlock episode={episode} />}
               </Td>
               <Td className="hidden text-right font-mono text-[11px] text-foreground-3 sm:table-cell">
                 {formatBytes(episode.remote_size ?? episode.local_size)}
@@ -699,8 +875,8 @@ function Td({ className, children }: { className?: string; children?: React.Reac
         // is the point. The richer views carry two sides in the name cell, so
         // the row is sized by its content and the other cells align to the top
         // rather than floating in the middle of a tall row.
-        "h-[38px] group-data-[view=compare]/row:h-auto group-data-[view=paths]/row:h-auto",
-        "group-data-[view=compare]/row:align-top group-data-[view=paths]/row:align-top",
+        "h-[38px] group-data-[view=compare]/row:h-auto group-data-[view=quality]/row:h-auto",
+        "group-data-[view=compare]/row:align-top group-data-[view=quality]/row:align-top",
         className
       )}
     >

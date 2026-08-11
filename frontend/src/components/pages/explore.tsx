@@ -15,7 +15,7 @@ import {
   IconHistory,
   IconLayoutList,
   IconArrowsDiff,
-  IconFolderSearch,
+  IconBadgeHd,
   IconList,
   IconMovie,
   IconPlayerPlay,
@@ -194,6 +194,14 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
    * selection, and it makes opening the section instant as well.
    */
   const backupsQuery = useExploreBackups(mediaType, selectedSeries, selectedSeason);
+
+  /*
+   * Quality is read out of file names, so it has nothing to say about a list of
+   * season folders. Rather than leave the switch showing a selected option that
+   * renders nothing, the season list falls back to List and says so by which
+   * segment is lit.
+   */
+  const effectiveView: ViewMode = view === "quality" && !selectedSeason ? "list" : view;
   const planMutation = useExplorePlan();
   const dryRunMutation = useExploreDryRun();
   const execute = useExploreExecute(mediaType);
@@ -816,34 +824,53 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
                 Three views, not two row heights. Each answers a different
                 question, so the switch changes what a row tells you rather
                 than how tall it is. Labelled from `md` up, because "Compare"
-                and "Paths" are not guessable from a glyph the way a row-height
-                control was; the icon alone carries it on narrower windows.
+                and "Quality" are not guessable from a glyph the way a
+                row-height control was; the icon alone carries it below that.
+
+                Quality is disabled on the season list: it is read out of file
+                names and a season is a folder, so the option would be there and
+                do nothing. Disabled with a reason beats silently inert.
               */}
               <div className="hidden gap-0.5 rounded-md border border-border bg-elevated p-0.5 sm:inline-flex">
                 {(
                   [
                     ["list", IconList, "List", "One line per file"],
                     ["compare", IconArrowsDiff, "Compare", "Local and remote side by side"],
-                    ["paths", IconFolderSearch, "Paths", "The full path on both sides"],
+                    [
+                      "quality",
+                      IconBadgeHd,
+                      "Quality",
+                      "What a sync would change: resolution, source and size",
+                    ],
                   ] as const
-                ).map(([value, Icon, label, title]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    title={`${label} — ${title}`}
-                    aria-pressed={view === value}
-                    onClick={() => setView(value)}
-                    className={cn(
-                      "flex h-5 items-center gap-1 rounded px-1.5 text-[10.5px] font-medium",
-                      view === value
-                        ? "bg-brand/15 text-brand-foreground"
-                        : "text-muted-foreground hover:text-foreground"
-                    )}
-                  >
-                    <Icon className="size-3.5" />
-                    <span className="hidden md:inline">{label}</span>
-                  </button>
-                ))}
+                ).map(([value, Icon, label, title]) => {
+                  const unavailable = value === "quality" && !selectedSeason;
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      disabled={unavailable}
+                      title={
+                        unavailable
+                          ? `${label} — open a ${isMovies ? "folder" : "season"}; quality is read from the file names`
+                          : `${label} — ${title}`
+                      }
+                      aria-pressed={effectiveView === value}
+                      onClick={() => setView(value)}
+                      className={cn(
+                        "flex h-5 items-center gap-1 rounded px-1.5 text-[10.5px] font-medium",
+                        unavailable
+                          ? "cursor-not-allowed text-muted-foreground/40"
+                          : effectiveView === value
+                            ? "bg-brand/15 text-brand-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      <Icon className="size-3.5" />
+                      <span className="hidden md:inline">{label}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -864,7 +891,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
               <EpisodeRows
                 episodes={episodes}
                 selected={picked}
-                view={view}
+                view={effectiveView}
                 cursor={cursor}
                 focused={pane === "table"}
                 onToggle={togglePick}
@@ -874,7 +901,7 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
               <SeasonRows
                 seasons={seasons}
                 selected={pickedSeasons}
-                view={view}
+                view={effectiveView}
                 cursor={cursor}
                 focused={pane === "table"}
                 onOpen={(season) => selectSeason(activeSeries.name, season)}

@@ -170,10 +170,32 @@ Each view answers a different question:
 | --- | --- | --- |
 | **List** | What is in here? | One line per row — name, size, date, sync state |
 | **Compare** | What is actually different? | Local and remote stacked, with the fields that disagree in amber, and `not on this side` where a copy is absent |
-| **Paths** | Exactly which files? | The full path on each side, wrapped and copyable |
+| **Quality** | What would a sync change? | Resolution, source, codec and release group on both sides, the size difference, and a sentence saying which way it goes |
 
 Absence is stated rather than left blank: an empty cell and "you do not have
 this" are the same picture otherwise, and only one of them is a reason to sync.
+
+**Quality exists because the Sync column raises a question it does not answer.**
+A row labelled `Upgraded` says the remote copy is different. It does not say
+whether that is 2160p replacing 1080p, a Bluray replacing a web rip, or the same
+1080p from another group at twice the size — and those are opposite decisions.
+
+Everything in it is read out of the file name by `lib/media-filename.ts`, so
+where the name says nothing the view says nothing rather than guessing: sides
+with no parseable quality read `the filename does not say`. The source ordering
+(HDTV → WebRip → WebDL → Bluray → Remux) is acknowledged in the code as rough —
+a good web release beats a bad disc rip — and is used only to say which way a
+swap goes, never to recommend one.
+
+The source is taken from the word joined to the resolution (`WEBDL-1080p`), and
+that match is deliberately not anchored to the start of the tag: quality tags
+carry other words in front of them (`Anime Dual-Audio WEBDL-1080p`), and
+anchoring dropped the source on every one of those.
+
+Quality is **disabled on the season list**, because a season is a folder and
+there is no file name to read. The switch greys it out with the reason rather
+than offering an option that would render nothing, and the season list falls
+back to List so a segment is always lit.
 
 At the season level Compare shows the two folder names with their file counts
 and sizes, because the question one level up is how far apart the folders are —
@@ -438,8 +460,8 @@ The three panes become one at a time, and a few things behave differently below
 - **The header strip splits in two below `sm`.** Back, path, tally, Actions and
   the view switch on one 34px strip is fine on a desktop and unreadable on a
   phone, so there the path gets the strip to itself. The view switch shows its
-  labels from `md` up and icons alone below that — "Compare" and "Paths" are not
-  guessable from a glyph the way a row-height control was.
+  labels from `md` up and icons alone below that — "Compare" and "Quality" are
+  not guessable from a glyph the way a row-height control was.
 - **A movie row carries a film icon where a series has its chevron.** Movies do
   not expand, and the slot was a column of empty space down the whole list.
 
