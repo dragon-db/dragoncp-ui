@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { hostname } from "node:os"
 import path from "path"
 import tailwindcss from "@tailwindcss/vite"
@@ -42,8 +43,30 @@ const proxy = {
   },
 }
 
+/**
+ * The release this bundle is built from.
+ *
+ * Read from the repository's `VERSION` file — the same one `config.py` reads —
+ * rather than from `package.json` or a constant in a component, so the number
+ * has exactly one home. Three hand-kept copies is why it stopped being updated.
+ *
+ * A build that cannot read the file still builds: the version is shown in the
+ * interface and reported by the backend, and neither is worth failing a deploy
+ * over. The running server's own version is what the navbar prefers anyway.
+ */
+function readVersion(): string {
+  try {
+    return readFileSync(path.resolve(__dirname, "../VERSION"), "utf8").trim() || "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(readVersion()),
+  },
   plugins: [
     react(),
     tailwindcss(),

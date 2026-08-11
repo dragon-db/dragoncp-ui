@@ -28,6 +28,12 @@ export interface RuntimeStatusResponse {
   status: string;
   runtime_status: {
     backend_reachable: boolean;
+    /**
+     * What the server is running. Optional because a backend that has not been
+     * restarted since this was added answers without it — the caller falls back
+     * to the version this bundle was built from.
+     */
+    version?: string;
     ssh_connected: boolean;
     websocket: {
       active_connections: number;
@@ -161,6 +167,22 @@ export function useSSHStatus() {
 
 export function useRuntimeStatus() {
   return useQuery(runtimeStatusQueryOptions());
+}
+
+/**
+ * The version to show: the running server's, or this bundle's if it has not
+ * answered yet.
+ *
+ * Preferring the server means the number on screen is the one actually serving
+ * requests. A cached bundle can outlive a deploy, and a version baked into it
+ * would then confidently report a release that is no longer running.
+ */
+export function useAppVersion(): string {
+  const { data } = useQuery({
+    ...runtimeStatusQueryOptions(),
+    select: (response) => response.runtime_status.version,
+  });
+  return data || __APP_VERSION__;
 }
 
 export function useSSHConnect() {

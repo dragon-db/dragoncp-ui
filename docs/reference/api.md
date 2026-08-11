@@ -1870,12 +1870,18 @@ What it does: returns lightweight runtime connectivity state for the frontend sh
 
 Auth: required.
 
+`version` is what the running server is, read from the repository's `VERSION`
+file. The navbar shows this rather than the number compiled into the bundle, so
+a cached frontend cannot keep reporting a release that is no longer running. See
+[versioning.md](versioning.md).
+
 Output JSON:
 ```json
 {
   "status": "success",
   "runtime_status": {
     "backend_reachable": true,
+    "version": "2.2.0",
     "ssh_connected": false,
     "websocket": {
       "active_connections": 1,

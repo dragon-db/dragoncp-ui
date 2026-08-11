@@ -1,13 +1,12 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import { useActiveTransfers } from "@/hooks/useTransfers";
 import { useWebhookNotifications } from "@/hooks/useWebhooks";
+import { useAppVersion } from "@/hooks/useConfig";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { RealtimeStatus } from "@/components/layout/realtime-status";
 import { IconHome, IconChevronRight, IconBell, IconSettings } from "@tabler/icons-react";
-
-const APP_VERSION = "v2.1.4";
 
 interface Crumb {
   section: string;
@@ -34,6 +33,7 @@ function resolveCrumb(pathname: string): Crumb {
 export function AppNavbar() {
   const location = useLocation();
   const crumb = resolveCrumb(location.pathname);
+  const version = useAppVersion();
 
   const activeQuery = useActiveTransfers();
   const running = activeQuery.data?.queue_status.running_count ?? 0;
@@ -104,7 +104,7 @@ export function AppNavbar() {
         variant="outline"
         className="hidden font-mono text-xs text-muted-foreground sm:inline-flex"
       >
-        {APP_VERSION}
+        v{version}
       </Badge>
     </header>
   );

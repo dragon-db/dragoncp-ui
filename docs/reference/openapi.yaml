@@ -2723,7 +2723,7 @@ paths:
   /runtime/status:
     get:
       tags: [Debug]
-      summary: Return the lightweight connectivity state the frontend shell polls
+      summary: Return the lightweight connectivity state the frontend shell polls, including the running server's version
       responses:
         '200':
           description: Runtime status

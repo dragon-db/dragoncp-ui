@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 from flask import Blueprint, jsonify, request
 from auth import require_auth
+from config import APP_VERSION
 
 debug_bp = Blueprint('debug', __name__)
 
@@ -58,6 +59,11 @@ def api_runtime_status():
         "status": "success",
         "runtime_status": {
             "backend_reachable": True,
+            # What this server is running. Reported here rather than only baked
+            # into the bundle so the number on screen is the version actually
+            # answering requests — a cached or stale frontend build would
+            # otherwise keep displaying whatever it was built from.
+            "version": APP_VERSION,
             "ssh_connected": ssh_manager.connected if ssh_manager else False,
             "websocket": {
                 "active_connections": get_websocket_connection_count(),
