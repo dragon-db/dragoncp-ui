@@ -20,7 +20,9 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { PageTabsList } from "@/components/layout/page-tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
 import { StatTiles } from "@/components/layout/stat-tiles";
@@ -54,6 +56,7 @@ import {
   type SlotSummary,
 } from "@/lib/backup-types";
 import { BackupHistory } from "@/components/backups/history";
+import { FullPath } from "@/components/backups/full-path";
 import { VersionList } from "@/components/backups/version-list";
 import { RestoreDialog } from "@/components/backups/restore-dialog";
 import {
@@ -264,18 +267,28 @@ export function BackupsPage() {
     });
   }
 
-  const selectionCount = pickedSlots.size + pickedVersions.size;
-
-  function deleteSelection() {
-    const parts: string[] = [];
-    if (pickedSlots.size) parts.push(`${pickedSlots.size} item(s)`);
-    if (pickedVersions.size) parts.push(`${pickedVersions.size} version(s)`);
+  /*
+   * The two selections stay apart all the way to the confirmation.
+   *
+   * Ticking an item in the list means "every version of this"; ticking a row in
+   * the inspector means "this specific version". They used to be summed into
+   * one bar reading "5 selected" over a permanent deletion, which said neither
+   * what would go nor how much. Each now has its own bar, in the place the
+   * ticking happens, naming what it will delete.
+   */
+  function deleteSlots() {
     openDelete(
-      {
-        slot_keys: pickedSlots.size ? [...pickedSlots] : undefined,
-        capture_ids: pickedVersions.size ? [...pickedVersions] : undefined,
-      },
-      parts.join(" and ")
+      { slot_keys: [...pickedSlots] },
+      pickedSlots.size === 1
+        ? "every version of 1 item"
+        : `every version of ${pickedSlots.size} items`
+    );
+  }
+
+  function deleteVersions() {
+    openDelete(
+      { capture_ids: [...pickedVersions] },
+      pickedVersions.size === 1 ? "1 version" : `${pickedVersions.size} versions`
     );
   }
 
@@ -317,7 +330,7 @@ export function BackupsPage() {
         // list, or the versions card when there is no unidentified section.
         // Reserved here rather than inside a list, because the bar floats over
         // the page rather than over any one of them.
-        selectionCount > 0 && "pb-20 lg:pb-4"
+        pickedSlots.size > 0 && "pb-20 lg:pb-4"
       )}
     >
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -385,42 +398,44 @@ export function BackupsPage() {
         <DiskBar disk={overview.data?.disk ?? null} />
       </div>
 
-      {/* Two questions, two tabs: what is stored right now, and what happened
-          to everything that is not. The second cannot be answered from the
-          first — by the time it is asked, the version is gone. */}
-      <div className="flex w-fit rounded-lg border border-border p-0.5">
-        {(
-          [
-            { id: "library", label: "Library", Icon: IconArchive },
-            { id: "history", label: "History", Icon: IconHistory },
-          ] as const
-        ).map((entry) => (
-          <button
-            key={entry.id}
-            type="button"
-            onClick={() => setTab(entry.id)}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium transition-colors",
-              tab === entry.id
-                ? "bg-brand/15 text-brand-foreground"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            <entry.Icon className="size-4" />
-            {entry.label}
-            {entry.id === "history" && unseenCount > 0 && (
-              <span className="rounded-full bg-amber-500/20 px-1.5 font-mono text-[10px] text-amber-300 tabular-nums">
-                {unseenCount}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+      {/*
+        Two questions, two tabs: what is stored right now, and what happened to
+        everything that is not. The second cannot be answered from the first —
+        by the time it is asked, the version is gone.
 
-      {tab === "history" && <BackupHistory />}
+        Rendered through PageTabsList rather than a segmented pill, because the
+        app already has exactly one idiom for a page-level switcher and a second
+        one here would make this page the odd screen out.
+      */}
+      <Tabs
+        value={tab}
+        onValueChange={(next) => setTab(next as Tab)}
+        // Carries the page's height chain through to the panes, which scroll
+        // inside themselves from `lg` up. Without `min-h-0` a flex child
+        // refuses to shrink below its content and the inner scroll never
+        // engages — the whole page scrolls instead.
+        className="gap-4 lg:min-h-0 lg:flex-1"
+      >
+        <PageTabsList
+          items={[
+            { value: "library", label: "Library", icon: IconArchive },
+            {
+              value: "history",
+              label: "History",
+              icon: IconHistory,
+              count: unseenCount || undefined,
+            },
+          ]}
+        />
 
-      {tab === "library" && (
-        <>
+        <TabsContent value="history">
+          <BackupHistory />
+        </TabsContent>
+
+        <TabsContent
+          value="library"
+          className="flex flex-col gap-4 lg:min-h-0 lg:flex-1"
+        >
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex rounded-lg border border-border p-0.5">
               {LIBRARIES.map((entry) => (
@@ -608,9 +623,10 @@ export function BackupsPage() {
                   )}
                 </ScrollArea>
                 <SelectionBar
-                  count={selectionCount}
-                  onDelete={deleteSelection}
-                  onClear={clearSelection}
+                  count={pickedSlots.size}
+                  noun="item"
+                  onDelete={deleteSlots}
+                  onClear={() => setPickedSlots(new Set())}
                 />
               </SectionCard>
             )}
@@ -634,22 +650,23 @@ export function BackupsPage() {
                 />
               }
             >
+              {/* The path is the only identity these have — nothing could work
+                  out what they are — so it is the one place truncating it left
+                  the operator with nothing at all to go on. */}
               <ul className="divide-y divide-border/50">
                 {unsorted.data.slice(0, 20).map((capture) => (
-                  <li key={capture.capture_id} className="flex items-center gap-2 px-4 py-2.5">
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-muted-foreground">
-                      {capture.capture_path}
-                    </span>
-                    <span className="flex-none font-mono text-[10.5px] text-muted-foreground tabular-nums">
-                      {capture.file_count} file(s) · {formatBytes(capture.total_size)}
-                    </span>
+                  <li key={capture.capture_id} className="px-4 py-2.5">
+                    <FullPath
+                      value={capture.capture_path}
+                      meta={`${capture.file_count} file(s) · ${formatBytes(capture.total_size)}`}
+                    />
                   </li>
                 ))}
               </ul>
             </SectionCard>
           )}
-        </>
-      )}
+        </TabsContent>
+      </Tabs>
 
       <Sheet open={Boolean(slotKey)} onOpenChange={(open) => !open && setSlotKey(null)}>
         {/*
@@ -664,9 +681,20 @@ export function BackupsPage() {
           side="right"
           className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-xl"
         >
-          <SheetTitle className="border-b border-border py-3 pr-12 pl-4 text-[13.5px]">
-            {slot.data?.display || "Versions"}
-          </SheetTitle>
+          {/*
+            The header carries the folder as well as the name. Everything below
+            it acts on files inside one directory, and the panel used to open
+            saying only "Show — S01E02", which is true of every copy of that
+            episode on the disk.
+          */}
+          <SheetHeader className="gap-1.5 border-b border-border px-4 py-3 pr-12">
+            <SheetTitle className="text-[13.5px] break-all">
+              {slot.data?.display || "Versions"}
+            </SheetTitle>
+            {slot.data?.current?.directory && (
+              <FullPath label="Library folder" value={slot.data.current.directory} />
+            )}
+          </SheetHeader>
           <div className="min-h-0 flex-1 overflow-y-auto">
             <VersionList
               captures={slot.data?.captures ?? []}
@@ -682,6 +710,18 @@ export function BackupsPage() {
               }
             />
           </div>
+          {/*
+            Docked inside the sheet, not to the viewport: this selection belongs
+            to the item the panel is showing, and a bar floating over the page
+            behind it is what made the two selections look like one.
+          */}
+          <SelectionBar
+            count={pickedVersions.size}
+            noun="version"
+            docked={false}
+            onDelete={deleteVersions}
+            onClear={() => setPickedVersions(new Set())}
+          />
         </SheetContent>
       </Sheet>
 

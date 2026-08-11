@@ -300,18 +300,21 @@ function HistoryItemCard({ item, destructive }: { item: HistoryItem; destructive
         )}
       </div>
 
+      {/* The paths carry the filename themselves now, so it is not repeated
+          above them — one line per location rather than a name and two echoes. */}
       <div className="mt-2 space-y-2">
         {item.files.map((file) => (
-          <div key={file.relative_path} className="space-y-1">
-            <FullName value={file.name} muted={!file.is_media} className="text-[12px]" />
-            <div className="space-y-1 pl-0.5">
-              <FullPath label="In the library" value={file.original_path} tone="muted" />
-              <FullPath label="Backup copy" value={file.backup_path} tone="muted" />
-            </div>
+          <div key={file.relative_path} className="space-y-1.5">
+            <FullPath
+              label="In the library"
+              value={file.original_path}
+              meta={formatBytes(file.file_size)}
+            />
+            <FullPath label="Backup copy" value={file.backup_path} />
           </div>
         ))}
         {item.files.length === 0 && item.capture_dir && (
-          <FullPath label="Backup folder" value={item.capture_dir} tone="muted" />
+          <FullPath label="Backup folder" value={item.capture_dir} />
         )}
         {item.files_omitted > 0 && (
           <p className="text-[11px] text-muted-foreground">

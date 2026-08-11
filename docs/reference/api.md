@@ -1696,10 +1696,22 @@ Output JSON:
 {
   "status": "success",
   "captures": [{"capture_id": "...", "display": "...", "captured_at": "...",
-                "total_size": 0, "file_count": 1, "pinned": false}],
-  "count": 1, "total_size": 0, "skipped_pinned": 0
+                "total_size": 0, "file_count": 1, "pinned": false,
+                "capture_path": "shows/<title>/<slot>/<capture id>",
+                "capture_dir": "/mnt/backup/shows/<title>/<slot>/<capture id>",
+                "files": [{"name": "...", "relative_path": "...",
+                           "original_path": "/mnt/media/... (null for versions
+                           recovered by an index rebuild)",
+                           "backup_path": "...", "file_size": 0,
+                           "is_media": true}]}],
+  "count": 1, "total_size": 0, "skipped_pinned": 0, "detailed": 1
 }
 ```
+
+`files` is populated for the first `detailed` versions only — the confirmation
+dialog lists a hundred and summarises the rest, and reading file rows for a
+thousand-version sweep would make the preview slower than the deletion it
+describes. The counts and `total_size` always cover everything.
 
 ### POST `/backups/delete`
 What it does: removes several versions at once — the space-reclaiming action.

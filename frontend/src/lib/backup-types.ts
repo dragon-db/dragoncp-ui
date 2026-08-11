@@ -143,6 +143,16 @@ export interface DeleteCandidate {
   total_size: number;
   file_count: number;
   pinned: boolean;
+  /** Relative to the backup base — what the index stores. */
+  capture_path: string;
+  /** The absolute folder on the backup disk, when the server could resolve it. */
+  capture_dir: string | null;
+  /**
+   * The files this version holds. Populated for the versions the dialog
+   * actually lists; beyond that the server sends an empty list rather than
+   * reading file rows nobody will see. `DeletePreview.detailed` says how many.
+   */
+  files: HistoryFile[];
 }
 
 export interface DeletePreview {
@@ -151,6 +161,8 @@ export interface DeletePreview {
   total_size: number;
   /** Held back because they are pinned. Reported, never silently absorbed. */
   skipped_pinned: number;
+  /** How many candidates carry their file paths. */
+  detailed?: number;
 }
 
 export interface DeleteResult {

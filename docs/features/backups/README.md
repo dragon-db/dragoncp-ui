@@ -478,16 +478,37 @@ the two are views of the same library.
 - **Titles pane** — every title holding versions, with counts and size.
 - **Slot list** — each movie or episode with versions, showing how many and how
   much. A pin marker appears when any of its versions is pinned.
-- **Inspector** — the slot's history. The library's current copy sits at the
-  top, marked as current rather than listed among the versions; under it, each
-  version with its capture time, why it was displaced, its files and sizes, and
-  **Restore**, **Pin** and **Delete**.
-- **Restore preview** — one row per file: what is being written, and what it
-  replaces, or *nothing to replace — this will be re-added*.
+- **Inspector** — the slot's history, read top to bottom as three questions:
+  what the library holds now, what could go back in its place, and what each
+  would cost. The current copy is stated first with its full path and set
+  apart — listing it among the versions made the one file you cannot restore
+  look like one you could. Under it each version carries its capture time, why
+  it was displaced, its files with the path each was taken from, and three
+  **labelled** actions. They were icon-only, which asked an operator to
+  remember which unlabelled glyph was the permanent one.
+
+  Versions are labelled by recency — *Most recent*, then *Older* with dates —
+  rather than numbered. `v1` for the newest read backwards to everyone.
+- **Restore preview** — one row per file, showing the two paths as a single
+  statement. A restore swaps one file for another inside the same folder, so
+  where both paths share a directory it is printed once, dimmed, with only the
+  two filenames aligned under it: the thing that changes is the thing you read.
+  Where the directories genuinely differ, both are shown in full, because the
+  fold would hide the fact worth noticing.
+- **Full paths everywhere.** Every modal and list on this page shows the
+  complete path and filename, wrapped rather than clipped and copyable in one
+  tap. A hover tooltip is no answer on a phone, and a friendly label
+  ("Show · Season 1 · Episode 2") matches every copy of that episode on the
+  disk. The delete confirmation is the case that mattered most: it used to show
+  a label and a size and nothing else, which asked for authorisation of a
+  permanent deletion without ever naming the file being removed.
 - **Selection and bulk delete** — tick items in the list (meaning *every
   version of these*) or versions in the inspector (meaning *these specific
-  ones*). A bar appears with **Delete selected**, and every delete is previewed
-  with its count and total size before it runs.
+  ones*). The two stay apart all the way to the confirmation, each with its own
+  bar in the place the ticking happens, naming what it will delete. They were
+  summed into one bar reading "5 selected" over a permanent deletion, which said
+  neither what would go nor how much. Every delete is still previewed with its
+  count and total size first.
 - **Newest / Largest** — the slot list sorts either way. Largest first is the
   order for reclaiming space.
 - **Housekeeping** — retention settings that **save to the database** and take

@@ -1777,6 +1777,24 @@ class BulkDeleteTests(BackupsTestCase):
         by_recent = self.captures.slots(sort='recent')
         self.assertEqual(by_recent[0]['episode_number'], 2, 'newest first by default')
 
+    def test_the_preview_says_which_files_leave_the_disk(self):
+        """
+        The confirmation is the last thing between an operator and a permanent
+        deletion, and a friendly label matches every copy of that episode. The
+        preview has to name the files and where they are.
+        """
+        capture = self.version('t1', f"{SHOW} - S01E01 - only.mkv")
+
+        preview = self.service.preview_delete(capture_ids=[capture['capture_id']])
+
+        entry = preview['captures'][0]
+        self.assertTrue(entry['capture_path'])
+        self.assertTrue(entry['capture_dir'], 'the absolute folder on the backup disk')
+        self.assertTrue(entry['files'], 'a deletion preview with no files names nothing')
+        self.assertTrue(entry['files'][0]['backup_path'].startswith(entry['capture_dir']))
+        self.assertIn('only.mkv', entry['files'][0]['name'])
+        self.assertEqual(preview['detailed'], 1)
+
     def test_versions_captured_in_the_same_millisecond_still_have_an_order(self):
         """
         A season sync writes several versions at once.

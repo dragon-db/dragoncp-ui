@@ -24,7 +24,9 @@ from .identity import (
 from .indexer import BackupIndexer
 from .layout import BackupLayout, BackupPathNotConfigured, utc_now
 from .migrate import LegacyMigration
-from .reporting import describe_capture, summarise, summarise_created, summary_line
+from .reporting import (
+    describe_capture, describe_files, summarise, summarise_created, summary_line,
+)
 from .restore import RestorePlanner, RestoreRunner
 from .retention import RetentionPolicy
 from .sorter import BackupSorter, SortedCapture, SortResult
@@ -36,6 +38,11 @@ from actor import AUTO_BACKUP, AUTO_RETENTION, acting_as, current_actor
 #: definition; stated here so the guard does not depend on a helper's name
 #: matching what it actually returns.
 _ACTIVE_STATUSES = frozenset({'running', 'pending', 'queued', 'paused'})
+
+#: Versions a delete preview spells out file by file. The dialog lists the first
+#: hundred and summarises the rest, so reading file rows past that is work
+#: nobody sees — and a sweep can select thousands.
+PREVIEW_FILE_DETAIL = 100
 
 
 class BackupsService:
@@ -689,21 +696,47 @@ class BackupsService:
         selected, skipped_pinned = self._select_for_delete(
             capture_ids, slot_keys, keep_newest, include_pinned,
         )
+
+        captures = []
+        for index, record in enumerate(selected):
+            entry = {
+                'capture_id': record['capture_id'],
+                'display': self._display(record),
+                'captured_at': record.get('captured_at'),
+                'total_size': record.get('total_size') or 0,
+                'file_count': record.get('file_count') or 0,
+                'pinned': bool(record.get('pinned')),
+                'capture_path': record.get('capture_path') or '',
+                'capture_dir': None,
+                'files': [],
+            }
+            try:
+                entry['capture_dir'] = self.layout.absolute(record.get('capture_path') or '')
+            except Exception:  # noqa: BLE001 - a preview without it still previews
+                pass
+
+            # Which files, and where they live, for the ones the dialog will
+            # actually list. Confirming a permanent deletion against a friendly
+            # label alone means never being shown what leaves the disk — but
+            # reading every file row for a thousand-version sweep would make the
+            # preview slower than the deletion it describes.
+            if index < PREVIEW_FILE_DETAIL:
+                try:
+                    entry['files'] = describe_files(
+                        self.captures.files(record['capture_id']), entry['capture_dir'],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            captures.append(entry)
+
         return {
-            'captures': [
-                {
-                    'capture_id': c['capture_id'],
-                    'display': self._display(c),
-                    'captured_at': c.get('captured_at'),
-                    'total_size': c.get('total_size') or 0,
-                    'file_count': c.get('file_count') or 0,
-                    'pinned': bool(c.get('pinned')),
-                }
-                for c in selected
-            ],
+            'captures': captures,
             'count': len(selected),
             'total_size': sum(c.get('total_size') or 0 for c in selected),
             'skipped_pinned': skipped_pinned,
+            # So the dialog can say "paths shown for the first N" rather than
+            # letting the rest look like versions with no files in them.
+            'detailed': min(len(selected), PREVIEW_FILE_DETAIL),
         }
 
     def delete_many(self, capture_ids: Optional[List[str]] = None,
