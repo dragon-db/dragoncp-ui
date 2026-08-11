@@ -151,8 +151,12 @@ export interface DeleteCandidate {
    * The files this version holds. Populated for the versions the dialog
    * actually lists; beyond that the server sends an empty list rather than
    * reading file rows nobody will see. `DeletePreview.detailed` says how many.
+   *
+   * Optional because the field is newer than the endpoint: a server that has
+   * not been restarted answers without it, and a confirmation dialog for a
+   * deletion with no undo must degrade to fewer facts rather than to a crash.
    */
-  files: HistoryFile[];
+  files?: HistoryFile[];
 }
 
 export interface DeletePreview {
@@ -313,8 +317,13 @@ export interface HistoryItem {
   capture_path: string;
   /** The absolute folder on the backup disk, when the server could resolve it. */
   capture_dir: string | null;
-  files: HistoryFile[];
-  files_omitted: number;
+  /**
+   * Absent on entries recorded before deletions described what they removed.
+   * These come out of a database that holds every shape the trail has ever
+   * had, so nothing here may be assumed present.
+   */
+  files?: HistoryFile[];
+  files_omitted?: number;
 }
 
 export interface HistoryDetail {

@@ -274,6 +274,10 @@ function HistoryRow({ entry }: { entry: ActivityEntry }) {
  */
 function HistoryItemCard({ item, destructive }: { item: HistoryItem; destructive: boolean }) {
   const reason = item.reason ? (REASON_LABELS[item.reason] ?? item.reason) : null;
+  // The trail is a database of every shape this detail has ever had, so an
+  // entry written before deletions described their files is an ordinary row
+  // here, not an error. It falls back to the folder.
+  const files = item.files ?? [];
 
   return (
     <div className="rounded-lg border border-border/70 bg-card/60 px-3 py-2.5">
@@ -303,7 +307,7 @@ function HistoryItemCard({ item, destructive }: { item: HistoryItem; destructive
       {/* The paths carry the filename themselves now, so it is not repeated
           above them — one line per location rather than a name and two echoes. */}
       <div className="mt-2 space-y-2">
-        {item.files.map((file) => (
+        {files.map((file) => (
           <div key={file.relative_path} className="space-y-1.5">
             <FullPath
               label="In the library"
@@ -313,10 +317,10 @@ function HistoryItemCard({ item, destructive }: { item: HistoryItem; destructive
             <FullPath label="Backup copy" value={file.backup_path} />
           </div>
         ))}
-        {item.files.length === 0 && item.capture_dir && (
+        {files.length === 0 && item.capture_dir && (
           <FullPath label="Backup folder" value={item.capture_dir} />
         )}
-        {item.files_omitted > 0 && (
+        {(item.files_omitted ?? 0) > 0 && (
           <p className="text-[11px] text-muted-foreground">
             …and {item.files_omitted} more file{item.files_omitted === 1 ? "" : "s"} in this
             version.

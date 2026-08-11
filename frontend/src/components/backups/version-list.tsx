@@ -47,11 +47,29 @@ function QualityChip({ name }: { name: string }) {
 }
 
 /**
+ * The folder a path sits in, or "" when it has none.
+ *
+ * Used to decide whether a path is worth spelling out. The panel states the
+ * library folder once at its head, so repeating it under every file below adds
+ * a line of identical characters and buries the filename — the one part that
+ * actually differs between two versions of the same episode.
+ */
+function directoryOf(path: string | null | undefined): string {
+  if (!path) return "";
+  const cut = path.lastIndexOf("/");
+  return cut < 0 ? "" : path.slice(0, cut);
+}
+
+/**
  * What the library holds right now.
  *
  * Given its own block at the head of the panel rather than a row in the list:
- * it is the subject of the whole screen, and the full path is the one fact that
- * says exactly which file on disk a restore is about to displace.
+ * it is the subject of the whole screen, and it is what every button below
+ * would overwrite.
+ *
+ * Shows the filename, not the full path: the panel header directly above it
+ * already states the folder, and printing the same directory twice in adjacent
+ * blocks reads as two different locations at a glance.
  */
 export function CurrentRow({ current }: { current: CurrentOccupant | null }) {
   if (!current) {
@@ -81,7 +99,9 @@ export function CurrentRow({ current }: { current: CurrentOccupant | null }) {
         </span>
         <QualityChip name={current.name} />
       </div>
-      <FullPath value={current.path} tone="ok" />
+      <code className="font-mono text-[12px] leading-[1.5] font-semibold break-all whitespace-pre-wrap text-emerald-200">
+        {current.name}
+      </code>
     </div>
   );
 }
@@ -89,20 +109,28 @@ export function CurrentRow({ current }: { current: CurrentOccupant | null }) {
 function VersionFile({
   name,
   fullPath,
+  libraryDir,
   size,
   media,
 }: {
   name: string;
   fullPath: string | null;
+  /** The folder the panel header already states, so it is not repeated here. */
+  libraryDir: string;
   size: number;
   media: boolean;
 }) {
+  // Only worth printing when it is news. A version taken from the same folder
+  // the header names adds nothing; one taken from somewhere else — a title that
+  // has since been reorganised — is exactly what an operator needs to see.
+  const elsewhere = Boolean(fullPath) && directoryOf(fullPath) !== libraryDir;
+
   return (
     <div className="min-w-0 rounded-md bg-black/20 px-2.5 py-2">
       <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1">
         <span
           className={cn(
-            "min-w-0 text-[12px] leading-snug font-medium break-all",
+            "min-w-0 font-mono text-[12px] leading-snug font-semibold break-all",
             media ? "text-foreground" : "text-muted-foreground"
           )}
         >
@@ -113,9 +141,7 @@ function VersionFile({
         </span>
         {media && <QualityChip name={name} />}
       </div>
-      {/* Where it lived before a sync moved it aside. The name alone cannot
-          tell two libraries' copies of the same episode apart. */}
-      <FullPath value={fullPath} label="Taken from" />
+      {elsewhere && <FullPath value={fullPath} label="Taken from" />}
     </div>
   );
 }
@@ -125,6 +151,7 @@ export function VersionRow({
   index,
   busy,
   selected,
+  libraryDir = "",
   onToggle,
   onRestore,
   onPin,
@@ -134,6 +161,8 @@ export function VersionRow({
   index: number;
   busy: boolean;
   selected: boolean;
+  /** The folder stated in the panel header, so files below need not repeat it. */
+  libraryDir?: string;
   onToggle: (capture: Capture) => void;
   onRestore: (capture: Capture) => void;
   onPin: (capture: Capture) => void;
@@ -209,6 +238,7 @@ export function VersionRow({
             key={file.relative_path}
             name={file.relative_path}
             fullPath={file.original_path}
+            libraryDir={libraryDir}
             size={file.file_size}
             media
           />
@@ -218,6 +248,7 @@ export function VersionRow({
             key={file.relative_path}
             name={file.relative_path}
             fullPath={file.original_path}
+            libraryDir={libraryDir}
             size={file.file_size}
             media={false}
           />
@@ -281,6 +312,10 @@ export function VersionList({
   onPin: (capture: Capture) => void;
   onDelete: (capture: Capture) => void;
 }) {
+  // Stated once at the head of the panel; every file below shows its name only,
+  // unless it sits somewhere else, which is the case worth reading.
+  const libraryDir = current?.directory || directoryOf(current?.path);
+
   if (loading) {
     return (
       <div className="space-y-2 p-4">
@@ -320,6 +355,7 @@ export function VersionList({
                 index={index}
                 busy={busyId === capture.capture_id}
                 selected={selected.has(capture.capture_id)}
+                libraryDir={libraryDir}
                 onToggle={onToggle}
                 onRestore={onRestore}
                 onPin={onPin}

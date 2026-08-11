@@ -31,8 +31,13 @@ import type { DeleteCandidate, DeletePreview } from "@/lib/backup-types";
 const LISTED = 100;
 
 function CandidateRow({ candidate }: { candidate: DeleteCandidate }) {
-  const media = candidate.files.filter((file) => file.is_media);
-  const sidecars = candidate.files.length - media.length;
+  // Never assumed present. A server that has not been restarted since the file
+  // detail was added answers without it, and this dialog guards a deletion with
+  // no undo — falling back to the capture folder tells the operator less, but
+  // crashing tells them nothing and strands the action entirely.
+  const files = candidate.files ?? [];
+  const media = files.filter((file) => file.is_media);
+  const sidecars = files.length - media.length;
 
   return (
     <li className="border-b border-border/50 px-3.5 py-3 last:border-b-0">
@@ -77,7 +82,10 @@ function CandidateRow({ candidate }: { candidate: DeleteCandidate }) {
               />
             )
         )}
-        {!candidate.files.length && (
+        {/* Keyed on the media files, not on the file list: a version holding
+            only sidecars has files but nothing above would draw a path, and the
+            confirmation would name no location at all. */}
+        {!media.length && (
           <FullPath
             label="Deleting from the backup disk"
             value={candidate.capture_dir ?? candidate.capture_path}
@@ -116,7 +124,7 @@ export function DeleteDialog({
   // chain made a failed or absent preview leave the button enabled, so a
   // permanent deletion could be confirmed against numbers that never arrived.
   const nothingToDo = !loading && !preview?.count;
-  const shown = preview?.captures.slice(0, LISTED) ?? [];
+  const shown = (preview?.captures ?? []).slice(0, LISTED);
   const beyondListed = (preview?.count ?? 0) - shown.length;
   const beyondDetailed = shown.length - (preview?.detailed ?? shown.length);
 
