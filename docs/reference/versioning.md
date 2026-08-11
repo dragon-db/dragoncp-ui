@@ -11,7 +11,14 @@ it. Current release: see [`VERSION`](../../VERSION).
 VERSION          ← the only place the number is written
 ```
 
-Everything else reads it. Nothing else states it.
+`VERSION` is the canonical source: it is the file you edit, and the application
+reads it rather than restating it.
+
+Package metadata is the one exception, and it is a copy rather than a reader.
+`frontend/package.json` and its lockfile must carry a literal version — npm
+requires one and cannot read a file outside the package — so they are
+**synchronized** to `VERSION` and a test fails the build when they fall behind.
+They are the reason "one file" needs enforcing rather than merely asserting.
 
 | Consumer | How it gets the number |
 | --- | --- |
@@ -19,7 +26,7 @@ Everything else reads it. Nothing else states it.
 | `/api/runtime/status` | Returns `APP_VERSION` |
 | The navbar badge | Prefers the running server's value, falls back to the build's |
 | The frontend bundle | `vite.config.ts` reads `VERSION` and defines `__APP_VERSION__` |
-| `frontend/package.json` and its lockfile | Bumped to match; a test enforces it |
+| `frontend/package.json` and its lockfile | A synchronized copy, not a reader — npm needs a literal. A test enforces it |
 
 **Why this exists.** The number used to be written out three times — in
 `config.py`, in `frontend/package.json`, and as a constant in the navbar — and
@@ -33,9 +40,13 @@ the build when `package.json` or the lockfile falls behind, and when any file
 under `frontend/src` or `config.py` hard-codes a version-shaped string on a line
 mentioning "version" — which is how a fourth copy would sneak back in.
 
-Reading the file never raises. A missing or empty `VERSION` reads as `unknown`:
-a packaging mistake should not stop the application starting, since the number
-is only ever displayed.
+Reading the file never raises. A missing or empty `VERSION` reads as `unknown`,
+and the application starts normally: a packaging mistake is not worth an outage.
+
+`unknown` degrades rather than misleads. It is shown as-is in the navbar, and
+the stale-session comparison below treats it as *no answer* — so an install that
+cannot read its own version simply never claims an update is available, instead
+of insisting on one at every poll.
 
 ## Cache busting is not what the version number is for
 

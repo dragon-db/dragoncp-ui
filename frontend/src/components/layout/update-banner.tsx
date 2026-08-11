@@ -27,8 +27,16 @@ export function UpdateBanner() {
   if (!stale || dismissed) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-brand/35 bg-brand/[0.08] px-4 py-2 sm:px-6">
-      <IconRefresh className="size-4 flex-none text-brand-hover" />
+    /* A live region: this appears while the page is already open, so a screen
+       reader has to be told it arrived rather than only finding it on the next
+       traversal. `polite` because it can wait for the current utterance — the
+       tab keeps working, it is just behind. */
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-brand/35 bg-brand/[0.08] px-4 py-2 sm:px-6"
+    >
+      <IconRefresh aria-hidden="true" className="size-4 flex-none text-brand-hover" />
       <p className="min-w-0 flex-1 text-[12.5px]">
         <span className="font-medium text-brand-foreground">Version {available} is running</span>
         <span className="text-muted-foreground">

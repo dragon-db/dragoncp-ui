@@ -220,7 +220,12 @@ function grade(name: string | null, isMovie: boolean): Grade | null {
   // not anchored to the start — a quality tag can carry other words in front of
   // it (`Dual-Audio WEBDL-1080p`), and anchoring dropped the source on every
   // one of those. A bare `1080p` states no source at all.
-  const sourceRaw = quality.match(/([A-Za-z]+)-\d{3,4}p/)?.[1] ?? null;
+  //
+  // Hyphens are allowed inside the token so `WEB-DL-1080p` yields `web-dl`,
+  // which SOURCE_RANK knows about — without them that entry was unreachable.
+  // Greedy matching backtracks to the last hyphen before the resolution, so
+  // `Dual-Audio WEBDL-1080p` still gives `webdl` rather than the whole phrase.
+  const sourceRaw = quality.match(/([A-Za-z][A-Za-z-]*)-\d{3,4}p/)?.[1] ?? null;
   return {
     resolution,
     source: sourceRaw ? sourceRaw.toLowerCase().replace(/\s/g, "") : null,

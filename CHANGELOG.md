@@ -2,8 +2,9 @@
 
 What changed in each release, in terms of what an operator would notice.
 
-The version lives in [`VERSION`](VERSION) and nowhere else. How to choose the
-next number, and when to bump it, is in
+The version lives in [`VERSION`](VERSION), which is the file you edit; package
+metadata is synchronized to it rather than read from it. How to choose the next
+number, and when to bump it, is in
 [`docs/reference/versioning.md`](docs/reference/versioning.md).
 
 Newest first.

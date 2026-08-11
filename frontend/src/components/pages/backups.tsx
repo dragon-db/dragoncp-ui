@@ -304,6 +304,8 @@ export function BackupsPage() {
    */
   const unseen = useUnseenRetention();
   const unseenCount = unseen.data?.versions ?? 0;
+  // More sweeps than one page holds: the figure is a floor, not a total.
+  const unseenTruncated = Boolean(unseen.data?.truncated);
 
   function acknowledgeRetention(openHistory: boolean) {
     markRetentionSeen();
@@ -374,8 +376,8 @@ export function BackupsPage() {
           <IconTrash className="mt-0.5 size-5 flex-none text-amber-400" />
           <div className="min-w-0 flex-1 text-[13px]">
             <div className="font-medium text-amber-400">
-              The automatic cleanup deleted {unseenCount} stored version
-              {unseenCount === 1 ? "" : "s"}
+              The automatic cleanup deleted {unseenTruncated ? "at least " : ""}
+              {unseenCount} stored version{unseenCount === 1 ? "" : "s"}
             </div>
             <p className="text-muted-foreground">
               Nobody asked for this — it ran on its own after a sync to keep the backup disk within

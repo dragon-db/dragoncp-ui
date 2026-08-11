@@ -370,6 +370,18 @@ export function markRetentionSeen() {
   }
 }
 
+/**
+ * Asks for the endpoint's whole page rather than a token few.
+ *
+ * The banner states how many versions were deleted, so a short page would
+ * understate a number about lost data — the one place rounding down is worse
+ * than saying nothing. 200 is the server's cap, which is far more sweeps than
+ * accumulate between two visits in practice; `truncated` covers the case where
+ * it is not, so the figure reads "200+" rather than as an exact count that
+ * happens to be wrong.
+ */
+const UNSEEN_PAGE = 200;
+
 export function useUnseenRetention() {
   const seen = lastSeen();
   return useQuery({
@@ -377,14 +389,21 @@ export function useUnseenRetention() {
     queryFn: async () => {
       const page = await activityApi.list({
         action: "backup.retention_apply",
-        limit: 20,
+        limit: UNSEEN_PAGE,
       });
       const fresh = seen ? page.entries.filter((entry) => entry.occurred_at > seen) : page.entries;
       const versions = fresh.reduce((total, entry) => {
         const detail = (entry.detail ?? {}) as HistoryDetail;
         return total + (detail.deleted_count ?? 0);
       }, 0);
-      return { sweeps: fresh.length, versions, latest: fresh[0] ?? null };
+      return {
+        sweeps: fresh.length,
+        versions,
+        // Every entry on a full page was unseen, so there are very likely more
+        // behind it that this figure does not include.
+        truncated: fresh.length >= UNSEEN_PAGE,
+        latest: fresh[0] ?? null,
+      };
     },
     staleTime: 1000 * 30,
   });

@@ -313,6 +313,30 @@ class QueryTests(ActivityTestCase):
         self.assertEqual(len(self.entries(action_group='backup')), 3)
         self.assertEqual(len(self.entries(action='backup.restore')), 1)
 
+    def test_the_route_turns_a_comma_list_into_several_actions(self):
+        """
+        The query above is only reachable if the endpoint parses the parameter.
+
+        The Backups history sends `backup.delete,backup.retention_apply` as one
+        string; a route that passed it through whole would filter on an action
+        nothing has ever recorded and quietly return an empty page.
+        """
+        from routes.activity import _actions
+
+        self.assertIsNone(_actions(None))
+        self.assertIsNone(_actions(''))
+        self.assertIsNone(_actions(' , '))
+        self.assertEqual(_actions('backup.restore'), 'backup.restore')
+        self.assertEqual(
+            _actions('backup.delete,backup.retention_apply'),
+            ['backup.delete', 'backup.retention_apply'],
+        )
+        self.assertEqual(
+            _actions(' backup.delete , backup.pin '),
+            ['backup.delete', 'backup.pin'],
+            'spacing around a comma is a person typing, not a different filter',
+        )
+
     def test_filter_by_several_actions_at_once(self):
         """
         The Backups history filters to "everything that removed something".

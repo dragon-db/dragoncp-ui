@@ -2737,6 +2737,10 @@ paths:
                   runtime_status:
                     type: object
                     additionalProperties: true
+                    properties:
+                      version:
+                        type: string
+                        description: The release the server is running, from the VERSION file. "unknown" when it could not be read.
         '401':
           $ref: '#/components/responses/Unauthorized'
 

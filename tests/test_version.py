@@ -68,6 +68,9 @@ class VersionIsSingleSourced(unittest.TestCase):
             *(REPO_ROOT / 'frontend/src').rglob('*.ts'),
             *(REPO_ROOT / 'frontend/src').rglob('*.tsx'),
             REPO_ROOT / 'config.py',
+            # The build reads VERSION; a literal here would be baked into every
+            # bundle and outrank the file it is supposed to be reading.
+            REPO_ROOT / 'frontend/vite.config.ts',
         ]
         offenders = []
         for path in searched:

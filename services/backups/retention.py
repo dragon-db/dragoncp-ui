@@ -226,20 +226,24 @@ class RetentionPolicy:
 
             described = self._describe(candidate, path)
 
+            freed_disk = True
             try:
                 shutil.rmtree(path, ignore_errors=False)
             except FileNotFoundError:
-                # Already gone from disk; the index row still has to go.
-                pass
+                # Already gone from disk; the index row still has to go, but
+                # nothing was reclaimed and the total must not say otherwise.
+                freed_disk = False
             except OSError as error:
                 result.errors.append(f"{candidate.display}: {error}")
                 continue
 
-            self.layout.prune_empty_dirs(path)
+            if freed_disk:
+                self.layout.prune_empty_dirs(path)
             self.captures.delete(candidate.capture_id)
             result.deleted.append(candidate.capture_id)
             result.deleted_items.append(described)
-            result.reclaimed += candidate.total_size
+            if freed_disk:
+                result.reclaimed += candidate.total_size
 
         return result
 

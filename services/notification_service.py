@@ -547,6 +547,12 @@ class NotificationService:
                 },
             ]
             if location:
+                # Discord rejects the whole message if any field value exceeds
+                # 1024 characters, so an unusually long path would silently cost
+                # the operator the entire notification rather than one field.
+                # The fences and ellipsis are part of the budget.
+                if len(location) > 1000:
+                    location = location[:997] + '...'
                 fields.append({
                     'name': 'Library Location',
                     'value': f"```{location}```",
@@ -596,8 +602,10 @@ class NotificationService:
                     f"{response.status_code} - {response.text}"
                 )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - see the docstring; must not raise
             print(f"❌ Error sending Discord retention notification: {e}")
+            import traceback
+            traceback.print_exc()
 
     @staticmethod
     def _format_size(num_bytes) -> str:

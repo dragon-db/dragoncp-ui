@@ -12,6 +12,7 @@ double episode, Specials, and an anime absolute number.
 """
 
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -1528,8 +1529,10 @@ class RetentionReportingTests(BackupsTestCase):
         self.sync('t0', f"{SHOW} - S01E01 - v0.mkv")
         self.sync('t1', f"{SHOW} - S01E01 - v1.mkv")
 
-        # The versions are already gone; a webhook being down cannot undo that,
-        # and must not turn a completed sync into a failed one.
+        # Both halves matter. The notification must have been attempted —
+        # otherwise this passes just as well when nothing tried to notify —
+        # and the failure must not turn a completed sync into a failed one.
+        self.assertEqual(self.notifier.attempts, 1, 'the notification was attempted')
         self.assertEqual(len(self.entries('backup.retention_apply')), 1)
 
     def test_versions_a_sync_created_are_recorded_too(self):
@@ -1547,9 +1550,13 @@ class RetentionReportingTests(BackupsTestCase):
 class _NotifierSpy:
     def __init__(self):
         self.retention_calls = []
+        #: Counted before the failure, so a test can tell "never tried" apart
+        #: from "tried and the webhook was down".
+        self.attempts = 0
         self.explode = False
 
     def send_backup_retention_notification(self, summary):
+        self.attempts += 1
         if self.explode:
             raise RuntimeError('discord is down')
         self.retention_calls.append(summary)
@@ -1776,6 +1783,33 @@ class BulkDeleteTests(BackupsTestCase):
         self.assertEqual(by_size[0]['total_size'], 9000)
         by_recent = self.captures.slots(sort='recent')
         self.assertEqual(by_recent[0]['episode_number'], 2, 'newest first by default')
+
+    def test_space_already_gone_is_not_counted_as_reclaimed(self):
+        """
+        A capture whose files vanished underneath us frees nothing.
+
+        The row still has to go — the index is derived from the tree, so a stale
+        entry would come back at the next rebuild. But counting its recorded
+        size would report space to the operator, and to Discord, that nobody got
+        back, on the one screen whose whole point is accurate accounting.
+        """
+        capture = self.version('t1', f"{SHOW} - S01E01 - only.mkv")
+        removed_by_hand = self.layout.absolute(capture['capture_path'])
+        shutil.rmtree(removed_by_hand)
+
+        result = self.service.delete_many(capture_ids=[capture['capture_id']])
+
+        self.assertEqual(result['deleted_count'], 1, 'the index entry still goes')
+        self.assertIsNone(self.captures.get(capture['capture_id']))
+        self.assertEqual(result['reclaimed'], 0, 'nothing was on disk to reclaim')
+
+    def test_space_actually_freed_is_counted(self):
+        capture = self.version('t1', f"{SHOW} - S01E01 - only.mkv", size=4096)
+
+        result = self.service.delete_many(capture_ids=[capture['capture_id']])
+
+        self.assertEqual(result['deleted_count'], 1)
+        self.assertGreater(result['reclaimed'], 0)
 
     def test_the_preview_says_which_files_leave_the_disk(self):
         """
