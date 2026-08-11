@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import api from "@/lib/api";
+import { isOutdated } from "@/lib/version";
 import type {
   SettingsResponse,
   DiskUsage,
@@ -183,6 +184,32 @@ export function useAppVersion(): string {
     select: (response) => response.runtime_status.version,
   });
   return data || __APP_VERSION__;
+}
+
+/**
+ * Whether this tab is running code the server has moved on from.
+ *
+ * Nothing about caching causes this and nothing about caching fixes it. Asset
+ * files are content-hashed and the shell is `no-cache`, so *a reload* always
+ * lands on the new build — the gap is the session that never reloads. A tab
+ * left open across a deploy keeps executing yesterday's JavaScript against
+ * today's API for as long as it stays open.
+ *
+ * The comparison is deliberately narrow. Both sides must be known and real:
+ * a backend too old to report its version says nothing, and `unknown` means the
+ * VERSION file could not be read at build or at startup. Guessing from either
+ * would nag on every poll about an update that may not exist.
+ */
+export function useUpdateAvailable(): { stale: boolean; running: string; available: string } {
+  const { data } = useQuery({
+    ...runtimeStatusQueryOptions(),
+    select: (response) => response.runtime_status.version,
+  });
+
+  const running = __APP_VERSION__;
+  const available = data ?? "";
+
+  return { stale: isOutdated(running, available), running, available };
 }
 
 export function useSSHConnect() {

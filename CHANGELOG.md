@@ -72,6 +72,10 @@ The release that put the version number back in service — it had been stuck at
   and `tests/test_version.py` fails the build if a copy reappears or drifts.
 - The running server reports its version on `/api/runtime/status`, and the
   navbar shows that rather than a number baked into the bundle.
+- **A tab left open across a deploy now says so** and offers a reload. Assets
+  were already busted by content hash, so a reload always landed on the new
+  build — the gap was the session that never reloads and keeps running old code
+  against the new API.
 
 ---
 

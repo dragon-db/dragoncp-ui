@@ -2,6 +2,7 @@ import { useState, type CSSProperties, type ReactNode } from "react";
 import { useRuntimeStatus } from "@/hooks/useConfig";
 import { useRuntimeStore } from "@/stores/runtime";
 import { AppSidebar } from "@/components/layout/app-sidebar";
+import { UpdateBanner } from "@/components/layout/update-banner";
 import { AppNavbar } from "@/components/layout/app-navbar";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { BackendUnavailableOverlay } from "@/components/layout/backend-unavailable-overlay";
@@ -48,6 +49,10 @@ export function AppLayout({ children }: AppLayoutProps) {
 
       <SidebarInset className="min-w-0 border border-border shadow-[0_24px_60px_-30px_rgba(0,0,0,0.85)]">
         <AppNavbar />
+        {/* Above the content, not floating over it: a tab running an older
+            release is a standing condition until reloaded, not a passing
+            notification that can be missed. */}
+        <UpdateBanner />
         {/* The scroll container is the padded wrapper rather than <main>, and it
             is a flex column — so a page that wants to fill the viewport (Explore
             pins a status bar to the bottom) can do it with flex-1, while normal
