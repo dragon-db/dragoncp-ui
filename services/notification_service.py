@@ -462,6 +462,164 @@ class NotificationService:
             import traceback
             traceback.print_exc()
     
+    def send_backup_retention_notification(self, summary: Dict):
+        """
+        Send a Discord notification when the retention sweep deletes backups.
+
+        This is the only deletion in the application that nobody asked for: it
+        runs by itself after a sync, on the one feature whose promise is that
+        nothing is destroyed. Everything else can be found by looking; this has
+        to come and find the operator, which is why it is pushed rather than
+        left in the trail.
+
+        Args:
+            summary: Dictionary describing what was removed, with:
+                - deleted_count: How many stored versions went
+                - reclaimed_bytes: Space freed on the backup disk
+                - items: Per-version detail, each with a display name and paths
+                - keep / grace_hours: The rule that selected them
+        """
+        try:
+            if not self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED'):
+                print("📭 Discord notifications are disabled, skipping retention notification")
+                return
+
+            discord_webhook_url = self.settings.get('DISCORD_WEBHOOK_URL')
+            if not discord_webhook_url:
+                print("📭 Discord webhook URL not configured, skipping retention notification")
+                return
+
+            items = summary.get('items') or []
+            deleted_count = summary.get('deleted_count') or len(items)
+            if not deleted_count:
+                return
+
+            reclaimed = summary.get('reclaimed_bytes') or 0
+            app_url = self.settings.get('DISCORD_APP_URL')
+            icon_url = self.settings.get('DISCORD_ICON_URL')
+
+            # Names, not just a count. "Removed 3 old versions" and "removed the
+            # only copy of the thing you were looking for" read identically when
+            # the titles are left out, and this message exists to be read in a
+            # hurry.
+            listed = []
+            for item in items[:8]:
+                display = item.get('display') or item.get('capture_id') or 'Unknown'
+                listed.append(f"• {display}  ({self._format_size(item.get('total_size') or 0)})")
+            if len(items) > 8:
+                listed.append(f"… and {len(items) - 8} more")
+            removed_text = '\n'.join(listed) if listed else 'No detail recorded'
+            if len(removed_text) > 900:
+                removed_text = removed_text[:897] + '...'
+
+            # The library path of the first thing removed, so the message says
+            # where on disk this happened without listing every path.
+            location = None
+            for item in items:
+                for file_info in item.get('files') or []:
+                    location = file_info.get('original_path') or file_info.get('backup_path')
+                    if location:
+                        break
+                if location:
+                    break
+
+            rule_parts = []
+            if summary.get('keep') is not None:
+                rule_parts.append(f"keep {summary['keep']} per item")
+            if summary.get('grace_hours'):
+                rule_parts.append(f"{summary['grace_hours']}h grace")
+
+            fields = [
+                {
+                    'name': 'Removed',
+                    'value': f"```{deleted_count} stored version(s)```",
+                    'inline': True
+                },
+                {
+                    'name': 'Space Reclaimed',
+                    'value': f"```{self._format_size(reclaimed)}```",
+                    'inline': True
+                },
+                {
+                    'name': 'Deleted Media',
+                    'value': f"```{removed_text}```",
+                    'inline': False
+                },
+            ]
+            if location:
+                # Discord rejects the whole message if any field value exceeds
+                # 1024 characters, so an unusually long path would silently cost
+                # the operator the entire notification rather than one field.
+                # The fences and ellipsis are part of the budget.
+                if len(location) > 1000:
+                    location = location[:997] + '...'
+                fields.append({
+                    'name': 'Library Location',
+                    'value': f"```{location}```",
+                    'inline': False
+                })
+            if rule_parts:
+                fields.append({
+                    'name': 'Retention Rule',
+                    'value': f"```{', '.join(rule_parts)}```",
+                    'inline': False
+                })
+
+            embed = {
+                'title': '🧹 Automatic backup cleanup',
+                'description': (
+                    'Old restore points were deleted to keep the backup disk within '
+                    'its retention rule. This cannot be undone.'
+                ),
+                # Amber: routine, but it destroyed something.
+                'color': 15105570,
+                'fields': fields,
+                'author': {
+                    'name': 'Backup Retention',
+                    'icon_url': icon_url
+                },
+                'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+                'footer': {
+                    'text': 'DragonCP Backup Retention'
+                }
+            }
+
+            if app_url and self._is_valid_discord_url(app_url):
+                embed['url'] = app_url
+
+            response = requests.post(
+                discord_webhook_url,
+                json={'embeds': [embed]},
+                headers={'Content-Type': 'application/json'},
+                timeout=10
+            )
+
+            if response.status_code == 204:
+                print(f"✅ Discord retention notification sent for {deleted_count} deletion(s)")
+            else:
+                print(
+                    f"❌ Discord retention notification failed: "
+                    f"{response.status_code} - {response.text}"
+                )
+
+        except Exception as e:  # noqa: BLE001 - see the docstring; must not raise
+            print(f"❌ Error sending Discord retention notification: {e}")
+            import traceback
+            traceback.print_exc()
+
+    @staticmethod
+    def _format_size(num_bytes) -> str:
+        """Bytes as something readable in a chat message."""
+        try:
+            size = float(num_bytes or 0)
+        except (TypeError, ValueError):
+            return '0 B'
+        for unit in ('B', 'KB', 'MB', 'GB', 'TB'):
+            if size < 1024 or unit == 'TB':
+                return f"{size:.0f} {unit}" if unit == 'B' else f"{size:.2f} {unit}"
+            size /= 1024
+        return f"{size:.2f} TB"
+
     def _is_valid_discord_url(self, url: str) -> bool:
         """Validate URL format for Discord embeds"""
         try:

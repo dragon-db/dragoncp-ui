@@ -8,17 +8,21 @@ import {
   IconClockHour4,
   IconDeviceTv,
   IconFolder,
+  IconHistory,
   IconLayoutList,
   IconMovie,
   IconPinFilled,
   IconSearch,
   IconSortDescending2,
+  IconTrash,
 } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { PageTabsList } from "@/components/layout/page-tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
 import { StatTiles } from "@/components/layout/stat-tiles";
@@ -36,7 +40,9 @@ import {
   usePlanRestore,
   useRebuildIndex,
   useRestoreCapture,
+  useUnseenRetention,
   useUnsortedBackups,
+  markRetentionSeen,
   type DeleteSelection,
 } from "@/hooks/useBackups";
 import {
@@ -49,6 +55,8 @@ import {
   type SlotSort,
   type SlotSummary,
 } from "@/lib/backup-types";
+import { BackupHistory } from "@/components/backups/history";
+import { FullPath } from "@/components/layout/full-path";
 import { VersionList } from "@/components/backups/version-list";
 import { RestoreDialog } from "@/components/backups/restore-dialog";
 import {
@@ -81,8 +89,10 @@ const LIBRARIES = [
 ] as const;
 
 type Pane = "titles" | "slots";
+type Tab = "library" | "history";
 
 export function BackupsPage() {
+  const [tab, setTab] = useState<Tab>("library");
   const [library, setLibrary] = useState<BackupLibrary>("shows");
   const [title, setTitle] = useState<string | null>(null);
   const [slotKey, setSlotKey] = useState<string | null>(null);
@@ -257,22 +267,51 @@ export function BackupsPage() {
     });
   }
 
-  const selectionCount = pickedSlots.size + pickedVersions.size;
-
-  function deleteSelection() {
-    const parts: string[] = [];
-    if (pickedSlots.size) parts.push(`${pickedSlots.size} item(s)`);
-    if (pickedVersions.size) parts.push(`${pickedVersions.size} version(s)`);
+  /*
+   * The two selections stay apart all the way to the confirmation.
+   *
+   * Ticking an item in the list means "every version of this"; ticking a row in
+   * the inspector means "this specific version". They used to be summed into
+   * one bar reading "5 selected" over a permanent deletion, which said neither
+   * what would go nor how much. Each now has its own bar, in the place the
+   * ticking happens, naming what it will delete.
+   */
+  function deleteSlots() {
     openDelete(
-      {
-        slot_keys: pickedSlots.size ? [...pickedSlots] : undefined,
-        capture_ids: pickedVersions.size ? [...pickedVersions] : undefined,
-      },
-      parts.join(" and ")
+      { slot_keys: [...pickedSlots] },
+      pickedSlots.size === 1
+        ? "every version of 1 item"
+        : `every version of ${pickedSlots.size} items`
+    );
+  }
+
+  function deleteVersions() {
+    openDelete(
+      { capture_ids: [...pickedVersions] },
+      pickedVersions.size === 1 ? "1 version" : `${pickedVersions.size} versions`
     );
   }
 
   const notConfigured = overview.data && !overview.data.configured;
+
+  /*
+   * The in-app half of "an unattended deletion announces itself".
+   *
+   * Retention runs on its own after a sync and takes versions nobody chose to
+   * lose. Discord carries that to wherever the operator is; this carries it to
+   * the page they land on when they come back, because the failure this exists
+   * to prevent is finding out by noticing an absence weeks later.
+   */
+  const unseen = useUnseenRetention();
+  const unseenCount = unseen.data?.versions ?? 0;
+  // More sweeps than one page holds: the figure is a floor, not a total.
+  const unseenTruncated = Boolean(unseen.data?.truncated);
+
+  function acknowledgeRetention(openHistory: boolean) {
+    markRetentionSeen();
+    unseen.refetch();
+    if (openHistory) setTab("history");
+  }
 
   /*
    * The page fills the viewport and scrolls INSIDE its panes only from `lg` up.
@@ -293,7 +332,7 @@ export function BackupsPage() {
         // list, or the versions card when there is no unidentified section.
         // Reserved here rather than inside a list, because the bar floats over
         // the page rather than over any one of them.
-        selectionCount > 0 && "pb-20 lg:pb-4"
+        pickedSlots.size > 0 && "pb-20 lg:pb-4"
       )}
     >
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -332,234 +371,304 @@ export function BackupsPage() {
         </div>
       )}
 
+      {unseenCount > 0 && (
+        <div className="flex flex-wrap items-start gap-3 rounded-xl border border-amber-500/35 bg-amber-500/[0.08] px-4 py-3">
+          <IconTrash className="mt-0.5 size-5 flex-none text-amber-400" />
+          <div className="min-w-0 flex-1 text-[13px]">
+            <div className="font-medium text-amber-400">
+              The automatic cleanup deleted {unseenTruncated ? "at least " : ""}
+              {unseenCount} stored version{unseenCount === 1 ? "" : "s"}
+            </div>
+            <p className="text-muted-foreground">
+              Nobody asked for this — it ran on its own after a sync to keep the backup disk within
+              its retention rule. The History tab says exactly what went and where it lived.
+            </p>
+          </div>
+          <div className="flex flex-none gap-2">
+            <Button variant="outline" size="sm" onClick={() => acknowledgeRetention(false)}>
+              Dismiss
+            </Button>
+            <Button size="sm" onClick={() => acknowledgeRetention(true)}>
+              See what went
+            </Button>
+          </div>
+        </div>
+      )}
+
       <div className="grid gap-3 lg:grid-cols-[1fr_18rem]">
         <StatTiles items={tiles} />
         <DiskBar disk={overview.data?.disk ?? null} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex rounded-lg border border-border p-0.5">
-          {LIBRARIES.map((entry) => (
-            <button
-              key={entry.id}
-              type="button"
-              onClick={() => selectLibrary(entry.id)}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium transition-colors",
-                library === entry.id
-                  ? "bg-brand/15 text-brand-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <entry.Icon className="size-4" />
-              <span className="hidden sm:inline">{entry.label}</span>
-            </button>
-          ))}
-        </div>
+      {/*
+        Two questions, two tabs: what is stored right now, and what happened to
+        everything that is not. The second cannot be answered from the first —
+        by the time it is asked, the version is gone.
 
-        {/* A floor, not just `min-w-0`: on a phone the back control joins this
+        Rendered through PageTabsList rather than a segmented pill, because the
+        app already has exactly one idiom for a page-level switcher and a second
+        one here would make this page the odd screen out.
+      */}
+      <Tabs
+        value={tab}
+        onValueChange={(next) => setTab(next as Tab)}
+        // Carries the page's height chain through to the panes, which scroll
+        // inside themselves from `lg` up. Without `min-h-0` a flex child
+        // refuses to shrink below its content and the inner scroll never
+        // engages — the whole page scrolls instead.
+        className="gap-4 lg:min-h-0 lg:flex-1"
+      >
+        <PageTabsList
+          items={[
+            { value: "library", label: "Library", icon: IconArchive },
+            {
+              value: "history",
+              label: "History",
+              icon: IconHistory,
+              count: unseenCount || undefined,
+            },
+          ]}
+        />
+
+        <TabsContent value="history">
+          <BackupHistory />
+        </TabsContent>
+
+        <TabsContent
+          value="library"
+          className="flex flex-col gap-4 lg:min-h-0 lg:flex-1"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex rounded-lg border border-border p-0.5">
+              {LIBRARIES.map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  onClick={() => selectLibrary(entry.id)}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium transition-colors",
+                    library === entry.id
+                      ? "bg-brand/15 text-brand-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <entry.Icon className="size-4" />
+                  <span className="hidden sm:inline">{entry.label}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* A floor, not just `min-w-0`: on a phone the back control joins this
             row and the field was squeezed down to its own magnifier icon.
             Below the floor the row wraps instead. */}
-        <div className="relative min-w-[9rem] flex-1 sm:max-w-xs">
-          <IconSearch className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search titles"
-            className="pl-8"
-          />
-        </div>
+            <div className="relative min-w-[9rem] flex-1 sm:max-w-xs">
+              <IconSearch className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search titles"
+                className="pl-8"
+              />
+            </div>
 
-        <div className="flex rounded-lg border border-border p-0.5">
-          {(
-            [
-              { id: "recent", label: "Newest", Icon: IconClockHour4 },
-              { id: "size", label: "Largest", Icon: IconSortDescending2 },
-            ] as const
-          ).map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => setSort(option.id)}
-              title={
-                option.id === "size"
-                  ? "Biggest first — what to delete when you need space back"
-                  : "Most recently replaced first"
-              }
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors",
-                sort === option.id
-                  ? "bg-brand/15 text-brand-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <option.Icon className="size-3.5" />
-              <span className="hidden sm:inline">{option.label}</span>
-            </button>
-          ))}
-        </div>
+            <div className="flex rounded-lg border border-border p-0.5">
+              {(
+                [
+                  { id: "recent", label: "Newest", Icon: IconClockHour4 },
+                  { id: "size", label: "Largest", Icon: IconSortDescending2 },
+                ] as const
+              ).map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setSort(option.id)}
+                  title={
+                    option.id === "size"
+                      ? "Biggest first — what to delete when you need space back"
+                      : "Most recently replaced first"
+                  }
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12px] font-medium transition-colors",
+                    sort === option.id
+                      ? "bg-brand/15 text-brand-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <option.Icon className="size-3.5" />
+                  <span className="hidden sm:inline">{option.label}</span>
+                </button>
+              ))}
+            </div>
 
-        {!isWide && pane === "slots" && (
-          <Button variant="outline" size="sm" onClick={() => setPane("titles")}>
-            <IconArrowLeft className="size-4" />
-            Titles
-          </Button>
-        )}
-      </div>
+            {!isWide && pane === "slots" && (
+              <Button variant="outline" size="sm" onClick={() => setPane("titles")}>
+                <IconArrowLeft className="size-4" />
+                Titles
+              </Button>
+            )}
+          </div>
 
-      <div className={cn("grid gap-4 lg:min-h-0 lg:flex-1", isWide && "lg:grid-cols-[290px_1fr]")}>
-        {(isWide || pane === "titles") && (
-          <SectionCard
-            label="Titles"
-            className="flex flex-col lg:min-h-0"
-            contentClassName="lg:min-h-0 lg:flex-1"
+          <div
+            className={cn("grid gap-4 lg:min-h-0 lg:flex-1", isWide && "lg:grid-cols-[290px_1fr]")}
           >
-            {/* A definite height below `lg`: the viewport inside is `size-full`,
+            {(isWide || pane === "titles") && (
+              <SectionCard
+                label="Titles"
+                className="flex flex-col lg:min-h-0"
+                contentClassName="lg:min-h-0 lg:flex-1"
+              >
+                {/* A definite height below `lg`: the viewport inside is `size-full`,
                 so a percentage height of an auto-height parent gives it nothing
                 to scroll within. */}
-            <ScrollArea className="max-h-[55vh] lg:h-full lg:max-h-[70vh]">
-              {titles.isLoading ? (
-                <div className="space-y-2 p-3">
-                  {[0, 1, 2, 3].map((row) => (
-                    <Skeleton key={row} className="h-9 w-full" />
-                  ))}
-                </div>
-              ) : !titles.data?.length ? (
-                <SectionEmpty
-                  icon={IconFolder}
-                  title="Nothing backed up here"
-                  hint={`No ${LIBRARY_LABELS[library]} have been replaced yet.`}
-                />
-              ) : (
-                <ul className="p-1.5">
-                  <li>
-                    <button
-                      type="button"
-                      onClick={() => setTitle(null)}
-                      className={cn(
-                        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors",
-                        title === null ? "bg-brand/12 text-brand-foreground" : "hover:bg-muted/60"
-                      )}
-                    >
-                      <IconArchive className="size-3.5 flex-none opacity-70" />
-                      <span className="flex-1">Everything</span>
-                    </button>
-                  </li>
-                  {titles.data.map((entry) => (
-                    <li key={entry.title}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setTitle(entry.title);
-                          setSlotKey(null);
-                          if (!isWide) setPane("slots");
-                        }}
-                        className={cn(
-                          "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors",
-                          title === entry.title
-                            ? "bg-brand/12 text-brand-foreground"
-                            : "hover:bg-muted/60"
-                        )}
-                      >
-                        <span className="min-w-0 flex-1 truncate" title={entry.title}>
-                          {entry.title}
-                        </span>
-                        <span className="flex-none font-mono text-[10px] text-muted-foreground tabular-nums">
-                          {entry.capture_count}
-                        </span>
-                        <span className="w-14 flex-none text-right font-mono text-[10px] text-muted-foreground tabular-nums">
-                          {formatBytes(entry.total_size)}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </ScrollArea>
-          </SectionCard>
-        )}
+                <ScrollArea className="max-h-[55vh] lg:h-full lg:max-h-[70vh]">
+                  {titles.isLoading ? (
+                    <div className="space-y-2 p-3">
+                      {[0, 1, 2, 3].map((row) => (
+                        <Skeleton key={row} className="h-9 w-full" />
+                      ))}
+                    </div>
+                  ) : !titles.data?.length ? (
+                    <SectionEmpty
+                      icon={IconFolder}
+                      title="Nothing backed up here"
+                      hint={`No ${LIBRARY_LABELS[library]} have been replaced yet.`}
+                    />
+                  ) : (
+                    <ul className="p-1.5">
+                      <li>
+                        <button
+                          type="button"
+                          onClick={() => setTitle(null)}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors",
+                            title === null
+                              ? "bg-brand/12 text-brand-foreground"
+                              : "hover:bg-muted/60"
+                          )}
+                        >
+                          <IconArchive className="size-3.5 flex-none opacity-70" />
+                          <span className="flex-1">Everything</span>
+                        </button>
+                      </li>
+                      {titles.data.map((entry) => (
+                        <li key={entry.title}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTitle(entry.title);
+                              setSlotKey(null);
+                              if (!isWide) setPane("slots");
+                            }}
+                            className={cn(
+                              "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition-colors",
+                              title === entry.title
+                                ? "bg-brand/12 text-brand-foreground"
+                                : "hover:bg-muted/60"
+                            )}
+                          >
+                            <span className="min-w-0 flex-1 truncate" title={entry.title}>
+                              {entry.title}
+                            </span>
+                            <span className="flex-none font-mono text-[10px] text-muted-foreground tabular-nums">
+                              {entry.capture_count}
+                            </span>
+                            <span className="w-14 flex-none text-right font-mono text-[10px] text-muted-foreground tabular-nums">
+                              {formatBytes(entry.total_size)}
+                            </span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </ScrollArea>
+              </SectionCard>
+            )}
 
-        {(isWide || pane === "slots") && (
-          <SectionCard
-            label={title ? `Versions in ${title}` : "All versions"}
-            description={
-              slots.data ? `${slots.data.total} item(s) with stored versions` : undefined
-            }
-            className="flex flex-col lg:min-h-0"
-            contentClassName="flex flex-col lg:min-h-0 lg:flex-1"
-          >
-            {/* Shrinks rather than filling, so the selection bar below it has
+            {(isWide || pane === "slots") && (
+              <SectionCard
+                label={title ? `Versions in ${title}` : "All versions"}
+                description={
+                  slots.data ? `${slots.data.total} item(s) with stored versions` : undefined
+                }
+                className="flex flex-col lg:min-h-0"
+                contentClassName="flex flex-col lg:min-h-0 lg:flex-1"
+              >
+                {/* Shrinks rather than filling, so the selection bar below it has
                 somewhere to go. `h-full` took the whole content box and the
                 sticky bar was pulled back up over the last row of the list. */}
-            <ScrollArea className="max-h-[55vh] lg:max-h-[70vh] lg:min-h-0 lg:flex-1">
-              {slots.isLoading ? (
-                <div className="space-y-2 p-3">
-                  {[0, 1, 2, 3, 4].map((row) => (
-                    <Skeleton key={row} className="h-11 w-full" />
-                  ))}
-                </div>
-              ) : !slots.data?.slots.length ? (
-                <SectionEmpty
-                  icon={IconArchive}
-                  title="Nothing stored here"
-                  hint="A version appears once a sync replaces or removes a file."
-                />
-              ) : (
-                <ul className="divide-y divide-border/50">
-                  {slots.data.slots.map((entry) => (
-                    <SlotRow
-                      key={entry.slot_key}
-                      slot={entry}
-                      active={slotKey === entry.slot_key}
-                      picked={pickedSlots.has(entry.slot_key)}
-                      onPick={() => toggleSlot(entry.slot_key)}
-                      onSelect={() => setSlotKey(entry.slot_key)}
+                <ScrollArea className="max-h-[55vh] lg:max-h-[70vh] lg:min-h-0 lg:flex-1">
+                  {slots.isLoading ? (
+                    <div className="space-y-2 p-3">
+                      {[0, 1, 2, 3, 4].map((row) => (
+                        <Skeleton key={row} className="h-11 w-full" />
+                      ))}
+                    </div>
+                  ) : !slots.data?.slots.length ? (
+                    <SectionEmpty
+                      icon={IconArchive}
+                      title="Nothing stored here"
+                      hint="A version appears once a sync replaces or removes a file."
                     />
-                  ))}
-                </ul>
-              )}
-            </ScrollArea>
-            <SelectionBar
-              count={selectionCount}
-              onDelete={deleteSelection}
-              onClear={clearSelection}
-            />
-          </SectionCard>
-        )}
-      </div>
+                  ) : (
+                    <ul className="divide-y divide-border/50">
+                      {slots.data.slots.map((entry) => (
+                        <SlotRow
+                          key={entry.slot_key}
+                          slot={entry}
+                          active={slotKey === entry.slot_key}
+                          picked={pickedSlots.has(entry.slot_key)}
+                          onPick={() => toggleSlot(entry.slot_key)}
+                          onSelect={() => setSlotKey(entry.slot_key)}
+                        />
+                      ))}
+                    </ul>
+                  )}
+                </ScrollArea>
+                <SelectionBar
+                  count={pickedSlots.size}
+                  noun="item"
+                  onDelete={deleteSlots}
+                  onClear={() => setPickedSlots(new Set())}
+                />
+              </SectionCard>
+            )}
+          </div>
 
-      {(overview.data?.totals.unsorted_count ?? 0) > 0 && unsorted.data && (
-        <SectionCard
-          label="Unidentified"
-          description="Kept but not recognised. Recoverable by hand today, and re-sortable once the parser improves."
-          actions={
-            <ClearUnsortedButton
-              count={unsorted.data.length}
-              size={unsorted.data.reduce((total, capture) => total + capture.total_size, 0)}
-              busy={previewDelete.isPending || removeMany.isPending}
-              onClick={() =>
-                openDelete(
-                  { capture_ids: unsorted.data!.map((capture) => capture.capture_id) },
-                  `all ${unsorted.data!.length} unidentified item(s)`
-                )
+          {(overview.data?.totals.unsorted_count ?? 0) > 0 && unsorted.data && (
+            <SectionCard
+              label="Unidentified"
+              description="Kept but not recognised. Recoverable by hand today, and re-sortable once the parser improves."
+              actions={
+                <ClearUnsortedButton
+                  count={unsorted.data.length}
+                  size={unsorted.data.reduce((total, capture) => total + capture.total_size, 0)}
+                  busy={previewDelete.isPending || removeMany.isPending}
+                  onClick={() =>
+                    openDelete(
+                      { capture_ids: unsorted.data!.map((capture) => capture.capture_id) },
+                      `all ${unsorted.data!.length} unidentified item(s)`
+                    )
+                  }
+                />
               }
-            />
-          }
-        >
-          <ul className="divide-y divide-border/50">
-            {unsorted.data.slice(0, 20).map((capture) => (
-              <li key={capture.capture_id} className="flex items-center gap-2 px-4 py-2.5">
-                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-muted-foreground">
-                  {capture.capture_path}
-                </span>
-                <span className="flex-none font-mono text-[10.5px] text-muted-foreground tabular-nums">
-                  {capture.file_count} file(s) · {formatBytes(capture.total_size)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </SectionCard>
-      )}
+            >
+              {/* The path is the only identity these have — nothing could work
+                  out what they are — so it is the one place truncating it left
+                  the operator with nothing at all to go on. */}
+              <ul className="divide-y divide-border/50">
+                {unsorted.data.slice(0, 20).map((capture) => (
+                  <li key={capture.capture_id} className="px-4 py-2.5">
+                    <FullPath
+                      value={capture.capture_path}
+                      meta={`${capture.file_count} file(s) · ${formatBytes(capture.total_size)}`}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </SectionCard>
+          )}
+        </TabsContent>
+      </Tabs>
 
       <Sheet open={Boolean(slotKey)} onOpenChange={(open) => !open && setSlotKey(null)}>
         {/*
@@ -574,9 +683,20 @@ export function BackupsPage() {
           side="right"
           className="gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-xl"
         >
-          <SheetTitle className="border-b border-border py-3 pr-12 pl-4 text-[13.5px]">
-            {slot.data?.display || "Versions"}
-          </SheetTitle>
+          {/*
+            The header carries the folder as well as the name. Everything below
+            it acts on files inside one directory, and the panel used to open
+            saying only "Show — S01E02", which is true of every copy of that
+            episode on the disk.
+          */}
+          <SheetHeader className="gap-1.5 border-b border-border px-4 py-3 pr-12">
+            <SheetTitle className="text-[13.5px] break-all">
+              {slot.data?.display || "Versions"}
+            </SheetTitle>
+            {slot.data?.current?.directory && (
+              <FullPath label="Library folder" value={slot.data.current.directory} />
+            )}
+          </SheetHeader>
           <div className="min-h-0 flex-1 overflow-y-auto">
             <VersionList
               captures={slot.data?.captures ?? []}
@@ -592,6 +712,18 @@ export function BackupsPage() {
               }
             />
           </div>
+          {/*
+            Docked inside the sheet, not to the viewport: this selection belongs
+            to the item the panel is showing, and a bar floating over the page
+            behind it is what made the two selections look like one.
+          */}
+          <SelectionBar
+            count={pickedVersions.size}
+            noun="version"
+            docked={false}
+            onDelete={deleteVersions}
+            onClear={() => setPickedVersions(new Set())}
+          />
         </SheetContent>
       </Sheet>
 

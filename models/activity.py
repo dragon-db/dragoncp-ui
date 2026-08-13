@@ -29,6 +29,7 @@ ACTIONS = {
     'transfer.bulk_delete': 'Deleted several sync records',
     'transfer.cleanup': 'Cleaned up duplicate sync records',
     # backups
+    'backup.capture': 'Kept files a sync was about to replace',
     'backup.restore': 'Restored a backup',
     'backup.delete': 'Deleted a backup',
     'backup.bulk_delete': 'Deleted several backups',
@@ -167,7 +168,8 @@ class Activity:
         actor_account_id: Optional[int] = None,
         actor_name: Optional[str] = None,
         actor_kind: Optional[str] = None,
-        action: Optional[str] = None,
+        #: One action, or several meaning "any of these".
+        action: Optional[Any] = None,
         action_group: Optional[str] = None,
         target_type: Optional[str] = None,
         target_id: Optional[str] = None,
@@ -196,8 +198,17 @@ class Activity:
             clauses.append('actor_kind = ?')
             params.append(actor_kind)
         if action:
-            clauses.append('action = ?')
-            params.append(action)
+            # A list means "any of these", which is what a screen filtering to
+            # "everything that deleted something" needs — four actions do that
+            # and no action prefix groups them. Paging and the total have to be
+            # computed by the query, so this cannot be a client-side filter.
+            wanted = [action] if isinstance(action, str) else [a for a in action if a]
+            if len(wanted) == 1:
+                clauses.append('action = ?')
+                params.append(wanted[0])
+            elif wanted:
+                clauses.append(f"action IN ({','.join('?' * len(wanted))})")
+                params.extend(wanted)
         if action_group:
             # 'backup' matches backup.restore, backup.delete, and so on.
             clauses.append('action LIKE ?')

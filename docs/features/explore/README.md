@@ -151,10 +151,57 @@ to disappear. They are lifted out into chips beside the name, where truncation
 cannot reach them.
 
 Names run to 102 characters at the median and 248 at the extreme, so on a narrow
-pane one line is not enough — the episode code itself was being cut off.
-Comfortable rows wrap, up to three lines; compact rows keep one line for when
-the point is to fit more on screen, which is what the density switch is for. On
-a wide window a name fits on one line and rows keep their normal height.
+pane one line is not enough — the episode code itself was being cut off. Rows
+wrap, up to three lines; on a wide window a name fits on one line and rows keep
+their normal height.
+
+### Three views, not two row heights
+
+The switch on the header strip used to offer comfortable and compact rows, which
+changed only how tall a row was. That is the least useful axis on a screen whose
+whole job is comparing two copies of a library — and the table was collapsing
+the comparison anyway, showing `remote ?? local` for name, size and date, so the
+one thing the page exists to reveal was the one thing it did not show. Both
+sides have always been on the wire.
+
+Each view answers a different question:
+
+| View | Answers | Shows |
+| --- | --- | --- |
+| **List** | What is in here? | One line per row — name, size, date, sync state |
+| **Compare** | What is actually different? | Local and remote stacked, with the fields that disagree in amber, and `not on this side` where a copy is absent |
+| **Quality** | What would a sync change? | Resolution, source, codec and release group on both sides, the size difference, and a sentence saying which way it goes |
+
+Absence is stated rather than left blank: an empty cell and "you do not have
+this" are the same picture otherwise, and only one of them is a reason to sync.
+
+**Quality exists because the Sync column raises a question it does not answer.**
+A row labelled `Upgraded` says the remote copy is different. It does not say
+whether that is 2160p replacing 1080p, a Bluray replacing a web rip, or the same
+1080p from another group at twice the size — and those are opposite decisions.
+
+Everything in it is read out of the file name by `lib/media-filename.ts`, so
+where the name says nothing the view says nothing rather than guessing: sides
+with no parseable quality read `the filename does not say`. The source ordering
+(HDTV → WebRip → WebDL → Bluray → Remux) is acknowledged in the code as rough —
+a good web release beats a bad disc rip — and is used only to say which way a
+swap goes, never to recommend one.
+
+The source is taken from the word joined to the resolution (`WEBDL-1080p`), and
+that match is deliberately not anchored to the start of the tag: quality tags
+carry other words in front of them (`Anime Dual-Audio WEBDL-1080p`), and
+anchoring dropped the source on every one of those.
+
+Quality is **disabled on the season list**, because a season is a folder and
+there is no file name to read. The switch greys it out with the reason rather
+than offering an option that would render nothing, and the season list falls
+back to List so a segment is always lit.
+
+At the season level Compare shows the two folder names with their file counts
+and sizes, because the question one level up is how far apart the folders are —
+the file-by-file answer is one click down. The local count is derived from the
+labels that describe a local file (`in_sync + upgraded + local_only`); there is
+no local total on the wire.
 
 **The title slot is not always a title.** 48 files are named
 `Example Show - S01E01 - 1080p x265.mkv`, where the slot holds quality. Printing
@@ -232,6 +279,15 @@ Backups page, which is what the link at the bottom of the panel is for.
 The file that a restore displaces is itself captured first, so a restore is
 undone by restoring the capture the restore created.
 
+**The count loads with the selection, not with the click.** The panel's Backups
+header carries how many kept files exist for what is selected. It used to fetch
+nothing until the section was opened, so the one question the badge answers at a
+glance — *is there anything to put back here?* — required the click that only
+makes sense once you already know the answer. It is one small index read per
+selection, and opening the section is then instant. While it is in flight the
+badge shows a placeholder rather than nothing: an absent badge reads as "no
+backups here", which is the single wrong answer it can give.
+
 ### Which backups belong to what you are looking at
 
 Matched on the backup's **`folder_name`**, which is the series folder the
@@ -282,9 +338,16 @@ this was written** (3 in TV Shows, 19 in Anime), plus 4 nested `Season NN/Season
 NN` folders.
 
 Explore flags them per season and per series, and the warning now carries a
-Repair button. It previews first: every file it will move is named, with the
+Repair button. It previews first: every file it will move is shown as both ends
+of the move — where it is now and where it lands, each path in full — with the
 folder that comes down under it, and the total. Nothing is renamed — the file
 takes the name it already has, one level up.
+
+The preview used to show a truncated filename and only the destination's season
+folder, which left out where the file actually is; being in the wrong place is
+the entire subject of a repair. The same applies to the two candidates in a
+contested move: both are named by their full path, because "keep this one" is a
+choice between two files that frequently share a filename.
 
 Three rules shape what it will and will not do.
 
@@ -395,8 +458,10 @@ The three panes become one at a time, and a few things behave differently below
 - **The breadcrumb and the remote path scroll sideways** instead of ending in an
   ellipsis. A long series name used to have no way to be read in full.
 - **The header strip splits in two below `sm`.** Back, path, tally, Actions and
-  the density switch on one 34px strip is fine on a desktop and unreadable on a
-  phone, so there the path gets the strip to itself.
+  the view switch on one 34px strip is fine on a desktop and unreadable on a
+  phone, so there the path gets the strip to itself. The view switch shows its
+  labels from `md` up and icons alone below that — "Compare" and "Quality" are
+  not guessable from a glyph the way a row-height control was.
 - **A movie row carries a film icon where a series has its chevron.** Movies do
   not expand, and the slot was a column of empty space down the whole list.
 

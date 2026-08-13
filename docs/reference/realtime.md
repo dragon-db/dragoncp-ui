@@ -40,6 +40,7 @@ that asked for that transfer's output. See
 | `test_webhook_received` | A webhook the receiver classified as a test (`eventType == "Test"`, title `Test Title`, or `testpath` in the folder path) | `routes/webhooks.py:87` (movies), `:201` (series), `:326` (anime) | `message`, `timestamp` |
 | `rename_webhook_received` | A Sonarr `Rename` webhook was parsed and stored, before the renames are executed | `services/rename_service.py:83` | `notification_id`, `series_title`, `total_files`, `media_type`, `timestamp` |
 | `rename_completed` | The rename run finished **and** its history row was updated successfully | `services/rename_service.py:146` | The whole result object: `notification_id`, `series_title`, `media_type`, `total_files`, `success_count`, `failed_count`, `status` (`completed` / `partial` / `failed`), `renamed_files`, `completed_at`, `message` |
+| `backup_retention` | The automatic retention sweep deleted stored versions after a sync | `services/backups/service.py` (`_apply_retention_quietly`) | `deleted` (count), `reclaimed` (bytes), `summary` (the titles as a phrase), `items` (up to 10 removed versions, each with its display name, sizes and full library/backup paths). Only emitted when something was actually removed |
 
 `stats` on the transfer events is the five-field object built by `build_progress_stats()` in `services/transfer_service.py:96`: `progress_percent`, `bytes_transferred`, `total_bytes`, `speed_bps`, `eta_seconds`. Individual fields may be `null` when rsync has not reported them yet.
 

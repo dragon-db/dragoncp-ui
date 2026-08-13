@@ -1,9 +1,4 @@
-import {
-  IconAlertTriangle,
-  IconArrowNarrowRight,
-  IconFileFilled,
-  IconRestore,
-} from "@tabler/icons-react";
+import { IconAlertTriangle, IconFileFilled, IconRestore } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -16,21 +11,22 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatBytes } from "@/lib/explore-format";
+import { FullPath, PathSwap } from "@/components/layout/full-path";
 import type { RestorePlan } from "@/lib/backup-types";
 
 /**
- * The confirmation.
+ * The restore confirmation.
  *
- * Every row answers the two questions worth asking before a restore: what is
- * being put back, and what it will replace. Both come from the plan the server
- * built — the same one it will execute — so nothing here is re-derived between
- * the preview and the run.
+ * Every row answers the two questions worth asking before a restore: exactly
+ * which file is being written, and exactly which file it writes over. Both come
+ * from the plan the server built — the same one it will execute — so nothing
+ * here is re-derived between the preview and the run.
+ *
+ * The paths are shown in full and as a single statement rather than two
+ * basenames. A restore replaces one file with another inside the same folder,
+ * and two truncated names ending in `.mkv` are not enough to tell which copy
+ * you are about to lose.
  */
-
-function basename(path: string): string {
-  const parts = path.split("/");
-  return parts[parts.length - 1] || path;
-}
 
 function OperationRow({
   target,
@@ -46,38 +42,21 @@ function OperationRow({
   isMedia: boolean;
 }) {
   return (
-    <div className="border-b border-border/60 px-4 py-3 last:border-b-0">
-      <div className="mb-1.5 flex min-w-0 items-center gap-2">
+    <div className="border-b border-border/60 px-5 py-3.5 last:border-b-0">
+      <div className="mb-2 flex items-center gap-2">
         <IconFileFilled
           className={cn("size-3 flex-none", isMedia ? "text-brand/70" : "text-muted-foreground/50")}
         />
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium" title={target}>
-          {basename(target)}
-        </span>
-        <span className="flex-none font-mono text-[10.5px] text-muted-foreground tabular-nums">
-          {formatBytes(size)}
+        <span className="font-mono text-[9.5px] tracking-[0.14em] text-muted-foreground uppercase">
+          {isMedia ? "Media file" : "Sidecar"}
         </span>
       </div>
-
-      {replaces ? (
-        <div className="flex min-w-0 items-center gap-1.5 pl-5 text-[11.5px] text-amber-400">
-          <IconArrowNarrowRight className="size-3.5 flex-none" />
-          <span className="flex-none font-mono text-[10px] tracking-[0.06em] uppercase">
-            Replaces
-          </span>
-          <span className="min-w-0 truncate" title={replaces}>
-            {basename(replaces)}
-          </span>
-          <span className="flex-none font-mono text-[10.5px] tabular-nums opacity-70">
-            {formatBytes(replacesSize)}
-          </span>
-        </div>
-      ) : (
-        <div className="flex items-center gap-1.5 pl-5 text-[11.5px] text-muted-foreground">
-          <IconArrowNarrowRight className="size-3.5 flex-none" />
-          <span>Nothing to replace — this will be re-added</span>
-        </div>
-      )}
+      <PathSwap
+        incoming={target}
+        incomingMeta={formatBytes(size)}
+        outgoing={replaces}
+        outgoingMeta={replaces ? formatBytes(replacesSize) : undefined}
+      />
     </div>
   );
 }
@@ -110,18 +89,13 @@ export function RestoreDialog({
           <DialogDescription className="text-[12.5px]">
             {blocked
               ? "This restore cannot run."
-              : `${operations.length} file(s) · ${plan?.replaces_count ?? 0} replacing a file already in the library`}
+              : `${operations.length} file(s), ${plan?.replaces_count ?? 0} of them writing over a file already in the library`}
           </DialogDescription>
         </DialogHeader>
 
         {plan?.target_dir && !blocked && (
-          <div className="border-y border-border/70 bg-muted/25 px-5 py-2">
-            <div className="font-mono text-[10px] tracking-[0.12em] text-muted-foreground uppercase">
-              Restoring into
-            </div>
-            <div className="truncate font-mono text-[11.5px]" title={plan.target_dir}>
-              {plan.target_dir}
-            </div>
+          <div className="border-y border-border/70 bg-muted/20 px-5 py-2.5">
+            <FullPath label="Restoring into" value={plan.target_dir} />
           </div>
         )}
 
@@ -129,7 +103,7 @@ export function RestoreDialog({
           {loading ? (
             <div className="space-y-2 p-4">
               {[0, 1, 2].map((row) => (
-                <Skeleton key={row} className="h-12 w-full" />
+                <Skeleton key={row} className="h-20 w-full" />
               ))}
             </div>
           ) : blocked ? (
@@ -150,14 +124,14 @@ export function RestoreDialog({
                 />
               ))}
               {(plan?.warnings.length ?? 0) > 0 && (
-                <div className="border-t border-border/70 bg-amber-500/[0.06] px-5 py-3">
+                <div className="space-y-1 border-t border-border/70 bg-amber-500/[0.06] px-5 py-3">
                   {plan!.warnings.map((warning) => (
                     <div
                       key={warning}
                       className="flex items-start gap-2 text-[12px] text-amber-400"
                     >
                       <IconAlertTriangle className="mt-px size-3.5 flex-none" />
-                      <span>{warning}</span>
+                      <span className="text-pretty">{warning}</span>
                     </div>
                   ))}
                 </div>
@@ -168,7 +142,7 @@ export function RestoreDialog({
 
         {!blocked && (
           <div className="border-t border-border/70 px-5 py-2.5 text-[11.5px] text-muted-foreground">
-            The file each of these replaces is kept first, so this restore can itself be undone.
+            Each file this writes over is kept first, so this restore can itself be undone.
           </div>
         )}
 

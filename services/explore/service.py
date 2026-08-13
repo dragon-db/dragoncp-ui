@@ -543,20 +543,34 @@ class ExploreService:
                 'Every file here already has another copy in place. Choose which '
                 'copy to keep for at least one of them.', 400)
 
+        # Collected by the keep-a-copy callback below, so the versions this
+        # repair creates appear in the backup history alongside the ones a sync
+        # makes. Without it a file can only be found by someone who already
+        # knows a repair happened.
+        kept: List[str] = []
         try:
             result = repair_mod.apply_repair(
                 local_root, plan, self.config.get_all_allowed_paths(),
                 decisions=decisions,
-                keep_a_copy=self._keep_a_copy(media_type),
+                keep_a_copy=self._keep_a_copy(media_type, kept),
             )
         except PathTraversalError as error:
             raise ExploreError(str(error), 400) from error
+
+        backups = getattr(self.coordinator, 'backups', None)
+        if backups is not None and kept:
+            backups.record_captures_created(
+                kept,
+                f"A repair of {folder} kept {len(kept)} file(s) it removed, "
+                'which are now restorable',
+                source=folder,
+            )
 
         result['scope'] = scope
         result['blocked'] = [b.as_dict() for b in plan.blocked]
         return result
 
-    def _keep_a_copy(self, media_type: str):
+    def _keep_a_copy(self, media_type: str, kept: Optional[List[str]] = None):
         """
         Hands the repair a way to preserve a file it is about to remove.
 
@@ -572,8 +586,10 @@ class ExploreService:
         def keep(relative_path: str, absolute_path: str):
             if backups is None or not library:
                 return False, 'the backup area is not available'
-            ok, message, _ = backups.capture_library_file(
+            ok, message, capture_id = backups.capture_library_file(
                 library, relative_path, absolute_path, 'explore_repair')
+            if ok and capture_id and kept is not None:
+                kept.append(capture_id)
             return ok, message
 
         return keep

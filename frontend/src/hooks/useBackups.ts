@@ -1,11 +1,14 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import api from "@/lib/api";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import api, { activityApi } from "@/lib/api";
+import { HISTORY_LENS_ACTIONS } from "@/lib/backup-types";
 import type {
   BackupLibrary,
   BackupsOverview,
   Capture,
   DeletePreview,
   DeleteResult,
+  HistoryDetail,
+  HistoryLens,
   MigrationReport,
   RebuildResult,
   RestorePlan,
@@ -309,5 +312,99 @@ export function useMigrationApply() {
       return response.data;
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [KEY] }),
+  });
+}
+
+/* ===== History ===== */
+
+/**
+ * What the Backups feature has done, read from the activity trail.
+ *
+ * Read from the trail rather than from a table of its own because the trail is
+ * already the record of who did what, and a second store would immediately
+ * disagree with it. The lens filters are sent to the server as a list of
+ * actions so the total and the paging describe the filtered set — filtering in
+ * the browser would page over rows it then threw away.
+ */
+export function useBackupHistory(lens: HistoryLens, limit = 25, offset = 0) {
+  const actions = HISTORY_LENS_ACTIONS[lens];
+  return useQuery({
+    queryKey: [KEY, "history", lens, limit, offset],
+    queryFn: () =>
+      activityApi.list({
+        ...(actions.length ? { action: actions.join(",") } : { group: "backup" }),
+        limit,
+        offset,
+      }),
+    placeholderData: keepPreviousData,
+    staleTime: 1000 * 15,
+  });
+}
+
+/**
+ * Deletions the automatic cleanup made that this browser has not acknowledged.
+ *
+ * The marker is the in-app half of the promise that an unattended deletion
+ * announces itself; Discord is the other half. Acknowledgement is stored per
+ * browser rather than on the server on purpose — it is "have *I* seen this",
+ * and one admin dismissing it should not hide it from another.
+ */
+const SEEN_KEY = "dragoncp.backups.retention-seen";
+
+function lastSeen(): string | null {
+  try {
+    return window.localStorage.getItem(SEEN_KEY);
+  } catch {
+    // Private browsing, or storage disabled. Showing the marker every time is
+    // the safe failure: over-reporting a deletion is recoverable, missing one
+    // is the thing this exists to prevent.
+    return null;
+  }
+}
+
+export function markRetentionSeen() {
+  try {
+    window.localStorage.setItem(SEEN_KEY, new Date().toISOString());
+  } catch {
+    /* nothing to do — the marker simply stays up */
+  }
+}
+
+/**
+ * Asks for the endpoint's whole page rather than a token few.
+ *
+ * The banner states how many versions were deleted, so a short page would
+ * understate a number about lost data — the one place rounding down is worse
+ * than saying nothing. 200 is the server's cap, which is far more sweeps than
+ * accumulate between two visits in practice; `truncated` covers the case where
+ * it is not, so the figure reads "200+" rather than as an exact count that
+ * happens to be wrong.
+ */
+const UNSEEN_PAGE = 200;
+
+export function useUnseenRetention() {
+  const seen = lastSeen();
+  return useQuery({
+    queryKey: [KEY, "retention-unseen", seen],
+    queryFn: async () => {
+      const page = await activityApi.list({
+        action: "backup.retention_apply",
+        limit: UNSEEN_PAGE,
+      });
+      const fresh = seen ? page.entries.filter((entry) => entry.occurred_at > seen) : page.entries;
+      const versions = fresh.reduce((total, entry) => {
+        const detail = (entry.detail ?? {}) as HistoryDetail;
+        return total + (detail.deleted_count ?? 0);
+      }, 0);
+      return {
+        sweeps: fresh.length,
+        versions,
+        // Every entry on a full page was unseen, so there are very likely more
+        // behind it that this figure does not include.
+        truncated: fresh.length >= UNSEEN_PAGE,
+        latest: fresh[0] ?? null,
+      };
+    },
+    staleTime: 1000 * 30,
   });
 }

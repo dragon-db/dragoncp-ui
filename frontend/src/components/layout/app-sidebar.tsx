@@ -24,7 +24,7 @@ import {
   IconLayoutDashboard,
   IconTransfer,
   IconWebhook,
-  IconLibraryPhoto,
+  IconCategory2,
   IconMovie,
   IconDeviceTv,
   IconBrandNetflix,
@@ -158,7 +158,11 @@ export function AppSidebar() {
                   aria-expanded={mediaExpanded}
                   className={navButton}
                 >
-                  <IconLibraryPhoto />
+                  {/* Four squares, because this item opens into exactly that:
+                      the three libraries. The photo-album glyph it replaced
+                      read as pictures rather than a media library, and its
+                      frame-and-stack detail turned to mush at 16px. */}
+                  <IconCategory2 />
                   <span>Browse Media</span>
                   <IconChevronRight
                     className={cn("ml-auto transition-transform", mediaExpanded && "rotate-90")}

@@ -102,6 +102,10 @@ AUTO_WEBHOOK_SERIES = automated_actor('webhook-series')
 AUTO_WEBHOOK_ANIME = automated_actor('webhook-anime')
 AUTO_WEBHOOK_RENAME = automated_actor('webhook-rename')
 AUTO_RETENTION = automated_actor('retention')
+#: Files kept out of the way of a sync. Named separately from the person who
+#: started the sync, and from retention, so the History tab can tell "this
+#: version was created for you" apart from "this version was taken away".
+AUTO_BACKUP = automated_actor('backup')
 
 # There is deliberately no actor for simulation or for queue promotion.
 #

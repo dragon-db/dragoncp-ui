@@ -12,6 +12,7 @@ double episode, Specials, and an anime absolute number.
 """
 
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -23,6 +24,8 @@ from unittest.mock import patch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+import activity_log
+from models.activity import Activity
 from models.backup_capture import BackupCapture
 from models.database import DatabaseManager
 from services.backups.identity import (
@@ -1416,6 +1419,148 @@ class RetentionTests(BackupsTestCase):
         self.assertIsNotNone(usage)
         self.assertIn('percent_used', usage)
 
+    def test_what_was_pruned_is_named_and_pathed_before_it_goes(self):
+        """
+        The prune is the only deletion nobody asked for.
+
+        Once the folder and the index row are gone this record is the only
+        thing that can answer "which episode did it take, and where did it
+        live" — so it has to be built while there is still something to read.
+        """
+        for index in range(3):
+            self.add_version(f"t{index}", f"{SHOW} - S01E01 - v{index}.mkv",
+                             when=self.old(10 - index))
+
+        result = self.retention.apply()
+
+        self.assertEqual(len(result.deleted_items), len(result.deleted))
+        item = result.deleted_items[0]
+        self.assertIn(SHOW, item['display'])
+        self.assertTrue(item['capture_path'])
+        self.assertTrue(item['capture_dir'], 'the absolute location on the backup disk')
+        self.assertTrue(item['files'], 'a deletion with no files listed names nothing')
+        self.assertTrue(item['files'][0]['name'])
+        # The location on the backup disk is always known, because it is derived
+        # from the capture folder. Where the file lived in the library is only
+        # known for captures indexed as they were made — one recovered by an
+        # index rebuild never knew, and this fixture rebuilds. The realistic
+        # path is covered by RetentionReportingTests.
+        self.assertTrue(item['files'][0]['backup_path'])
+        self.assertGreater(item['total_size'], 0)
+
+
+class RetentionReportingTests(BackupsTestCase):
+    """
+    An unattended deletion has to announce itself.
+
+    Everything else on the Backups page is something an operator did on
+    purpose and can find by looking. Retention runs by itself after a sync, so
+    if it does not come and find them, the first they know of it is an absence.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.config.values['BACKUP_RETENTION_KEEP'] = '1'
+        self.config.values['BACKUP_RETENTION_GRACE_HOURS'] = '0'
+
+        self.activity = Activity(self.db)
+        activity_log.set_store(self.activity)
+        self.addCleanup(activity_log.set_store, None)
+
+        self.notifier = _NotifierSpy()
+        coordinator = FakeCoordinator(FakeQueue())
+        coordinator.notification_service = self.notifier
+
+        self.transfers = _TransferSpy()
+        self.service = BackupsService(
+            self.config, self.db, self.captures, self.transfers,
+            coordinator=coordinator,
+        )
+        self.season_dir = os.path.join(self.tv_root, SHOW, 'Season 01')
+
+    def sync(self, transfer_id, filename):
+        self.transfers.create({
+            'transfer_id': transfer_id, 'media_type': 'tvshows',
+            'dest_path': self.season_dir,
+        })
+        touch(os.path.join(self.layout.staging_dir(transfer_id), filename))
+        self.service.sort_after_transfer(transfer_id)
+
+    def entries(self, action):
+        return self.activity.query(action=action, limit=50)['entries']
+
+    def test_an_automatic_prune_records_which_media_it_deleted(self):
+        self.sync('t0', f"{SHOW} - S01E01 - v0.mkv")
+        self.sync('t1', f"{SHOW} - S01E01 - v1.mkv")
+
+        entry = self.entries('backup.retention_apply')[0]
+
+        self.assertEqual(entry['actor_kind'], 'automated')
+        self.assertEqual(entry['actor_name'], 'retention')
+        self.assertIn(SHOW, entry['summary'],
+                      'a bare count does not tell anyone what they lost')
+
+        detail = entry['detail']
+        self.assertTrue(detail['automatic'])
+        self.assertEqual(detail['deleted_count'], 1)
+        self.assertIn(SHOW, detail['items'][0]['display'])
+        self.assertTrue(detail['items'][0]['files'][0]['original_path'])
+        self.assertEqual(detail['keep'], 1)
+
+    def test_an_automatic_prune_notifies_the_operator(self):
+        self.sync('t0', f"{SHOW} - S01E01 - v0.mkv")
+        self.sync('t1', f"{SHOW} - S01E01 - v1.mkv")
+
+        self.assertEqual(len(self.notifier.retention_calls), 1)
+        payload = self.notifier.retention_calls[0]
+        self.assertEqual(payload['deleted_count'], 1)
+        self.assertIn(SHOW, payload['items'][0]['display'])
+
+    def test_a_sync_that_prunes_nothing_says_nothing(self):
+        self.sync('t0', f"{SHOW} - S01E01 - v0.mkv")
+
+        self.assertEqual(self.entries('backup.retention_apply'), [])
+        self.assertEqual(self.notifier.retention_calls, [],
+                         'a notification for every sync is one nobody reads')
+
+    def test_a_failing_notifier_does_not_take_the_sync_down_with_it(self):
+        self.notifier.explode = True
+
+        self.sync('t0', f"{SHOW} - S01E01 - v0.mkv")
+        self.sync('t1', f"{SHOW} - S01E01 - v1.mkv")
+
+        # Both halves matter. The notification must have been attempted —
+        # otherwise this passes just as well when nothing tried to notify —
+        # and the failure must not turn a completed sync into a failed one.
+        self.assertEqual(self.notifier.attempts, 1, 'the notification was attempted')
+        self.assertEqual(len(self.entries('backup.retention_apply')), 1)
+
+    def test_versions_a_sync_created_are_recorded_too(self):
+        """Otherwise the trail can say where a backup went but not where it came from."""
+        self.sync('t0', f"{SHOW} - S01E01 - v0.mkv")
+
+        entry = self.entries('backup.capture')[0]
+        self.assertEqual(entry['actor_name'], 'backup')
+        self.assertEqual(entry['detail']['created_count'], 1)
+        self.assertIn(SHOW, entry['detail']['items'][0]['display'])
+        self.assertNotIn('deleted_count', entry['detail'],
+                         'a version being kept must not read as one being deleted')
+
+
+class _NotifierSpy:
+    def __init__(self):
+        self.retention_calls = []
+        #: Counted before the failure, so a test can tell "never tried" apart
+        #: from "tried and the webhook was down".
+        self.attempts = 0
+        self.explode = False
+
+    def send_backup_retention_notification(self, summary):
+        self.attempts += 1
+        if self.explode:
+            raise RuntimeError('discord is down')
+        self.retention_calls.append(summary)
+
 
 # ===========================================================================
 # The service as a whole
@@ -1639,6 +1784,78 @@ class BulkDeleteTests(BackupsTestCase):
         by_recent = self.captures.slots(sort='recent')
         self.assertEqual(by_recent[0]['episode_number'], 2, 'newest first by default')
 
+    def test_space_already_gone_is_not_counted_as_reclaimed(self):
+        """
+        A capture whose files vanished underneath us frees nothing.
+
+        The row still has to go — the index is derived from the tree, so a stale
+        entry would come back at the next rebuild. But counting its recorded
+        size would report space to the operator, and to Discord, that nobody got
+        back, on the one screen whose whole point is accurate accounting.
+        """
+        capture = self.version('t1', f"{SHOW} - S01E01 - only.mkv")
+        removed_by_hand = self.layout.absolute(capture['capture_path'])
+        shutil.rmtree(removed_by_hand)
+
+        result = self.service.delete_many(capture_ids=[capture['capture_id']])
+
+        self.assertEqual(result['deleted_count'], 1, 'the index entry still goes')
+        self.assertIsNone(self.captures.get(capture['capture_id']))
+        self.assertEqual(result['reclaimed'], 0, 'nothing was on disk to reclaim')
+
+    def test_space_actually_freed_is_counted(self):
+        capture = self.version('t1', f"{SHOW} - S01E01 - only.mkv", size=4096)
+
+        result = self.service.delete_many(capture_ids=[capture['capture_id']])
+
+        self.assertEqual(result['deleted_count'], 1)
+        self.assertGreater(result['reclaimed'], 0)
+
+    def test_the_preview_says_which_files_leave_the_disk(self):
+        """
+        The confirmation is the last thing between an operator and a permanent
+        deletion, and a friendly label matches every copy of that episode. The
+        preview has to name the files and where they are.
+        """
+        capture = self.version('t1', f"{SHOW} - S01E01 - only.mkv")
+
+        preview = self.service.preview_delete(capture_ids=[capture['capture_id']])
+
+        entry = preview['captures'][0]
+        self.assertTrue(entry['capture_path'])
+        self.assertTrue(entry['capture_dir'], 'the absolute folder on the backup disk')
+        self.assertTrue(entry['files'], 'a deletion preview with no files names nothing')
+        self.assertTrue(entry['files'][0]['backup_path'].startswith(entry['capture_dir']))
+        self.assertIn('only.mkv', entry['files'][0]['name'])
+        self.assertEqual(preview['detailed'], 1)
+
+    def test_versions_captured_in_the_same_millisecond_still_have_an_order(self):
+        """
+        A season sync writes several versions at once.
+
+        Timestamps are stamped to the millisecond, so two of them can tie — and
+        with nothing to break the tie the same list reloaded twice came back in
+        a different order. The capture id sorts in timestamp order, so it
+        settles it and settles it the right way round.
+        """
+        stamp = '2026-08-10T12:00:00.000Z'
+        for capture_id, episode in (('20260810T120000.000__a', 1),
+                                    ('20260810T120000.000__b', 2)):
+            self.captures.upsert({
+                'capture_id': capture_id, 'library': 'shows', 'title': SHOW,
+                'season_number': 1, 'episode_number': episode, 'kind': 'slot',
+                'capture_path': f"shows/{SHOW}/{capture_id}", 'captured_at': stamp,
+                'total_size': 100, 'file_count': 1,
+            }, [], [f"shows|{SHOW}|1|{episode}"])
+
+        orderings = {
+            tuple(row['slot_key'] for row in self.captures.slots(sort='recent'))
+            for _ in range(20)
+        }
+        self.assertEqual(len(orderings), 1, 'the same query must not shuffle')
+        self.assertEqual(self.captures.slots(sort='recent')[0]['episode_number'], 2,
+                         'the later capture id is the later capture')
+
 
 class RetentionSettingsTests(BackupsTestCase):
     """The rule has to survive a restart and be visible to background threads."""
@@ -1756,10 +1973,16 @@ class ServiceTests(BackupsTestCase):
         self.service.sort_after_transfer('t')
 
         capture_id = self.captures.recent()[0]['capture_id']
-        ok, _message = self.service.delete_capture(capture_id)
+        ok, _message, removed = self.service.delete_capture(capture_id)
         self.assertTrue(ok)
         self.assertEqual(self.tree(), [])
         self.assertIsNone(self.captures.get(capture_id))
+
+        # Described before the row went, so the trail can still name it.
+        self.assertEqual(removed['capture_id'], capture_id)
+        self.assertIn(SHOW, removed['display'])
+        self.assertTrue(removed['files'])
+        self.assertTrue(removed['files'][0]['original_path'])
 
     def test_pinning_round_trips(self):
         self.transfers.create({

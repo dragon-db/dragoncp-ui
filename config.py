@@ -16,11 +16,38 @@ reads both. This class is the env half and knows nothing about the other.
 """
 
 import os
+from pathlib import Path
 from typing import Dict, List
 
 
-# Application version for cache busting
-APP_VERSION = "2.1.4"
+#: The release this build is. Read from the `VERSION` file at the repository
+#: root, which is the single place the number is written.
+#:
+#: It used to be a literal here, one of three hand-maintained copies — this one,
+#: `frontend/package.json` and a constant in the navbar. Nothing read this one,
+#: so it drifted quietly while the screen showed a different number; keeping
+#: three copies in step by hand is why the version stopped being updated at all.
+#: `tests/test_version.py` fails the build if they disagree again.
+_VERSION_FILE = Path(__file__).resolve().parent / 'VERSION'
+
+
+def _read_version() -> str:
+    """
+    The version, or a marker saying it could not be read.
+
+    Never raises. A missing or unreadable VERSION file is a packaging mistake,
+    not a reason for the application to refuse to start — the number is shown
+    in the interface and reported by the runtime endpoint, and neither is worth
+    an outage.
+    """
+    try:
+        version = _VERSION_FILE.read_text(encoding='utf-8').strip()
+        return version or 'unknown'
+    except OSError:
+        return 'unknown'
+
+
+APP_VERSION = _read_version()
 
 
 class DragonCPConfig:

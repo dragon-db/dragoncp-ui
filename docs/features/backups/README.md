@@ -266,8 +266,35 @@ Three things protect a capture:
 
 A multi-episode capture is only pruned when it has fallen out of the window in
 **every** slot it belongs to; otherwise restoring the other episode would find
-nothing. Nothing is removed silently: every prune reports what went and how
-much was reclaimed.
+nothing.
+
+**Nothing is removed silently, and a count is not enough.** Retention is the
+only deletion in the application that nobody asked for — it runs by itself
+after a sync, on the one feature whose promise is that nothing is destroyed.
+`Removed 3 old versions` and `removed the only copy of the thing you were
+looking for` read identically, so every prune records the versions themselves:
+title, which version, when it was captured, its size, and the full path on both
+sides — where the file lived in the library and where the kept copy sat on the
+backup disk.
+
+That description is built **before** anything is deleted. Afterwards the folder
+and the index row are both gone and there is nothing left to read, so the entry
+is the only surviving record of a file that no longer exists anywhere.
+
+It is then announced three ways, because an unattended deletion that has to be
+gone looking for is one nobody finds:
+
+- **Discord**, through the same webhook as sync and rename notifications, so it
+  reaches whoever is not looking at the app. Never allowed to raise — the
+  versions are gone either way, and a webhook being down must not turn a
+  completed sync into a failed one.
+- **A banner on the Backups page**, until dismissed. Acknowledgement is stored
+  per browser rather than on the server: the question is "have *I* seen this",
+  and one administrator dismissing it should not hide it from another.
+- **The History tab**, permanently — see below.
+
+The same detail is recorded for manual deletions, so `who deleted my backup`
+has one answer whoever did it.
 
 Disk pressure is **shown and never acted on**. Pruning keyed to free space
 fires at unpredictable moments, which for a recovery tool is the wrong
@@ -451,21 +478,58 @@ the two are views of the same library.
 - **Titles pane** — every title holding versions, with counts and size.
 - **Slot list** — each movie or episode with versions, showing how many and how
   much. A pin marker appears when any of its versions is pinned.
-- **Inspector** — the slot's history. The library's current copy sits at the
-  top, marked as current rather than listed among the versions; under it, each
-  version with its capture time, why it was displaced, its files and sizes, and
-  **Restore**, **Pin** and **Delete**.
-- **Restore preview** — one row per file: what is being written, and what it
-  replaces, or *nothing to replace — this will be re-added*.
+- **Inspector** — the slot's history, read top to bottom as three questions:
+  what the library holds now, what could go back in its place, and what each
+  would cost. The current copy is stated first with its full path and set
+  apart — listing it among the versions made the one file you cannot restore
+  look like one you could. Under it each version carries its capture time, why
+  it was displaced, its files with the path each was taken from, and three
+  **labelled** actions. They were icon-only, which asked an operator to
+  remember which unlabelled glyph was the permanent one.
+
+  Versions are labelled by recency — *Most recent*, then *Older* with dates —
+  rather than numbered. `v1` for the newest read backwards to everyone.
+- **Restore preview** — one row per file, showing the two paths as a single
+  statement. A restore swaps one file for another inside the same folder, so
+  where both paths share a directory it is printed once, dimmed, with only the
+  two filenames aligned under it: the thing that changes is the thing you read.
+  Where the directories genuinely differ, both are shown in full, because the
+  fold would hide the fact worth noticing.
+- **Full paths everywhere.** Every modal and list on this page shows the
+  complete path and filename, wrapped rather than clipped and copyable in one
+  tap. A hover tooltip is no answer on a phone, and a friendly label
+  ("Show · Season 1 · Episode 2") matches every copy of that episode on the
+  disk. The delete confirmation is the case that mattered most: it used to show
+  a label and a size and nothing else, which asked for authorisation of a
+  permanent deletion without ever naming the file being removed.
 - **Selection and bulk delete** — tick items in the list (meaning *every
   version of these*) or versions in the inspector (meaning *these specific
-  ones*). A bar appears with **Delete selected**, and every delete is previewed
-  with its count and total size before it runs.
+  ones*). The two stay apart all the way to the confirmation, each with its own
+  bar in the place the ticking happens, naming what it will delete. They were
+  summed into one bar reading "5 selected" over a permanent deletion, which said
+  neither what would go nor how much. Every delete is still previewed with its
+  count and total size first.
 - **Newest / Largest** — the slot list sorts either way. Largest first is the
   order for reclaiming space.
 - **Housekeeping** — retention settings that **save to the database** and take
   effect without a restart; the index rebuild; the one-off migration; and the
   unidentified list.
+- **History tab** — the page answers two questions and they need two views.
+  *Library* is what is stored right now. *History* is what happened to
+  everything that is not, which the first cannot answer: by the time anybody
+  asks, the version and its index row are gone.
+
+  It reads the activity trail rather than a store of its own, because the trail
+  is already the record of who did what and a second one would immediately
+  disagree with it. Filters are **Everything**, **Deleted**, **Kept** and
+  **Restored**, sent to the server as a set of actions so the total and the
+  paging describe the filtered set. Expanding an entry shows each version it
+  touched with its full library path and its full backup path, both copyable.
+
+  Versions being *created* are recorded too, once per sync or repair rather
+  than once per file. Without that the trail could say where a backup went but
+  not where it came from, which is the question asked by anyone looking at a
+  version they do not remember making.
 - **Every deletion is previewed, and the preview is binding.** Retention's
   *Remove them now* is disabled until the current numbers have been previewed,
   and editing them clears the preview — otherwise previewing "keep 10" and then

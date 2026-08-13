@@ -314,7 +314,7 @@ Query parameters, all optional and combined with AND:
 | `actor` | a username, or an automation name such as `auto-sync` |
 | `actor_kind` | `admin`, `automated` or `system` |
 | `account_id` | the stable account id, which survives a rename |
-| `action` | one exact action, e.g. `backup.restore` |
+| `action` | one exact action, e.g. `backup.restore`, or several separated by commas meaning any of them — `backup.delete,backup.retention_apply`. The total and the paging describe the filtered set |
 | `group` | an action family, e.g. `backup` |
 | `target_type` | `transfer`, `backup_capture`, `notification`, `setting`, `account`, `connection`, `simulation`, `explore_plan` |
 | `target_id` | one specific thing |
@@ -1696,10 +1696,22 @@ Output JSON:
 {
   "status": "success",
   "captures": [{"capture_id": "...", "display": "...", "captured_at": "...",
-                "total_size": 0, "file_count": 1, "pinned": false}],
-  "count": 1, "total_size": 0, "skipped_pinned": 0
+                "total_size": 0, "file_count": 1, "pinned": false,
+                "capture_path": "shows/<title>/<slot>/<capture id>",
+                "capture_dir": "/mnt/backup/shows/<title>/<slot>/<capture id>",
+                "files": [{"name": "...", "relative_path": "...",
+                           "original_path": "/mnt/media/... (null for versions
+                           recovered by an index rebuild)",
+                           "backup_path": "...", "file_size": 0,
+                           "is_media": true}]}],
+  "count": 1, "total_size": 0, "skipped_pinned": 0, "detailed": 1
 }
 ```
+
+`files` is populated for the first `detailed` versions only — the confirmation
+dialog lists a hundred and summarises the rest, and reading file rows for a
+thousand-version sweep would make the preview slower than the deletion it
+describes. The counts and `total_size` always cover everything.
 
 ### POST `/backups/delete`
 What it does: removes several versions at once — the space-reclaiming action.
@@ -1858,12 +1870,18 @@ What it does: returns lightweight runtime connectivity state for the frontend sh
 
 Auth: required.
 
+`version` is what the running server is, read from the repository's `VERSION`
+file. The navbar shows this rather than the number compiled into the bundle, so
+a cached frontend cannot keep reporting a release that is no longer running. See
+[versioning.md](versioning.md).
+
 Output JSON:
 ```json
 {
   "status": "success",
   "runtime_status": {
     "backend_reachable": true,
+    "version": "2.2.0",
     "ssh_connected": false,
     "websocket": {
       "active_connections": 1,

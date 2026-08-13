@@ -47,6 +47,27 @@ class FrontendServingTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b'window.dragoncp', response.data)
         self.assertIn('immutable', response.headers['Cache-Control'])
+        self.assertEqual(response.cache_control.max_age, 31536000)
+        self.assertTrue(response.cache_control.public)
+
+    def test_built_assets_are_not_revalidated_on_every_load(self):
+        # send_from_directory defaults to no-cache, which overrides the one-year
+        # policy above it and costs a round trip per asset per load. Filenames
+        # are content-hashed, so the browser must never have to ask.
+        self.write_build()
+
+        response = self.client.get('/assets/app.js')
+
+        self.assertFalse(response.cache_control.no_cache)
+        self.assertNotIn('no-cache', response.headers['Cache-Control'])
+
+    def test_the_shell_is_still_revalidated_so_new_builds_are_picked_up(self):
+        self.write_build()
+
+        for path in ('/', '/activity'):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertIn('no-cache', response.headers['Cache-Control'])
 
     def test_unknown_api_paths_do_not_fall_back_to_the_spa(self):
         self.write_build()

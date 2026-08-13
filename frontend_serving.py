@@ -34,6 +34,10 @@ def serve_frontend(frontend_path: str, dist_dir: Path = FRONTEND_DIST_DIR):
         try:
             response = send_from_directory(dist_dir, frontend_path)
             if frontend_path.startswith('assets/'):
+                # send_from_directory applies no-cache by default, which beats
+                # everything below it: the browser revalidates every asset on
+                # every load. Hashed filenames make that revalidation pointless.
+                response.cache_control.no_cache = None
                 response.cache_control.public = True
                 response.cache_control.max_age = 31536000
                 response.cache_control.immutable = True

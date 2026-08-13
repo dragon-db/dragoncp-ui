@@ -24,17 +24,25 @@ from .identity import (
 from .indexer import BackupIndexer
 from .layout import BackupLayout, BackupPathNotConfigured, utc_now
 from .migrate import LegacyMigration
+from .reporting import (
+    describe_capture, describe_files, summarise, summarise_created, summary_line,
+)
 from .restore import RestorePlanner, RestoreRunner
 from .retention import RetentionPolicy
 from .sorter import BackupSorter, SortedCapture, SortResult
 from activity_log import OUTCOME_FAILED, OUTCOME_OK, record
 from security import PathTraversalError
-from actor import AUTO_RETENTION, acting_as, current_actor
+from actor import AUTO_BACKUP, AUTO_RETENTION, acting_as, current_actor
 
 #: What counts as "still using the disk". Mirrors the transfer model's own
 #: definition; stated here so the guard does not depend on a helper's name
 #: matching what it actually returns.
 _ACTIVE_STATUSES = frozenset({'running', 'pending', 'queued', 'paused'})
+
+#: Versions a delete preview spells out file by file. The dialog lists the first
+#: hundred and summarises the rest, so reading file rows past that is work
+#: nobody sees — and a sweep can select thousands.
+PREVIEW_FILE_DETAIL = 100
 
 
 class BackupsService:
@@ -113,9 +121,11 @@ class BackupsService:
             summary['errors'].append(str(error))
             return summary
 
+        indexed: List[str] = []
         for capture in result.captures:
             try:
                 self.index_sorted(capture)
+                indexed.append(capture.capture_id)
             except Exception as error:  # noqa: BLE001 - files are placed; index is rebuildable
                 summary['errors'].append(f"{capture.capture_id}: {error}")
 
@@ -125,10 +135,48 @@ class BackupsService:
         summary['unsorted'] = result.unsorted_count
         summary['errors'].extend(result.errors)
 
+        self.record_captures_created(
+            indexed,
+            f"A sync of {transfer.get('folder_name') or transfer_id} replaced "
+            f"{len(indexed)} file(s), which are now restorable",
+            source=transfer_id,
+        )
+
         if result.captures:
             self._apply_retention_quietly()
 
         return summary
+
+    def record_captures_created(self, capture_ids: List[str], summary: str,
+                                source: Optional[str] = None) -> None:
+        """
+        Note that versions came into existence, and where from.
+
+        The trail already answers "where did my backup go". Without this it
+        cannot answer "where did this one come from", which is the question
+        asked by anyone looking at a version they do not remember creating.
+
+        Recorded once per batch rather than once per file: a season sync
+        displaces dozens of episodes, and a trail with one entry each buries
+        everything else on the page.
+        """
+        if not capture_ids:
+            return
+        items = []
+        for capture_id in capture_ids:
+            record_row = self.captures.get(capture_id)
+            if record_row:
+                items.append(self.describe_capture_for_removal(record_row))
+        if not items:
+            return
+        with acting_as(AUTO_BACKUP):
+            record(
+                'backup.capture',
+                summary,
+                target_type='backup_capture',
+                target_id=source,
+                detail=summarise_created(items),
+            )
 
     def capture_library_file(self, library: str, library_relative_path: str,
                              absolute_path: str, reason: str) -> Tuple[bool, str, Optional[str]]:
@@ -591,7 +639,7 @@ class BackupsService:
         self.captures.update(capture_id, {'pinned': 1 if pinned else 0})
         return True, 'Pinned' if pinned else 'Unpinned'
 
-    def delete_capture(self, capture_id: str) -> Tuple[bool, str]:
+    def delete_capture(self, capture_id: str) -> Tuple[bool, str, Optional[Dict]]:
         """
         Remove one version, files and index entry together.
 
@@ -599,32 +647,47 @@ class BackupsService:
         the source of truth and the index is derived from it, so a row removed
         without its files frees no space and comes straight back on the next
         rebuild — the entry looks deleted until it silently is not.
-        """
-        record = self.captures.get(capture_id)
-        if not record:
-            return False, 'Backup not found'
 
-        ok, error = self._remove_capture_files(record)
+        Returns (ok, message, removed) where `removed` describes what went, for
+        the caller to record. It is None on every failure path, so a caller
+        cannot report a deletion that did not happen.
+        """
+        capture_record = self.captures.get(capture_id)
+        if not capture_record:
+            return False, 'Backup not found', None
+
+        described = self.describe_capture_for_removal(capture_record)
+
+        ok, error, _freed_disk = self._remove_capture_files(capture_record)
         if not ok:
-            return False, error
+            return False, error, None
 
         self.captures.delete(capture_id)
-        return True, 'Backup deleted'
+        return True, 'Backup deleted', described
 
-    def _remove_capture_files(self, record: Dict) -> Tuple[bool, str]:
-        """Remove one capture's folder and tidy the directories it emptied."""
+    def _remove_capture_files(self, capture_record: Dict) -> Tuple[bool, str, bool]:
+        """
+        Remove one capture's folder and tidy the directories it emptied.
+
+        Returns (ok, error, freed_disk). `freed_disk` is False when the files
+        were already gone: the index row still has to go, so the deletion
+        succeeds, but nothing was reclaimed and callers must not count its
+        recorded size as space they got back.
+        """
         try:
-            path = self.layout.absolute(record['capture_path'])
+            path = self.layout.absolute(capture_record['capture_path'])
         except Exception as error:  # noqa: BLE001
-            return False, f"Refusing to delete: {error}"
+            return False, f"Refusing to delete: {error}", False
         try:
             shutil.rmtree(path)
         except FileNotFoundError:
-            pass  # Already gone from disk; the index row still has to go.
+            # Already gone from disk; the index row still has to go, but this
+            # freed nothing and saying otherwise inflates every total above it.
+            return True, '', False
         except OSError as error:
-            return False, f"Could not remove the files: {error}"
+            return False, f"Could not remove the files: {error}", False
         self.layout.prune_empty_dirs(path)
-        return True, ''
+        return True, '', True
 
     # ---- reclaiming space -------------------------------------------------
 
@@ -642,21 +705,48 @@ class BackupsService:
         selected, skipped_pinned = self._select_for_delete(
             capture_ids, slot_keys, keep_newest, include_pinned,
         )
+
+        captures = []
+        # Named to avoid shadowing the imported activity recorder.
+        for index, capture_record in enumerate(selected):
+            entry = {
+                'capture_id': capture_record['capture_id'],
+                'display': self._display(capture_record),
+                'captured_at': capture_record.get('captured_at'),
+                'total_size': capture_record.get('total_size') or 0,
+                'file_count': capture_record.get('file_count') or 0,
+                'pinned': bool(capture_record.get('pinned')),
+                'capture_path': capture_record.get('capture_path') or '',
+                'capture_dir': None,
+                'files': [],
+            }
+            try:
+                entry['capture_dir'] = self.layout.absolute(capture_record.get('capture_path') or '')
+            except Exception:  # noqa: BLE001 - a preview without it still previews
+                pass
+
+            # Which files, and where they live, for the ones the dialog will
+            # actually list. Confirming a permanent deletion against a friendly
+            # label alone means never being shown what leaves the disk — but
+            # reading every file row for a thousand-version sweep would make the
+            # preview slower than the deletion it describes.
+            if index < PREVIEW_FILE_DETAIL:
+                try:
+                    entry['files'] = describe_files(
+                        self.captures.files(capture_record['capture_id']), entry['capture_dir'],
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            captures.append(entry)
+
         return {
-            'captures': [
-                {
-                    'capture_id': c['capture_id'],
-                    'display': self._display(c),
-                    'captured_at': c.get('captured_at'),
-                    'total_size': c.get('total_size') or 0,
-                    'file_count': c.get('file_count') or 0,
-                    'pinned': bool(c.get('pinned')),
-                }
-                for c in selected
-            ],
+            'captures': captures,
             'count': len(selected),
             'total_size': sum(c.get('total_size') or 0 for c in selected),
             'skipped_pinned': skipped_pinned,
+            # So the dialog can say "paths shown for the first N" rather than
+            # letting the rest look like versions with no files in them.
+            'detailed': min(len(selected), PREVIEW_FILE_DETAIL),
         }
 
     def delete_many(self, capture_ids: Optional[List[str]] = None,
@@ -674,23 +764,56 @@ class BackupsService:
             capture_ids, slot_keys, keep_newest, include_pinned,
         )
 
-        deleted, freed, errors = [], 0, []
-        for record in selected:
-            ok, error = self._remove_capture_files(record)
+        deleted, deleted_items, freed, errors = [], [], 0, []
+        # `capture_record`, not `record` — that name belongs to the activity
+        # recorder imported at the top of this module, and shadowing it inside a
+        # loop is a trap for whoever adds a record() call here later.
+        for capture_record in selected:
+            # Described first: after the files and the row are gone there is
+            # nothing left to read, and "deleted 12 versions" is not an answer
+            # to "which episode did I lose".
+            described = self.describe_capture_for_removal(capture_record)
+            ok, error, freed_disk = self._remove_capture_files(capture_record)
             if not ok:
-                errors.append(f"{self._display(record)}: {error}")
+                errors.append(f"{self._display(capture_record)}: {error}")
                 continue
-            self.captures.delete(record['capture_id'])
-            deleted.append(record['capture_id'])
-            freed += record.get('total_size') or 0
+            self.captures.delete(capture_record['capture_id'])
+            deleted.append(capture_record['capture_id'])
+            deleted_items.append(described)
+            # Only what actually left the disk. A capture whose files were
+            # already missing is still deleted from the index, but counting its
+            # recorded size would report space nobody got back.
+            if freed_disk:
+                freed += capture_record.get('total_size') or 0
 
         return {
             'deleted': deleted,
+            'deleted_items': deleted_items,
             'deleted_count': len(deleted),
             'reclaimed': freed,
             'skipped_pinned': skipped_pinned,
             'errors': errors,
         }
+
+    def describe_capture_for_removal(self, capture_record: Dict) -> Dict:
+        """
+        One version, described well enough to be identified once it is gone.
+
+        Neither the file list nor the absolute path is allowed to fail the
+        deletion it is describing — the operator asked for space back, and a
+        record that is thinner than intended is better than a refusal.
+        """
+        try:
+            files = self.captures.files(capture_record['capture_id'])
+        except Exception:  # noqa: BLE001
+            files = []
+        try:
+            capture_dir = self.layout.absolute(capture_record.get('capture_path') or '')
+        except Exception:  # noqa: BLE001
+            capture_dir = None
+        return describe_capture(
+            capture_record, files=files, display=self._display(capture_record), capture_dir=capture_dir,
+        )
 
     def _select_for_delete(self, capture_ids: Optional[List[str]],
                            slot_keys: Optional[List[str]],
@@ -706,15 +829,15 @@ class BackupsService:
         records: Dict[str, Dict] = {}
 
         if capture_ids:
-            for record in self.captures.get_many(list(dict.fromkeys(capture_ids))):
-                records[record['capture_id']] = record
+            for capture_record in self.captures.get_many(list(dict.fromkeys(capture_ids))):
+                records[capture_record['capture_id']] = capture_record
 
         if slot_keys:
             for slot_key in dict.fromkeys(slot_keys):
                 versions = self.captures.captures_for_slot(slot_key)
                 # `captures_for_slot` is already newest first.
-                for record in versions[max(0, keep_newest):]:
-                    records[record['capture_id']] = record
+                for capture_record in versions[max(0, keep_newest):]:
+                    records[capture_record['capture_id']] = capture_record
 
         selected = list(records.values())
         if include_pinned:
@@ -743,15 +866,15 @@ class BackupsService:
         )
 
     @staticmethod
-    def _display(record: Dict) -> str:
-        if record.get('kind') != 'slot':
-            return record.get('capture_path') or record.get('capture_id', '')
+    def _display(capture_record: Dict) -> str:
+        if capture_record.get('kind') != 'slot':
+            return capture_record.get('capture_path') or capture_record.get('capture_id', '')
         return SlotIdentity(
-            library=record.get('library') or '',
-            title=record.get('title') or '',
-            season=record.get('season_number'),
-            episode=record.get('episode_number'),
-            year=record.get('release_year'),
+            library=capture_record.get('library') or '',
+            title=capture_record.get('title') or '',
+            season=capture_record.get('season_number'),
+            episode=capture_record.get('episode_number'),
+            year=capture_record.get('release_year'),
         ).display
 
     # ---- index and housekeeping ------------------------------------------
@@ -798,24 +921,59 @@ class BackupsService:
             return
         if result.deleted:
             reclaimed_gb = result.reclaimed / 1e9
+            named = summary_line(result.deleted_items)
             with acting_as(AUTO_RETENTION):
                 record(
                     'backup.retention_apply',
-                    f"Retention removed {len(result.deleted)} old backup version(s), "
-                    f"reclaiming {result.reclaimed / 1e9:.2f} GB",
+                    f"Retention removed {len(result.deleted)} old backup version(s) "
+                    f"({named}), reclaiming {reclaimed_gb:.2f} GB",
                     target_type='backup_capture',
-                    detail={'deleted_count': len(result.deleted),
-                            'reclaimed_bytes': result.reclaimed,
-                            'automatic': True},
+                    detail=summarise(
+                        result.deleted_items,
+                        automatic=True,
+                        reclaimed=result.reclaimed,
+                        extra={'keep': result.keep, 'grace_hours': result.grace_hours},
+                    ),
                 )
             print(
-                f"🧹 Backup retention removed {len(result.deleted)} old version(s), "
-                f"reclaiming {reclaimed_gb:.2f} GB"
+                f"🧹 Backup retention removed {len(result.deleted)} old version(s) "
+                f"({named}), reclaiming {reclaimed_gb:.2f} GB"
             )
             self._emit('backup_retention', {
                 'deleted': len(result.deleted),
                 'reclaimed': result.reclaimed,
+                'items': result.deleted_items[:10],
+                'summary': named,
             })
+            self._notify_deleted(result.deleted_items, result.reclaimed)
+
+    def _notify_deleted(self, items: List[Dict], reclaimed: int) -> None:
+        """
+        Tell the operator that something deleted their backups while they were
+        not looking.
+
+        This is the one deletion nobody asked for, on the one page whose whole
+        promise is that nothing is destroyed. Finding out days later by noticing
+        an absence is the failure this exists to prevent.
+
+        Never allowed to raise: the versions are already gone, and a webhook
+        that is down must not turn a completed sync into a failed one.
+        """
+        if not items:
+            return
+        notifier = getattr(self.coordinator, 'notification_service', None)
+        if notifier is None or not hasattr(notifier, 'send_backup_retention_notification'):
+            return
+        try:
+            notifier.send_backup_retention_notification({
+                'deleted_count': len(items),
+                'reclaimed_bytes': reclaimed,
+                'items': items,
+                'keep': self.retention.keep(),
+                'grace_hours': self.retention.grace_hours(),
+            })
+        except Exception as error:  # noqa: BLE001 - see docstring
+            print(f"⚠️  Could not send the backup retention notification: {error}")
 
     def migration_plan(self) -> Dict:
         report = self.migration.plan().as_dict()

@@ -732,8 +732,11 @@ Steps:
 - [ ] `vite-plugin-pwa`, manifest, icon set, `display: standalone`
 - [ ] Deny-list `/api` and `/socket.io` from the navigation fallback, and keep
       API responses out of the runtime cache
-- [ ] Update prompt on a new build, so a cached shell cannot run against a newer
-      API
+- [x] Update prompt on a new build, so a cached shell cannot run against a newer
+      API — done in 2.2.0, outside this task. `UpdateBanner` compares the
+      version the server reports on `/api/runtime/status` against the one built
+      into the bundle and offers a reload. It is not service-worker aware yet,
+      so revisit once one is registered
 - [ ] Live with it before deciding anything else
 - [ ] Optional, only if it turns out to be the point: Web Push — VAPID keys, a
       subscription table, a sender beside the existing socket emits
@@ -773,6 +776,47 @@ Notes:
   happens to be correct.
 
 - Handoff: not started. Step 1 is a console toggle and costs nothing to try.
+
+### TASK-019 — Connectors: one way to talk to an outside service
+Status: planned      Priority: medium
+Tags: backend, notifications, architecture            Branch: —
+Docs: —
+
+Plan: every outside service this app talks to is wired up on its own terms.
+Discord is three near-identical blocks inside `services/notification_service.py`
+— each re-reading `DISCORD_NOTIFICATIONS_ENABLED` and `DISCORD_WEBHOOK_URL`,
+each posting with its own `requests.post(..., timeout=10)`, each checking for
+`204` and printing its own error. Sonarr and Radarr arrive as webhooks with no
+outbound side at all, and the storage host is a bare `requests` call in
+`routes/debug.py`.
+
+The intent is a connector module: one place that owns "is this service
+configured, send this payload, here is what happened", with a per-service
+adapter on top of it. Then adding a service is writing an adapter rather than
+another copy of the plumbing, and retries, timeouts and failure reporting are
+decided once.
+
+Done looks like: a new outbound integration needs no new HTTP handling, and
+turning one off is a setting rather than a code path.
+
+Steps:
+- [ ] Name the surface: what a connector must answer (configured?, send,
+      test) and what the caller gets back
+- [ ] Extract the shared Discord webhook flow behind it — the enabled/URL
+      checks, the post, the `204` handling, the error reporting. Raised in the
+      2.2.0 review and deliberately deferred here rather than done as a
+      drive-by refactor of three working methods
+- [ ] Move the storage-host call in `routes/debug.py` onto the same path
+- [ ] Decide whether Sonarr/Radarr *outbound* calls (the API integration that
+      renames wait on) belong here or stay separate
+
+Notes:
+- 2026-08-11 (claude): raised by the 2.2.0 review, which asked for the Discord
+  duplication to be extracted. Skipped at the time — it is a refactor of three
+  methods that work, and doing it inside a UI PR would have put unrelated risk
+  in that change. Recorded here because the operator already has this plan.
+- Handoff: not started. The Discord extraction is the smallest useful first
+  step and is worth doing on its own.
 
 ## Backlog
 
