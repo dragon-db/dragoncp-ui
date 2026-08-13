@@ -42,6 +42,7 @@ from services import TransferCoordinator
 from services.rename_service import RenameService
 from services.simulation_service import SimulationService
 from services.explore.service import ExploreService
+from services.remote_daemon import RemoteDaemonService
 
 # Import routes
 from routes import (
@@ -50,6 +51,7 @@ from routes import (
     init_media_routes, init_transfer_routes, init_backup_routes,
     explore_bp, init_explore_routes,
     activity_bp, init_activity_routes,
+    remote_daemon_bp, init_remote_daemon_routes,
     init_webhook_routes, init_debug_routes, init_simulation_routes
 )
 
@@ -311,6 +313,13 @@ init_simulation_routes(simulation_service)
 explore_service = ExploreService(config, db_manager, transfer_coordinator, ssh_manager)
 init_explore_routes(explore_service)
 
+# The transfer server on the remote host — the fast route past SSH's own speed
+# limit. It opens its own SSH connection for each control action rather than
+# using the browse session above, because the checks and restarts run from
+# background threads with nobody connected in the UI.
+remote_daemon_service = RemoteDaemonService(config, settings_service)
+init_remote_daemon_routes(remote_daemon_service)
+
 # Register route blueprints
 app.register_blueprint(auth_bp, url_prefix='/api')
 app.register_blueprint(media_bp, url_prefix='/api')
@@ -322,6 +331,7 @@ app.register_blueprint(logs_bp, url_prefix='/api')
 app.register_blueprint(simulation_bp, url_prefix='/api')
 app.register_blueprint(explore_bp, url_prefix='/api')
 app.register_blueprint(activity_bp, url_prefix='/api')
+app.register_blueprint(remote_daemon_bp, url_prefix='/api')
 
 logger.info('Backend logging file: %s', LOG_FILE_PATH)
 

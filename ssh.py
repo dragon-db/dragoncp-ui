@@ -245,6 +245,66 @@ class SSHManager:
         except Exception as e:
             return 1, "", str(e)
     
+    def write_file(self, remote_path: str, content: str,
+                   mode: int = 0o600) -> Tuple[bool, str]:
+        """
+        Write a file on the remote host over SFTP.
+
+        SECURITY: deliberately NOT execute_command() with a heredoc. A command
+        line is readable by every account on the host through `ps`, and the
+        files this writes include the transfer server's password — so a heredoc
+        would publish the very secret it is writing. SFTP carries the content
+        inside the connection instead.
+
+        The mode is applied to the file while it is still empty, so there is no
+        window in which the content exists at the umask's default permissions.
+        """
+        if not self.connected:
+            return False, "Not connected"
+        try:
+            sftp = self.client.open_sftp()
+        except Exception as e:
+            return False, f"Could not open a file transfer channel: {e}"
+        try:
+            handle = sftp.open(remote_path, 'w')
+            try:
+                sftp.chmod(remote_path, mode)
+                handle.write(content)
+            finally:
+                handle.close()
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+        finally:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+
+    def read_file(self, remote_path: str, max_bytes: int = 65536) -> Optional[str]:
+        """
+        Read a remote file, or None if it is not there or cannot be read.
+
+        Bounded, because the callers read small generated files and a surprise
+        should not become an unbounded read into this process's memory.
+        """
+        if not self.connected:
+            return None
+        try:
+            sftp = self.client.open_sftp()
+        except Exception:
+            return None
+        try:
+            with sftp.open(remote_path, 'r') as handle:
+                return handle.read(max_bytes).decode('utf-8', 'replace')
+        except Exception:
+            return None
+        finally:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+
     def list_folders(self, path: str) -> List[str]:
         """List folders in remote directory"""
         # SECURITY: quote the path to prevent remote command injection
