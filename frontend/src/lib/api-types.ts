@@ -69,6 +69,16 @@ export interface Transfer {
   queue_reason?: "slot" | "path" | string | null;
   /** True for transfers created by the simulation tool. */
   is_simulation?: boolean;
+  /**
+   * How this transfer reached the media host. `daemon` is the fast transfer
+   * server, `ssh` the original route, absent for a run that predates the choice
+   * or never left this machine.
+   *
+   * Recorded when the transfer starts, because it depends on what was true at
+   * that moment. Without it a transfer that fell back to the slow route and one
+   * that never had a faster option look identical afterwards.
+   */
+  transport?: "daemon" | "ssh" | null;
   log_count: number;
   logs?: string[];
   rsync_process_id?: number;

@@ -1,8 +1,17 @@
 # Fast Transport: getting past the transfer speed ceiling
 
 Last updated: 2026-08-13
-Status: **diagnosis complete and measured. Step 1 of section 7.5 is built** —
-install, control, status and removal, with nothing using it for transfers yet.
+Status: **built and in use.** Steps 1–3 of section 7.5 are done: install and
+control, route selection, and transfers actually taking the faster route.
+Current behaviour is documented in
+[`../features/fast-transfers/README.md`](../features/fast-transfers/README.md);
+this document is kept for the measurements and the options that were rejected.
+
+> **End to end on the real library, 2026-08-13.** A transfer started through the
+> normal pipeline chose the fast route on its own, ran at **29.6 MB/s**, recorded
+> `transport=daemon`, and the transfer server switched itself off when the queue
+> emptied. A separate 902 MB file pulled over the same route came back
+> **md5-identical** to the copy on the media host, at 30.5 MB/s.
 
 > **Measured against the real library on 2026-08-13.** A 10.1 GB film pulled
 > over the installed transfer server arrived complete and byte-exact at

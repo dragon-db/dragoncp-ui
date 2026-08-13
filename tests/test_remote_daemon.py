@@ -112,8 +112,19 @@ class SourceMappingTests(unittest.TestCase):
         self.assertEqual(
             address, 'dragoncp@remote.example::tvshows/Alpha & Bravo [2024]/S01E01.mkv')
 
-    def test_a_bare_library_address_ends_in_a_slash(self):
+    def test_the_trailing_slash_is_the_callers_decision(self):
+        # To rsync, "source/" means the CONTENTS of a folder and "source" means
+        # the folder itself, landing inside the destination. Getting it wrong
+        # nests a season inside itself, so neither can be the silent default.
+        self.assertEqual(
+            layout.daemon_source('remote.example', 'tvshows', 'Example Show'),
+            'dragoncp@remote.example::tvshows/Example Show')
+        self.assertEqual(
+            layout.daemon_source('remote.example', 'tvshows', 'Example Show', True),
+            'dragoncp@remote.example::tvshows/Example Show/')
         self.assertEqual(layout.daemon_source('remote.example', 'movies'),
+                         'dragoncp@remote.example::movies')
+        self.assertEqual(layout.daemon_source('remote.example', 'movies', '', True),
                          'dragoncp@remote.example::movies/')
 
 
@@ -437,6 +448,74 @@ class ServiceTests(unittest.TestCase):
             state = service.status(refresh=False)
         self.assertNotIn('198.51.100.7', repr(state))
         self.assertTrue(state['has_allowed_address'])
+
+    def test_the_fast_route_is_refused_until_it_is_switched_on(self):
+        service = self.build()
+        service.password()
+        with patch.object(RemoteDaemonService, 'ensure_running', return_value=(True, 'Ready')):
+            self.assertIsNone(service.route_for('/srv/media/movies/A Film'))
+
+    def test_a_path_outside_every_library_never_gets_a_fast_route(self):
+        # Failing closed. A path we cannot place inside a published library is
+        # one we must not invent an address for.
+        service = self.build(settings={'FAST_TRANSPORT_ENABLED': 'true'})
+        service.password()
+        with patch.object(RemoteDaemonService, 'ensure_running', return_value=(True, 'Ready')):
+            self.assertIsNone(service.route_for('/etc/passwd'))
+            self.assertIsNone(service.route_for('/srv/other/thing'))
+
+    def test_a_server_that_will_not_answer_falls_back(self):
+        service = self.build(settings={'FAST_TRANSPORT_ENABLED': 'true'})
+        service.password()
+        with patch.object(RemoteDaemonService, 'ensure_running', return_value=(False, 'blocked')):
+            self.assertIsNone(service.route_for('/srv/media/movies/A Film'))
+
+    def test_no_generated_password_means_no_fast_route(self):
+        service = self.build(settings={'FAST_TRANSPORT_ENABLED': 'true'})
+        with patch.object(RemoteDaemonService, 'ensure_running', return_value=(True, 'Ready')):
+            self.assertIsNone(service.route_for('/srv/media/movies/A Film'))
+
+    def test_a_usable_route_carries_the_port_and_the_password_file(self):
+        service = self.build(settings={'FAST_TRANSPORT_ENABLED': 'true'})
+        service.password()
+        with patch.object(RemoteDaemonService, 'ensure_running', return_value=(True, 'Ready')):
+            # The directory on disk is /srv/media/tv; the published name is
+            # 'tvshows'. The address carries the published name, never the
+            # layout of somebody's disk.
+            source, args = service.route_for('/srv/media/tv/Example Show', True)
+        self.assertEqual(source, 'dragoncp@remote.example::tvshows/Example Show/')
+        self.assertIn('--port=52314', args)
+        self.assertIn('--password-file', args)
+
+    def test_it_stays_up_when_told_to_run_always(self):
+        service = self.build(settings={'FAST_TRANSPORT_LIFECYCLE': 'always'})
+        with patch.object(RemoteDaemonService, 'stop') as stop:
+            service.release(lambda: False)
+        stop.assert_not_called()
+
+    def test_it_stops_once_nothing_needs_it(self):
+        service = self.build()
+        with patch.object(RemoteDaemonService, 'stop', return_value=(True, 'stopped')) as stop, \
+                patch.object(RemoteDaemonService, 'health',
+                             return_value=probe.ProbeResult(probe.READY, 'Ready')):
+            service.release(lambda: False)
+        stop.assert_called_once()
+
+    def test_it_is_left_alone_while_a_transfer_still_needs_it(self):
+        service = self.build()
+        with patch.object(RemoteDaemonService, 'stop') as stop, \
+                patch.object(RemoteDaemonService, 'health',
+                             return_value=probe.ProbeResult(probe.READY, 'Ready')):
+            service.release(lambda: True)
+        stop.assert_not_called()
+
+    def test_a_failure_while_stopping_is_swallowed(self):
+        # This runs after a transfer has already finished. A server left up
+        # costs a listening port; raising here would turn a completed transfer
+        # into an error.
+        service = self.build()
+        with patch.object(RemoteDaemonService, 'health', side_effect=RuntimeError('boom')):
+            service.release(lambda: False)  # must not raise
 
     def test_status_always_answers_even_when_the_remote_is_unreachable(self):
         service = self.build()

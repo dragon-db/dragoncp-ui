@@ -2,6 +2,30 @@
 """
 DragonCP Auto-Sync Scheduler Service
 Manages scheduled auto-sync jobs for series and anime with intelligent wait-time handling
+
+PLANNED: this wait is a guess, and it does not have to be
+------------------------------------------------------------------------------
+A webhook says "an episode arrived". It cannot say how many more are coming, so
+this scheduler waits a fixed number of seconds and hopes the rest of the season
+lands inside the window. Both outcomes are wrong in a way nobody can see:
+
+  * the window is too short — a season is split across several transfers, each
+    taking a queue slot and each writing its own backup capture,
+  * the window is too long — a single episode sits waiting for company that is
+    never coming.
+
+Sonarr and Radarr both answer this properly over their own APIs: what is
+queued, what is grabbed, what is still importing. Asking them turns the wait
+from a fixed guess into a real answer — hold until the queue for this season is
+empty, then go, with the fixed window kept only as an upper bound for when the
+API cannot be reached.
+
+That belongs with the connectors work (one place that owns talking to an
+outside service) rather than here, because it needs a client with retries,
+timeouts and failure reporting that this scheduler should not grow its own copy
+of. The change lands in `schedule_job`/`_process_jobs` below: the wait becomes a
+question asked of the connector, and `SERIES_ANIME_SYNC_WAIT_TIME` becomes the
+ceiling rather than the answer.
 """
 
 import time

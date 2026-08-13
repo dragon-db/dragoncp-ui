@@ -42,7 +42,6 @@ from services import TransferCoordinator
 from services.rename_service import RenameService
 from services.simulation_service import SimulationService
 from services.explore.service import ExploreService
-from services.remote_daemon import RemoteDaemonService
 
 # Import routes
 from routes import (
@@ -314,11 +313,10 @@ explore_service = ExploreService(config, db_manager, transfer_coordinator, ssh_m
 init_explore_routes(explore_service)
 
 # The transfer server on the remote host — the fast route past SSH's own speed
-# limit. It opens its own SSH connection for each control action rather than
-# using the browse session above, because the checks and restarts run from
-# background threads with nobody connected in the UI.
-remote_daemon_service = RemoteDaemonService(config, settings_service)
-init_remote_daemon_routes(remote_daemon_service)
+# limit. The coordinator owns it so the Settings panel and the transfers share
+# ONE instance: it caches the health answer and holds the lock that keeps an
+# idle shutdown from racing a starting transfer, and neither works with two.
+init_remote_daemon_routes(transfer_coordinator.remote_daemon)
 
 # Register route blueprints
 app.register_blueprint(auth_bp, url_prefix='/api')

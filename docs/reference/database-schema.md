@@ -45,6 +45,13 @@ up on startup without a migration script:
   Explore run copies an approved list of files rather than a whole directory, so
   rsync is given `--files-from` and never `--delete`. Stored on the row so a
   queued, promoted, resumed or restarted run rebuilds the same command.
+- `transfers.transport` - which route reached the media host: `daemon` for the
+  fast transfer server, `ssh` for the original route, `NULL` for a run that
+  predates the choice or never left this machine. Written when rsync starts,
+  because the answer depends on what was true at that moment and cannot be
+  reconstructed; without it a transfer that fell back to the slow route and one
+  that never had a faster option look identical. See
+  `../features/fast-transfers/README.md`.
 
 ### Explore Tables
 

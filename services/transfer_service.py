@@ -9,9 +9,43 @@ import subprocess
 import threading
 import re
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
 from env_flags import test_mode_enabled
+
+
+# How a transfer reaches the remote host. Stored on the transfer so history,
+# a restart and the interface can all say which one ran — a transfer that was
+# slow because it fell back is a different fact from one that was simply slow,
+# and without this they look identical afterwards.
+DAEMON = 'daemon'
+SSH = 'ssh'
+
+
+@dataclass
+class TransferRoute:
+    """
+    One decision about how to reach the remote host, and what rsync needs to
+    act on it.
+
+    Everything that differs between the two routes is here and nowhere else:
+    the source address, and the arguments that get it there. Every other flag
+    on a transfer command is identical either way, which is the whole reason
+    this change is small — the backups, the deletions, the progress output and
+    the dry-run parser do not know or care which one was chosen.
+    """
+    kind: str
+    source: str
+    args: List[str] = field(default_factory=list)
+
+    @property
+    def is_daemon(self) -> bool:
+        return self.kind == DAEMON
+
+    @property
+    def label(self) -> str:
+        return 'transfer server' if self.is_daemon else 'SSH'
 
 
 # How often a superseding progress line is allowed to reach the database. The
@@ -108,12 +142,17 @@ def build_progress_stats(transfer: Dict) -> Dict:
 class TransferService:
     """Service for rsync process management and monitoring"""
 
-    def __init__(self, config, db_manager, transfer_model, socketio=None, queue_manager=None):
+    def __init__(self, config, db_manager, transfer_model, socketio=None, queue_manager=None,
+                 remote_daemon=None):
         self.config = config
         self.db = db_manager
         self.transfer_model = transfer_model
         self.socketio = socketio
         self.queue_manager = queue_manager
+        # The transfer server on the remote host, or None where there is none.
+        # Optional so every existing construction of this service keeps working
+        # and simply never takes the fast route.
+        self.remote_daemon = remote_daemon
         self.transfers = {}  # Active transfer processes: {transfer_id: process}
 
         # Transfers stopped on purpose: {transfer_id: 'cancelled' | 'paused'}.
@@ -244,6 +283,79 @@ class TransferService:
                 "-o", f"UserKnownHostsFile={known_hosts}"]
 
 
+    def resolve_route(self, source_path: str, trailing_slash: bool = True,
+                      allow_daemon: bool = True) -> 'TransferRoute':
+        """
+        Decide how one transfer reaches the remote host, and build its address.
+
+        Asked once, at the moment rsync is about to run — not when a transfer is
+        queued. A transfer can sit in the queue for hours, and the answer to "is
+        the fast route available" is only worth having at the moment it is used.
+        Every launch path goes through here, including a promotion from the
+        queue and a restart, so none of them can quietly disagree.
+
+        Falls back to SSH for every reason the fast route is not available, and
+        the fallback is silent by design: the panel explains why the fast route
+        is unavailable, and a transfer's job is to run.
+
+        `allow_daemon=False` is for a simulation, which copies fixture files on
+        this machine and never touches the remote host at all.
+        """
+        if allow_daemon and self.remote_daemon is not None:
+            try:
+                planned = self.remote_daemon.route_for(source_path, trailing_slash)
+            except Exception as error:  # noqa: BLE001 - never block a transfer
+                print(f"⚠️  Could not check the transfer server, using SSH: {error}")
+                planned = None
+            if planned is not None:
+                source, args = planned
+                print(f"🚀 Using the transfer server for {source_path}")
+                return TransferRoute(DAEMON, source, args)
+
+        return TransferRoute(SSH, self._ssh_source(source_path, trailing_slash),
+                             self._ssh_args())
+
+    def _ssh_args(self) -> List[str]:
+        """The `-e ssh ...` argument pair the SSH route needs."""
+        ssh_key_path = self._resolved_key_path()
+        # SECURITY (SEC-07): host-key verification per configured policy
+        options = self._build_ssh_host_key_options() + ["-o", "Compression=no"]
+        if ssh_key_path:
+            options.extend(["-i", ssh_key_path])
+        return ["-e", f"ssh {' '.join(options)}"]
+
+    def _ssh_source(self, source_path: str, trailing_slash: bool) -> str:
+        user = self.config.get("REMOTE_USER")
+        host = self.config.get("REMOTE_IP")
+        suffix = '/' if trailing_slash and not source_path.endswith('/') else ''
+        return f"{user}@{host}:{source_path}{suffix}"
+
+    def _record_route(self, transfer_id: str, route: Optional['TransferRoute']) -> None:
+        """
+        Write down which route a transfer took.
+
+        Without this, a transfer that fell back to SSH and one that never had a
+        faster option look identical afterwards — both simply slow. This is what
+        lets the interface say which one happened, and it is why the column is
+        written at launch rather than derived later: the answer depends on
+        conditions at that moment and cannot be reconstructed.
+        """
+        try:
+            self.transfer_model.update(
+                transfer_id, {'transport': route.kind if route else None})
+        except Exception as error:  # noqa: BLE001 - bookkeeping, not the transfer
+            print(f"⚠️  Could not record the route for {transfer_id}: {error}")
+
+    def _resolved_key_path(self) -> str:
+        """The configured SSH key as an absolute path, or '' when there is none."""
+        ssh_key_path = self.config.get("SSH_KEY_PATH", "")
+        if not ssh_key_path:
+            return ""
+        if not os.path.isabs(ssh_key_path):
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            ssh_key_path = os.path.join(os.path.dirname(script_dir), ssh_key_path)
+        return ssh_key_path if os.path.exists(ssh_key_path) else ""
+
     def perform_dry_run_rsync(self, source_path: str, dest_path: str) -> Dict:
         """
         Perform rsync dry-run to validate sync safety
@@ -260,12 +372,7 @@ class TransferService:
             print(f"   Source: {source_path}")
             print(f"   Dest: {dest_path}")
             
-            # Get SSH connection details
-            ssh_user = self.config.get("REMOTE_USER")
-            ssh_host = self.config.get("REMOTE_IP")
-            ssh_key_path = self.config.get("SSH_KEY_PATH", "")
-            
-            if not ssh_user or not ssh_host:
+            if not self.config.get("REMOTE_USER") or not self.config.get("REMOTE_IP"):
                 return {
                     'safe_to_sync': False,
                     'reason': 'SSH credentials not configured',
@@ -276,21 +383,14 @@ class TransferService:
                     'deleted_files': [],
                     'incoming_files': []
                 }
-            
-            # Resolve SSH key path
-            if ssh_key_path:
-                if not os.path.isabs(ssh_key_path):
-                    script_dir = os.path.dirname(os.path.abspath(__file__))
-                    ssh_key_path = os.path.join(os.path.dirname(script_dir), ssh_key_path)
-                if not os.path.exists(ssh_key_path):
-                    ssh_key_path = ""
-            
-            # Build SSH options
-            # SECURITY (SEC-07): host-key verification per configured policy
-            ssh_options = self._build_ssh_host_key_options() + ["-o", "Compression=no"]
-            if ssh_key_path and os.path.exists(ssh_key_path):
-                ssh_options.extend(["-i", ssh_key_path])
-            
+
+            # A dry run moves no media, so which route it takes changes nothing
+            # about safety — but it must take the SAME one the real transfer
+            # will, or it is rehearsing a different command. IMPORTANT: trailing
+            # slash on the source, so this compares folder CONTENTS and the
+            # itemised output lines up with what the transfer would do.
+            route = self.resolve_route(source_path, trailing_slash=True)
+
             # Build dry-run rsync command
             # Note: Using -avv (double verbose) to get ALL files in itemize-changes output,
             # including unchanged files (.f notation), not just transferred files (>f notation)
@@ -307,13 +407,9 @@ class TransferService:
                 "--no-perms",
                 "--no-owner",
                 "--no-group",
-                "-e", f"ssh {' '.join(ssh_options)}"
             ]
-            
-            # Add source and destination
-            # IMPORTANT: Always use trailing slash for source to sync folder contents, not the folder itself
-            # This ensures consistent behavior and proper file comparison in itemize-changes output
-            rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
+            rsync_cmd.extend(route.args)
+            rsync_cmd.extend([route.source, f"{dest_path}/"])
             
             print(f"🔄 Executing dry-run: {' '.join(rsync_cmd)}")
             
@@ -570,7 +666,6 @@ class TransferService:
                 return self._start_explore_rsync(
                     transfer_id, source_path, dest_path, backup_dir,
                     explore_files_from, transfer_row.get('explore_mode') or 'sync',
-                    ssh_user, ssh_host, ssh_key_path,
                 )
 
             # Build rsync command with SSH connection
@@ -613,6 +708,7 @@ class TransferService:
                 rsync_cmd.append("--dry-run")
                 print("🧪 TEST_MODE enabled - rsync will run in dry-run mode (no actual file transfers)")
 
+            route = None
             if is_simulation:
                 # Hold the copy to a realistic speed so progress, ETA and the
                 # queue behave the way they do against a remote server, rather
@@ -622,21 +718,16 @@ class TransferService:
                 rsync_cmd.append(f"--bwlimit={int(bwlimit)}")
                 rsync_cmd.extend([f"{source_path}/", f"{dest_path}/"])
             else:
-                # Build SSH options for rsync
-                # SECURITY (SEC-07): host-key verification per configured policy
-                ssh_options = self._build_ssh_host_key_options() + ["-o", "Compression=no"]
-                if ssh_key_path and os.path.exists(ssh_key_path):
-                    ssh_options.extend(["-i", ssh_key_path])
+                # IMPORTANT: trailing slash means "the CONTENTS of this folder".
+                # A 'file' transfer names one file and must not have one, or
+                # rsync is asked for the contents of something that is not a
+                # directory. Both routes obey the same rule.
+                route = self.resolve_route(
+                    source_path, trailing_slash=(operation_type != "file"))
+                rsync_cmd.extend(route.args)
+                rsync_cmd.extend([route.source, f"{dest_path}/"])
 
-                rsync_cmd.extend(["-e", f"ssh {' '.join(ssh_options)}"])
-
-                # IMPORTANT: Always use trailing slash for folder syncs to sync contents, not the folder itself
-                # For 'file' type, no trailing slash; for 'folder' type, trailing slash on both source and dest
-                if operation_type == "file":
-                    rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}", f"{dest_path}/"])
-                else:
-                    rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
-            
+            self._record_route(transfer_id, route)
             print(f"🔄 Starting rsync: {' '.join(rsync_cmd)}")
             
             # Start transfer in background
@@ -697,15 +788,19 @@ class TransferService:
     
     def build_explore_rsync_command(self, source_path: str, dest_path: str,
                                     backup_dir: str, files_from: str, mode: str,
-                                    ssh_user: str, ssh_host: str,
-                                    ssh_key_path: str) -> List[str]:
+                                    route: Optional['TransferRoute'] = None) -> List[str]:
         """
         The command an Explore plan runs as.
 
         Built in one place so a dry run can be the same command with
         `--dry-run` in front of it. A rehearsal that differs from the run it is
-        rehearsing is worse than no rehearsal.
+        rehearsing is worse than no rehearsal — and that now includes the route:
+        the caller resolves it once and passes it to both, so a plan cannot be
+        rehearsed over one and carried out over the other.
         """
+        if route is None:
+            route = self.resolve_route(source_path, trailing_slash=True)
+
         rsync_cmd = [
             "rsync", "-av",
             "--progress",
@@ -728,13 +823,9 @@ class TransferService:
         if mode == 'download':
             rsync_cmd.append("--ignore-existing")
 
-        ssh_options = self._build_ssh_host_key_options() + ["-o", "Compression=no"]
-        if ssh_key_path and os.path.exists(ssh_key_path):
-            ssh_options.extend(["-i", ssh_key_path])
-        rsync_cmd.extend(["-e", f"ssh {' '.join(ssh_options)}"])
-
+        rsync_cmd.extend(route.args)
         # With --files-from the source is the ROOT the list is relative to.
-        rsync_cmd.extend([f"{ssh_user}@{ssh_host}:{source_path}/", f"{dest_path}/"])
+        rsync_cmd.extend([route.source, f"{dest_path}/"])
         return rsync_cmd
 
     def run_explore_dry_run(self, source_path: str, dest_path: str,
@@ -750,17 +841,8 @@ class TransferService:
         dry run has no progress worth streaming, and one line per file is what
         the report is built from.
         """
-        ssh_user = self.config.get("REMOTE_USER")
-        ssh_host = self.config.get("REMOTE_IP")
-        ssh_key_path = self.config.get("SSH_KEY_PATH", "")
-        if not ssh_user or not ssh_host:
+        if not self.config.get("REMOTE_USER") or not self.config.get("REMOTE_IP"):
             return False, -1, '', 'No remote host is configured'
-
-        if ssh_key_path and not os.path.isabs(ssh_key_path):
-            script_dir = os.path.dirname(os.path.abspath(__file__))
-            ssh_key_path = os.path.join(os.path.dirname(script_dir), ssh_key_path)
-        if ssh_key_path and not os.path.exists(ssh_key_path):
-            ssh_key_path = ""
 
         if not os.path.exists(files_from):
             return False, -1, '', 'The file list for this plan is no longer available'
@@ -771,7 +853,6 @@ class TransferService:
 
         cmd = self.build_explore_rsync_command(
             source_path, dest_path, backup_dir, files_from, mode,
-            ssh_user, ssh_host, ssh_key_path,
         )
         # Drop the progress flags — they fight with a per-file report — and put
         # --dry-run first so it is impossible to miss when reading a log.
@@ -803,8 +884,7 @@ class TransferService:
         return True, 0, output, None
 
     def _start_explore_rsync(self, transfer_id: str, source_path: str, dest_path: str,
-                             backup_dir: str, files_from: str, mode: str,
-                             ssh_user: str, ssh_host: str, ssh_key_path: str) -> bool:
+                             backup_dir: str, files_from: str, mode: str) -> bool:
         """
         Run one Explore plan.
 
@@ -831,10 +911,11 @@ class TransferService:
                 })
                 return False
 
+            route = self.resolve_route(source_path, trailing_slash=True)
             rsync_cmd = self.build_explore_rsync_command(
-                source_path, dest_path, backup_dir, files_from, mode,
-                ssh_user, ssh_host, ssh_key_path,
+                source_path, dest_path, backup_dir, files_from, mode, route,
             )
+            self._record_route(transfer_id, route)
 
             if test_mode_enabled():
                 rsync_cmd.insert(1, "--dry-run")

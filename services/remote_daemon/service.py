@@ -32,7 +32,7 @@ import stat
 import threading
 import time
 from contextlib import contextmanager
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from ssh import SSHManager
 
@@ -71,6 +71,10 @@ class RemoteDaemonService:
         self.settings = settings_service
         self._probe_cache: Optional[Tuple[float, probe.ProbeResult]] = None
         self._lock = threading.Lock()
+        # Held while a transfer is deciding to use the server, and while the
+        # idle shutdown decides to stop it. Separate from the cache lock, which
+        # is taken for microseconds; this one is held across SSH round trips.
+        self._use_lock = threading.RLock()
 
     # ---- configuration ----------------------------------------------------
 
@@ -403,19 +407,97 @@ class RemoteDaemonService:
         Used before a transfer. One attempt, not a retry loop: a transfer
         waiting on a server that is never coming back should fall through to the
         route that works, not sit there.
+
+        Holds the use lock, so a transfer starting can never interleave with the
+        idle shutdown in `release`.
         """
-        result = self.health()
-        if result.ok:
-            return True, 'Ready'
-        if result.state in (probe.BLOCKED, probe.AUTH_FAILED):
-            # It is up and it is refusing us. Restarting a service that is
-            # running perfectly well cannot change its mind, and doing it anyway
-            # would throw away the one thing the check established.
-            return False, result.detail
-        started, message = self.start()
-        if not started:
-            return False, message
-        return self.health().ok, message
+        with self._use_lock:
+            result = self.health()
+            if result.ok:
+                return True, 'Ready'
+            if result.state in (probe.BLOCKED, probe.AUTH_FAILED):
+                # It is up and it is refusing us. Restarting a service that is
+                # running perfectly well cannot change its mind, and doing it
+                # anyway would throw away what the check established.
+                return False, result.detail
+            started, message = self.start()
+            if not started:
+                return False, message
+            return self.health(refresh=True).ok, message
+
+    def release(self, still_needed: Callable[[], bool]) -> None:
+        """
+        Switch it off once nothing needs it, if it is meant to run on demand.
+
+        `still_needed` is asked INSIDE the lock, and starting a transfer takes
+        the same lock, so the answer cannot go stale between the question and
+        the shutdown. Worst case a transfer whose row does not exist yet finds
+        the server stopped and starts it again — a second of SSH, not a failure.
+
+        Never raises. This is housekeeping that runs after a transfer has
+        already finished; a server that stays up costs a listening port, and
+        that is not worth turning a completed transfer into an error.
+        """
+        if self.start_at_boot:
+            # Told to stay up. Nothing to do.
+            return
+        try:
+            with self._use_lock:
+                if still_needed():
+                    return
+                if not self.health().running:
+                    return
+                stopped, message = self.stop()
+                if stopped:
+                    print('🛑 Transfer server stopped — nothing left to transfer')
+                else:
+                    print(f"⚠️  Could not stop the transfer server: {message}")
+        except Exception as error:  # noqa: BLE001 - housekeeping must not raise
+            print(f"⚠️  Could not stop the transfer server: {error}")
+
+    # ---- choosing a route for one transfer --------------------------------
+
+    def route_for(self, source_path: str, trailing_slash: bool = True
+                  ) -> Optional[Tuple[str, List[str]]]:
+        """
+        The address and extra arguments for pulling `source_path` over this
+        server, or None to say "use SSH".
+
+        Returns None — meaning fall back — for every reason a transfer might not
+        be able to take this route:
+
+          * the operator has not switched it on
+          * it is not configured, or no password has been generated
+          * the path is not inside a published library, so there is no library
+            to ask for. Failing closed here matters: a path we cannot place is
+            one we should not be inventing an address for.
+          * it is not running, will not accept us, or could not be started
+
+        The caller does not need to know which of those happened; the panel
+        already explains it, and a transfer's job is to run, not to diagnose.
+        """
+        if not self.settings.get_bool('FAST_TRANSPORT_ENABLED'):
+            return None
+        configured, _ = self.configured()
+        if not configured:
+            return None
+        if not self.password(create=False):
+            return None
+
+        placed = layout.source_for(self.settings, source_path)
+        if placed is None:
+            return None
+        module, relative = placed
+
+        ready, _ = self.ensure_running()
+        if not ready:
+            return None
+
+        source = layout.daemon_source(self.host, module, relative, trailing_slash)
+        return source, [
+            f'--port={self.port}',
+            '--password-file', self._secret_file(),
+        ]
 
     # ---- health ------------------------------------------------------------
 

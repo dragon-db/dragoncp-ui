@@ -97,7 +97,17 @@ This design prioritizes correctness on path conflicts and avoids parallel writes
 
 ## 5. Transfer Execution and Safety Model
 
-`TransferService` runs and monitors `rsync` processes (`services/transfer_service.py:259`, `services/transfer_service.py:425`).
+`TransferService` runs and monitors `rsync` processes (`services/transfer_service.py`).
+
+**Two routes to the media host.** Before rsync starts, `resolve_route()` decides
+whether to pull over the transfer server installed on the media host — about
+three times faster, because SSH caps itself at roughly 13 MB/s on this 154 ms
+link — or over SSH as before. Only the source address and two arguments differ;
+every other flag is identical, which is why the backups, deletions, queueing and
+progress parsing below are unaffected by the choice. Anything that makes the
+faster route unavailable falls back to SSH rather than failing, and the route
+that ran is recorded on the transfer. See
+`../features/fast-transfers/README.md`.
 
 Safety and behavior choices currently implemented:
 - Uses `--delete` for destination convergence.

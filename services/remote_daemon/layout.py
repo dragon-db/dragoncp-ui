@@ -139,7 +139,8 @@ def source_for(settings, absolute_path: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-def daemon_source(host: str, module: str, relative: str = '') -> str:
+def daemon_source(host: str, module: str, relative: str = '',
+                  trailing_slash: bool = False) -> str:
     """
     The address rsync is given for a daemon transfer.
 
@@ -148,6 +149,15 @@ def daemon_source(host: str, module: str, relative: str = '') -> str:
     the path is URL-encoded — and media filenames are full of the characters
     that would make the answer matter. This form has no such layer: the path is
     sent as typed. The port travels separately, as `--port`.
+
+    `trailing_slash` is not cosmetic and the caller must decide it. To rsync,
+    `source/` means "the contents of this directory" and `source` means "this
+    directory, as a directory inside the destination". Getting it wrong nests a
+    season folder inside itself. The SSH form has exactly the same rule, and the
+    callers already track which one they need.
     """
     base = f"{DAEMON_USER}@{host}::{module}"
-    return f"{base}/{relative}" if relative else f"{base}/"
+    path = f"{base}/{relative}" if relative else base
+    if trailing_slash and not path.endswith('/'):
+        path += '/'
+    return path
