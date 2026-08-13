@@ -10,6 +10,7 @@ import {
 import { SettingsPanel } from "@/components/settings/settings-panel";
 import { AccountPanel } from "@/components/settings/account-panel";
 import { BackendLogPanel } from "@/components/settings/backend-log-panel";
+import { RemoteTransferPanel } from "@/components/settings/remote-transfer-panel";
 import {
   useDiscordSettings,
   useTestDiscord,
@@ -219,6 +220,7 @@ export function SettingsPage() {
         </TabsList>
 
         <TabsContent value="config" className="mt-4 space-y-4">
+          <RemoteTransferPanel />
           <SettingsPanel />
         </TabsContent>
 
