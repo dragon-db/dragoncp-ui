@@ -33,6 +33,7 @@ import {
   IconCheck,
   IconLink,
   IconPlayerPause,
+  IconPlugConnected,
   IconRefresh,
   IconServer,
   IconSettings,
@@ -205,6 +206,10 @@ export function SettingsPage() {
             <IconSettings className="h-4 w-4" />
             Core Config
           </TabsTrigger>
+          <TabsTrigger value="connections">
+            <IconPlugConnected className="h-4 w-4" />
+            Connections
+          </TabsTrigger>
           <TabsTrigger value="automation">
             <IconWebhook className="h-4 w-4" />
             Automation
@@ -220,8 +225,43 @@ export function SettingsPage() {
         </TabsList>
 
         <TabsContent value="config" className="mt-4 space-y-4">
-          <RemoteTransferPanel />
           <SettingsPanel />
+        </TabsContent>
+
+        {/*
+          Reaching the media host, in one place: the SSH session everything else
+          is built on, and the faster route that carries the files. Connection
+          Controls used to sit under Diagnostics, which was the wrong shelf — it
+          has buttons that change what the app is doing, and nothing about it is
+          diagnosis.
+        */}
+        <TabsContent value="connections" className="mt-4 space-y-4">
+          <Card className="border-neutral-800 bg-neutral-900/50">
+            <CardHeader>
+              <CardTitle className="text-white">Connection Controls</CardTitle>
+              <CardDescription className="text-neutral-400">
+                Auto-connect/disconnect and runtime connection details
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex gap-2">
+                <Button onClick={runAutoConnect} disabled={autoConnect.isPending}>
+                  <IconBolt className="mr-2 h-4 w-4" />
+                  Auto Connect
+                </Button>
+                <Button variant="outline" onClick={runDisconnect} disabled={disconnect.isPending}>
+                  <IconPlayerPause className="mr-2 h-4 w-4" />
+                  Disconnect
+                </Button>
+              </div>
+              <div className="text-sm text-neutral-300">
+                SSH: {sshStatusQuery.data ? "Connected" : "Disconnected"} | Active WebSocket
+                sessions: {wsStatusQuery.data?.websocket_status.active_connections ?? 0}
+              </div>
+            </CardContent>
+          </Card>
+
+          <RemoteTransferPanel />
         </TabsContent>
 
         <TabsContent value="account" className="mt-4 space-y-4">
@@ -390,31 +430,6 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="diagnostics" className="mt-4 space-y-4">
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardHeader>
-              <CardTitle className="text-white">Connection Controls</CardTitle>
-              <CardDescription className="text-neutral-400">
-                Auto-connect/disconnect and runtime connection details
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex gap-2">
-                <Button onClick={runAutoConnect} disabled={autoConnect.isPending}>
-                  <IconBolt className="mr-2 h-4 w-4" />
-                  Auto Connect
-                </Button>
-                <Button variant="outline" onClick={runDisconnect} disabled={disconnect.isPending}>
-                  <IconPlayerPause className="mr-2 h-4 w-4" />
-                  Disconnect
-                </Button>
-              </div>
-              <div className="text-sm text-neutral-300">
-                SSH: {sshStatusQuery.data ? "Connected" : "Disconnected"} | Active WebSocket
-                sessions: {wsStatusQuery.data?.websocket_status.active_connections ?? 0}
-              </div>
-            </CardContent>
-          </Card>
-
           <Card className="border-neutral-800 bg-neutral-900/50">
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
