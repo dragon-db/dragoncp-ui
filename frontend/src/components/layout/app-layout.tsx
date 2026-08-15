@@ -3,7 +3,6 @@ import { useRuntimeStatus } from "@/hooks/useConfig";
 import { useRuntimeStore } from "@/stores/runtime";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { UpdateBanner } from "@/components/layout/update-banner";
-import { TestModeBanner } from "@/components/layout/test-mode-banner";
 import { AppNavbar } from "@/components/layout/app-navbar";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { BackendUnavailableOverlay } from "@/components/layout/backend-unavailable-overlay";
@@ -54,10 +53,6 @@ export function AppLayout({ children }: AppLayoutProps) {
             release is a standing condition until reloaded, not a passing
             notification that can be missed. */}
         <UpdateBanner />
-        {/* Above everything and never dismissible: with test mode on, every
-            success message in the interface is a rehearsal, so this has to be
-            on screen at the moment somebody reads one. */}
-        <TestModeBanner />
         {/* The scroll container is the padded wrapper rather than <main>, and it
             is a flex column — so a page that wants to fill the viewport (Explore
             pins a status bar to the bottom) can do it with flex-1, while normal

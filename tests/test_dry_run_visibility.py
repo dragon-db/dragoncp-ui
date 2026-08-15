@@ -114,12 +114,26 @@ class TestModeIsVisibleTests(unittest.TestCase):
         source = (REPO_ROOT / 'routes' / 'debug.py').read_text()
         self.assertIn('"test_mode": bool(socketio_runtime_info.get', source)
 
-    def test_the_interface_shows_a_banner_for_it(self):
-        banner = REPO_ROOT / 'frontend' / 'src' / 'components' / 'layout' / 'test-mode-banner.tsx'
-        self.assertTrue(banner.exists(), 'the test-mode banner is missing')
-        layout = (REPO_ROOT / 'frontend' / 'src' / 'components' / 'layout'
-                  / 'app-layout.tsx').read_text()
-        self.assertIn('<TestModeBanner />', layout, 'the banner is never rendered')
+    def test_the_header_shows_it(self):
+        navbar = (REPO_ROOT / 'frontend' / 'src' / 'components' / 'layout'
+                  / 'app-navbar.tsx').read_text()
+        self.assertIn('useTestMode', navbar, 'the header never asks whether test mode is on')
+        self.assertIn('{testMode && (', navbar, 'the header never renders it')
+
+    def test_the_header_badge_is_not_hidden_on_small_screens(self):
+        # The version badge beside it IS hidden below sm. This one must not be:
+        # a phone is exactly where somebody checks whether a sync worked, so a
+        # badge that vanished at that width would be worse than none.
+        import re
+
+        navbar = (REPO_ROOT / 'frontend' / 'src' / 'components' / 'layout'
+                  / 'app-navbar.tsx').read_text()
+        badge = navbar.split('{testMode && (')[1].split(')}')[0]
+        # Only the style classes; `aria-hidden` is an accessibility attribute on
+        # the icon and has nothing to do with the breakpoint.
+        classes = ' '.join(re.findall(r'className="([^"]*)"', badge)).split()
+        self.assertNotIn('hidden', classes)
+        self.assertNotIn('sm:inline-flex', classes)
 
     def test_a_rehearsed_restore_is_not_toasted_as_a_success(self):
         page = (REPO_ROOT / 'frontend' / 'src' / 'components' / 'pages' / 'backups.tsx').read_text()
