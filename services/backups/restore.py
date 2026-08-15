@@ -30,6 +30,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from env_flags import test_mode_enabled
 from security import PathTraversalError, assert_path_within_bounds, validate_relative_path
 
+from . import preserve
 from .identity import SlotIdentity, media_type_for_library, new_capture_id
 from .layout import BackupLayout, utc_now
 
@@ -465,11 +466,11 @@ class RestoreRunner:
                 continue
             target = os.path.join(capture_path, os.path.basename(source))
             try:
-                shutil.copy2(source, target)
-                # Verify before anything is destroyed. A short copy here would
-                # otherwise be discovered only after the original was gone.
-                if os.path.getsize(target) != os.path.getsize(source):
-                    raise OSError('short copy')
+                # This file is about to be replaced by the version being
+                # restored, so the two names share bytes only until step 3
+                # runs. A hardlink is safe here and instant. Verified either
+                # way before anything is destroyed.
+                preserve.keep_before_destroying(source, target)
                 stored += 1
                 self.log(f"Kept the current copy: {os.path.basename(source)}")
             except OSError as error:
@@ -519,6 +520,20 @@ class RestoreRunner:
 
         temporary = f"{operation.target}.dragoncp-restore"
         try:
+            # DELIBERATELY A COPY, not a hardlink, even when the backup area is
+            # on the same disk and linking would be instant and free.
+            #
+            # What lands here goes back to being an ordinary library file and
+            # stays one for months. A hardlink would leave it sharing bytes with
+            # the stored version indefinitely, exposed to anything that ever
+            # writes to the library in place — a tag editor, a remux that strips
+            # an audio track. That would rewrite the backup too, silently: still
+            # listed, still apparently restorable, no longer what was backed up.
+            #
+            # Everywhere the two names coexist for seconds instead of months
+            # DOES link — see `preserve.keep_before_destroying`. That is where
+            # the saving is anyway: it runs on every transfer that replaces or
+            # deletes a file, while a restore is rare and started by a person.
             shutil.copy2(operation.source, temporary)
             if os.path.getsize(temporary) != os.path.getsize(operation.source):
                 raise OSError('short copy')

@@ -196,8 +196,8 @@ which is what catches an upgrade that renamed the file.
 The run is a swap, ordered so nothing is destroyed before its replacement is
 safely written:
 
-1. **Capture the current occupant** — copy it into a new capture in the same
-   slot, and verify the copy landed at the expected size. A failure here aborts
+1. **Capture the current occupant** — put it into a new capture in the same
+   slot, and verify it landed at the expected size. A failure here aborts
    with `Nothing was changed`.
 2. **Write the restored file** to a temporary name beside the target, verify,
    then `os.replace` it into position — atomic, because it is within the
@@ -344,6 +344,38 @@ other instance's records still point at the folders that have just moved, so its
 Backups page will list versions it can no longer restore until it is running
 this code and has rebuilt its index. Sequence it deliberately: deploy first, or
 accept that the other instance's backup page is stale until you do.
+
+### 9. Keeping a file without copying it
+
+When the backup area shares a filesystem with the media, a file can be kept by
+giving it a **second name** rather than copying it — instant whatever its size,
+and costing no extra space. `services/backups/preserve.py` does this, and falls
+back to copying when the two are on different disks, so the behaviour is correct
+either way.
+
+The rule is about **how long the two names share bytes**, not about saving space:
+
+| Where | What it does | Why |
+| --- | --- | --- |
+| Keeping a file before it is replaced or deleted | **Link** | The two names coexist for seconds and one is about to be destroyed. This is the frequent case — every transfer that replaces or deletes anything. |
+| Writing a restored file into the library | **Copy** | It goes back to being ordinary library media and stays that way for months. |
+
+Two names mean one file: writing through either changes both. Nothing here does
+— rsync writes a temporary file and renames it, the rename service only changes
+names, a restore replaces atomically — but the library is not only touched by
+this application. A tool that rewrites a container's tags or strips an audio
+track *in place* would rewrite a linked backup too, silently: still listed, still
+apparently restorable, no longer what was backed up.
+
+That is why a restored file is copied. It is the one that stays exposed, and a
+restore is rare enough that a copy costs little. `tests/test_backup_preserve.py`
+pins both halves, including that the restore write stays a copy.
+
+**The backup area must not sit inside a library directory.** Explore walks those
+to work out what is on this machine, so stored versions inside one would be read
+as misplaced library files. Same disk is wanted; inside a library is not. The
+right shape is a sibling of the media directories, and a misplacement is reported
+at startup.
 
 ## Behaviour worth knowing
 

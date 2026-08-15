@@ -21,6 +21,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from .identity import (
     SlotIdentity, identify, media_type_for_library, new_capture_id, parse_capture_id,
 )
+from . import preserve
 from .indexer import BackupIndexer
 from .layout import BackupLayout, BackupPathNotConfigured, utc_now
 from .migrate import LegacyMigration
@@ -70,6 +71,22 @@ class BackupsService:
 
         self._restores_running: Dict[str, str] = {}
         self._lock = threading.Lock()
+
+        # Said once, loudly, at startup rather than discovered later as odd
+        # Explore results. A warning rather than a refusal: the application is
+        # otherwise fine, transfers and restores work, and taking the whole
+        # installation down over a misconfigured directory would be worse than
+        # the problem. See BackupLayout.misplaced_inside_library.
+        try:
+            inside = self.layout.misplaced_inside_library()
+        except Exception:  # noqa: BLE001 - startup must survive this
+            inside = None
+        if inside:
+            print(
+                '⚠️  BACKUP_PATH is inside a media library directory '
+                f'({inside}). Stored versions will be read as library files by '
+                'Explore. Move it beside the media directories, not inside one.'
+            )
 
     def set_coordinator(self, coordinator) -> None:
         self.coordinator = coordinator
@@ -212,11 +229,14 @@ class BackupsService:
 
         target = os.path.join(capture_path, os.path.basename(absolute_path))
         try:
-            shutil.copy2(absolute_path, target)
-            # Verified before the caller destroys anything. A short copy here
-            # would otherwise only be discovered once the original was gone.
-            if os.path.getsize(target) != os.path.getsize(absolute_path):
-                raise OSError('short copy')
+            # The caller destroys the original straight after this, so the two
+            # names share bytes for seconds. A hardlink is therefore safe here
+            # and costs neither time nor space, whatever the file's size. Falls
+            # back to copying when the backup area is not on the media disk.
+            # Verified either way before the caller destroys anything.
+            how, _ = preserve.keep_before_destroying(absolute_path, target)
+            if how == preserve.LINKED:
+                print(f"🔗 Kept {os.path.basename(absolute_path)} without copying it")
         except OSError as error:
             shutil.rmtree(capture_path, ignore_errors=True)
             self.layout.prune_empty_dirs(os.path.dirname(capture_path))

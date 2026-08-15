@@ -139,6 +139,36 @@ class BackupLayout:
             os.makedirs(value, exist_ok=True)
         return value
 
+    def misplaced_inside_library(self) -> Optional[str]:
+        """
+        The library folder the backup area is wrongly inside, or None.
+
+        The backup area MUST NOT sit inside one of the local libraries. Explore
+        walks those three directories to work out what is on this machine, so
+        every stored old version would be read as a misplaced library file —
+        offered for "repair", counted in comparisons, and generally treated as
+        media rather than as the history of media. Path validation would also
+        stop telling the two apart.
+
+        Being on the same disk is wanted, and is what makes a backup a rename
+        rather than a copy. Being inside a library is not. The right shape is a
+        sibling of the media directories.
+
+        Compared segment by segment, so a backup area at `/media/tv-backups`
+        does not look like it is inside `/media/tv`.
+        """
+        try:
+            base = self.base(for_writing=False)
+        except BackupPathNotConfigured:
+            return None
+
+        base_parts = [p for p in os.path.abspath(base).split(os.sep) if p]
+        for library in self.config.get_destination_paths():
+            library_parts = [p for p in os.path.abspath(library).split(os.sep) if p]
+            if base_parts[:len(library_parts)] == library_parts:
+                return library
+        return None
+
     def base_or_none(self, for_writing: bool = False) -> Optional[str]:
         """The base, or None when it is unset. For read paths that may skip."""
         try:
