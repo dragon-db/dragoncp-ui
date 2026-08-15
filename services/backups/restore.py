@@ -412,8 +412,21 @@ class RestoreRunner:
             except Exception as error:  # noqa: BLE001 - files are already safe
                 self.log(f"⚠️  Could not index the swapped-out copy: {error}")
 
+        # Carried so the interface can say so rather than leaving it in a log.
+        # A dry run reported "Restored 2 file(s)" and looked exactly like a real
+        # one; the only way to find out nothing had happened was to open the
+        # transfer's log and read it.
+        summary['dry_run'] = dry_run
+
         if summary['failed'] and not summary['restored']:
             return False, f"Restore failed: {summary['failed']} file(s) could not be written", summary
+
+        if dry_run:
+            return True, (
+                f"Test mode: nothing was written. {summary['restored']} file(s) "
+                'would have been restored.'
+            ), summary
+
         if summary['failed']:
             return True, (
                 f"Restored {summary['restored']} file(s); "

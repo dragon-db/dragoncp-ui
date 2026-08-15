@@ -205,7 +205,11 @@ export function BackupsPage() {
       { captureId: restoreTarget.capture_id },
       {
         onSuccess: (result) => {
-          toast.success(result.message);
+          // A rehearsal does not get a tick. The message says test mode, but a
+          // green success toast is what the eye reads first, and it was the
+          // reason a dry run looked exactly like a real restore.
+          if (result.dry_run) toast.warning(result.message);
+          else toast.success(result.message);
           setRestoreTarget(null);
           setRestorePlan(null);
         },

@@ -29,6 +29,34 @@ from .identity import (
 from .layout import BackupLayout, CaptureLocation, recently_touched
 
 
+#: The reference a restore writes into the capture id it creates. Everything
+#: else puts a transfer id there.
+RESTORE_SOURCE_REF = 'restore'
+
+DEFAULT_REASON = 'sync_replace'
+RESTORE_REASON = 'restore_swap'
+
+
+def reason_from(location: CaptureLocation) -> str:
+    """
+    Why a capture exists, worked out from its folder name.
+
+    Derived from the path rather than remembered in a column, because the tree
+    is the source of truth and the database is an index over it — a reason that
+    only existed in a row would be invented afresh as "replaced by a sync" every
+    time somebody rebuilt.
+
+    That is not hypothetical: the capture a RESTORE creates — the copy of what
+    you just replaced, and therefore the one to restore if you want to undo —
+    was being labelled as though an ordinary sync had displaced it. The one
+    version a person is most likely to go looking for was the one the list
+    described wrongly.
+    """
+    if (location.source_ref or '').strip().lower() == RESTORE_SOURCE_REF:
+        return RESTORE_REASON
+    return DEFAULT_REASON
+
+
 @dataclass
 class RebuildResult:
     indexed: int = 0
@@ -82,7 +110,7 @@ class BackupIndexer:
             'captured_at': location.captured_at.isoformat().replace('+00:00', 'Z'),
             'source_transfer_id': carried.get('source_transfer_id'),
             'source_ref': location.source_ref,
-            'reason': carried.get('reason') or 'sync_replace',
+            'reason': carried.get('reason') or reason_from(location),
             'kind': location.kind,
             'file_count': len(files),
             'total_size': sum(f['file_size'] for f in files),

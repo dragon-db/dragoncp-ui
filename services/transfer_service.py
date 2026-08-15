@@ -985,6 +985,10 @@ class TransferService:
             log_count = len(tail)
             del tail[:-SOCKET_LOG_TAIL]
 
+            # A simulation moves real bytes between local fixture files even in
+            # test mode, so its completion message must not claim otherwise.
+            is_simulation = bool(existing.get('is_simulation'))
+
             # Whether the last line actually WRITTEN is a progress line. This
             # has to track the database, not the in-memory tail: when the write
             # interval skips a tick the two diverge, and replacing based on the
@@ -1092,7 +1096,15 @@ class TransferService:
                 print(f"🛑 Transfer {transfer_id} stopped by user")
             elif return_code == 0:
                 status = 'completed'
-                progress = 'Transfer completed successfully!'
+                # Says so in the row, not only in the log. A rehearsal and a
+                # real transfer both finished with code 0 and both recorded
+                # "completed successfully", so a week later the history could
+                # not tell you which runs had actually moved anything.
+                progress = (
+                    'Test mode: nothing was transferred (rsync ran as a dry run)'
+                    if test_mode_enabled() and not is_simulation
+                    else 'Transfer completed successfully!'
+                )
                 print(f"✅ Transfer {transfer_id} completed successfully")
             else:
                 status = 'failed'
