@@ -438,10 +438,7 @@ export function BackupsPage() {
           <BackupHistory />
         </TabsContent>
 
-        <TabsContent
-          value="library"
-          className="flex flex-col gap-4 lg:min-h-0 lg:flex-1"
-        >
+        <TabsContent value="library" className="flex flex-col gap-4 lg:min-h-0 lg:flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex rounded-lg border border-border p-0.5">
               {LIBRARIES.map((entry) => (

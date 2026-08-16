@@ -405,6 +405,42 @@ class RestoreRunner:
             if operation.replaces:
                 summary['replaced'] += 1
 
+        # ---- 3b. drop what was kept for files that never moved -------------
+        #
+        # Step 1 keeps the current occupant by giving it a SECOND NAME, which is
+        # only safe because it is about to be replaced. When its write fails it
+        # is not replaced, so the library file and the stored copy stay one file
+        # under two names — indefinitely, and indexed as a backup. An in-place
+        # edit of the live file would then rewrite the "backup" too.
+        #
+        # Nothing is lost by dropping those: the original is still in the
+        # library, untouched, which is the whole reason its write failed.
+        if new_capture_path and not dry_run:
+            failed_paths = {f['file'] for f in summary['failures']}
+            for operation in plan.operations:
+                if operation.relative_path not in failed_paths or not operation.replaces:
+                    continue
+                kept = os.path.join(new_capture_path, os.path.basename(operation.replaces))
+                try:
+                    if os.path.exists(kept):
+                        os.remove(kept)
+                        self.log(
+                            'Discarded the kept copy of '
+                            f"{os.path.basename(operation.replaces)} — it was never replaced"
+                        )
+                except OSError as error:  # noqa: PERF203 - one file, one message
+                    self.log(f"⚠️  Could not discard an unused kept copy: {error}")
+
+            # Nothing was displaced after all. An empty capture folder indexes
+            # as a backup holding no files, which is worse than no row at all.
+            try:
+                if not os.listdir(new_capture_path):
+                    os.rmdir(new_capture_path)
+                    new_capture_path = None
+                    summary['captured'] = None
+            except OSError:
+                pass
+
         # ---- 4. index the capture the restore itself created --------------
         if new_capture_path and not dry_run:
             try:

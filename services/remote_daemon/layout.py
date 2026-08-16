@@ -97,14 +97,22 @@ def module_roots(settings) -> List[Tuple[str, str]]:
     """
     The libraries to publish, as (published name, remote directory).
 
-    A library with no directory configured is skipped rather than published as
-    an empty path — rsync would happily serve the whole filesystem from one.
+    Normalised BEFORE it is judged, which is the whole point. The check used to
+    come first, so `/` passed it as a non-empty string and then had its trailing
+    slash stripped to `''` — an empty root that `_within` treats as containing
+    every path on the machine. Publishing it would have offered the entire
+    filesystem read-only, and mapped any source path onto it.
+
+    A library with no directory, or one set to the filesystem root, is therefore
+    skipped rather than published.
     """
     roots = []
     for name, key in MODULES:
-        root = (settings.get(key) or '').strip()
-        if root:
-            roots.append((name, root.rstrip('/')))
+        root = (settings.get(key) or '').strip().rstrip('/')
+        if not root or root == '.':
+            # Empty, or `/` reduced to nothing by the strip above.
+            continue
+        roots.append((name, root))
     return roots
 
 
@@ -117,6 +125,11 @@ def _within(root: str, path: str) -> Optional[str]:
     """
     root_parts = [p for p in root.strip('/').split('/') if p]
     path_parts = [p for p in path.strip('/').split('/') if p]
+    if not root_parts:
+        # An empty root matches everything. `module_roots` refuses to publish
+        # one, and this refuses to map onto one — the two together mean a
+        # misconfigured library cannot become an unrestricted mapping.
+        return None
     if path_parts[:len(root_parts)] != root_parts:
         return None
     return '/'.join(path_parts[len(root_parts):])

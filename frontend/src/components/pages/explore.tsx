@@ -461,7 +461,10 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
       { captureId: restoreTarget.backup_id },
       {
         onSuccess: (result) => {
-          toast.success(result.message);
+          // A rehearsal does not get a tick here either — this page can start
+          // exactly the same restore as the Backups page.
+          if (result.dry_run) toast.warning(result.message);
+          else toast.success(result.message);
           restoreRequest.current = null;
           setRestoreTarget(null);
           setRestorePlan(null);

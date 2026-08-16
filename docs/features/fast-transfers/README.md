@@ -238,8 +238,21 @@ fallback controls: the whole point is that they can be changed from the panel, a
 the moment transfers have already dropped to the slow route, without editing a
 file on the server and restarting.
 
-**Changing any of them takes effect on the next Install.** The panel reports when
-what is on the server is older than what is here.
+**Not all of them take effect the same way**, and the difference matters when
+something has gone wrong and you are trying to fix it:
+
+- `FAST_TRANSPORT_ENABLED` applies **immediately** — it is read when a transfer
+  chooses its route, so switching it off stops the next transfer using the fast
+  route with nothing else to do.
+- `FAST_TRANSPORT_ACCESS_MODE` and `FAST_TRANSPORT_LIFECYCLE` are saved
+  immediately but describe what gets **generated on the remote host**, so they
+  apply on the next **Install**. Switching to password-only and not reinstalling
+  changes nothing on the server.
+- The environment-file settings need the application restarted as well.
+
+The panel reports when what is installed no longer matches what is configured —
+including when its start-at-boot setting has drifted from the lifecycle you
+chose.
 
 ## 10. Endpoints
 

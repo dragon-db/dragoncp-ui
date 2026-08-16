@@ -18,6 +18,8 @@ import threading
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
+from env_flags import test_mode_enabled
+
 from .identity import (
     SlotIdentity, identify, media_type_for_library, new_capture_id, parse_capture_id,
 )
@@ -480,8 +482,18 @@ class BackupsService:
             daemon=True,
         ).start()
 
-        return True, f"Restoring {plan.slot_display}", {
-            **plan.as_dict(), 'transfer_id': transfer_id,
+        # Answered here, not by the worker. A restore is accepted and then runs
+        # on its own thread, so this response is sent long before the worker
+        # decides anything — the interface was reading a `dry_run` that could
+        # never have arrived in time, and dressed a rehearsal up as a success
+        # every time. Test mode is a property of the server, known now.
+        rehearsing = test_mode_enabled()
+        opening = (
+            f"Test mode: rehearsing a restore of {plan.slot_display}, nothing will be written"
+            if rehearsing else f"Restoring {plan.slot_display}"
+        )
+        return True, opening, {
+            **plan.as_dict(), 'transfer_id': transfer_id, 'dry_run': rehearsing,
         }
 
     def _reserve(self, plan) -> Tuple[bool, str, str]:
@@ -564,10 +576,19 @@ class BackupsService:
                         plan, ok: bool, message: str, summary: Dict,
                         initiator=None) -> None:
         now = datetime.now().isoformat()
-        completion_succeeded = ok and not summary.get('failed')
-        completion_status = 'completed' if completion_succeeded else 'failed'
+
+        # A rehearsal is not a restore, and everything below has to agree on
+        # that. It used to be judged on `ok` alone, so a test-mode run — which
+        # writes nothing — stamped the capture as restored, recorded a real
+        # "Restored ..." entry against the person who asked, and handed
+        # retention a capture id for a folder that was never created. Retention
+        # could then prune a genuine version to make room for a phantom one.
+        rehearsed = bool(summary.get('dry_run'))
+        completion_succeeded = ok and not summary.get('failed') and not rehearsed
+
+        completion_status = 'completed' if (completion_succeeded or rehearsed) else 'failed'
         completion_message = message
-        if ok and not completion_succeeded:
+        if ok and not completion_succeeded and not rehearsed:
             completion_message = f"Restore incomplete: {message}"
 
         try:
@@ -612,14 +633,21 @@ class BackupsService:
         # asynchronous, so at acceptance nothing has been restored yet and the
         # run may still fail. The entry names the person who asked for it and
         # the outcome they actually got.
+        if rehearsed:
+            summary_text = f"Rehearsed a restore of {plan.slot_display} (test mode, nothing written)"
+        elif completion_succeeded:
+            summary_text = f"Restored {plan.slot_display} from a backup"
+        else:
+            summary_text = f"Failed to restore {plan.slot_display} from a backup"
+
         record(
             'backup.restore',
-            (f"Restored {plan.slot_display} from a backup" if completion_succeeded
-             else f"Failed to restore {plan.slot_display} from a backup"),
+            summary_text,
             target_type='backup_capture', target_id=capture_id,
             target_label=plan.slot_display,
-            detail={'files': summary.get('restored'), 'failed': summary.get('failed')},
-            outcome=OUTCOME_OK if completion_succeeded else OUTCOME_FAILED,
+            detail={'files': summary.get('restored'), 'failed': summary.get('failed'),
+                    'dry_run': rehearsed},
+            outcome=OUTCOME_OK if (completion_succeeded or rehearsed) else OUTCOME_FAILED,
             actor=initiator,
         )
 

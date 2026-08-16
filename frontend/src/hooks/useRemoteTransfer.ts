@@ -12,11 +12,7 @@ import api from "@/lib/api";
  */
 
 export type RemoteTransferHealthState =
-  | "ready"
-  | "blocked"
-  | "auth_failed"
-  | "unreachable"
-  | "error";
+  "ready" | "blocked" | "auth_failed" | "unreachable" | "error";
 
 export interface RemoteTransferStatus {
   configured: boolean;
@@ -92,7 +88,9 @@ export function useRemoteTransferAction() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (action: "install" | "start" | "stop" | "restart" | "uninstall" | "rotate-password") => {
+    mutationFn: async (
+      action: "install" | "start" | "stop" | "restart" | "uninstall" | "rotate-password"
+    ) => {
       const response = await api.post<ActionResponse>(`/remote-transfer/${action}`);
       return response.data;
     },

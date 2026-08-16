@@ -63,14 +63,22 @@ function StatusLight({ state, running }: { state: RemoteTransferHealthState; run
       <span
         className={cn(
           "relative inline-flex size-2.5 rounded-full",
-          running ? HEALTH_TONE[state] : HEALTH_TONE.unreachable,
+          running ? HEALTH_TONE[state] : HEALTH_TONE.unreachable
         )}
       />
     </span>
   );
 }
 
-function Fact({ label, value, tone }: { label: string; value: string; tone?: "good" | "warn" | "bad" }) {
+function Fact({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "good" | "warn" | "bad";
+}) {
   return (
     <div className="flex items-center justify-between gap-3 py-1.5 text-sm">
       <span className="text-neutral-400">{label}</span>
@@ -80,7 +88,7 @@ function Fact({ label, value, tone }: { label: string; value: string; tone?: "go
           tone === "good" && "text-emerald-300",
           tone === "warn" && "text-amber-300",
           tone === "bad" && "text-red-300",
-          !tone && "text-neutral-200",
+          !tone && "text-neutral-200"
         )}
       >
         {value}
@@ -108,7 +116,7 @@ export function RemoteTransferPanel() {
 
   const run = async (
     name: "install" | "start" | "stop" | "restart" | "uninstall" | "rotate-password",
-    describe: string,
+    describe: string
   ) => {
     try {
       const result = await action.mutateAsync(name);
@@ -156,8 +164,8 @@ export function RemoteTransferPanel() {
               Fast transfers
             </CardTitle>
             <CardDescription className="text-neutral-400">
-              A transfer server on the media host that moves files about three times faster
-              than SSH. Transfers fall back to SSH on their own whenever it is unavailable.
+              A transfer server on the media host that moves files about three times faster than
+              SSH. Transfers fall back to SSH on their own whenever it is unavailable.
             </CardDescription>
           </div>
           <Button
@@ -179,8 +187,8 @@ export function RemoteTransferPanel() {
 
         {statusQuery.isError && (
           <p className="text-sm text-red-300">
-            Could not read the transfer server's status. The backend may need restarting
-            after an update.
+            Could not read the transfer server's status. The backend may need restarting after an
+            update.
           </p>
         )}
 
@@ -204,13 +212,12 @@ export function RemoteTransferPanel() {
                 <div className="space-y-2 text-sm">
                   <p className="text-amber-200">
                     This server now reaches the media host from a different address than the
-                    transfer server allows. Transfers are still running — over SSH, at the
-                    slower speed.
+                    transfer server allows. Transfers are still running — over SSH, at the slower
+                    speed.
                   </p>
                   <p className="text-xs text-neutral-400">
                     Either put the new address in <code>RSYNC_DAEMON_ALLOWED_IP</code> and
-                    reinstall, or switch access to password-only below to get the speed back
-                    now.
+                    reinstall, or switch access to password-only below to get the speed back now.
                   </p>
                 </div>
               </div>
@@ -223,8 +230,16 @@ export function RemoteTransferPanel() {
             )}
 
             <div className="divide-y divide-neutral-800/70">
-              <Fact label="Installed" value={yesNo(server.installed)} tone={server.installed ? "good" : undefined} />
-              <Fact label="Running" value={server.service_state ?? "Unknown"} tone={server.service_state === "active" ? "good" : undefined} />
+              <Fact
+                label="Installed"
+                value={yesNo(server.installed)}
+                tone={server.installed ? "good" : undefined}
+              />
+              <Fact
+                label="Running"
+                value={server.service_state ?? "Unknown"}
+                tone={server.service_state === "active" ? "good" : undefined}
+              />
               <Fact
                 label="Answering us"
                 value={server.health.ok ? "Yes" : "No"}
@@ -254,19 +269,38 @@ export function RemoteTransferPanel() {
             <Separator className="bg-neutral-800" />
 
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" onClick={() => run("install", "Install the transfer server")} disabled={busy || !server.configured}>
+              <Button
+                size="sm"
+                onClick={() => run("install", "Install the transfer server")}
+                disabled={busy || !server.configured}
+              >
                 <IconRocket className="size-4" />
                 {server.installed ? "Reinstall" : "Install"}
               </Button>
-              <Button size="sm" variant="outline" onClick={() => run("start", "Start the transfer server")} disabled={busy || !server.installed}>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => run("start", "Start the transfer server")}
+                disabled={busy || !server.installed}
+              >
                 <IconPlayerPlay className="size-4" />
                 Start
               </Button>
-              <Button size="sm" variant="outline" onClick={() => run("stop", "Stop the transfer server")} disabled={busy || !server.installed}>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => run("stop", "Stop the transfer server")}
+                disabled={busy || !server.installed}
+              >
                 <IconPlayerStop className="size-4" />
                 Stop
               </Button>
-              <Button size="sm" variant="outline" onClick={() => run("rotate-password", "Change the password")} disabled={busy || !server.installed}>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => run("rotate-password", "Change the password")}
+                disabled={busy || !server.installed}
+              >
                 <IconKey className="size-4" />
                 New password
               </Button>
@@ -305,7 +339,9 @@ export function RemoteTransferPanel() {
                     saveSetting(
                       "FAST_TRANSPORT_ENABLED",
                       checked,
-                      checked ? "Transfers will use the fast route when it is available" : "Transfers will use SSH",
+                      checked
+                        ? "Transfers will use the fast route when it is available"
+                        : "Transfers will use SSH"
                     )
                   }
                 />
@@ -328,7 +364,7 @@ export function RemoteTransferPanel() {
                       value,
                       value === "restricted"
                         ? "Only the allowed address may connect — reinstall to apply"
-                        : "Any address may connect, password only — reinstall to apply",
+                        : "Any address may connect, password only — reinstall to apply"
                     );
                   }}
                 >
@@ -384,9 +420,18 @@ export function RemoteTransferPanel() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => {
-                        navigator.clipboard?.writeText(detected);
-                        toast.success("Copied");
+                      onClick={async () => {
+                        // Only claim it worked once it has. The clipboard is
+                        // unavailable outside a secure context and can be
+                        // refused by permission, and saying "Copied" either way
+                        // means pasting nothing into the environment file.
+                        try {
+                          if (!navigator.clipboard) throw new Error("unavailable");
+                          await navigator.clipboard.writeText(detected);
+                          toast.success("Copied");
+                        } catch {
+                          toast.error("Could not copy — select the address and copy it by hand");
+                        }
                       }}
                     >
                       <IconCopy className="size-4" />
@@ -397,7 +442,7 @@ export function RemoteTransferPanel() {
                         className={cn(
                           server.address_matches
                             ? "border-emerald-500/40 text-emerald-300"
-                            : "border-amber-500/40 text-amber-300",
+                            : "border-amber-500/40 text-amber-300"
                         )}
                       >
                         {server.address_matches ? (
@@ -413,9 +458,9 @@ export function RemoteTransferPanel() {
                 )}
               </div>
               <p className="text-xs text-neutral-500">
-                Asked of the media host directly, so it is exact and goes nowhere else. To
-                use it, put it in <code>RSYNC_DAEMON_ALLOWED_IP</code> in the environment
-                file on this server and reinstall.
+                Asked of the media host directly, so it is exact and goes nowhere else. To use it,
+                put it in <code>RSYNC_DAEMON_ALLOWED_IP</code> in the environment file on this
+                server and reinstall.
               </p>
             </div>
           </>

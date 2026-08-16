@@ -171,11 +171,23 @@ class RemoteDaemonService:
             # so the secret never exists at the umask's default permissions.
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, 'w') as handle:
+                # Narrowed BEFORE the secret is written, not after. The mode
+                # passed to os.open only applies when the file is created, so
+                # rotating over an existing world-readable file would otherwise
+                # write the new password into it at the old permissions and only
+                # narrow them afterwards — a window a crash can stop inside.
+                os.fchmod(handle.fileno(), 0o600)
                 handle.write(value + '\n')
-            os.chmod(path, 0o600)
         except OSError as error:
             raise RemoteDaemonError(f"Could not store the password: {error}")
         return value
+
+    def _password_present(self) -> bool:
+        """Whether a password has been generated, never raising to say so."""
+        try:
+            return bool(self.password(create=False))
+        except RemoteDaemonError:
+            return False
 
     def password_file_ok(self) -> bool:
         """rsync refuses a password file others can read, and so should we."""
@@ -282,10 +294,14 @@ class RemoteDaemonService:
                     + ', '.join(missing)
                 )
 
-            directory = layout.remote_dir(home)
+            # SECURITY: shell-quoted like every other remote path in this
+            # application. The home directory is not attacker-controlled today,
+            # but the rule exists so that no path reaches a remote shell
+            # unquoted — and an exception is how the rule stops being one.
+            directory = ssh._quote_remote_path(layout.remote_dir(home))
+            units = ssh._quote_remote_path(layout.unit_dir(home))
             code, _, err = self._run(
-                ssh, f'mkdir -p "{directory}" "{layout.unit_dir(home)}" '
-                     f'&& chmod 700 "{directory}"'
+                ssh, f'mkdir -p {directory} {units} && chmod 700 {directory}'
             )
             if code != 0:
                 return False, f"Could not create the remote directory: {err or code}"
@@ -311,7 +327,12 @@ class RemoteDaemonService:
             # installing it, so that "only while transfers run" is a real
             # setting rather than something an operator has to remember to undo.
             action = 'enable' if self.start_at_boot else 'disable'
-            self._run(ssh, f'systemctl --user {action} {layout.UNIT_NAME}')
+            code, _, err = self._run(ssh, f'systemctl --user {action} {layout.UNIT_NAME}')
+            if code != 0:
+                return False, (
+                    f"Installed, but could not set it to {action} at boot: {err or code}. "
+                    'Its start-up behaviour is not what the settings say.'
+                )
 
             code, _, err = self._run(ssh, f'systemctl --user restart {layout.UNIT_NAME}')
             if code != 0:
@@ -319,6 +340,13 @@ class RemoteDaemonService:
 
         self._forget_probe()
         result = self._probe_now(retries=3)
+
+        # Installing starts it so the result can be verified, but on demand
+        # means on demand: an install with nothing to transfer must not leave a
+        # port listening. Released after the check, not before it.
+        if not self.start_at_boot:
+            self.release(lambda: False)
+
         if result.ok:
             return True, 'The transfer server is installed and answering'
         if result.state == probe.BLOCKED:
@@ -355,8 +383,27 @@ class RemoteDaemonService:
         """
         with self._ssh() as ssh:
             home = self._home(ssh)
-            self._run(ssh, f'systemctl --user stop {layout.UNIT_NAME}')
-            self._run(ssh, f'systemctl --user disable {layout.UNIT_NAME}')
+
+            # Refuse to remove the configuration while the service is still up.
+            # Deleting the files under a running daemon leaves a listener with
+            # no configuration to inspect and no unit to stop it by — the worst
+            # of both, and it used to be reported as a successful removal.
+            code, _, err = self._run(ssh, f'systemctl --user stop {layout.UNIT_NAME}')
+            if code != 0:
+                return False, (
+                    f"Could not stop the transfer server, so nothing was removed: "
+                    f"{err or code}"
+                )
+            if self._probe_now().running:
+                return False, (
+                    'The transfer server is still answering after being asked to '
+                    'stop, so nothing was removed.'
+                )
+
+            code, _, err = self._run(ssh, f'systemctl --user disable {layout.UNIT_NAME}')
+            if code != 0:
+                print(f"⚠️  Could not unregister the transfer server: {err or code}")
+
             for path in layout.installed_paths(home):
                 quoted = ssh._quote_remote_path(path)
                 code, _, err = ssh.execute_command(f'rm -rf {quoted}')
@@ -424,6 +471,26 @@ class RemoteDaemonService:
             if not started:
                 return False, message
             return self.health(refresh=True).ok, message
+
+    @contextmanager
+    def borrowed(self, still_needed: Optional[Callable[[], bool]] = None):
+        """
+        Use the transfer server for one short job, then let it go.
+
+        For work that starts the server but owns no completion watcher to stop
+        it — a standalone safety dry run, an Explore rehearsal. Those move
+        metadata, take seconds, and used to leave an on-demand server listening
+        until some unrelated transfer happened to finish. That is the opposite
+        of what "only while transfers run" promises.
+
+        `still_needed` defaults to "nothing else is using it", and a caller with
+        a better answer (the coordinator knows about queued transfers) passes
+        its own.
+        """
+        try:
+            yield
+        finally:
+            self.release(still_needed or (lambda: False))
 
     def release(self, still_needed: Callable[[], bool]) -> None:
         """
@@ -557,11 +624,16 @@ class RemoteDaemonService:
             'start_at_boot': self.start_at_boot,
             'enabled_for_transfers': self.settings.get_bool('FAST_TRANSPORT_ENABLED'),
             'libraries': [name for name, _ in roots],
-            'password_stored': bool(self.password(create=False)),
+            # Never allowed to raise. An unreadable password file is something
+            # status exists to REPORT, and reading it here used to happen before
+            # the guarded section below — so the one situation the panel most
+            # needs to describe was the one that made it return a 500 instead.
+            'password_stored': self._password_present(),
             'password_file_secure': self.password_file_ok(),
             'installed': None,
             'service_state': None,
             'service_enabled': None,
+            'lifecycle_matches': None,
             'up_to_date': None,
             'address_matches': None,
             'detected_address_differs': None,
@@ -584,10 +656,25 @@ class RemoteDaemonService:
                 state['service_state'] = (active or '').strip() or 'unknown'
                 state['service_enabled'] = (enabled or '').strip() or 'unknown'
 
+                # Whether it will come back on its own matches the setting that
+                # says it should. This is NOT part of the configuration
+                # fingerprint, because it is not in the configuration file — it
+                # is a fact about the service manager, so it has to be asked of
+                # the service manager. Without this, a server set to "always"
+                # but actually disabled reported itself fully up to date and
+                # then failed to return after a reboot.
+                if state['installed'] and state['service_enabled'] != 'unknown':
+                    actually_enabled = state['service_enabled'].startswith('enabled')
+                    state['lifecycle_matches'] = actually_enabled == self.start_at_boot
+
                 if conf:
                     expected = render.fingerprint(
                         self.port, self.access_mode, self.allowed_address, roots)
-                    state['up_to_date'] = render.installed_fingerprint(conf) == expected
+                    matches = render.installed_fingerprint(conf) == expected
+                    # A settings change that has not been applied is a settings
+                    # change that has not been applied, whichever half of it
+                    # drifted.
+                    state['up_to_date'] = matches and state['lifecycle_matches'] is not False
 
                 # Ask the far end what address we arrive from and compare it with
                 # what the transfer server is told to allow. This is what turns
@@ -635,6 +722,13 @@ class RemoteDaemonService:
                         'reinstall to apply them')
             return ('Running, but it will not serve this library. Check the '
                     'allowed address and the configured media directories.')
+        if health['ok'] and state.get('lifecycle_matches') is False:
+            return (
+                'Answering, but it is set to '
+                + ('stay off at boot when it should stay on'
+                   if state['start_at_boot'] else 'start at boot when it should not')
+                + ' — reinstall to apply'
+            )
         if health['ok'] and state['up_to_date'] is False:
             return 'Answering, but its settings are older than the ones here — reinstall to apply them'
         if health['ok']:

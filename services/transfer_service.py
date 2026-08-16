@@ -9,6 +9,7 @@ import subprocess
 import threading
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
@@ -315,6 +316,37 @@ class TransferService:
         return TransferRoute(SSH, self._ssh_source(source_path, trailing_slash),
                              self._ssh_args())
 
+    @contextmanager
+    def _short_lived_route(self):
+        """
+        For a dry run, which starts the transfer server but owns no watcher.
+
+        A dry run moves metadata, so it gains nothing from the faster route
+        except proving the route WORKS before a transfer commits to it — a
+        misconfigured library or a refused address is much better found here.
+        What it must not do is leave the server listening afterwards, which is
+        what happened: releasing only ever ran when a transfer completed, and a
+        dry run is not a transfer.
+        """
+        if self.remote_daemon is None:
+            yield
+            return
+        with self.remote_daemon.borrowed(self._daemon_still_needed):
+            yield
+
+    def _daemon_still_needed(self) -> bool:
+        """Whether a real transfer is using the server right now."""
+        coordinator = getattr(self.queue_manager, 'coordinator', None)
+        checker = getattr(coordinator, '_transfers_still_active', None)
+        if callable(checker):
+            return bool(checker())
+        try:
+            active = self.transfer_model.get_all(
+                statuses=['running', 'queued', 'pending'], include_logs=False)
+        except Exception:  # noqa: BLE001 - unsure means leave it running
+            return True
+        return any(not row.get('is_simulation') for row in active)
+
     def _ssh_args(self) -> List[str]:
         """The `-e ssh ...` argument pair the SSH route needs."""
         ssh_key_path = self._resolved_key_path()
@@ -489,7 +521,22 @@ class TransferService:
                 'deleted_files': [],
                 'incoming_files': []
             }
-    
+        finally:
+            # This dry run may have started the transfer server, and it owns no
+            # completion watcher to stop it again. Released on every path out,
+            # including the timeout and error returns above — a check that fails
+            # is exactly when nothing follows to clean up after it.
+            self._release_short_lived_route()
+
+    def _release_short_lived_route(self) -> None:
+        """Let the transfer server go after a job that owns no watcher."""
+        if self.remote_daemon is None:
+            return
+        try:
+            self.remote_daemon.release(self._daemon_still_needed)
+        except Exception as error:  # noqa: BLE001 - housekeeping only
+            print(f"⚠️  Could not release the transfer server: {error}")
+
     def _count_local_media_files(self, dest_path: str) -> int:
         """Count media files in the local destination directory"""
         media_extensions = ('.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.flv', '.webm', '.ts')
@@ -875,6 +922,11 @@ class TransferService:
             return False, -1, '', f"The dry run took longer than {timeout}s and was stopped"
         except OSError as error:
             return False, -1, '', f"Could not run rsync: {error}"
+
+        finally:
+            # Same as the safety dry run: this can start the transfer server and
+            # has no watcher of its own to stop it.
+            self._release_short_lived_route()
 
         elapsed = int((time.time() - started) * 1000)
         print(f"🧪 Explore dry run finished in {elapsed}ms with code {result.returncode}")

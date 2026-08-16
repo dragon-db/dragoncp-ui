@@ -314,9 +314,10 @@ today's speed and the status panel says why. Nothing ever stops working.
 ### 5.3 Smaller pieces
 
 - A column on the transfer recording the route, and a badge in the UI.
-- Daemon address, port and secret in the environment file with the other
+- Daemon address and port in the environment file with the other
   security-boundary settings; the on/off switch in the database where an
-  operator can change it without a restart.
+  operator can change it without a restart. The password is in neither — it is
+  generated and kept in its own owner-only file.
 - A remote status panel: daemon reachable or not, with buttons to start and stop
   it over the existing SSH connection. This is the "manage it from here"
   requirement, and it applies to the daemon just as much as to a custom agent.

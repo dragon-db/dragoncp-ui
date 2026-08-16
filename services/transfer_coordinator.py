@@ -277,6 +277,9 @@ class TransferCoordinator:
             else:
                 # If failed to start, unregister from queue manager
                 self.queue_manager.unregister_transfer(transfer_id)
+                # No rsync means no completion watcher, so nothing else would
+                # ever let the transfer server go.
+                self._release_fast_route()
                 return (False, 'failed')  # Failed to start
         
         return (False, 'failed')  # Shouldn't reach here, but return failure
@@ -292,7 +295,10 @@ class TransferCoordinator:
         try:
             active = self.transfer_model.get_all(
                 statuses=['running', 'queued', 'pending'], include_logs=False)
-            return bool(active)
+            # Simulations copy fixture files on this machine and never touch the
+            # remote host, so counting one as demand held the transfer server
+            # open for work that could not possibly use it.
+            return any(not row.get('is_simulation') for row in active)
         except Exception as error:  # noqa: BLE001
             # Unsure means leave it running. A transfer server left up costs a
             # listening port; one stopped underneath a running transfer costs
@@ -328,6 +334,10 @@ class TransferCoordinator:
                     # a fresh watcher that finalizes them when it really ends.
                     print(f"⏸️  Transfer {transfer_id} paused, releasing queue slot")
                     self.queue_manager.unregister_transfer(transfer_id, dest_path)
+                    # A pause can last hours. Leaving the transfer server up for
+                    # all of it is exactly what "only while transfers run" is
+                    # supposed to prevent, and resuming starts it again anyway.
+                    self._release_fast_route()
                     break
 
                 # Unregister from queue manager (will promote next queued transfer)
@@ -624,7 +634,9 @@ class TransferCoordinator:
         else:
             # If failed to start, unregister from queue manager
             self.queue_manager.unregister_transfer(transfer_id)
-        
+            # Same as the first start path: no rsync, no watcher, so release here.
+            self._release_fast_route()
+
         return success
     
     def get_queue_status(self) -> Dict:

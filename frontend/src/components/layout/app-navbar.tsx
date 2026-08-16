@@ -6,13 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { RealtimeStatus } from "@/components/layout/realtime-status";
-import {
-  IconHome,
-  IconChevronRight,
-  IconBell,
-  IconFlask,
-  IconSettings,
-} from "@tabler/icons-react";
+import { IconHome, IconChevronRight, IconBell, IconFlask, IconSettings } from "@tabler/icons-react";
 
 interface Crumb {
   section: string;

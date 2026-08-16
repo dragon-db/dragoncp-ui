@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from services.remote_daemon import layout, probe, render
-from services.remote_daemon.service import RemoteDaemonService
+from services.remote_daemon.service import RemoteDaemonError, RemoteDaemonService
 
 
 class FakeSettings:
@@ -529,3 +529,91 @@ class ServiceTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReviewFindingsTests(unittest.TestCase):
+    """
+    Failure and lifecycle paths raised in review. Each one reported success
+    while leaving the installation in a state the operator was not told about.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch('services.remote_daemon.service._app_dir', return_value=self.tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def build(self, config=None, settings=None):
+        return RemoteDaemonService(FakeConfig(config), FakeSettings(settings))
+
+    # ---- a filesystem root must never be published ------------------------
+
+    def test_a_root_library_is_not_published(self):
+        # '/' survived the truthiness check and then became '' — an empty root
+        # that matches every path on the machine.
+        settings = FakeSettings({'MOVIE_PATH': '/', 'TVSHOW_PATH': '', 'ANIME_PATH': '  '})
+        self.assertEqual(layout.module_roots(settings), [])
+
+    def test_nothing_maps_onto_an_empty_root(self):
+        settings = FakeSettings({'MOVIE_PATH': '/', 'TVSHOW_PATH': '', 'ANIME_PATH': ''})
+        for path in ('/etc/shadow', '/', '/home/someone/private'):
+            self.assertIsNone(layout.source_for(settings, path), path)
+
+    def test_a_trailing_slash_still_publishes_normally(self):
+        settings = FakeSettings({'MOVIE_PATH': '/srv/media/movies/'})
+        self.assertIn(('movies', '/srv/media/movies'), layout.module_roots(settings))
+
+    # ---- uninstall must not lie -------------------------------------------
+
+    def test_uninstall_refuses_when_the_service_will_not_stop(self):
+        service = self.build()
+        with patch.object(RemoteDaemonService, '_ssh'), \
+                patch.object(RemoteDaemonService, '_home', return_value='/home/someone'), \
+                patch.object(RemoteDaemonService, '_run', return_value=(1, '', 'stop failed')):
+            ok, message = service.uninstall()
+        self.assertFalse(ok)
+        self.assertIn('nothing was removed', message)
+
+    def test_uninstall_refuses_while_it_is_still_answering(self):
+        service = self.build()
+        with patch.object(RemoteDaemonService, '_ssh'), \
+                patch.object(RemoteDaemonService, '_home', return_value='/home/someone'), \
+                patch.object(RemoteDaemonService, '_run', return_value=(0, '', '')), \
+                patch.object(RemoteDaemonService, '_probe_now',
+                             return_value=probe.ProbeResult(probe.READY, 'Ready')):
+            ok, message = service.uninstall()
+        self.assertFalse(ok)
+        self.assertIn('still answering', message)
+
+    # ---- lifecycle drift must be visible ----------------------------------
+
+    def test_a_boot_setting_that_did_not_apply_is_not_reported_as_up_to_date(self):
+        service = self.build(settings={'FAST_TRANSPORT_LIFECYCLE': 'always'})
+        state = {
+            'installed': True, 'service_enabled': 'disabled', 'start_at_boot': True,
+            'up_to_date': True, 'configured': True, 'reachable_over_ssh': True,
+            'lifecycle_matches': False, 'configuration_problem': '',
+            'health': probe.ProbeResult(probe.READY, 'Ready').to_dict(),
+            'service_state': 'active',
+        }
+        self.assertIn('boot', RemoteDaemonService._summarise(state))
+
+    def test_status_survives_an_unreadable_password_file(self):
+        service = self.build()
+        with patch.object(RemoteDaemonService, 'password',
+                          side_effect=RemoteDaemonError('permission denied')):
+            self.assertFalse(service._password_present())
+
+    # ---- the stored password is never briefly readable --------------------
+
+    def test_rotating_over_a_readable_file_narrows_before_writing(self):
+        service = self.build()
+        path = os.path.join(self.tmp.name, 'dragoncp_rsyncd.secret')
+        with open(path, 'w') as handle:
+            handle.write('old\n')
+        os.chmod(path, 0o644)
+
+        service.rotate_password()
+        self.assertEqual(os.stat(path).st_mode & 0o077, 0)
+        self.assertTrue(service.password_file_ok())
