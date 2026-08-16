@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """
-Two ways a restore could quietly damage the thing it exists to protect.
+A restore must never leave a live library file welded to a stored backup.
 
-Both were found in review, both reproduced, and neither crashed anything — which
-is why they need tests rather than care.
+These RUN the restore rather than reading the code that performs it. The
+previous version of this file mostly asserted on source strings, and that is
+exactly why it passed while a real hole stayed open: reading the code only ever
+proves the code says what you expected it to say.
 
-  1. A REHEARSAL counted as a restore. Test mode writes nothing, but the run
-     still stamped the capture as restored, recorded a real "Restored ..."
-     against whoever asked, and handed retention a capture id for a folder that
-     was never created. Retention could then prune a genuine version to make
-     room for a phantom.
+A file is kept by giving it a SECOND NAME when the backup area shares a disk
+with the media — instant, and free. That is safe only while the caller really
+does destroy the original immediately afterwards. Three things can stop it:
 
-  2. A FAILED restore left the live file hardlinked to an indexed backup. The
-     current occupant is kept by giving it a second name — safe only because it
-     is about to be replaced. When the replacement fails it is not replaced, so
-     the two stay one file under two names, indefinitely, indexed as a backup.
+  1. the write of the replacement fails,
+  2. the write succeeds but removing the OLD filename fails, which is reported
+     as a success with a warning, and
+  3. a rehearsal, which writes nothing at all by design.
+
+All three end with the original still in the library, and in each case the kept
+copy must not survive as an indexed backup pointing at the same bytes.
 """
 
 import os
@@ -28,95 +31,235 @@ from unittest.mock import MagicMock, patch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from services.backups import preserve
-from services.backups.restore import RestoreRunner
+from services.backups.restore import RestoreOperation, RestorePlan, RestoreRunner
 
 
-class RehearsalIsNotARestoreTests(unittest.TestCase):
-    """
-    Pinned by reading the finaliser, because the damage is in what it triggers
-    downstream rather than in a value it returns.
-    """
+class RestoreOnDiskTestCase(unittest.TestCase):
+    """A real backup tree, a real library, and a real RestoreRunner."""
 
-    def source(self):
-        return (REPO_ROOT / 'services' / 'backups' / 'service.py').read_text()
-
-    def body(self):
-        return self.source().split('def _finish_restore')[1].split('\n    def ')[0]
-
-    def test_a_rehearsal_is_not_treated_as_a_successful_restore(self):
-        body = self.body()
-        self.assertIn("rehearsed = bool(summary.get('dry_run'))", body)
-        self.assertIn('and not rehearsed', body)
-
-    def test_a_rehearsal_does_not_stamp_the_capture_as_restored(self):
-        body = self.body()
-        stamp = body.split("'restored_at': now")[0]
-        # The stamp is guarded by completion_succeeded, which now excludes a
-        # rehearsal. If that guard is ever loosened this fails.
-        self.assertIn('if completion_succeeded:', stamp)
-
-    def test_a_rehearsal_does_not_run_retention(self):
-        body = self.body()
-        self.assertIn("if completion_succeeded and summary.get('captured')", body)
-
-    def test_a_rehearsal_is_recorded_as_a_rehearsal(self):
-        body = self.body()
-        self.assertIn('Rehearsed a restore of', body)
-        self.assertIn("'dry_run': rehearsed", body)
-
-    def test_the_endpoint_answers_dry_run_itself(self):
-        # The worker decides far too late: the response is already sent. Test
-        # mode is a property of the server and is knowable at accept time.
-        accept = self.source().split('def restore(')[1].split('\n    def ')[0]
-        self.assertIn('test_mode_enabled()', accept)
-        self.assertIn("'dry_run': rehearsing", accept)
-
-
-class FailedRestoreLeavesNothingSharedTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.library = os.path.join(self.tmp, 'library')
-        self.capture = os.path.join(self.tmp, 'capture')
+        self.backups = os.path.join(self.tmp, 'backups')
         os.makedirs(self.library)
-        os.makedirs(self.capture)
-        self.live = os.path.join(self.library, 'episode.mkv')
+        os.makedirs(self.backups)
+
+        # What is in the library now, and the older version being restored.
+        self.live = os.path.join(self.library, 'Show - S01E01 [WEBDL-1080p].mkv')
         with open(self.live, 'wb') as handle:
-            handle.write(b'the copy that is already there')
+            handle.write(b'the copy currently in the library')
 
-    def runner(self):
-        return RestoreRunner.__new__(RestoreRunner)
+        self.stored_dir = os.path.join(self.backups, 'stored')
+        os.makedirs(self.stored_dir)
+        self.stored = os.path.join(self.stored_dir, 'Show - S01E01 [HDTV-720p].mkv')
+        with open(self.stored, 'wb') as handle:
+            handle.write(b'the older version being restored')
 
-    def test_a_kept_copy_whose_write_failed_is_discarded(self):
-        kept = os.path.join(self.capture, 'episode.mkv')
-        preserve.keep_before_destroying(self.live, kept)
-        self.assertEqual(os.stat(self.live).st_nlink, 2)
+        self.captured_dir = os.path.join(self.backups, 'movies', 'Show', 'newcapture')
 
-        # What the fix does when the restore of that file fails.
-        os.remove(kept)
+    def build_runner(self):
+        runner = RestoreRunner.__new__(RestoreRunner)
+        runner.log = lambda *a, **k: None
+        runner.layout = MagicMock()
+        runner.layout.slot_dir.return_value = os.path.dirname(self.captured_dir)
+        runner.captures = MagicMock()
+        runner.captures.get.return_value = None
+        runner.indexer = MagicMock()
+        runner.config = MagicMock()
+        # The library really is the boundary here, so the bounds check is real.
+        runner.config.get_destination_paths.return_value = [self.library]
+        return runner
 
-        self.assertEqual(os.stat(self.live).st_nlink, 1)
-        with open(self.live, 'rb') as handle:
-            self.assertEqual(handle.read(), b'the copy that is already there')
-
-    def test_the_runner_discards_kept_copies_for_failed_operations(self):
-        source = (REPO_ROOT / 'services' / 'backups' / 'restore.py').read_text()
-        run = source.split('def run(')[1].split('\n    def ')[0]
-        self.assertIn("failed_paths = {f['file'] for f in summary['failures']}", run)
-        # And the discard happens BEFORE the capture is indexed, so a capture
-        # holding only unreplaced files is never written down as a backup.
-        self.assertLess(
-            run.index('failed_paths'),
-            run.index('reindex_capture'),
-            'kept copies must be discarded before the capture is indexed',
+    def plan(self, target=None, replaces=None):
+        current = replaces if replaces is not None else self.live
+        operation = RestoreOperation(
+            relative_path='Show - S01E01.mkv',
+            source=self.stored,
+            target=target or self.live,
+            replaces=current,
+            replaces_size=os.path.getsize(current) if current else 0,
+            file_size=os.path.getsize(self.stored),
+            is_media=True,
+            display='Show - S01E01',
+        )
+        return RestorePlan(
+            capture_id='cap1', slot_display='Show S01E01', library='shows',
+            target_dir=self.library, operations=[operation],
         )
 
+    def run_restore(self, plan, dry_run=False):
+        runner = self.build_runner()
+
+        def reserve(*_args, **_kwargs):
+            # The real one creates the folder; a stub that only returns a path
+            # makes every keep fail for the wrong reason.
+            os.makedirs(self.captured_dir, exist_ok=True)
+            return self.captured_dir, 'newcapture'
+
+        with patch('services.backups.restore.test_mode_enabled', return_value=dry_run), \
+                patch('services.backups.restore.new_capture_id', return_value='newcapture'), \
+                patch.object(RestoreRunner, '_reserve', side_effect=reserve):
+            return runner.run(plan, {'library': 'shows', 'title': 'Show'}, None)
+
+    def kept_copies(self):
+        if not os.path.isdir(self.captured_dir):
+            return []
+        return sorted(os.listdir(self.captured_dir))
+
+    def shares_bytes_with_live(self, name):
+        kept = os.path.join(self.captured_dir, name)
+        return os.stat(kept).st_ino == os.stat(self.live).st_ino
+
+
+class AFailedWriteLeavesNothingSharedTests(RestoreOnDiskTestCase):
+    def test_the_kept_copy_is_discarded_when_the_write_fails(self):
+        plan = self.plan()
+        with patch('services.backups.restore.shutil.copy2', side_effect=OSError('disk full')):
+            ok, message, summary = self.run_restore(plan)
+
+        self.assertEqual(summary['failed'], 1)
+        self.assertEqual(self.kept_copies(), [],
+                         'a copy kept for a file that was never replaced must not survive')
+        self.assertEqual(os.stat(self.live).st_nlink, 1)
+        with open(self.live, 'rb') as handle:
+            self.assertEqual(handle.read(), b'the copy currently in the library')
+
     def test_an_emptied_capture_is_not_indexed(self):
-        source = (REPO_ROOT / 'services' / 'backups' / 'restore.py').read_text()
-        run = source.split('def run(')[1].split('\n    def ')[0]
-        self.assertIn('os.rmdir(new_capture_path)', run)
-        self.assertIn("summary['captured'] = None", run)
+        plan = self.plan()
+        runner_indexer = {}
+
+        with patch('services.backups.restore.shutil.copy2', side_effect=OSError('disk full')):
+            ok, message, summary = self.run_restore(plan)
+
+        self.assertIsNone(summary['captured'])
+        self.assertFalse(os.path.isdir(self.captured_dir))
+
+
+class ARenamedRestoreThatCouldNotTidyUpTests(RestoreOnDiskTestCase):
+    """
+    The case the first fix missed.
+
+    An upgrade renamed the file, so the restore writes a DIFFERENT name and then
+    removes the old one. When that removal fails the operation still counts as
+    restored — with a warning — so a fix that only looked at the failure list
+    left the old file in the library, still sharing bytes with an indexed backup.
+    """
+
+    def test_the_kept_copy_is_discarded_when_the_old_name_cannot_be_removed(self):
+        renamed_target = os.path.join(self.library, 'Show - S01E01 [HDTV-720p].mkv')
+        plan = self.plan(target=renamed_target, replaces=self.live)
+
+        real_remove = os.remove
+
+        def refuse_to_remove_the_live_file(path, *args, **kwargs):
+            if os.path.abspath(path) == os.path.abspath(self.live):
+                raise OSError('permission denied')
+            return real_remove(path, *args, **kwargs)
+
+        with patch('services.backups.restore.os.remove',
+                   side_effect=refuse_to_remove_the_live_file):
+            ok, message, summary = self.run_restore(plan)
+
+        # The restore itself worked: the older version is now in the library.
+        self.assertTrue(ok)
+        self.assertEqual(summary['restored'], 1)
+        self.assertTrue(os.path.exists(renamed_target))
+        # And the file it could not remove is still there — which is precisely
+        # why its kept copy must not remain linked to it.
+        self.assertTrue(os.path.exists(self.live))
+        self.assertEqual(self.kept_copies(), [])
+        self.assertEqual(os.stat(self.live).st_nlink, 1)
+
+    def test_a_successful_rename_restore_keeps_its_backup(self):
+        # The control case. When the removal DOES work, the kept copy is the
+        # only remaining name for those bytes and must survive.
+        renamed_target = os.path.join(self.library, 'Show - S01E01 [HDTV-720p].mkv')
+        plan = self.plan(target=renamed_target, replaces=self.live)
+
+        ok, message, summary = self.run_restore(plan)
+
+        self.assertTrue(ok)
+        self.assertFalse(os.path.exists(self.live), 'the old name should have been removed')
+        self.assertEqual(self.kept_copies(), ['Show - S01E01 [WEBDL-1080p].mkv'])
+        with open(os.path.join(self.captured_dir, self.kept_copies()[0]), 'rb') as handle:
+            self.assertEqual(handle.read(), b'the copy currently in the library')
+
+    def test_an_in_place_replacement_keeps_its_backup(self):
+        # The other control case, and the one an inode test could get wrong: the
+        # restore overwrote the same path, so a file still exists there — but it
+        # is a NEW file, and the kept copy is the only name for the old bytes.
+        ok, message, summary = self.run_restore(self.plan())
+
+        self.assertTrue(ok)
+        self.assertEqual(self.kept_copies(), ['Show - S01E01 [WEBDL-1080p].mkv'])
+        kept = os.path.join(self.captured_dir, self.kept_copies()[0])
+        with open(kept, 'rb') as handle:
+            self.assertEqual(handle.read(), b'the copy currently in the library')
+        with open(self.live, 'rb') as handle:
+            self.assertEqual(handle.read(), b'the older version being restored')
+
+
+class ARehearsalWritesNothingTests(RestoreOnDiskTestCase):
+    def test_a_rehearsal_changes_nothing_on_disk(self):
+        ok, message, summary = self.run_restore(self.plan(), dry_run=True)
+
+        self.assertTrue(ok)
+        self.assertTrue(summary['dry_run'])
+        self.assertIn('Test mode', message)
+        self.assertEqual(self.kept_copies(), [])
+        with open(self.live, 'rb') as handle:
+            self.assertEqual(handle.read(), b'the copy currently in the library')
+
+
+class RehearsalHasNoSideEffectsTests(unittest.TestCase):
+    """
+    The finaliser's downstream effects, which are what actually caused damage:
+    a stamped capture, a recorded restore, and retention run against a capture
+    that was never created.
+    """
+
+    def build(self):
+        from services.backups.service import BackupsService
+
+        service = BackupsService.__new__(BackupsService)
+        service.transfer_model = MagicMock()
+        service.captures = MagicMock()
+        service.coordinator = None
+        service.socketio = None
+        service._lock = __import__('threading').Lock()
+        service._restores_running = {}
+        service._apply_retention_quietly = MagicMock()
+        return service
+
+    def finish(self, service, summary):
+        plan = MagicMock()
+        plan.slot_display = 'Show S01E01'
+        plan.target_dir = '/library'
+        with patch('services.backups.service.record') as record:
+            service._finish_restore(
+                't1', 'cap1', {}, plan, True, 'Test mode: nothing was written', summary)
+        return record
+
+    def test_a_rehearsal_does_not_stamp_prune_or_record_a_restore(self):
+        service = self.build()
+        record = self.finish(service, {
+            'restored': 2, 'failed': 0, 'captured': 'cap-never-created', 'dry_run': True,
+        })
+
+        service.captures.update.assert_not_called()
+        service._apply_retention_quietly.assert_not_called()
+        self.assertIn('Rehearsed', record.call_args[0][1])
+
+    def test_a_real_restore_still_stamps_prunes_and_records(self):
+        service = self.build()
+        record = self.finish(service, {
+            'restored': 2, 'failed': 0, 'captured': 'cap2', 'dry_run': False,
+        })
+
+        service.captures.update.assert_called_once()
+        service._apply_retention_quietly.assert_called_once()
+        self.assertIn('Restored', record.call_args[0][1])
 
 
 if __name__ == '__main__':

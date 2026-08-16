@@ -182,12 +182,24 @@ class RemoteDaemonService:
             raise RemoteDaemonError(f"Could not store the password: {error}")
         return value
 
-    def _password_present(self) -> bool:
-        """Whether a password has been generated, never raising to say so."""
+    def _password_state(self) -> Tuple[bool, Optional[str]]:
+        """
+        Whether a password is stored, and what is wrong if something is.
+
+        Returns (stored, problem). "Not generated yet" and "generated but this
+        process cannot read it" are different situations needing different
+        actions, and collapsing both to False said "no password" about a file
+        sitting right there — while the security check beside it, which only
+        stats the file, went on reporting it as fine.
+        """
+        path = self._secret_file()
+        if not os.path.exists(path):
+            return False, None
         try:
-            return bool(self.password(create=False))
-        except RemoteDaemonError:
-            return False
+            self.password(create=False)
+            return True, None
+        except RemoteDaemonError as error:
+            return True, str(error)
 
     def password_file_ok(self) -> bool:
         """rsync refuses a password file others can read, and so should we."""
@@ -344,17 +356,26 @@ class RemoteDaemonService:
         # Installing starts it so the result can be verified, but on demand
         # means on demand: an install with nothing to transfer must not leave a
         # port listening. Released after the check, not before it.
+        released = False
         if not self.start_at_boot:
             self.release(lambda: False)
+            released = True
 
+        # The tense matters. After the release above it is no longer answering,
+        # and saying that it is sends an operator to look for a listening port
+        # that this method just closed on purpose.
         if result.ok:
-            return True, 'The transfer server is installed and answering'
+            return True, (
+                'The transfer server is installed and working. It is stopped again '
+                'until a transfer needs it.'
+                if released else 'The transfer server is installed and answering'
+            )
         if result.state == probe.BLOCKED:
             return True, (
-                'Installed and running, but it refused this address. '
+                'Installed, but it refused this address. '
                 'Check the allowed address, or switch to password-only access.'
             )
-        return True, f"Installed, but it is not answering yet: {result.detail}"
+        return True, f"Installed, but it did not answer: {result.detail}"
 
     def _missing_roots(self, ssh, roots: List[Tuple[str, str]]) -> List[str]:
         """
@@ -401,8 +422,12 @@ class RemoteDaemonService:
                 )
 
             code, _, err = self._run(ssh, f'systemctl --user disable {layout.UNIT_NAME}')
-            if code != 0:
-                print(f"⚠️  Could not unregister the transfer server: {err or code}")
+            # Not fatal — the service is already stopped and the files are about
+            # to go — but not silent either. A failed disable leaves the boot
+            # link behind pointing at a unit that will not exist, which the
+            # service manager complains about on every start until somebody
+            # removes it by hand. Reported in the result rather than swallowed.
+            disable_problem = '' if code == 0 else (err or f'exit {code}')
 
             for path in layout.installed_paths(home):
                 quoted = ssh._quote_remote_path(path)
@@ -421,6 +446,12 @@ class RemoteDaemonService:
         self._forget_probe()
         if leftovers:
             return False, 'Some files could not be removed: ' + ', '.join(leftovers)
+        if disable_problem:
+            return True, (
+                'The transfer server was removed, but its start-at-boot link could '
+                f'not be unregistered ({disable_problem}). Remove it by hand if the '
+                'service manager reports a missing unit.'
+            )
         return True, 'The transfer server was removed from the remote host'
 
     # ---- run control -------------------------------------------------------
@@ -512,8 +543,13 @@ class RemoteDaemonService:
             with self._use_lock:
                 if still_needed():
                     return
-                if not self.health().running:
-                    return
+                # Deliberately NOT conditioned on the health check. `running` is
+                # only true for the three answers that prove the daemon spoke to
+                # us; an unclassified rsync error reads as not-running while the
+                # daemon is listening perfectly well, and an install that had
+                # just started it would then skip the shutdown entirely. Asking
+                # the service manager to stop something already stopped costs
+                # one round trip and always succeeds.
                 stopped, message = self.stop()
                 if stopped:
                     print('🛑 Transfer server stopped — nothing left to transfer')
@@ -613,6 +649,7 @@ class RemoteDaemonService:
         """
         configured, why = self.configured()
         roots = self.module_roots()
+        password_stored, password_problem = self._password_state()
 
         state: Dict = {
             'configured': configured,
@@ -628,8 +665,11 @@ class RemoteDaemonService:
             # status exists to REPORT, and reading it here used to happen before
             # the guarded section below — so the one situation the panel most
             # needs to describe was the one that made it return a 500 instead.
-            'password_stored': self._password_present(),
-            'password_file_secure': self.password_file_ok(),
+            'password_stored': password_stored,
+            'password_problem': password_problem,
+            # Only meaningful when the file can actually be read; an unreadable
+            # one is reported by password_problem instead of being called secure.
+            'password_file_secure': self.password_file_ok() and not password_problem,
             'installed': None,
             'service_state': None,
             'service_enabled': None,

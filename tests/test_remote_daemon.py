@@ -599,11 +599,30 @@ class ReviewFindingsTests(unittest.TestCase):
         }
         self.assertIn('boot', RemoteDaemonService._summarise(state))
 
-    def test_status_survives_an_unreadable_password_file(self):
+    def test_an_unreadable_password_is_reported_rather_than_called_absent(self):
+        """
+        "Not generated yet" and "generated but unreadable" need different
+        actions. Collapsing both to False said "no password" about a file
+        sitting right there, while the security check beside it — which only
+        stats the file — went on calling it fine.
+        """
         service = self.build()
+        path = os.path.join(self.tmp.name, 'dragoncp_rsyncd.secret')
+        with open(path, 'w') as handle:
+            handle.write('a-password\n')
+        os.chmod(path, 0o600)
+
         with patch.object(RemoteDaemonService, 'password',
                           side_effect=RemoteDaemonError('permission denied')):
-            self.assertFalse(service._password_present())
+            stored, problem = service._password_state()
+        self.assertTrue(stored, 'the file is there, so it is stored')
+        self.assertIn('permission denied', problem)
+
+    def test_no_password_file_at_all_is_not_a_problem(self):
+        service = self.build()
+        stored, problem = service._password_state()
+        self.assertFalse(stored)
+        self.assertIsNone(problem)
 
     # ---- the stored password is never briefly readable --------------------
 

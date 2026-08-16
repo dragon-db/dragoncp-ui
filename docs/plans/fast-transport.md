@@ -611,7 +611,8 @@ Answered on 2026-08-10:
   after logout, and every other application on that server is run this way.
 - **Is rclone an option?** No — not available on this account. Syncthing and
   Resilio Sync are offered instead, and both are the wrong shape (section 4.4).
-- **Is the backup area on the same disk as the media?** No. See section 7.7.
+- **Is the backup area on the same disk as the media?** No. See section 7.9,
+  and `backups-on-one-disk.md` for the plan that came out of it.
 
 - **Does this end have a fixed public address?** Yes. The fast route is
   restricted to it, and section 7.7 covers losing it.

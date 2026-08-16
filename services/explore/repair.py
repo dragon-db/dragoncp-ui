@@ -429,13 +429,30 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
     directories_removed = 0
     decisions = decisions or {}
 
-    def preserve(relative_path: str, absolute_path: str) -> Tuple[bool, str]:
+    def preserve(relative_path: str, absolute_path: str):
+        """
+        Keep a copy, and hand back the way to withdraw it.
+
+        Always returns (ok, message, undo). `undo` matters because a file is
+        kept by giving it a SECOND NAME when the backup area shares a disk with
+        the media — safe only while the caller really does remove the original
+        immediately after. A caller whose removal fails has to call `undo`, or
+        the library file stays welded to an indexed backup and any later
+        in-place edit rewrites both.
+        """
+        def nothing_to_undo(because: str = '') -> None:
+            return None
+
         if keep_a_copy is None:
-            return True, 'not requested'
+            return True, 'not requested', nothing_to_undo
         try:
-            return keep_a_copy(relative_path, absolute_path)
+            result = keep_a_copy(relative_path, absolute_path)
         except Exception as error:  # noqa: BLE001 - a failure here must not delete
-            return False, str(error)
+            return False, str(error), nothing_to_undo
+        if len(result) == 3:
+            return result
+        ok, message = result
+        return ok, message, nothing_to_undo
 
     for action in plan.actions:
         instruction = decisions.get(action.relative_path) or {}
@@ -487,7 +504,7 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
         # outright, because the judgement that the other copy is better is one
         # a person can regret.
         if action.needs_decision and decision == KEEP_EXISTING:
-            ok, message = preserve(source_rel, source)
+            ok, message, undo_keep = preserve(source_rel, source)
             if not ok:
                 failed.append({
                     'relative_path': action.relative_path,
@@ -497,6 +514,10 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
             try:
                 os.remove(source)
             except OSError as error:
+                # The copy was kept by giving this file a second name, and it is
+                # still here. Withdraw the keep, or the live file stays welded to
+                # an indexed backup.
+                undo_keep('the file it was kept from could not be removed')
                 failed.append({'relative_path': action.relative_path, 'error': str(error)})
                 continue
             directories_removed += _prune_empty(os.path.dirname(source), local_root)
@@ -518,7 +539,7 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
                 failed.append({'relative_path': action.relative_path, 'error': str(error)})
                 continue
 
-            ok, message = preserve(action.rival.relative_path, rival_abs)
+            ok, message, undo_keep = preserve(action.rival.relative_path, rival_abs)
             if not ok:
                 failed.append({
                     'relative_path': action.relative_path,
@@ -528,6 +549,9 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
             try:
                 os.remove(rival_abs)
             except OSError as error:
+                # Same as above: the keep gave this file a second name and it is
+                # still here, so the keep has to be withdrawn.
+                undo_keep('the copy it was kept from could not be removed')
                 failed.append({'relative_path': action.relative_path, 'error': str(error)})
                 continue
             # Recorded only once the move it makes room for has succeeded.

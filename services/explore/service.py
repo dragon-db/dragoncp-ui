@@ -590,7 +590,24 @@ class ExploreService:
                 library, relative_path, absolute_path, 'explore_repair')
             if ok and capture_id and kept is not None:
                 kept.append(capture_id)
-            return ok, message
+            if not ok:
+                return ok, message
+
+            def undo(because: str = 'the file it was kept from is still there'):
+                """
+                Give the kept copy back if the removal does not happen.
+
+                A file is kept by giving it a SECOND NAME, on the promise that
+                the caller destroys the first one immediately. A caller whose
+                delete fails has to withdraw that, or the library file stays
+                welded to an indexed backup and any in-place edit rewrites both.
+                """
+                if capture_id:
+                    backups.discard_capture(capture_id, because)
+                    if kept is not None and capture_id in kept:
+                        kept.remove(capture_id)
+
+            return ok, message, undo
 
         return keep
 

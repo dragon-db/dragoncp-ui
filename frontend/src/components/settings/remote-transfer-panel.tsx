@@ -216,8 +216,9 @@ export function RemoteTransferPanel() {
                     speed.
                   </p>
                   <p className="text-xs text-neutral-400">
-                    Either put the new address in <code>RSYNC_DAEMON_ALLOWED_IP</code> and
-                    reinstall, or switch access to password-only below to get the speed back now.
+                    Either put the new address in <code>RSYNC_DAEMON_ALLOWED_IP</code> and reinstall
+                    — or switch access to password-only below and reinstall. Either way it is the
+                    reinstall that applies the change on the remote host.
                   </p>
                 </div>
               </div>

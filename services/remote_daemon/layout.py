@@ -97,20 +97,36 @@ def module_roots(settings) -> List[Tuple[str, str]]:
     """
     The libraries to publish, as (published name, remote directory).
 
-    Normalised BEFORE it is judged, which is the whole point. The check used to
-    come first, so `/` passed it as a non-empty string and then had its trailing
-    slash stripped to `''` — an empty root that `_within` treats as containing
-    every path on the machine. Publishing it would have offered the entire
-    filesystem read-only, and mapped any source path onto it.
+    Canonicalised BEFORE it is judged, which is the whole point, and with
+    `normpath` rather than a strip — stripping slashes alone let every spelling
+    of the filesystem root through except the literal one. `/.`, `/./`, `/..`
+    and `/../` all survived it and were written straight into the rsync
+    configuration, where rsync resolves them back to `/` and serves the entire
+    machine read-only.
 
-    A library with no directory, or one set to the filesystem root, is therefore
-    skipped rather than published.
+    So: resolve the path, require it to be absolute, and refuse the root itself.
+    A library that is unset, relative, or the whole filesystem is skipped rather
+    than published.
     """
     roots = []
     for name, key in MODULES:
-        root = (settings.get(key) or '').strip().rstrip('/')
-        if not root or root == '.':
-            # Empty, or `/` reduced to nothing by the strip above.
+        raw = (settings.get(key) or '').strip()
+        if not raw:
+            continue
+        # posixpath, not os.path: these are paths on the remote Linux host, and
+        # they must normalise the same way whatever this application runs on.
+        root = posixpath.normpath(raw)
+        if not root.startswith('/'):
+            # A relative path means something different depending on where the
+            # daemon happens to start. Never publish one.
+            print(f"⚠️  Not publishing {name}: {key} is not an absolute path")
+            continue
+        # Not `== '/'`: POSIX gives a LEADING DOUBLE SLASH its own meaning, so
+        # normpath deliberately preserves `//` — which rsync then serves as the
+        # root all the same. Anything that is nothing but separators is the
+        # whole filesystem however it is spelled.
+        if not root.strip('/'):
+            print(f"⚠️  Not publishing {name}: {key} resolves to the whole filesystem")
             continue
         roots.append((name, root))
     return roots

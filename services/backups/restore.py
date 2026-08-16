@@ -408,26 +408,41 @@ class RestoreRunner:
         # ---- 3b. drop what was kept for files that never moved -------------
         #
         # Step 1 keeps the current occupant by giving it a SECOND NAME, which is
-        # only safe because it is about to be replaced. When its write fails it
-        # is not replaced, so the library file and the stored copy stay one file
-        # under two names — indefinitely, and indexed as a backup. An in-place
-        # edit of the live file would then rewrite the "backup" too.
+        # only safe because it is about to be replaced. Whenever it is NOT
+        # replaced, the library file and the stored copy stay one file under two
+        # names — indefinitely, and indexed as a backup. An in-place edit of the
+        # live file would then rewrite the "backup" too.
         #
-        # Nothing is lost by dropping those: the original is still in the
-        # library, untouched, which is the whole reason its write failed.
+        # The test is the inode, not whether the write reported success. Two
+        # different failures leave the original in place, and only one of them
+        # is a failure at all:
+        #
+        #   * the write failed, so nothing replaced it, or
+        #   * a RENAMING restore wrote the new name and then could not remove
+        #     the old one. That is reported as a success with a warning, so
+        #     checking the failure list alone missed it entirely.
+        #
+        # Comparing inodes catches both and, just as importantly, leaves alone
+        # the cases that are fine: an in-place replacement puts a NEW file at
+        # that path, and a copy taken across filesystems never shared bytes to
+        # begin with.
         if new_capture_path and not dry_run:
-            failed_paths = {f['file'] for f in summary['failures']}
             for operation in plan.operations:
-                if operation.relative_path not in failed_paths or not operation.replaces:
+                if not operation.replaces:
                     continue
                 kept = os.path.join(new_capture_path, os.path.basename(operation.replaces))
                 try:
-                    if os.path.exists(kept):
-                        os.remove(kept)
-                        self.log(
-                            'Discarded the kept copy of '
-                            f"{os.path.basename(operation.replaces)} — it was never replaced"
-                        )
+                    if not os.path.exists(kept) or not os.path.exists(operation.replaces):
+                        continue
+                    if os.stat(kept).st_ino != os.stat(operation.replaces).st_ino:
+                        continue
+                    os.remove(kept)
+                    self.log(
+                        'Discarded the kept copy of '
+                        f"{os.path.basename(operation.replaces)} — the original is still "
+                        'in the library, so keeping a second name for it would put the '
+                        'backup at risk'
+                    )
                 except OSError as error:  # noqa: PERF203 - one file, one message
                     self.log(f"⚠️  Could not discard an unused kept copy: {error}")
 

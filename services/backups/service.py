@@ -197,6 +197,32 @@ class BackupsService:
                 detail=summarise_created(items),
             )
 
+    def discard_capture(self, capture_id: str, because: str = '') -> bool:
+        """
+        Undo a keep whose caller could not go through with the removal.
+
+        `capture_library_file` keeps a file by giving it a SECOND NAME, which is
+        only safe because the caller destroys the first one straight after. When
+        that destruction fails, the caller must call this: otherwise the library
+        file and the stored copy stay one file under two names, indexed as a
+        backup, and anything that later edits the live file in place rewrites
+        the "backup" with it.
+
+        Nothing is lost. The original is still in the library — that is exactly
+        why its removal failed.
+        """
+        record = self.captures.get(capture_id)
+        try:
+            if record:
+                self._remove_capture_files(record)
+                self.captures.delete(capture_id)
+            print(f"🔗 Discarded the kept copy {capture_id}"
+                  + (f" — {because}" if because else ''))
+            return True
+        except Exception as error:  # noqa: BLE001 - the library file is intact either way
+            print(f"⚠️  Could not discard the kept copy {capture_id}: {error}")
+            return False
+
     def capture_library_file(self, library: str, library_relative_path: str,
                              absolute_path: str, reason: str) -> Tuple[bool, str, Optional[str]]:
         """
