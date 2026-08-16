@@ -25,10 +25,20 @@ export interface RemoteTransferStatus {
   enabled_for_transfers: boolean;
   libraries: string[];
   password_stored: boolean;
+  /**
+   * Why the stored password could not be read, when that is the situation.
+   *
+   * Separate from `password_file_secure` because they call for different
+   * remedies. A file others can read is fixed by rotating it; a file this
+   * server cannot read is a permissions problem on the file itself, and
+   * rotating would not touch it.
+   */
+  password_problem: string | null;
   password_file_secure: boolean;
   installed: boolean | null;
   service_state: string | null;
   service_enabled: string | null;
+  lifecycle_matches: boolean | null;
   up_to_date: boolean | null;
   address_matches: boolean | null;
   detected_address_differs: boolean | null;

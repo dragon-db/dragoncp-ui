@@ -358,8 +358,11 @@ class RemoteDaemonService:
         # port listening. Released after the check, not before it.
         released = False
         if not self.start_at_boot:
-            self.release(lambda: False)
-            released = True
+            # Whether it actually stopped, not merely whether we asked. `release`
+            # swallows a failed stop on purpose — it is housekeeping that runs
+            # after a transfer and must not raise — so taking the attempt as the
+            # answer told operators the port was closed when it was still open.
+            released = self.release(lambda: False)
 
         # The tense matters. After the release above it is no longer answering,
         # and saying that it is sends an operator to look for a listening port
@@ -447,10 +450,15 @@ class RemoteDaemonService:
         if leftovers:
             return False, 'Some files could not be removed: ' + ', '.join(leftovers)
         if disable_problem:
-            return True, (
-                'The transfer server was removed, but its start-at-boot link could '
-                f'not be unregistered ({disable_problem}). Remove it by hand if the '
-                'service manager reports a missing unit.'
+            # Reported as NOT successful, even though the files did go. Something
+            # this application installed is still registered with the service
+            # manager and needs a person, and a green toast plus a successful
+            # activity entry is how that gets forgotten. The message carries the
+            # nuance the flag cannot.
+            return False, (
+                'The transfer server\'s files were removed, but its start-at-boot '
+                f'registration could not be cancelled ({disable_problem}). The service '
+                'manager will report a missing unit until it is removed by hand.'
             )
         return True, 'The transfer server was removed from the remote host'
 
@@ -523,9 +531,14 @@ class RemoteDaemonService:
         finally:
             self.release(still_needed or (lambda: False))
 
-    def release(self, still_needed: Callable[[], bool]) -> None:
+    def release(self, still_needed: Callable[[], bool]) -> bool:
         """
         Switch it off once nothing needs it, if it is meant to run on demand.
+
+        Returns True only when the server is actually stopped now — so a caller
+        that wants to TELL somebody the port is closed has something truthful to
+        read. False covers every other outcome: told to stay up, still needed,
+        or the stop failed.
 
         `still_needed` is asked INSIDE the lock, and starting a transfer takes
         the same lock, so the answer cannot go stale between the question and
@@ -534,15 +547,16 @@ class RemoteDaemonService:
 
         Never raises. This is housekeeping that runs after a transfer has
         already finished; a server that stays up costs a listening port, and
-        that is not worth turning a completed transfer into an error.
+        that is not worth turning a completed transfer into an error. The return
+        value is how a caller learns that anyway.
         """
         if self.start_at_boot:
             # Told to stay up. Nothing to do.
-            return
+            return False
         try:
             with self._use_lock:
                 if still_needed():
-                    return
+                    return False
                 # Deliberately NOT conditioned on the health check. `running` is
                 # only true for the three answers that prove the daemon spoke to
                 # us; an unclassified rsync error reads as not-running while the
@@ -555,8 +569,10 @@ class RemoteDaemonService:
                     print('🛑 Transfer server stopped — nothing left to transfer')
                 else:
                     print(f"⚠️  Could not stop the transfer server: {message}")
+                return stopped
         except Exception as error:  # noqa: BLE001 - housekeeping must not raise
             print(f"⚠️  Could not stop the transfer server: {error}")
+            return False
 
     # ---- choosing a route for one transfer --------------------------------
 

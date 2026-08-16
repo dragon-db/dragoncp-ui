@@ -162,8 +162,14 @@ What happens, in order:
    Nothing fails, nothing needs attention to keep the library up to date.
 2. **The panel says exactly what happened** — that the address changed, and that
    transfers are on the slower route until it is resolved.
-3. **Two one-click answers**: update the allowed address and reinstall, or switch
-   to password-only access.
+3. **Two ways back**, and neither is a single click — the change has to be
+   pushed to the remote host before it means anything:
+   - Put the new address in the environment file, restart the application, and
+     press **Install**. Three steps, because the address is a security boundary
+     that lives outside the database on purpose.
+   - Or switch access to password-only in the panel and press **Install**. Two
+     steps, and the one to reach for when the speed matters more than waiting to
+     find out what the new address is.
 
 **It never downgrades itself.** Dropping the address restriction is always a
 deliberate human action. A system that quietly weakens its own security to keep

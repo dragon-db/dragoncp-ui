@@ -602,8 +602,13 @@ class ExploreService:
                 delete fails has to withdraw that, or the library file stays
                 welded to an indexed backup and any in-place edit rewrites both.
                 """
-                if capture_id:
-                    backups.discard_capture(capture_id, because)
+                if not capture_id:
+                    return
+                # Only drop it from the audit list if it really went. A capture
+                # whose files could not be removed still exists and is still
+                # indexed, so quietly forgetting it here would hide the one
+                # thing somebody needs to go and deal with.
+                if backups.discard_capture(capture_id, because):
                     if kept is not None and capture_id in kept:
                         kept.remove(capture_id)
 

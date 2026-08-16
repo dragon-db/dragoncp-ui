@@ -636,3 +636,114 @@ class ReviewFindingsTests(unittest.TestCase):
         service.rotate_password()
         self.assertEqual(os.stat(path).st_mode & 0o077, 0)
         self.assertTrue(service.password_file_ok())
+
+
+class ThirdPassFindingsTests(unittest.TestCase):
+    """
+    Reporting an outcome that did not happen. Each of these returned success
+    while leaving something behind.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patcher = patch('services.remote_daemon.service._app_dir', return_value=self.tmp.name)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def build(self, config=None, settings=None):
+        return RemoteDaemonService(FakeConfig(config), FakeSettings(settings))
+
+    @staticmethod
+    def ssh_that_works():
+        """An SSH session whose file writes succeed, for install-path tests."""
+        from unittest.mock import MagicMock
+
+        session = MagicMock()
+        session.write_file.return_value = (True, '')
+        session.read_file.return_value = ''
+        # `rm -rf` succeeds; the `test -e` sweep afterwards must report the
+        # paths as GONE, or every uninstall test fails on leftovers instead of
+        # the thing it is checking.
+        session.execute_command.side_effect = (
+            lambda command: (1, '', '') if command.startswith('test -e') else (0, '', ''))
+        session._quote_remote_path.side_effect = lambda p: f"'{p}'"
+        holder = MagicMock()
+        holder.return_value.__enter__.return_value = session
+        return holder
+
+    def test_release_says_whether_it_actually_stopped(self):
+        service = self.build()
+        with patch.object(RemoteDaemonService, 'stop', return_value=(False, 'refused')):
+            self.assertFalse(service.release(lambda: False))
+        with patch.object(RemoteDaemonService, 'stop', return_value=(True, 'stopped')):
+            self.assertTrue(service.release(lambda: False))
+
+    def test_release_reports_false_when_it_was_told_to_stay_up(self):
+        service = self.build(settings={'FAST_TRANSPORT_LIFECYCLE': 'always'})
+        with patch.object(RemoteDaemonService, 'stop') as stop:
+            self.assertFalse(service.release(lambda: False))
+        stop.assert_not_called()
+
+    def test_release_reports_false_when_something_still_needs_it(self):
+        service = self.build()
+        with patch.object(RemoteDaemonService, 'stop') as stop:
+            self.assertFalse(service.release(lambda: True))
+        stop.assert_not_called()
+
+    def test_install_does_not_claim_it_stopped_when_stopping_failed(self):
+        service = self.build()
+        with patch.object(RemoteDaemonService, 'configured', return_value=(True, '')), \
+                patch.object(RemoteDaemonService, 'password', return_value='pw'), \
+                patch.object(RemoteDaemonService, '_ssh', self.ssh_that_works()), \
+                patch.object(RemoteDaemonService, '_home', return_value='/home/someone'), \
+                patch.object(RemoteDaemonService, '_rsync_binary', return_value='/usr/bin/rsync'), \
+                patch.object(RemoteDaemonService, '_missing_roots', return_value=[]), \
+                patch.object(RemoteDaemonService, '_run', return_value=(0, '', '')), \
+                patch.object(RemoteDaemonService, '_probe_now',
+                             return_value=probe.ProbeResult(probe.READY, 'Ready')), \
+                patch.object(RemoteDaemonService, 'release', return_value=False):
+            ok, message = service.install()
+
+        self.assertTrue(ok)
+        self.assertNotIn('stopped again', message,
+                         'a failed stop must not be reported as a closed port')
+
+    def test_install_says_it_stopped_when_it_did(self):
+        service = self.build()
+        with patch.object(RemoteDaemonService, 'configured', return_value=(True, '')), \
+                patch.object(RemoteDaemonService, 'password', return_value='pw'), \
+                patch.object(RemoteDaemonService, '_ssh', self.ssh_that_works()), \
+                patch.object(RemoteDaemonService, '_home', return_value='/home/someone'), \
+                patch.object(RemoteDaemonService, '_rsync_binary', return_value='/usr/bin/rsync'), \
+                patch.object(RemoteDaemonService, '_missing_roots', return_value=[]), \
+                patch.object(RemoteDaemonService, '_run', return_value=(0, '', '')), \
+                patch.object(RemoteDaemonService, '_probe_now',
+                             return_value=probe.ProbeResult(probe.READY, 'Ready')), \
+                patch.object(RemoteDaemonService, 'release', return_value=True):
+            ok, message = service.install()
+
+        self.assertTrue(ok)
+        self.assertIn('stopped again', message)
+
+    def test_a_partial_uninstall_is_not_reported_as_success(self):
+        # The files went, but the boot registration did not. Something this
+        # application installed is still known to the service manager and needs
+        # a person — a green toast is how that gets forgotten.
+        service = self.build()
+        calls = {'n': 0}
+
+        def run(_ssh, command):
+            if 'disable' in command:
+                return 1, '', 'permission denied'
+            return 0, '', ''
+
+        with patch.object(RemoteDaemonService, '_ssh', self.ssh_that_works()), \
+                patch.object(RemoteDaemonService, '_home', return_value='/home/someone'), \
+                patch.object(RemoteDaemonService, '_run', side_effect=run), \
+                patch.object(RemoteDaemonService, '_probe_now',
+                             return_value=probe.ProbeResult(probe.UNREACHABLE, 'gone')):
+            ok, message = service.uninstall()
+
+        self.assertFalse(ok)
+        self.assertIn('start-at-boot', message)

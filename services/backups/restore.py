@@ -434,7 +434,14 @@ class RestoreRunner:
                 try:
                     if not os.path.exists(kept) or not os.path.exists(operation.replaces):
                         continue
-                    if os.stat(kept).st_ino != os.stat(operation.replaces).st_ino:
+                    # samefile compares device AND inode. An inode number alone
+                    # is unique only WITHIN a filesystem, and the backup area is
+                    # not always on the same one as the media — when it is not,
+                    # the keep falls back to a real copy, and two unrelated files
+                    # on two devices can share an inode number by coincidence.
+                    # Comparing inodes alone would then delete a perfectly good
+                    # backup on the strength of a collision.
+                    if not os.path.samefile(kept, operation.replaces):
                         continue
                     os.remove(kept)
                     self.log(

@@ -262,8 +262,24 @@ export function RemoteTransferPanel() {
               )}
               <Fact label="Port" value={String(server.port || "—")} />
               <Fact label="Libraries published" value={server.libraries.join(", ") || "None"} />
-              {!server.password_file_secure && server.password_stored && (
-                <Fact label="Stored password" value="Readable by others — rotate it" tone="bad" />
+              {/*
+                Two different problems, two different remedies. A file others
+                can read is fixed by rotating it. A file this server cannot read
+                is a permissions problem on the file itself, and rotating would
+                not touch it — so saying "rotate it" there sends somebody to do
+                the one thing that cannot help.
+              */}
+              {server.password_problem ? (
+                <Fact
+                  label="Stored password"
+                  value="Cannot be read — check the file's owner and permissions"
+                  tone="bad"
+                />
+              ) : (
+                !server.password_file_secure &&
+                server.password_stored && (
+                  <Fact label="Stored password" value="Readable by others — rotate it" tone="bad" />
+                )
               )}
             </div>
 

@@ -264,3 +264,74 @@ class RehearsalHasNoSideEffectsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ACrossDeviceBackupIsNeverMistakenForALinkTests(RestoreOnDiskTestCase):
+    """
+    An inode number is unique only WITHIN a filesystem.
+
+    When the backup area is on a different disk the keep falls back to a real
+    copy, and two unrelated files on two devices can share an inode number by
+    coincidence. Comparing inode numbers alone then deletes a perfectly good
+    backup. `os.path.samefile` compares the device too.
+    """
+
+    def test_a_backup_kept_as_a_copy_survives_a_successful_restore(self):
+        # The real cross-device situation, with nothing faked: when the backup
+        # area is on another disk the keep falls back to a COPY, so the two
+        # files are independent from the start. The cleanup must recognise that
+        # and leave it alone — an inode-number comparison would not, because
+        # those numbers are only unique within one filesystem.
+        with patch('services.backups.preserve.same_filesystem', return_value=False):
+            ok, message, summary = self.run_restore(self.plan())
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            self.kept_copies(), ['Show - S01E01 [WEBDL-1080p].mkv'],
+            'a backup kept as a copy is independent and must never be discarded')
+        kept = os.path.join(self.captured_dir, self.kept_copies()[0])
+        self.assertNotEqual(os.stat(kept).st_ino, os.stat(self.live).st_ino)
+        with open(kept, 'rb') as handle:
+            self.assertEqual(handle.read(), b'the copy currently in the library')
+
+    def test_the_comparison_uses_the_device_as_well_as_the_inode(self):
+        # samefile compares st_dev AND st_ino; st_ino alone is unique only
+        # within a filesystem, so a collision across two devices would delete a
+        # valid backup.
+        source = (REPO_ROOT / 'services' / 'backups' / 'restore.py').read_text()
+        cleanup = source.split('3b. drop what was kept')[1].split('# ---- 4.')[0]
+        self.assertIn('os.path.samefile', cleanup)
+        self.assertNotIn('st_ino', cleanup)
+
+
+class DiscardingAKeptCopyTests(unittest.TestCase):
+    """
+    Withdrawing a keep has to remove the FILES, not just the row.
+
+    Deleting the index entry while the file remains turns a visible problem into
+    an invisible one: a second name for a live library file, sitting in the
+    backup tree, listed nowhere and reachable by nothing.
+    """
+
+    def build(self):
+        from services.backups.service import BackupsService
+
+        service = BackupsService.__new__(BackupsService)
+        service.captures = MagicMock()
+        service.captures.get.return_value = {'capture_id': 'cap1'}
+        return service
+
+    def test_a_failed_file_removal_keeps_the_index_entry(self):
+        service = self.build()
+        service._remove_capture_files = MagicMock(
+            return_value=(False, 'permission denied', False))
+
+        self.assertFalse(service.discard_capture('cap1'))
+        service.captures.delete.assert_not_called()
+
+    def test_a_successful_removal_deletes_the_index_entry(self):
+        service = self.build()
+        service._remove_capture_files = MagicMock(return_value=(True, '', True))
+
+        self.assertTrue(service.discard_capture('cap1'))
+        service.captures.delete.assert_called_once_with('cap1')

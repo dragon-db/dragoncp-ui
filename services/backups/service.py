@@ -214,7 +214,16 @@ class BackupsService:
         record = self.captures.get(capture_id)
         try:
             if record:
-                self._remove_capture_files(record)
+                removed, error, _ = self._remove_capture_files(record)
+                if not removed:
+                    # The files are still there, so the index row STAYS. Deleting
+                    # it would turn a visible problem into an invisible one: a
+                    # second name for a live library file, sitting in the backup
+                    # tree, listed nowhere and reachable by nothing. At least
+                    # while it is indexed it can be seen and deleted.
+                    print(f"⚠️  Could not remove the kept copy {capture_id}: {error}. "
+                          'Its index entry has been left in place so it stays visible.')
+                    return False
                 self.captures.delete(capture_id)
             print(f"🔗 Discarded the kept copy {capture_id}"
                   + (f" — {because}" if because else ''))
