@@ -227,6 +227,19 @@ export function TransferDetailPanel({
           value={formatDuration(elapsed)}
           mono
         />
+        {/* Named in full here rather than badged, because the detail view is
+            where someone asks why a transfer took as long as it did. */}
+        <Fact
+          label="Route"
+          value={
+            transfer.transport === "daemon"
+              ? "transfer server"
+              : transfer.transport === "ssh"
+                ? "SSH"
+                : undefined
+          }
+          mono
+        />
         <Fact
           label="Transferred"
           value={

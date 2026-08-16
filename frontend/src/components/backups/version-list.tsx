@@ -229,6 +229,21 @@ export function VersionRow({
             )}
           </div>
           <p className="mt-0.5 text-[11.5px] text-muted-foreground">{reason}</p>
+          {/*
+            The way back from a restore.
+
+            There is no separate undo, and there does not need to be one: a
+            restore keeps whatever it replaced as a new version of this same
+            item, so restoring THAT is the undo. Nothing said so, though —
+            somebody who had just restored the wrong version went looking for an
+            Undo button and found a list that described their previous copy as
+            an ordinary sync backup. Saying it on the row is the whole fix.
+          */}
+          {capture.reason === "restore_swap" && (
+            <p className="mt-0.5 text-[11.5px] text-amber-300/90">
+              This is the copy a restore replaced — restore it to undo that restore.
+            </p>
+          )}
         </div>
       </div>
 

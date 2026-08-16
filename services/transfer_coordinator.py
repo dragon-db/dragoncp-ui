@@ -23,6 +23,7 @@ from services.sync_logger import log_sync, log_validation, log_state_change
 from services.queue_manager import QueueManager
 from services.path_service import PathService
 from services.settings_service import SettingsService
+from services.remote_daemon import RemoteDaemonService
 
 # The model owns the definition of "active"; importing it here keeps one list
 # rather than two that can drift.
@@ -68,7 +69,15 @@ class TransferCoordinator:
             socketio=socketio, coordinator=self, settings=self.settings_service,
             legacy_backup_model=self.backup_model,
         )
-        self.transfer_service = TransferService(config, db_manager, self.transfer_model, socketio, self.queue_manager)
+        # The transfer server on the remote host — the fast route past SSH's own
+        # speed limit. Built here rather than in the application so that the
+        # transfers and the Settings panel share ONE instance: it caches the
+        # health answer and holds the lock that stops an idle shutdown racing a
+        # starting transfer, and neither works with two copies.
+        self.remote_daemon = RemoteDaemonService(config, self.settings_service)
+
+        self.transfer_service = TransferService(config, db_manager, self.transfer_model, socketio, self.queue_manager,
+                                                remote_daemon=self.remote_daemon)
         self.notification_service = NotificationService(config, self.settings_service, self.transfer_model, self.webhook_model, self.series_webhook_model)
         self.webhook_service = WebhookService(config, self.webhook_model, self.series_webhook_model, self)
         self.auto_sync_scheduler = AutoSyncScheduler(db_manager, self.settings)
@@ -268,10 +277,42 @@ class TransferCoordinator:
             else:
                 # If failed to start, unregister from queue manager
                 self.queue_manager.unregister_transfer(transfer_id)
+                # No rsync means no completion watcher, so nothing else would
+                # ever let the transfer server go.
+                self._release_fast_route()
                 return (False, 'failed')  # Failed to start
         
         return (False, 'failed')  # Shouldn't reach here, but return failure
     
+    def _transfers_still_active(self) -> bool:
+        """
+        Whether any transfer still needs the remote host.
+
+        Counts pending and queued as well as running: a queued transfer is one
+        that will want the transfer server within seconds, and stopping it in
+        between only to start it again is churn for nothing.
+        """
+        try:
+            active = self.transfer_model.get_all(
+                statuses=['running', 'queued', 'pending'], include_logs=False)
+            # Simulations copy fixture files on this machine and never touch the
+            # remote host, so counting one as demand held the transfer server
+            # open for work that could not possibly use it.
+            return any(not row.get('is_simulation') for row in active)
+        except Exception as error:  # noqa: BLE001
+            # Unsure means leave it running. A transfer server left up costs a
+            # listening port; one stopped underneath a running transfer costs
+            # the transfer.
+            print(f"⚠️  Could not check for active transfers: {error}")
+            return True
+
+    def _release_fast_route(self) -> None:
+        """Let the transfer server stop if it is meant to run only on demand."""
+        try:
+            self.remote_daemon.release(self._transfers_still_active)
+        except Exception as error:  # noqa: BLE001 - housekeeping only
+            print(f"⚠️  Could not release the transfer server: {error}")
+
     def _post_transfer_completion(self, transfer_id: str):
         """Wait for transfer to complete, then finalize backup and send notifications"""
         # Poll until transfer is no longer running
@@ -293,6 +334,10 @@ class TransferCoordinator:
                     # a fresh watcher that finalizes them when it really ends.
                     print(f"⏸️  Transfer {transfer_id} paused, releasing queue slot")
                     self.queue_manager.unregister_transfer(transfer_id, dest_path)
+                    # A pause can last hours. Leaving the transfer server up for
+                    # all of it is exactly what "only while transfers run" is
+                    # supposed to prevent, and resuming starts it again anyway.
+                    self._release_fast_route()
                     break
 
                 # Unregister from queue manager (will promote next queued transfer)
@@ -324,6 +369,11 @@ class TransferCoordinator:
                         print(f"⚠️  Backup sorting: {error}")
                 except Exception as be:
                     print(f"⚠️  Backup sorting error for {transfer_id}: {be}")
+
+                # Switch the transfer server off if nothing else needs it. Done
+                # last, and after the queue has had its chance to promote the
+                # next transfer, so a queue that is still working keeps it.
+                self._release_fast_route()
 
                 break
             
@@ -584,7 +634,9 @@ class TransferCoordinator:
         else:
             # If failed to start, unregister from queue manager
             self.queue_manager.unregister_transfer(transfer_id)
-        
+            # Same as the first start path: no rsync, no watcher, so release here.
+            self._release_fast_route()
+
         return success
     
     def get_queue_status(self) -> Dict:

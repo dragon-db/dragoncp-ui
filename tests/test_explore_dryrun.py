@@ -170,6 +170,5 @@ class ReconcileTests(unittest.TestCase):
         dryrun.reconcile(report, planned={'a.mkv': 5}, superseded={'a.mkv': 5})
         self.assertEqual(len(report.files), 1, 'rsync already spoke for this one')
 
-
 if __name__ == '__main__':
     unittest.main()

@@ -49,6 +49,37 @@ def _read_version() -> str:
 
 APP_VERSION = _read_version()
 
+REDACTED = '<redacted>'
+
+
+def _for_logging(key: str, value: str) -> str:
+    """
+    What may be written to the log for one setting.
+
+    Every value in the environment file used to be printed here on every start,
+    which put the operator password, the token-signing key, the Flask secret,
+    the storage API token and the address allowed to reach the transfer server
+    into the backend log in plain text — a file that is read over the shoulder,
+    downloaded from the Settings page, and pasted into bug reports.
+
+    The registry already records which settings are secret, so that judgement is
+    made in one place rather than repeated here. Anything the registry does not
+    know is redacted too: a setting added later is far more likely to be a
+    credential than to be something worth reading in a startup log, and the
+    Settings page already shows the ones that are not.
+    """
+    if not value:
+        return value
+    try:
+        import settings_registry
+
+        setting = settings_registry.get(key)
+    except Exception:  # noqa: BLE001 - logging must never break startup
+        return REDACTED
+    if setting is None or setting.sensitive or setting.hidden:
+        return REDACTED
+    return value
+
 
 class DragonCPConfig:
     """Configuration manager for DragonCP"""
@@ -77,8 +108,10 @@ class DragonCPConfig:
                         line = line.strip()
                         if line and not line.startswith('#') and '=' in line:
                             key, value = line.split('=', 1)
-                            config[key.strip()] = value.strip().strip('"').strip("'")
-                            print(f"  {key.strip()}: {value.strip().strip('"').strip("'")}")
+                            key = key.strip()
+                            value = value.strip().strip('"').strip("'")
+                            config[key] = value
+                            print(f"  {key}: {_for_logging(key, value)}")
             except Exception as e:
                 print(f"❌ Error loading env file: {e}")
         else:

@@ -30,6 +30,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 from env_flags import test_mode_enabled
 from security import PathTraversalError, assert_path_within_bounds, validate_relative_path
 
+from . import preserve
 from .identity import SlotIdentity, media_type_for_library, new_capture_id
 from .layout import BackupLayout, utc_now
 
@@ -404,6 +405,64 @@ class RestoreRunner:
             if operation.replaces:
                 summary['replaced'] += 1
 
+        # ---- 3b. drop what was kept for files that never moved -------------
+        #
+        # Step 1 keeps the current occupant by giving it a SECOND NAME, which is
+        # only safe because it is about to be replaced. Whenever it is NOT
+        # replaced, the library file and the stored copy stay one file under two
+        # names — indefinitely, and indexed as a backup. An in-place edit of the
+        # live file would then rewrite the "backup" too.
+        #
+        # The test is the inode, not whether the write reported success. Two
+        # different failures leave the original in place, and only one of them
+        # is a failure at all:
+        #
+        #   * the write failed, so nothing replaced it, or
+        #   * a RENAMING restore wrote the new name and then could not remove
+        #     the old one. That is reported as a success with a warning, so
+        #     checking the failure list alone missed it entirely.
+        #
+        # Comparing inodes catches both and, just as importantly, leaves alone
+        # the cases that are fine: an in-place replacement puts a NEW file at
+        # that path, and a copy taken across filesystems never shared bytes to
+        # begin with.
+        if new_capture_path and not dry_run:
+            for operation in plan.operations:
+                if not operation.replaces:
+                    continue
+                kept = os.path.join(new_capture_path, os.path.basename(operation.replaces))
+                try:
+                    if not os.path.exists(kept) or not os.path.exists(operation.replaces):
+                        continue
+                    # samefile compares device AND inode. An inode number alone
+                    # is unique only WITHIN a filesystem, and the backup area is
+                    # not always on the same one as the media — when it is not,
+                    # the keep falls back to a real copy, and two unrelated files
+                    # on two devices can share an inode number by coincidence.
+                    # Comparing inodes alone would then delete a perfectly good
+                    # backup on the strength of a collision.
+                    if not os.path.samefile(kept, operation.replaces):
+                        continue
+                    os.remove(kept)
+                    self.log(
+                        'Discarded the kept copy of '
+                        f"{os.path.basename(operation.replaces)} — the original is still "
+                        'in the library, so keeping a second name for it would put the '
+                        'backup at risk'
+                    )
+                except OSError as error:  # noqa: PERF203 - one file, one message
+                    self.log(f"⚠️  Could not discard an unused kept copy: {error}")
+
+            # Nothing was displaced after all. An empty capture folder indexes
+            # as a backup holding no files, which is worse than no row at all.
+            try:
+                if not os.listdir(new_capture_path):
+                    os.rmdir(new_capture_path)
+                    new_capture_path = None
+                    summary['captured'] = None
+            except OSError:
+                pass
+
         # ---- 4. index the capture the restore itself created --------------
         if new_capture_path and not dry_run:
             try:
@@ -411,8 +470,21 @@ class RestoreRunner:
             except Exception as error:  # noqa: BLE001 - files are already safe
                 self.log(f"⚠️  Could not index the swapped-out copy: {error}")
 
+        # Carried so the interface can say so rather than leaving it in a log.
+        # A dry run reported "Restored 2 file(s)" and looked exactly like a real
+        # one; the only way to find out nothing had happened was to open the
+        # transfer's log and read it.
+        summary['dry_run'] = dry_run
+
         if summary['failed'] and not summary['restored']:
             return False, f"Restore failed: {summary['failed']} file(s) could not be written", summary
+
+        if dry_run:
+            return True, (
+                f"Test mode: nothing was written. {summary['restored']} file(s) "
+                'would have been restored.'
+            ), summary
+
         if summary['failed']:
             return True, (
                 f"Restored {summary['restored']} file(s); "
@@ -465,11 +537,11 @@ class RestoreRunner:
                 continue
             target = os.path.join(capture_path, os.path.basename(source))
             try:
-                shutil.copy2(source, target)
-                # Verify before anything is destroyed. A short copy here would
-                # otherwise be discovered only after the original was gone.
-                if os.path.getsize(target) != os.path.getsize(source):
-                    raise OSError('short copy')
+                # This file is about to be replaced by the version being
+                # restored, so the two names share bytes only until step 3
+                # runs. A hardlink is safe here and instant. Verified either
+                # way before anything is destroyed.
+                preserve.keep_before_destroying(source, target)
                 stored += 1
                 self.log(f"Kept the current copy: {os.path.basename(source)}")
             except OSError as error:
@@ -519,6 +591,20 @@ class RestoreRunner:
 
         temporary = f"{operation.target}.dragoncp-restore"
         try:
+            # DELIBERATELY A COPY, not a hardlink, even when the backup area is
+            # on the same disk and linking would be instant and free.
+            #
+            # What lands here goes back to being an ordinary library file and
+            # stays one for months. A hardlink would leave it sharing bytes with
+            # the stored version indefinitely, exposed to anything that ever
+            # writes to the library in place — a tag editor, a remux that strips
+            # an audio track. That would rewrite the backup too, silently: still
+            # listed, still apparently restorable, no longer what was backed up.
+            #
+            # Everywhere the two names coexist for seconds instead of months
+            # DOES link — see `preserve.keep_before_destroying`. That is where
+            # the saving is anyway: it runs on every transfer that replaces or
+            # deletes a file, while a restore is rare and started by a person.
             shutil.copy2(operation.source, temporary)
             if os.path.getsize(temporary) != os.path.getsize(operation.source):
                 raise OSError('short copy')

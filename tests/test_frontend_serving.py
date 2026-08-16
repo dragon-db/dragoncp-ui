@@ -3,12 +3,19 @@
 
 import hashlib
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from flask import Flask
+
+# Before the project imports below. pytest puts the repository root on the path
+# for us, so this only ever mattered when the file was run directly — which is
+# why `python tests/test_frontend_serving.py` had never worked.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 
 from frontend_serving import serve_frontend
 import start
@@ -128,7 +135,6 @@ class FrontendBuildTests(unittest.TestCase):
             self.assertFalse(start.build_frontend(self.frontend))
 
         self.assertEqual(self.digest_file.read_text(encoding='utf-8').strip(), 'outdated')
-
 
 if __name__ == '__main__':
     unittest.main()

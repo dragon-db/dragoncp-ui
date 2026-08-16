@@ -125,6 +125,12 @@ export interface RestorePlan {
   total_size: number;
   replaces_count: number;
   transfer_id?: string;
+  /**
+   * True when the server is in test mode and the restore only rehearsed. The
+   * result message says so too; this is what stops the interface dressing a
+   * rehearsal up as a success.
+   */
+  dry_run?: boolean;
 }
 
 export interface RetentionRule {
@@ -388,11 +394,25 @@ export const LIBRARY_LABELS: Record<BackupLibrary, string> = {
   anime: "Anime",
 };
 
+/**
+ * Why a stored version exists.
+ *
+ * `restore_swap` is the one that matters most: it is the copy a restore
+ * displaced, so it is what you restore to undo that restore. It was previously
+ * never produced — every capture came back as `sync_replace` — which left the
+ * version somebody is most likely to want described as an ordinary sync backup.
+ *
+ * `sync_delete` is listed but is not produced yet. A file removed by a sync and
+ * one replaced by a sync both arrive the same way, and telling them apart after
+ * the fact would mislabel an upgrade that renamed its file as a deletion. Better
+ * to say "replaced" than to guess wrongly.
+ */
 export const REASON_LABELS: Record<string, string> = {
   sync_replace: "Replaced by a sync",
   sync_delete: "Removed by a sync",
   restore_swap: "Replaced by a restore",
   explore_prune: "Removed from Explore",
+  explore_repair: "Set aside by a repair",
 };
 
 /** "Season 01", "Specials", or nothing for a movie. */

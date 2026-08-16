@@ -40,7 +40,11 @@ import { useTransferPosters } from "@/hooks/useTransferPosters";
 import { useSimulationStatus } from "@/hooks/useSimulation";
 import { WebhookPoster, MediaBadge } from "@/components/webhooks/webhook-bits";
 import { ConfirmDialog } from "@/components/transfers/confirm-dialog";
-import { ProgressMeter, TransferStatusBadge } from "@/components/transfers/transfer-bits";
+import {
+  ProgressMeter,
+  TransferStatusBadge,
+  TransportBadge,
+} from "@/components/transfers/transfer-bits";
 import { TransferDetailPanel, type TransferActions } from "@/components/transfers/transfer-detail";
 import { SimulationBadge, SimulationPanel } from "@/components/transfers/simulation-panel";
 import {
@@ -186,6 +190,7 @@ function TransferRow({
                   </span>
                   <MediaBadge mediaType={transfer.media_type} />
                   {transfer.is_simulation && <SimulationBadge />}
+                  <TransportBadge transport={transfer.transport} />
                   {/* On phones the status reads with the title; from sm up it
                     keeps its column at the end of the row. */}
                   <TransferStatusBadge status={status} className="sm:hidden" />

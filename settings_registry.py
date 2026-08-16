@@ -101,6 +101,20 @@ _ENV_SETTINGS: List[Setting] = [
     Setting('SSH_KEY_PATH', ENV, 'remote', 'SSH key', 'Private key used to connect.',
             kind='path'),
 
+    # ---- the fast transfer route -----------------------------------------
+    # The port is a constant of the installation. The address allowed to reach
+    # it is the security boundary, and it is `hidden` rather than merely
+    # sensitive: a redacted value tells a reader nothing they can use, so there
+    # is no reason to send it at all. It stays out of the database for the same
+    # reason — a value held in one place can only leak from one place.
+    Setting('RSYNC_DAEMON_PORT', ENV, 'fast_transport', 'Transfer server port',
+            'The port the transfer server listens on. Use one the host has allocated.',
+            kind='number', default='52314'),
+    Setting('RSYNC_DAEMON_ALLOWED_IP', ENV, 'fast_transport', 'Allowed address',
+            'The only address permitted to reach the transfer server. Everything '
+            'else is refused.',
+            sensitive=True, hidden=True),
+
     # ---- where the media lives -------------------------------------------
     # These are the security boundary: `get_all_allowed_paths()` returns
     # exactly this set, and every traversal check validates against it. They
@@ -190,6 +204,26 @@ _DB_SETTINGS: List[Setting] = [
     Setting('WEBSOCKET_TIMEOUT_MINUTES', DB, 'runtime', 'Realtime idle timeout (minutes)',
             'How long the realtime connection stays open with no activity.',
             kind='number', default='30', minimum=5, maximum=60),
+
+    # ---- the fast transfer route -----------------------------------------
+    # These are in the database rather than the environment file on purpose.
+    # The access mode is the fallback for a home address that changed: the whole
+    # point is that it can be switched from the panel, without editing a file on
+    # the server and restarting, at the moment transfers have already dropped
+    # back to the slow route.
+    Setting('FAST_TRANSPORT_ENABLED', DB, 'fast_transport', 'Use the fast route',
+            'Pull media over the transfer server instead of SSH when it is available. '
+            'Transfers fall back to SSH on their own whenever it is not.',
+            kind='boolean', default='false'),
+    Setting('FAST_TRANSPORT_ACCESS_MODE', DB, 'fast_transport', 'Access',
+            'restricted = only the allowed address may connect. '
+            'password = any address may, held off by the password alone — the '
+            'fallback for when the allowed address is lost.',
+            default='restricted'),
+    Setting('FAST_TRANSPORT_LIFECYCLE', DB, 'fast_transport', 'When it runs',
+            'on_demand = started when a transfer needs it and stopped afterwards. '
+            'always = left running and started at boot.',
+            default='on_demand'),
 ]
 
 
@@ -205,6 +239,7 @@ ENV_ONLY_KEYS: Tuple[str, ...] = tuple(s.key for s in SETTINGS if not s.editable
 
 GROUPS: Tuple[Tuple[str, str], ...] = (
     ('remote', 'Remote host'),
+    ('fast_transport', 'Fast transfers'),
     ('library', 'Media directories'),
     ('disks', 'Disk reporting'),
     ('security', 'Security'),

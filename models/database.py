@@ -366,6 +366,17 @@ class DatabaseManager:
             self._ensure_column(conn, 'transfers', 'explore_mode', "TEXT")
             self._ensure_column(conn, 'transfers', 'explore_plan_id', "TEXT")
 
+            # How the transfer reached the remote host: 'daemon' for the fast
+            # transfer server, 'ssh' for the original route, NULL for a run that
+            # predates the choice or never left this machine (a simulation).
+            #
+            # Written when rsync starts, because the answer depends on what was
+            # true at that moment — whether the server was up and would accept
+            # us — and cannot be reconstructed afterwards. Without it, a
+            # transfer that fell back and one that never had a faster option
+            # look identical: both simply slow.
+            self._ensure_column(conn, 'transfers', 'transport', "TEXT")
+
             # When a backup was last restored. Split out from `status`, which
             # briefly carried 'restored' as well as presence and so made a
             # successful restore its own last: the planner refused to restore

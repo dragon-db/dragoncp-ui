@@ -18,9 +18,12 @@ import threading
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Tuple
 
+from env_flags import test_mode_enabled
+
 from .identity import (
     SlotIdentity, identify, media_type_for_library, new_capture_id, parse_capture_id,
 )
+from . import preserve
 from .indexer import BackupIndexer
 from .layout import BackupLayout, BackupPathNotConfigured, utc_now
 from .migrate import LegacyMigration
@@ -70,6 +73,22 @@ class BackupsService:
 
         self._restores_running: Dict[str, str] = {}
         self._lock = threading.Lock()
+
+        # Said once, loudly, at startup rather than discovered later as odd
+        # Explore results. A warning rather than a refusal: the application is
+        # otherwise fine, transfers and restores work, and taking the whole
+        # installation down over a misconfigured directory would be worse than
+        # the problem. See BackupLayout.misplaced_inside_library.
+        try:
+            inside = self.layout.misplaced_inside_library()
+        except Exception:  # noqa: BLE001 - startup must survive this
+            inside = None
+        if inside:
+            print(
+                '⚠️  BACKUP_PATH is inside a media library directory '
+                f'({inside}). Stored versions will be read as library files by '
+                'Explore. Move it beside the media directories, not inside one.'
+            )
 
     def set_coordinator(self, coordinator) -> None:
         self.coordinator = coordinator
@@ -178,6 +197,41 @@ class BackupsService:
                 detail=summarise_created(items),
             )
 
+    def discard_capture(self, capture_id: str, because: str = '') -> bool:
+        """
+        Undo a keep whose caller could not go through with the removal.
+
+        `capture_library_file` keeps a file by giving it a SECOND NAME, which is
+        only safe because the caller destroys the first one straight after. When
+        that destruction fails, the caller must call this: otherwise the library
+        file and the stored copy stay one file under two names, indexed as a
+        backup, and anything that later edits the live file in place rewrites
+        the "backup" with it.
+
+        Nothing is lost. The original is still in the library — that is exactly
+        why its removal failed.
+        """
+        record = self.captures.get(capture_id)
+        try:
+            if record:
+                removed, error, _ = self._remove_capture_files(record)
+                if not removed:
+                    # The files are still there, so the index row STAYS. Deleting
+                    # it would turn a visible problem into an invisible one: a
+                    # second name for a live library file, sitting in the backup
+                    # tree, listed nowhere and reachable by nothing. At least
+                    # while it is indexed it can be seen and deleted.
+                    print(f"⚠️  Could not remove the kept copy {capture_id}: {error}. "
+                          'Its index entry has been left in place so it stays visible.')
+                    return False
+                self.captures.delete(capture_id)
+            print(f"🔗 Discarded the kept copy {capture_id}"
+                  + (f" — {because}" if because else ''))
+            return True
+        except Exception as error:  # noqa: BLE001 - the library file is intact either way
+            print(f"⚠️  Could not discard the kept copy {capture_id}: {error}")
+            return False
+
     def capture_library_file(self, library: str, library_relative_path: str,
                              absolute_path: str, reason: str) -> Tuple[bool, str, Optional[str]]:
         """
@@ -212,11 +266,14 @@ class BackupsService:
 
         target = os.path.join(capture_path, os.path.basename(absolute_path))
         try:
-            shutil.copy2(absolute_path, target)
-            # Verified before the caller destroys anything. A short copy here
-            # would otherwise only be discovered once the original was gone.
-            if os.path.getsize(target) != os.path.getsize(absolute_path):
-                raise OSError('short copy')
+            # The caller destroys the original straight after this, so the two
+            # names share bytes for seconds. A hardlink is therefore safe here
+            # and costs neither time nor space, whatever the file's size. Falls
+            # back to copying when the backup area is not on the media disk.
+            # Verified either way before the caller destroys anything.
+            how, _ = preserve.keep_before_destroying(absolute_path, target)
+            if how == preserve.LINKED:
+                print(f"🔗 Kept {os.path.basename(absolute_path)} without copying it")
         except OSError as error:
             shutil.rmtree(capture_path, ignore_errors=True)
             self.layout.prune_empty_dirs(os.path.dirname(capture_path))
@@ -460,8 +517,18 @@ class BackupsService:
             daemon=True,
         ).start()
 
-        return True, f"Restoring {plan.slot_display}", {
-            **plan.as_dict(), 'transfer_id': transfer_id,
+        # Answered here, not by the worker. A restore is accepted and then runs
+        # on its own thread, so this response is sent long before the worker
+        # decides anything — the interface was reading a `dry_run` that could
+        # never have arrived in time, and dressed a rehearsal up as a success
+        # every time. Test mode is a property of the server, known now.
+        rehearsing = test_mode_enabled()
+        opening = (
+            f"Test mode: rehearsing a restore of {plan.slot_display}, nothing will be written"
+            if rehearsing else f"Restoring {plan.slot_display}"
+        )
+        return True, opening, {
+            **plan.as_dict(), 'transfer_id': transfer_id, 'dry_run': rehearsing,
         }
 
     def _reserve(self, plan) -> Tuple[bool, str, str]:
@@ -544,10 +611,19 @@ class BackupsService:
                         plan, ok: bool, message: str, summary: Dict,
                         initiator=None) -> None:
         now = datetime.now().isoformat()
-        completion_succeeded = ok and not summary.get('failed')
-        completion_status = 'completed' if completion_succeeded else 'failed'
+
+        # A rehearsal is not a restore, and everything below has to agree on
+        # that. It used to be judged on `ok` alone, so a test-mode run — which
+        # writes nothing — stamped the capture as restored, recorded a real
+        # "Restored ..." entry against the person who asked, and handed
+        # retention a capture id for a folder that was never created. Retention
+        # could then prune a genuine version to make room for a phantom one.
+        rehearsed = bool(summary.get('dry_run'))
+        completion_succeeded = ok and not summary.get('failed') and not rehearsed
+
+        completion_status = 'completed' if (completion_succeeded or rehearsed) else 'failed'
         completion_message = message
-        if ok and not completion_succeeded:
+        if ok and not completion_succeeded and not rehearsed:
             completion_message = f"Restore incomplete: {message}"
 
         try:
@@ -592,14 +668,21 @@ class BackupsService:
         # asynchronous, so at acceptance nothing has been restored yet and the
         # run may still fail. The entry names the person who asked for it and
         # the outcome they actually got.
+        if rehearsed:
+            summary_text = f"Rehearsed a restore of {plan.slot_display} (test mode, nothing written)"
+        elif completion_succeeded:
+            summary_text = f"Restored {plan.slot_display} from a backup"
+        else:
+            summary_text = f"Failed to restore {plan.slot_display} from a backup"
+
         record(
             'backup.restore',
-            (f"Restored {plan.slot_display} from a backup" if completion_succeeded
-             else f"Failed to restore {plan.slot_display} from a backup"),
+            summary_text,
             target_type='backup_capture', target_id=capture_id,
             target_label=plan.slot_display,
-            detail={'files': summary.get('restored'), 'failed': summary.get('failed')},
-            outcome=OUTCOME_OK if completion_succeeded else OUTCOME_FAILED,
+            detail={'files': summary.get('restored'), 'failed': summary.get('failed'),
+                    'dry_run': rehearsed},
+            outcome=OUTCOME_OK if (completion_succeeded or rehearsed) else OUTCOME_FAILED,
             actor=initiator,
         )
 

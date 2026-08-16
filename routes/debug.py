@@ -64,6 +64,13 @@ def api_runtime_status():
             # answering requests — a cached or stale frontend build would
             # otherwise keep displaying whatever it was built from.
             "version": APP_VERSION,
+            # Reported at the top level, not only buried inside the socket
+            # runtime block, because it changes what every action in the
+            # interface MEANS. With it on, a transfer reports "completed" and a
+            # restore reports "restored" while nothing is written to disk. That
+            # is fine on a test server and alarming anywhere else, and either
+            # way an operator has to be able to see it without reading a log.
+            "test_mode": bool(socketio_runtime_info.get('test_mode')),
             "ssh_connected": ssh_manager.connected if ssh_manager else False,
             "websocket": {
                 "active_connections": get_websocket_connection_count(),

@@ -431,6 +431,5 @@ class RenameTests(ActivityTestCase):
         self.assertEqual(len(by_account), 2)
         self.assertEqual({e['actor_name'] for e in by_account}, {'priya', 'priya.n'})
 
-
 if __name__ == '__main__':
     unittest.main()

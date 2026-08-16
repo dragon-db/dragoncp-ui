@@ -174,12 +174,6 @@ class TransferLoggingTests(unittest.TestCase):
         self.assertEqual(len(logs), cap)
         # The tail is what survives: it holds the summary and any errors
         self.assertEqual(logs[-1], f"file_{cap + 24}.mkv")
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class IntentionalStopWindowTests(unittest.TestCase):
     """
     Cancelling or pausing a transfer whose rsync has already exited.
@@ -233,3 +227,6 @@ class IntentionalStopWindowTests(unittest.TestCase):
         self.service._mark_intentional_stop("again", "cancelled")
         self.service._clear_intentional_stop("again")
         self.assertIsNone(self.service._take_intentional_stop("again"))
+
+if __name__ == '__main__':
+    unittest.main()

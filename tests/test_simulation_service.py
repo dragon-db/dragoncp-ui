@@ -127,6 +127,5 @@ class SimulationSafetyTests(unittest.TestCase):
         busy = self.service.running_real_transfers()
         self.assertEqual([t["transfer_id"] for t in busy], ["real_a"])
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

@@ -6,6 +6,7 @@ import {
   IconPlayerPause,
   IconCircleX,
   IconArrowsTransferDown,
+  IconRocket,
 } from "@tabler/icons-react";
 import type { ReactNode } from "react";
 
@@ -120,6 +121,36 @@ export function ProgressMeter({
         style={{ width: `${queued ? 0 : percent}%` }}
       />
     </div>
+  );
+}
+
+/**
+ * Which route a transfer took to the media host.
+ *
+ * Only shown for the fast route. A transfer over SSH is the normal case and
+ * badging every one of them would be noise — but a transfer that ran three
+ * times faster is worth being able to see, and its absence is what tells you a
+ * transfer fell back.
+ */
+export function TransportBadge({
+  transport,
+  className,
+}: {
+  transport?: string | null;
+  className?: string;
+}) {
+  if (transport !== "daemon") return null;
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-300 uppercase",
+        className
+      )}
+      title="Pulled over the fast transfer server rather than SSH"
+    >
+      <IconRocket className="size-[11px]" />
+      Fast
+    </span>
   );
 }
 

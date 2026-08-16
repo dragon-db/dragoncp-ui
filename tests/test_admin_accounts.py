@@ -664,6 +664,5 @@ class ActorTests(unittest.TestCase):
         for actor in (AUTO_SYNC_SCHEDULER, SYSTEM_ACTOR, webhook_actor('anime')):
             self.assertIsNone(actor.to_dict()['actor_account_id'])
 
-
 if __name__ == '__main__':
     unittest.main()

@@ -35,6 +35,13 @@ export interface RuntimeStatusResponse {
      * to the version this bundle was built from.
      */
     version?: string;
+    /**
+     * Whether the server is running with every write turned into a rehearsal.
+     * Optional because a backend that has not been restarted since this was
+     * added answers without it — absent is read as "not in test mode", which is
+     * the safe way round: it never claims a real server is a test one.
+     */
+    test_mode?: boolean;
     ssh_connected: boolean;
     websocket: {
       active_connections: number;
@@ -210,6 +217,22 @@ export function useUpdateAvailable(): { stale: boolean; running: string; availab
   const available = data ?? "";
 
   return { stale: isOutdated(running, available), running, available };
+}
+
+/**
+ * Whether this server writes anything to disk.
+ *
+ * Reads the runtime status every page already polls, so it costs no extra
+ * request. Absent means no — a backend too old to report it is far more likely
+ * to be a real one than a test one, and claiming a live server is a rehearsal
+ * would be the more dangerous mistake.
+ */
+export function useTestMode(): boolean {
+  const { data } = useQuery({
+    ...runtimeStatusQueryOptions(),
+    select: (response) => response.runtime_status.test_mode ?? false,
+  });
+  return data ?? false;
 }
 
 export function useSSHConnect() {

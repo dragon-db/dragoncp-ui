@@ -592,6 +592,5 @@ class DryRunTests(unittest.TestCase):
         self.assertIn('rsync was not run', ' '.join(report['warnings']))
         self.assertEqual(len(report['removals']), 1)
 
-
 if __name__ == '__main__':
     unittest.main()

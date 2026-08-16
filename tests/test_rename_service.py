@@ -138,6 +138,5 @@ class RenameServiceTests(unittest.TestCase):
         self.assertFalse(os.path.exists(self.previous_local_path))
         self.assertTrue(os.path.exists(self.new_local_path))
 
-
 if __name__ == '__main__':
     unittest.main()

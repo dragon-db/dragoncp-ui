@@ -513,6 +513,5 @@ class RepairTests(unittest.TestCase):
             self.repair_service().repair_plan('books', self.SERIES)
         self.assertEqual(caught.exception.status, 404)
 
-
 if __name__ == '__main__':
     unittest.main()

@@ -363,6 +363,5 @@ class SeasonSpellingTests(unittest.TestCase):
         self.assertTrue(plan.source_root.endswith('Season 01'))
         self.assertTrue(plan.dest_root.endswith('Season 1'))
 
-
 if __name__ == '__main__':
     unittest.main()

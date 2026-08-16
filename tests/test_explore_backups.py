@@ -182,6 +182,5 @@ class BackupScopeTests(unittest.TestCase):
         self.assertEqual(len(runs), 1)
         self.assertIsNone(runs[0]['season_name'])
 
-
 if __name__ == '__main__':
     unittest.main()

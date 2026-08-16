@@ -58,6 +58,13 @@ ACTIONS = {
     'settings.discord_test': 'Sent a Discord test message',
     'ssh.connect': 'Connected to the media server',
     'ssh.disconnect': 'Disconnected from the media server',
+    # the transfer server on the remote host
+    'remote_transfer.install': 'Installed the remote transfer server',
+    'remote_transfer.uninstall': 'Removed the remote transfer server',
+    'remote_transfer.start': 'Started the remote transfer server',
+    'remote_transfer.stop': 'Stopped the remote transfer server',
+    'remote_transfer.restart': 'Restarted the remote transfer server',
+    'remote_transfer.rotate_password': 'Changed the remote transfer server password',
     # simulation
     'simulation.start': 'Started a simulation',
     'simulation.stop': 'Stopped a simulation',

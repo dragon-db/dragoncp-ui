@@ -1,12 +1,12 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import { useActiveTransfers } from "@/hooks/useTransfers";
 import { useWebhookNotifications } from "@/hooks/useWebhooks";
-import { useAppVersion } from "@/hooks/useConfig";
+import { useAppVersion, useTestMode } from "@/hooks/useConfig";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { RealtimeStatus } from "@/components/layout/realtime-status";
-import { IconHome, IconChevronRight, IconBell, IconSettings } from "@tabler/icons-react";
+import { IconHome, IconChevronRight, IconBell, IconFlask, IconSettings } from "@tabler/icons-react";
 
 interface Crumb {
   section: string;
@@ -34,6 +34,7 @@ export function AppNavbar() {
   const location = useLocation();
   const crumb = resolveCrumb(location.pathname);
   const version = useAppVersion();
+  const testMode = useTestMode();
 
   const activeQuery = useActiveTransfers();
   const running = activeQuery.data?.queue_status.running_count ?? 0;
@@ -71,6 +72,32 @@ export function AppNavbar() {
           <span className="font-medium text-foreground">{queued}</span>
         </div>
       </div>
+
+      {/*
+        Test mode.
+
+        Deliberately NOT hidden on small screens, unlike the version badge
+        beside it. This is the one thing in the header that changes what every
+        result in the application means — with it on, a transfer reports
+        "completed" and a restore reports "restored" while nothing is written to
+        disk — and a phone is exactly where somebody checks whether a sync
+        worked. A badge that disappeared at the width it is most needed would be
+        worse than none.
+
+        Kept to a chip rather than a banner because this only ever runs on the
+        development instance. If it ever appears on the production one, that is
+        itself the emergency it is reporting.
+      */}
+      {testMode && (
+        <span
+          role="status"
+          title="Test mode: nothing is written to disk. Transfers and restores report success without moving any files."
+          className="inline-flex flex-none items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold tracking-[0.06em] text-amber-300 uppercase"
+        >
+          <IconFlask aria-hidden="true" className="size-3" />
+          Test
+        </span>
+      )}
 
       {/* Notifications — the link carries the button styling itself; a <button>
           nested inside the <a> would be an interactive element inside another. */}

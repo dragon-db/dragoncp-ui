@@ -456,5 +456,67 @@ class ConfigRouteTests(unittest.TestCase):
         self.assertIn('BACKUP_RETENTION_KEEP', body)
 
 
+class StartupLoggingTests(unittest.TestCase):
+    """
+    What reading the environment file is allowed to say out loud.
+
+    Every value in it used to be printed on every start, which put the operator
+    password, the token-signing key, the Flask secret, the storage API token and
+    the address allowed to reach the transfer server into the backend log in
+    plain text. That log is shown on the Settings page, downloaded with one
+    button, and pasted into bug reports.
+    """
+
+    SECRETS = {
+        'DRAGONCP_PASSWORD': 'sup3r-secret-pw',
+        'JWT_SECRET_KEY': 'jwt-signing-key-value',
+        'SECRET_KEY': 'flask-secret-value',
+        'DISK_API_TOKEN': 'storage-api-token-value',
+        'RSYNC_DAEMON_ALLOWED_IP': '198.51.100.7',
+    }
+    PLAIN = {'REMOTE_USER': 'someone', 'MOVIE_PATH': '/srv/media/movies'}
+
+    def _load(self):
+        import io
+        import contextlib
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'test.env'
+            lines = [f'{k}="{v}"' for k, v in {**self.SECRETS, **self.PLAIN}.items()]
+            path.write_text('\n'.join(lines) + '\n')
+            captured = io.StringIO()
+            with patch('config.os.path.dirname', return_value=folder), \
+                    contextlib.redirect_stdout(captured):
+                config = DragonCPConfig('test.env')
+            return config, captured.getvalue()
+
+    def test_no_secret_is_printed_while_reading_the_environment_file(self):
+        config, printed = self._load()
+        for key, value in self.SECRETS.items():
+            self.assertEqual(config.get(key), value, f'{key} should still be readable')
+            self.assertNotIn(value, printed, f'{key} was printed in the clear')
+
+    def test_ordinary_settings_are_still_readable_in_the_log(self):
+        # Redacting everything would be safe and useless — the reason to print
+        # any of it is being able to see which media directories were picked up.
+        _, printed = self._load()
+        for value in self.PLAIN.values():
+            self.assertIn(value, printed)
+
+    def test_a_setting_the_registry_does_not_know_is_redacted(self):
+        # Fails closed. Something added later is far likelier to be a credential
+        # than to be worth reading in a startup log.
+        from config import _for_logging
+
+        self.assertEqual(_for_logging('SOME_NEW_KEY', 'value'), '<redacted>')
+
+    def test_every_sensitive_registered_setting_is_covered(self):
+        from config import _for_logging
+
+        for setting in registry.SETTINGS:
+            if setting.sensitive or setting.hidden:
+                self.assertEqual(
+                    _for_logging(setting.key, 'a-value'), '<redacted>', setting.key)
+
 if __name__ == '__main__':
     unittest.main()
