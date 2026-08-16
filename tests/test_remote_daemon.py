@@ -525,12 +525,6 @@ class ServiceTests(unittest.TestCase):
             state = service.status(refresh=False)
         self.assertFalse(state['reachable_over_ssh'])
         self.assertTrue(state['summary'])
-
-
-if __name__ == '__main__':
-    unittest.main()
-
-
 class ReviewFindingsTests(unittest.TestCase):
     """
     Failure and lifecycle paths raised in review. Each one reported success
@@ -705,9 +699,14 @@ class ThirdPassFindingsTests(unittest.TestCase):
                 patch.object(RemoteDaemonService, 'release', return_value=False):
             ok, message = service.install()
 
-        self.assertTrue(ok)
-        self.assertNotIn('stopped again', message,
-                         'a failed stop must not be reported as a closed port')
+        # NOT a success. Everything was written and the service runs, but the
+        # port is open when the configured lifecycle says it should be closed —
+        # and that is the part an operator chose for security reasons.
+        self.assertFalse(ok)
+        # Checked on meaning rather than on a phrase: it must say the port is
+        # still open, not that the server was stopped.
+        self.assertIn('still open', message)
+        self.assertNotIn('It is stopped again', message)
 
     def test_install_says_it_stopped_when_it_did(self):
         service = self.build()
@@ -747,3 +746,6 @@ class ThirdPassFindingsTests(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertIn('start-at-boot', message)
+
+if __name__ == '__main__':
+    unittest.main()

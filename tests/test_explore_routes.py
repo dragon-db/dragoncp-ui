@@ -149,6 +149,5 @@ class ExploreRouteTests(unittest.TestCase):
         response = self.client.post('/api/explore/transfer', json={'plan_id': 'expired'})
         self.assertEqual(response.status_code, 409)
 
-
 if __name__ == '__main__':
     unittest.main()

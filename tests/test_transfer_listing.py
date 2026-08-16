@@ -114,12 +114,6 @@ class TransferListingTests(unittest.TestCase):
         transfer = self.model.get("a")
         self.assertEqual(len(transfer["logs"]), 4)
         self.assertEqual(transfer["logs"][0], "line 0")
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ActiveTransferListingTests(unittest.TestCase):
     """
     `get_active()` feeds two things: the migration guard, and — through
@@ -188,3 +182,6 @@ class ActiveTransferListingTests(unittest.TestCase):
         documented = Transfer.get_active.__doc__.lower()
         for status in Transfer.ACTIVE_STATUSES:
             self.assertIn(status, documented, status)
+
+if __name__ == '__main__':
+    unittest.main()

@@ -194,6 +194,5 @@ class LogCompactionTests(unittest.TestCase):
 
         self.assertNotIn("a line written while compacting", self.logs_of("running"))
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

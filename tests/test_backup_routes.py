@@ -540,6 +540,5 @@ class _CoordinatorShim:
         self.backups = service
         self.capture_model = capture_model
 
-
 if __name__ == '__main__':
     unittest.main()

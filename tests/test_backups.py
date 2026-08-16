@@ -2013,6 +2013,5 @@ class ServiceTests(BackupsTestCase):
         self.assertIsNotNone(view['current'])
         self.assertEqual(view['current']['name'], f"{SHOW} - S01E01 - New.mkv")
 
-
 if __name__ == '__main__':
     unittest.main()

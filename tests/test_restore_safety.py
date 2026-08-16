@@ -260,12 +260,6 @@ class RehearsalHasNoSideEffectsTests(unittest.TestCase):
         service.captures.update.assert_called_once()
         service._apply_retention_quietly.assert_called_once()
         self.assertIn('Restored', record.call_args[0][1])
-
-
-if __name__ == '__main__':
-    unittest.main()
-
-
 class ACrossDeviceBackupIsNeverMistakenForALinkTests(RestoreOnDiskTestCase):
     """
     An inode number is unique only WITHIN a filesystem.
@@ -294,14 +288,49 @@ class ACrossDeviceBackupIsNeverMistakenForALinkTests(RestoreOnDiskTestCase):
         with open(kept, 'rb') as handle:
             self.assertEqual(handle.read(), b'the copy currently in the library')
 
-    def test_the_comparison_uses_the_device_as_well_as_the_inode(self):
-        # samefile compares st_dev AND st_ino; st_ino alone is unique only
-        # within a filesystem, so a collision across two devices would delete a
-        # valid backup.
-        source = (REPO_ROOT / 'services' / 'backups' / 'restore.py').read_text()
-        cleanup = source.split('3b. drop what was kept')[1].split('# ---- 4.')[0]
-        self.assertIn('os.path.samefile', cleanup)
-        self.assertNotIn('st_ino', cleanup)
+    def test_the_same_inode_number_on_two_devices_does_not_delete_the_backup(self):
+        """
+        The collision itself, made deterministic.
+
+        Inode numbers are unique only within one filesystem, so two unrelated
+        files on two devices can share one. Reporting real files with a matching
+        inode number and DIFFERENT device ids is the only way to reproduce that
+        on demand — and it is what tells an implementation comparing `st_ino`
+        alone apart from one comparing device and inode together.
+        """
+        kept = os.path.join(self.captured_dir, os.path.basename(self.live))
+        real_stat = os.stat
+        collided = {'ino': 4242}
+
+        def stat_with_a_collision(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            try:
+                target = os.fspath(path)
+            except TypeError:  # a file descriptor, used by the copy itself
+                return result
+            if os.path.abspath(target) not in (os.path.abspath(kept),
+                                               os.path.abspath(self.live)):
+                return result
+            # A REAL stat_result, so everything that reads one keeps working.
+            fields = list(result)
+            fields[1] = collided['ino']                                  # st_ino
+            fields[2] = 1 if 'backups' in target else 2                  # st_dev
+            return os.stat_result(fields, {
+                'st_atime_ns': result.st_atime_ns,
+                'st_mtime_ns': result.st_mtime_ns,
+                'st_ctime_ns': result.st_ctime_ns,
+            })
+
+        # Kept as a copy, as it would be across devices, then given colliding
+        # inode numbers on different devices.
+        with patch('services.backups.preserve.same_filesystem', return_value=False):
+            with patch('os.stat', side_effect=stat_with_a_collision):
+                ok, message, summary = self.run_restore(self.plan())
+
+        self.assertTrue(ok, message)
+        self.assertEqual(
+            self.kept_copies(), ['Show - S01E01 [WEBDL-1080p].mkv'],
+            'an inode-number collision across devices must not delete a real backup')
 
 
 class DiscardingAKeptCopyTests(unittest.TestCase):
@@ -335,3 +364,6 @@ class DiscardingAKeptCopyTests(unittest.TestCase):
 
         self.assertTrue(service.discard_capture('cap1'))
         service.captures.delete.assert_called_once_with('cap1')
+
+if __name__ == '__main__':
+    unittest.main()

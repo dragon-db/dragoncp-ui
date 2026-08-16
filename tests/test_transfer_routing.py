@@ -200,6 +200,5 @@ class RouteRecordingTests(unittest.TestCase):
         service = TransferService(FakeConfig(), MagicMock(), model, None, None)
         service._record_route('t1', TransferRoute(SSH, 'x', []))  # must not raise
 
-
 if __name__ == '__main__':
     unittest.main()

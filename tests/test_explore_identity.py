@@ -131,6 +131,5 @@ class PathSplitTests(unittest.TestCase):
             ('Show', 'Season 01/ep.mkv', 'ep.mkv'),
         )
 
-
 if __name__ == '__main__':
     unittest.main()

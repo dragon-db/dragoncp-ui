@@ -421,6 +421,5 @@ class AuthRouteTests(unittest.TestCase):
         self.assertEqual(configured['account_count'], 1)
         self.assertFalse(configured['using_fallback_account'])
 
-
 if __name__ == '__main__':
     unittest.main()

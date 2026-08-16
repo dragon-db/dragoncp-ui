@@ -189,6 +189,5 @@ class GroupSyncTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(transfers, [])
 
-
 if __name__ == '__main__':
     unittest.main()

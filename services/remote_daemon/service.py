@@ -357,12 +357,28 @@ class RemoteDaemonService:
         # means on demand: an install with nothing to transfer must not leave a
         # port listening. Released after the check, not before it.
         released = False
+        shutdown_failed = False
         if not self.start_at_boot:
             # Whether it actually stopped, not merely whether we asked. `release`
             # swallows a failed stop on purpose — it is housekeeping that runs
             # after a transfer and must not raise — so taking the attempt as the
             # answer told operators the port was closed when it was still open.
             released = self.release(lambda: False)
+            shutdown_failed = not released
+
+        # A shutdown that did not happen is not a successful install of an
+        # on-demand server. Everything was written and the service runs, but the
+        # port is open when the configured lifecycle says it should be closed —
+        # which is the one part of this an operator chose for security reasons.
+        # Reported as a failure so it reaches them in red and is recorded as
+        # such, with the message carrying what did work.
+        if shutdown_failed:
+            return False, (
+                'Installed and working, but it could not be stopped again '
+                'afterwards, so its port is still open. It is set to run only '
+                'while transfers need it — stop it by hand, or set it to run '
+                'always if that is what you want.'
+            )
 
         # The tense matters. After the release above it is no longer answering,
         # and saying that it is sends an operator to look for a listening port

@@ -139,6 +139,5 @@ class TestModeIsVisibleTests(unittest.TestCase):
         page = (REPO_ROOT / 'frontend' / 'src' / 'components' / 'pages' / 'backups.tsx').read_text()
         self.assertIn('result.dry_run', page)
 
-
 if __name__ == '__main__':
     unittest.main()

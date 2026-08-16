@@ -101,6 +101,5 @@ class VersionSurvivesABadFile(unittest.TestCase):
             with patch.object(config, '_VERSION_FILE', empty):
                 self.assertEqual(config._read_version(), 'unknown')
 
-
 if __name__ == '__main__':
     unittest.main()

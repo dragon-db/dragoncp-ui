@@ -200,6 +200,5 @@ class BackupAreaPlacementTests(unittest.TestCase):
         layout = BackupLayout(FakeConfig(backup_path='', destinations=['/media/tv']))
         self.assertIsNone(layout.misplaced_inside_library())
 
-
 if __name__ == '__main__':
     unittest.main()

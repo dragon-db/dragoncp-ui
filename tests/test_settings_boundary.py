@@ -518,6 +518,5 @@ class StartupLoggingTests(unittest.TestCase):
                 self.assertEqual(
                     _for_logging(setting.key, 'a-value'), '<redacted>', setting.key)
 
-
 if __name__ == '__main__':
     unittest.main()

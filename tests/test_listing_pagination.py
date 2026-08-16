@@ -303,6 +303,5 @@ class NotificationCatalogTests(unittest.TestCase):
         self.assertEqual(by_id["m1"]["languages"], [])
         self.assertEqual(by_id["s1"]["episodes"], [])
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
