@@ -174,7 +174,7 @@ class MisplacedTests(unittest.TestCase):
     def test_file_nested_inside_a_directory_named_after_it_is_flagged(self):
         # Exactly the damage the old single-episode download left behind:
         # "Season 01/ep.mkv/ep.mkv", invisible to a media server.
-        name = 'Short Anime (2010) - S01E18 - 018 - Eighteenth Night [Bluray-1080p][X-Dragon DB].mkv'
+        name = 'Short Anime (2010) - S01E18 - 018 - An Eighteenth Episode [Bluray-1080p][X-Dragon DB].mkv'
         season = build(
             'anime',
             [(f'Short Anime (2010)/Season 01/{name}', 2 * GB, 100)],

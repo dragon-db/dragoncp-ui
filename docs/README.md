@@ -26,7 +26,7 @@ map; `INDEX.md` is the catalogue.
 
 | You are working on | Read first | Then |
 |---|---|---|
-| A specific feature (transfers, backups, renames, webhooks, auth, notifications, explore, queue, auto-sync, simulation) | `features/<area>/README.md` | The `Related` links at the bottom of that doc |
+| A specific feature (transfers, backups, renames, webhooks, auth, notifications, integrations, explore, queue, auto-sync, simulation) | `features/<area>/README.md` | The `Related` links at the bottom of that doc |
 | Anything touching rsync, progress, pause/resume | `features/transfers/README.md` | `features/queue/README.md` |
 | Why a transfer was fast or slow, or the transfer server on the media host | `features/fast-transfers/README.md` | `plans/fast-transport.md` |
 | Browsing the library, comparing it with the remote, or planning a sync | `features/explore/README.md` | `features/transfers/README.md` |

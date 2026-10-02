@@ -11,6 +11,59 @@ Newest first.
 
 ---
 
+## 2.3.0
+
+The release that made DragonCP extensible: outside services are now
+**connectors**, each with its own page under a new Integrations section in the
+sidebar.
+
+### Integrations
+
+- **New Integrations section** in the sidebar, with one page per connector.
+  Discord, Sonarr, Radarr and Jellyfin are there today; adding another is a
+  single file on the server, and it appears in this menu on its own.
+- **Discord now supports several webhooks**, each with a name you choose. One is
+  the default.
+- **Every notification can be pointed at a specific webhook.** A new
+  Notifications tab lists all five announcements DragonCP makes — sync finished,
+  sync failed, rename finished, old backups deleted, automatic sync refused —
+  each with a destination and an on/off switch. Anything left on "use default"
+  goes where the default webhook points, so a notification added in a future
+  version arrives instead of shipping silent.
+- **A new Activity tab shows the last hundred messages** and what happened to
+  each: delivered, failed with the reason, or held back and why. Answering "why
+  didn't I get told about that" previously meant reading the server console.
+- **Each webhook has its own Test button**, so a test proves *that* webhook
+  rather than whichever one happened to be saved.
+- **Sonarr, Radarr and Jellyfin can be connected and tested.** Nothing reads
+  them yet; using them to decide when a sync should start comes next.
+- **Your existing Discord setup is carried over automatically.** The webhook you
+  had becomes a destination called "Default", nothing is re-routed, and messages
+  keep going exactly where they went before.
+
+### Fixed
+
+- **A rename notification no longer holds up Sonarr.** The Discord message was
+  posted inside the HTTP request Sonarr made, so Sonarr waited up to ten seconds
+  for Discord to answer. Messages are now delivered in the background.
+- **A very long title, path or error no longer costs the whole message.**
+  Discord rejects a message outright when any field runs past its limit, and
+  nothing enforced those limits before.
+- **A failed send no longer prints the webhook URL to the log.** A Discord
+  webhook URL is the credential; it is now redacted everywhere it could surface.
+- **A Discord destination must be a Discord address.** The server posts to
+  whatever is stored, and previously that could be anywhere.
+- **Rate limiting is handled.** A message refused for arriving too fast is
+  retried once, after the wait Discord asks for.
+
+### Removed
+
+- The Discord card on the Settings → Automation tab, and the
+  `/api/discord/settings` and `/api/discord/test` endpoints. The Automation tab
+  links to the new page.
+
+---
+
 ## 2.2.0
 
 The release that put the version number back in service — it had been stuck at

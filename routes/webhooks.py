@@ -8,26 +8,14 @@ import os
 import logging
 from datetime import datetime
 from flask import Blueprint, jsonify, request, Response, g
-import requests
 import json
 from activity_log import record, record_failure
 from actor import AUTO_WEBHOOK_RENAME, webhook_actor
 from auth import require_auth
 from webhook_auth import require_webhook_auth
 from models.webhook import NotificationCatalog
-from settings_registry import REDACTED
 
 webhooks_bp = Blueprint('webhooks', __name__)
-
-
-def _redacted(value):
-    """A stored secret as the client should see it: a placeholder, or nothing.
-
-    Sending the placeholder back on save means "unchanged" — `SettingsService`
-    treats it that way for every sensitive setting — so the field round-trips
-    without the value ever leaving the server.
-    """
-    return REDACTED if value else ''
 
 # A page the UI would never render is a payload nobody reads.
 MAX_PAGE_SIZE = 200
@@ -1175,202 +1163,12 @@ def api_webhook_settings():
             }), 500
 
 
-# ===== DISCORD SETTINGS =====
-
-@webhooks_bp.route('/discord/settings', methods=['GET', 'POST'])
-@require_auth
-def api_discord_settings():
-    """Get or update Discord notification settings"""
-    if request.method == 'GET':
-        try:
-            # Read through the resolver so the defaults here match the ones
-            # the notification service applies when it actually sends.
-            store = transfer_coordinator.settings_service
-            settings = {
-                # Redacted the same way `/api/config` redacts it — it is the
-                # same secret, and one endpoint handing it back in full made
-                # the other's redaction decorative. Sending the placeholder
-                # back on save means "unchanged", so the round trip still works.
-                "webhook_url": _redacted(store.get('DISCORD_WEBHOOK_URL')),
-                "app_url": store.get('DISCORD_APP_URL'),
-                "manual_sync_thumbnail_url": store.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL'),
-                "icon_url": store.get('DISCORD_ICON_URL'),
-                "enabled": store.get_bool('DISCORD_NOTIFICATIONS_ENABLED'),
-            }
-            return jsonify({
-                "status": "success",
-                "settings": settings
-            })
-        except Exception as e:
-            return jsonify({
-                "status": "error",
-                "message": f"Failed to get Discord settings: {str(e)}"
-            }), 500
-    
-    else:  # POST
-        try:
-            data = request.json
-            if not data:
-                return jsonify({"status": "error", "message": "No data provided"}), 400
-            
-            # Update Discord settings
-            # One writer. These are database settings like any other, so they
-            # go through the resolver rather than reaching for the raw model —
-            # which is what kept the bounds and the redaction rule in one place.
-            store = transfer_coordinator.settings_service
-            payload = {
-                key: data[form_key]
-                for key, form_key in (
-                    ('DISCORD_NOTIFICATIONS_ENABLED', 'enabled'),
-                    ('DISCORD_WEBHOOK_URL', 'webhook_url'),
-                    ('DISCORD_APP_URL', 'app_url'),
-                    ('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', 'manual_sync_thumbnail_url'),
-                    ('DISCORD_ICON_URL', 'icon_url'),
-                )
-                if form_key in data
-            }
-            saved, _refused, errors = store.set_many(payload)
-            if errors:
-                return jsonify({"status": "error", "message": "; ".join(errors)}), 400
-            # After the error gate: a rejected save must not be recorded as a
-            # change, and `saved` is what actually persisted.
-            record('settings.discord_update',
-                   f"Changed Discord settings: {', '.join(sorted(saved)) or 'nothing'}",
-                   target_type='setting', target_id='discord',
-                   detail={'keys': sorted(saved)})
-            for key in saved:
-                print(f"🎮 {key} updated (DB)")
-
-            return jsonify({
-                "status": "success",
-                "message": "Discord settings updated successfully"
-            })
-            
-        except Exception as e:
-            print(f"❌ Error updating Discord settings: {e}")
-            return jsonify({
-                "status": "error",
-                "message": f"Failed to update Discord settings: {str(e)}"
-            }), 500
-
-
-@webhooks_bp.route('/discord/test', methods=['POST'])
-@require_auth
-def api_discord_test():
-    """Test Discord webhook with a sample notification"""
-    try:
-        # Check if Discord notifications are enabled
-        store = transfer_coordinator.settings_service
-        notifications_enabled = store.get_bool('DISCORD_NOTIFICATIONS_ENABLED')
-        if not notifications_enabled:
-            return jsonify({
-                "status": "error",
-                "message": "Discord notifications are disabled. Please enable them first."
-            }), 400
-        
-        # Get Discord webhook URL from settings
-        discord_webhook_url = store.get('DISCORD_WEBHOOK_URL')
-        if not discord_webhook_url:
-            return jsonify({
-                "status": "error",
-                "message": "Discord webhook URL not configured"
-            }), 400
-        
-        # Get other Discord settings
-        app_url = store.get('DISCORD_APP_URL')
-        manual_sync_thumbnail_url = store.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL')
-        icon_url = store.get('DISCORD_ICON_URL')
-        
-        # Create test embed
-        embed = {
-            'title': 'DragonCP Test Notification',
-            'color': 11164867,  # Purple color
-            'fields': [
-                {
-                    'name': 'Folder Synced',
-                    'value': '/test/path/sample_movie',
-                    'inline': False
-                },
-                {
-                    'name': 'Files Info',
-                    'value': '```Transferred files: 1\nDeleted Files: 2```',
-                    'inline': True
-                },
-                {
-                    'name': 'Speed Info',
-                    'value': '```Transferred: 3.84G\nAvg Speed: 7.31M bytes/sec```',
-                    'inline': True
-                },
-                {
-                    'name': 'Requested by',
-                    'value': 'test',
-                    'inline': True
-                }
-            ],
-            'author': {
-                'name': 'Test Notification',
-                'icon_url': icon_url
-            },
-            'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-            'footer': {
-                'text': 'This is a test notification from DragonCP'
-            }
-        }
-        
-        # Add URL only if it's a valid format (Discord is strict about URL validation)
-        if app_url and _is_valid_discord_url(app_url):
-            embed['url'] = app_url
-        
-        # Add thumbnail if configured
-        if manual_sync_thumbnail_url:
-            embed['thumbnail'] = {
-                'url': manual_sync_thumbnail_url
-            }
-        
-        # Prepare Discord payload
-        payload = {
-            'embeds': [embed]
-        }
-        
-        # Send test notification
-        response = requests.post(
-            discord_webhook_url,
-            json=payload,
-            headers={'Content-Type': 'application/json'},
-            timeout=10
-        )
-        
-        if response.status_code == 204:
-            record('settings.discord_test', 'Sent a Discord test message',
-                   target_type='setting', target_id='discord')
-            return jsonify({
-                "status": "success",
-                "message": "Test Discord notification sent successfully!"
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "message": f"Discord webhook test failed: {response.status_code} - {response.text}"
-            }), 400
-            
-    except Exception as e:
-        print(f"❌ Error testing Discord webhook: {e}")
-        return jsonify({
-            "status": "error",
-            "message": f"Failed to test Discord webhook: {str(e)}"
-        }), 500
-
-
-def _is_valid_discord_url(url: str) -> bool:
-    """Validate URL format for Discord embeds"""
-    try:
-        import re
-        # Discord accepts http/https URLs with proper domain format
-        # Allow localhost, IP addresses, and proper domain names
-        url_pattern = r'^https?://(?:(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d{1,5})?(?:/.*)?$'
-        return bool(re.match(url_pattern, url))
-    except Exception:
-        return False
+# ===== DISCORD =====
+#
+# Discord used to be configured here: /discord/settings and /discord/test,
+# reading and writing five DISCORD_* settings keys. It is a connector now —
+# see routes/connectors.py — because one webhook URL could only ever mean one
+# destination, and every announcement the app makes landed in it.
 
 
 # ===== DRY-RUN ENDPOINTS =====

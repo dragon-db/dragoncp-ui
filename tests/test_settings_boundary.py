@@ -31,6 +31,41 @@ from models.settings import AppSettings
 from services.settings_service import SettingsService
 
 
+#: A DB-backed secret that exists only while a test runs.
+#
+# There used to be a real one to test against — the Discord webhook URL — and
+# these tests used it as their example. Discord became a connector in 2.3.0 and
+# its credential moved to `connector_secret`, which left the registry with no
+# editable secret at all. The rules those tests pin are still real and still
+# reachable by any setting added later, so the example is synthesised rather
+# than the tests deleted.
+_SECRET_KEY_UNDER_TEST = 'TEST_ONLY_SECRET'
+
+_TEST_SECRET = registry.Setting(
+    _SECRET_KEY_UNDER_TEST, registry.DB, 'runtime', 'Test-only secret',
+    'Exists for the duration of one test.', kind='password', sensitive=True,
+)
+
+
+def install_test_secret(case):
+    """Add the synthetic secret to the registry for one test."""
+    original_settings = registry.SETTINGS
+    original_by_key = registry.BY_KEY
+    original_editable = registry.EDITABLE_KEYS
+
+    registry.SETTINGS = original_settings + (_TEST_SECRET,)
+    registry.BY_KEY = {**original_by_key, _TEST_SECRET.key: _TEST_SECRET}
+    registry.EDITABLE_KEYS = original_editable + (_TEST_SECRET.key,)
+
+    def restore():
+        registry.SETTINGS = original_settings
+        registry.BY_KEY = original_by_key
+        registry.EDITABLE_KEYS = original_editable
+
+    case.addCleanup(restore)
+    return _TEST_SECRET.key
+
+
 class FakeConfig:
     def __init__(self, values=None):
         self.values = dict(values or {})
@@ -68,11 +103,28 @@ class RegistryTests(unittest.TestCase):
 
     def test_the_operator_facing_settings_are_editable(self):
         for key in ('AUTO_SYNC_MOVIES', 'AUTO_SYNC_SERIES', 'AUTO_SYNC_ANIME',
-                    'SERIES_ANIME_SYNC_WAIT_TIME', 'DISCORD_NOTIFICATIONS_ENABLED',
-                    'DISCORD_WEBHOOK_URL', 'BACKUP_RETENTION_KEEP',
+                    'SERIES_ANIME_SYNC_WAIT_TIME', 'BACKUP_RETENTION_KEEP',
                     'BACKUP_RETENTION_GRACE_HOURS', 'BACKUP_RETENTION_ENABLED',
                     'WEBSOCKET_TIMEOUT_MINUTES'):
             self.assertTrue(registry.is_editable(key), f"{key} should be editable")
+
+    def test_the_discord_settings_left_the_registry(self):
+        """
+        Discord became a connector. Its five keys are rows in `connector`,
+        `connector_secret` and `connector_target` now, and leaving them here
+        as well would give one value two homes — the exact failure this
+        registry was built to end.
+        """
+        for key in ('DISCORD_NOTIFICATIONS_ENABLED', 'DISCORD_WEBHOOK_URL',
+                    'DISCORD_APP_URL', 'DISCORD_ICON_URL',
+                    'DISCORD_MANUAL_SYNC_THUMBNAIL_URL'):
+            self.assertIsNone(registry.get(key), f"{key} should have moved to the connector layer")
+
+    def test_every_group_has_settings_in_it(self):
+        """A group with nothing in it renders as an empty card on the screen."""
+        used = {s.group for s in registry.SETTINGS}
+        for group, label in registry.GROUPS:
+            self.assertIn(group, used, f"the {label!r} group holds no settings")
 
     def test_the_sync_wait_time_is_in_seconds(self):
         """
@@ -167,9 +219,10 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(self.service.get_int('WEBSOCKET_TIMEOUT_MINUTES'), 60)
 
     def test_a_redacted_placeholder_means_unchanged(self):
-        self.service.set('DISCORD_WEBHOOK_URL', 'https://example.invalid/hook')
-        self.service.set_many({'DISCORD_WEBHOOK_URL': registry.REDACTED})
-        self.assertEqual(self.service.get('DISCORD_WEBHOOK_URL'), 'https://example.invalid/hook')
+        key = install_test_secret(self)
+        self.service.set(key, 'https://example.invalid/hook')
+        self.service.set_many({key: registry.REDACTED})
+        self.assertEqual(self.service.get(key), 'https://example.invalid/hook')
 
     def test_a_value_can_be_deliberately_cleared(self):
         """
@@ -179,22 +232,22 @@ class ResolverTests(unittest.TestCase):
         went back to the env file: clearing the Discord webhook in the UI
         looked like it worked and notifications kept going to the old one.
         """
-        self.config.values['DISCORD_WEBHOOK_URL'] = 'https://example.invalid/from-env'
-        self.assertEqual(
-            self.service.get('DISCORD_WEBHOOK_URL'), 'https://example.invalid/from-env',
-        )
+        key = install_test_secret(self)
+        self.config.values[key] = 'https://example.invalid/from-env'
+        self.assertEqual(self.service.get(key), 'https://example.invalid/from-env')
 
-        self.service.set('DISCORD_WEBHOOK_URL', '')
-        self.assertEqual(self.service.get('DISCORD_WEBHOOK_URL'), '')
+        self.service.set(key, '')
+        self.assertEqual(self.service.get(key), '')
 
     def test_a_cleared_value_survives_a_restart(self):
         """Startup adoption used to put the env value back over it every time."""
-        self.config.values['DISCORD_WEBHOOK_URL'] = 'https://example.invalid/from-env'
-        self.service.set('DISCORD_WEBHOOK_URL', '')
+        key = install_test_secret(self)
+        self.config.values[key] = 'https://example.invalid/from-env'
+        self.service.set(key, '')
 
         self.service.adopt_env_defaults()
 
-        self.assertEqual(self.service.get('DISCORD_WEBHOOK_URL'), '')
+        self.assertEqual(self.service.get(key), '')
 
     def test_nothing_is_written_when_any_value_in_the_payload_is_invalid(self):
         """
@@ -277,10 +330,11 @@ class ResolverTests(unittest.TestCase):
         self.assertNotIn('REMOTE_PASSWORD', flat)
 
     def test_an_editable_secret_is_redacted_not_omitted(self):
-        self.service.set('DISCORD_WEBHOOK_URL', 'https://example.invalid/hook')
+        key = install_test_secret(self)
+        self.service.set(key, 'https://example.invalid/hook')
         described = self.service.describe()
         flat = {s['key']: s for g in described['groups'] for s in g['settings']}
-        self.assertEqual(flat['DISCORD_WEBHOOK_URL']['value'], registry.REDACTED)
+        self.assertEqual(flat[key]['value'], registry.REDACTED)
 
     def test_a_setting_with_nothing_saved_shows_its_default_value(self):
         """

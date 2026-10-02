@@ -153,11 +153,11 @@ Type `5`, save, and the stored value is `30`; the field corrects itself after th
 refetches. The bounds used to be enforced in one route only, so the same value written
 through another path was accepted unclamped.
 
-**The Test button uses saved settings, not what is on screen.** The button is enabled
-only when the on-screen Enable toggle is on, but `POST /api/discord/test` reads the
-webhook URL and the enabled flag out of storage. So: typing a new webhook URL and
-hitting **Save Automation** first is what makes Test exercise the new URL, and flipping
-the toggle on without saving makes Test fail with "Discord notifications are disabled".
+**Discord is not configured here any more.** It became a connector in 2.3.0, with named
+webhooks and a choice of destination per notification, and it lives under Integrations →
+Discord in the sidebar. The Automation tab links to it. Each webhook has its own Test
+button that sends to *that* webhook, which is the question the old single Test button
+could not answer once there was more than one destination.
 
 ## Where a save goes
 
@@ -167,7 +167,10 @@ Each tab writes its own settings, through the same resolver, into the same datab
 | --- | --- | --- |
 | Core Config | `POST /api/config` | every editable key in the registry |
 | Automation | `POST /api/webhook/settings` | the three auto-sync toggles and the wait time |
-| Automation | `POST /api/discord/settings` | the five Discord fields |
+
+Connectors write elsewhere — `POST /api/connectors/<id>` and the destination routes,
+into the `connector` tables rather than `app_settings`. See
+[Integrations](../integrations/README.md).
 
 All of them land in the `app_settings` table. They are global — one value for the whole
 installation, visible to every operator — and they survive a restart.

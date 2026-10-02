@@ -110,8 +110,8 @@ loss over 10 probes). Real ceiling about 33 MB/s. Local TCP buffers are large
 enough for this distance; the remote's are larger still. TCP itself is not a
 limit at any speed we care about.
 
-**The remote server:** Debian 11, AMD EPYC 7702P, 128 cores, hardware AES
-present, 503 GB RAM, 8.5 TB free on the media volume. OpenSSH 8.4, rsync 3.2.3,
+**The remote server:** a shared Debian 11 host with hardware AES present and
+ample memory and free space on the media volume. OpenSSH 8.4, rsync 3.2.3,
 Python 3.9.2. `screen`, `tmux` and `cron` all available.
 
 **Three things that make the agent idea viable when it is wanted:**
@@ -127,8 +127,8 @@ Python 3.9.2. `screen`, `tmux` and `cron` all available.
    was served by a plain Python 3.9 standard-library HTTP server, and it saturated
    the link.
 
-**One caution.** The test used ports in the 52308–52309 range, which were free at
-the time. Before committing to a port, pick one from the range the hosting
+**One caution.** The test used two ports that happened to be free at the
+time. Before committing to a port, pick one from the range the hosting
 provider has actually allocated to the account — several are already in use by
 other applications on that box.
 
@@ -604,8 +604,8 @@ of work rather than folded in here.
 
 Answered on 2026-08-10:
 
-- **Which ports are available?** 52314–52349 are allocated and unused. The plan
-  takes 52314 and reserves 52315.
+- **Which ports are available?** The provider allocates the account a fixed
+  range, and it had unused ports. The plan takes 52314 and reserves 52315.
 - **Can user services be controlled from here?** Yes. The user service manager
   responds over a non-interactive connection, the account keeps services running
   after logout, and every other application on that server is run this way.

@@ -35,8 +35,8 @@ Add-only means "copy what is missing, never remove anything". It is safe for
 missing episodes, and it is broken for upgrades. Here is why:
 
 ```
-remote:  Show - S01E23 - Title [Bluray-2160p][NEW-Dragon DB].mkv
-local:   Show - S01E23 - Title [WEBDL-1080p][OLD-Dragon DB].mkv
+remote:  Show - S01E23 - Title [Bluray-2160p][NEW].mkv
+local:   Show - S01E23 - Title [WEBDL-1080p][OLD].mkv
 ```
 
 Same episode, different file, **different filename**. Add-only sees a file it
@@ -88,11 +88,11 @@ I did not have to guess — I read your library. Everything is Sonarr-renamed an
 every file carries the `S01E07` anchor:
 
 ```
-TV     A.B.C. - S02E03 - An Episode Title [WEBDL-1080p][DUS-Dragon DB].mkv
-TV     Another Series (2024) - S01E03 - A Third Episode [WEBDL-1080p][HONE].mkv
-Anime  Example Anime (2018) - S01E24 - 024 - Another Episode Title [Anime Dual-Audio Bluray-1080p][JA+EN][Chotab-Dragon DB].mkv
-Anime  Long Anime (2004) - S17E22 - 388 - AN EPISODE IN CAPS [...].mkv
-Movie  A Movie (2025) Bluray-1080p [PSA-Dragon DB].mkv
+TV     A.B.C. - S02E03 - An Episode Title [WEBDL-1080p][GROUP].mkv
+TV     Another Series (2024) - S01E03 - A Third Episode [WEBDL-1080p][GROUP].mkv
+Anime  Example Anime (2018) - S01E24 - 024 - Another Episode Title [Anime Dual-Audio Bluray-1080p][JA+EN][GROUP].mkv
+Anime  Long Anime (2000) - S17E22 - 388 - AN EPISODE IN CAPS [...].mkv
+Movie  A Movie (2025) Bluray-1080p [GROUP].mkv
 ```
 
 Four things that came out of the real files and would have caused bugs:

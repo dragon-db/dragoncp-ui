@@ -134,9 +134,9 @@ Sonarr and Radarr write a predictable shape, and the library holds ~4,300 files
 in it:
 
 ```
-Series - S01E03 - Third Episode [WEBRip-1080p][TAoE-Dragon DB].mkv
-Series (2025) - S02E04 - 016 - The Title [Anime Dual-Audio WEBDL-1080p][JA+EN][VARYG-Dragon DB].mkv
-Title (2025) WEBDL-1080p [HI+ML] [ViSTA-Dragon DB].mkv
+Series - S01E03 - Third Episode [WEBRip-1080p][GROUP].mkv
+Series (2025) - S02E04 - 016 - The Title [Anime Dual-Audio WEBDL-1080p][JA+EN][GROUP].mkv
+Title (2025) WEBDL-1080p [HI+ML] [GROUP].mkv
 ```
 
 Two things follow, and both shape how a row reads:

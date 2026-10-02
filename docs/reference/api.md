@@ -830,7 +830,7 @@ Input JSON — either an explicit list:
 ```
 or every record a filter finds:
 ```json
-{ "all_matching": true, "status": "failed", "statuses": ["completed", "failed"], "search": "dune" }
+{ "all_matching": true, "status": "failed", "statuses": ["completed", "failed"], "search": "example" }
 ```
 
 `all_matching` re-evaluates the filter here rather than trusting a list of ids,
@@ -1057,7 +1057,7 @@ Input JSON — either an explicit list:
 ```
 or every notification a filter finds:
 ```json
-{ "all_matching": true, "status": "failed", "media_type": "tvshows", "search": "dune" }
+{ "all_matching": true, "status": "failed", "media_type": "tvshows", "search": "example" }
 ```
 
 Ids are unique across both tables, so a delete by id finds the owning table
@@ -1441,7 +1441,7 @@ practice and how the Renames tab presents them.
 
 ---
 
-## 7) Webhook and Discord Settings Endpoints
+## 7) Webhook Settings and Connector Endpoints
 
 ### GET `/webhook/settings`
 What it does: returns webhook auto-sync settings.
@@ -1484,8 +1484,23 @@ Output JSON:
 {"status":"success","message":"Settings updated successfully"}
 ```
 
-### GET `/discord/settings`
-What it does: returns Discord notification settings.
+## Connectors
+
+Discord used to be configured through `/discord/settings` and `/discord/test`,
+which read and wrote five `DISCORD_*` settings keys. Those endpoints are gone.
+Discord is one connector among several now, with named destinations and a
+choice of destination per notification.
+
+**No response from any endpoint below ever contains a credential.** Secrets are
+stored in `connector_secret`, which has no read path to a response body. What a
+client gets instead is `secrets_set` — whether a value exists — which is all a
+form needs to show "configured" beside a field it must never be shown. A secret
+sent back as the string `<redacted>` on save means "unchanged".
+
+### GET `/connectors`
+Every connector this build knows about, configured or not. Driven by the
+adapter registry rather than by database rows, so a fresh install still lists
+all of them.
 
 Auth: required.
 
@@ -1493,51 +1508,182 @@ Output JSON:
 ```json
 {
   "status": "success",
-  "settings": {
-    "webhook_url": "",
-    "app_url": "http://localhost:5000",
-    "manual_sync_thumbnail_url": "",
-    "icon_url": "",
-    "enabled": false
-  }
+  "connectors": [
+    {
+      "id": "discord",
+      "display_name": "Discord",
+      "description": "Post announcements to Discord channels through webhooks.",
+      "capabilities": ["notify"],
+      "config_fields": [
+        {"name": "app_url", "label": "App URL", "kind": "url",
+         "secret": false, "required": false, "placeholder": "http://localhost:5000",
+         "description": "Where a message links back to."}
+      ],
+      "settings_label": "Appearance",
+      "settings_description": "How a message looks when it arrives in Discord.",
+      "supports_check": false,
+      "enabled": true,
+      "configured": true,
+      "config": {"app_url": "http://localhost:5000"},
+      "secrets_set": {},
+      "last_check_at": null,
+      "last_check_ok": null,
+      "last_check_message": null,
+      "exists": true,
+      "target_noun": "webhook",
+      "targets": [
+        {"target_id": "tgt_abc123", "connector_id": "discord", "label": "Default",
+         "is_default": true, "enabled": true, "last_send_at": null,
+         "last_send_ok": null, "last_send_error": null}
+      ]
+    }
+  ]
 }
 ```
 
-### POST `/discord/settings`
-What it does: updates Discord notification settings.
+Notes:
+- `configured` for a notifying connector means "has a default destination", not
+  "has credentials" — Discord needs no connector-level credential because a
+  webhook URL carries its own.
+- `exists` is false until the connector has been saved at least once.
+- `settings_label` and `settings_description` name the settings form. Most
+  connectors are reached with an address and a key, so theirs say "Connection";
+  Discord's holds only presentation and says "Appearance". The client renders
+  what it is given rather than assuming.
+- `supports_check` is false when there is nothing to reach at connector level.
+
+### GET `/connectors/<connector_id>`
+One connector, plus its stored routes. `404` for an id no adapter claims.
+
+### POST `/connectors/<connector_id>`
+Saves settings. Fields declared `secret` go to `connector_secret`; everything
+else goes in the config blob.
 
 Auth: required.
 
 Input JSON (any subset):
 ```json
+{"enabled": true, "config": {"base_url": "http://localhost:8989", "api_key": "..."}}
+```
+
+Notes:
+- Omitting `enabled` leaves it alone; omitting a config key leaves that key alone.
+- A secret sent as `<redacted>` is not written. A secret sent as `""` is deleted.
+- A key the connector does not declare is a `400`, naming the key.
+
+### POST `/connectors/<connector_id>/check`
+Reaches the service now and reports what happened.
+
+`400` when the connector declares `supports_check: false` — Discord has no
+endpoint to reach at this level, and answering `ok` would put a green
+"last checked" badge on something nothing checked. Test a webhook instead.
+
+Output JSON:
+```json
+{"status": "success", "result": {"ok": true, "message": "Connected to Sonarr 4.0.0", "detail": {}}}
+```
+
+The result is stored on the connector row, so the page can show when it was
+last checked and what it said.
+
+### POST `/connectors/<connector_id>/targets`
+Adds a destination. Only for connectors that can notify — `400` otherwise.
+
+Input JSON:
+```json
+{"label": "alerts", "credential": "https://discord.com/api/webhooks/...", "make_default": false}
+```
+
+Notes:
+- `label` is unique per connector and is what the routing table offers by name.
+- The credential is validated by the adapter first. Discord requires `https`,
+  a host in the Discord set, and `/api/webhooks/` in the path — the server posts
+  to whatever is stored, so this is where it is decided where it may be pointed.
+- The first destination of a connector always becomes the default.
+
+### PATCH `/connectors/<connector_id>/targets/<target_id>`
+Renames, replaces the credential, takes one in or out of service, or makes it
+the default. Setting a new default clears the old one in the same transaction.
+
+### DELETE `/connectors/<connector_id>/targets/<target_id>`
+Removes a destination and its credential. If it was the default, the oldest
+remaining destination is promoted. Routes pointing at it are cleared to `null`
+rather than deleted, so those notifications fall back to the default instead of
+going silent.
+
+### POST `/connectors/<connector_id>/targets/<target_id>/test`
+Sends a real message to one destination, now, ignoring routing entirely — the
+question being asked is "does this webhook work", not "where would a sync
+notification go".
+
+Error behavior: `400` with the service's own explanation, redacted.
+
+### GET `/connectors/events`
+The notification catalogue and where each announcement currently goes.
+
+Output JSON:
+```json
 {
-  "enabled": true,
-  "webhook_url": "https://discord.com/api/webhooks/...",
-  "app_url": "https://dragoncp.example.com",
-  "manual_sync_thumbnail_url": "https://example.com/thumb.png",
-  "icon_url": "https://example.com/icon.png"
+  "status": "success",
+  "events": [
+    {
+      "key": "transfer.failed",
+      "label": "Sync failed",
+      "description": "A transfer stopped without finishing, with the errors rsync reported.",
+      "default_severity": "failure",
+      "routes": {
+        "discord": {"target_id": "tgt_abc123", "enabled": true, "using_default": false}
+      }
+    }
+  ],
+  "connectors": [{"id": "discord", "display_name": "Discord", "targets": []}]
 }
 ```
 
-Output JSON:
+Every event appears whether or not it has been routed: a notification nobody
+can see is a notification nobody can turn off. `using_default` true means no
+destination was chosen, which is not a gap — it is the rule that keeps a
+notification added in a later version from shipping silent.
+
+### PUT `/connectors/routes`
+Saves the routing table.
+
+Input JSON:
 ```json
-{"status":"success","message":"Discord settings updated successfully"}
+{"routes": [
+  {"event_key": "transfer.failed", "connector_id": "discord",
+   "target_id": "tgt_abc123", "enabled": true},
+  {"event_key": "transfer.completed", "connector_id": "discord",
+   "target_id": null, "enabled": true}
+]}
 ```
 
-### POST `/discord/test`
-What it does: sends a test embed notification to configured Discord webhook.
+Notes:
+- `target_id: null` means "use the connector's default", the same as no row.
+- An unknown event key, an unknown connector, or a destination belonging to a
+  different connector is a `400` and nothing is saved for that row.
 
-Auth: required.
-
-Input: no body required.
+### GET `/connectors/<connector_id>/deliveries`
+The last hundred announcements this connector handled, newest first. This is
+the whole answer to "why didn't I get told about that", which before this
+existed required reading the server console.
 
 Output JSON:
 ```json
-{"status":"success","message":"Test Discord notification sent successfully!"}
+{
+  "status": "success",
+  "deliveries": [
+    {"id": 12, "connector_id": "discord", "target_label": "alerts",
+     "event_key": "transfer.failed", "title": "Example Show", "ok": true,
+     "skipped_reason": null, "status_code": 204, "error": null,
+     "duration_ms": 143, "created_at": "2026-08-17 01:20:11"}
+  ]
+}
 ```
 
-Error behavior:
-- `400` if Discord notifications are disabled or webhook URL missing/invalid/fails.
+A row with `ok: false` and a `skipped_reason` was held back deliberately —
+the notification is switched off, the destination is out of service, or no
+default is set. A row with `ok: false` and an `error` was attempted and failed.
 
 ---
 
@@ -2557,7 +2703,8 @@ This document covers all `/api/*` routes currently implemented in backend Python
 - 2 media endpoints (`/media-types` and `/media/dry-run`; the rest were retired
   with Browse Media)
 - 13 transfer endpoints (including `pause`, `resume` and `bulk-delete`)
-- 32 webhook-related endpoints (receivers, management, rename, settings, Discord)
+- 29 webhook-related endpoints (receivers, management, rename, settings)
+- 11 connector endpoints (listing, settings, destinations, routing, delivery history)
 - 28 backup endpoints
 - 7 debug endpoints
 - 4 simulation endpoints

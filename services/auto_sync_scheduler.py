@@ -65,11 +65,33 @@ class AutoSyncScheduler:
         self.jobs = {}  # {batch_key: AutoSyncJob}
         self.lock = threading.Lock()
         self.coordinator = None  # Set by transfer_coordinator during initialization
+        self.media_index = None  # Optional; without it the fixed wait is used
         print("✅ Auto-Sync Scheduler initialized")
     
     def set_coordinator(self, coordinator):
         """Set the transfer coordinator reference"""
         self.coordinator = coordinator
+
+    def set_media_index(self, media_index):
+        """Give the scheduler something to ask.
+
+        Optional on purpose. Left unset — or set to something that cannot
+        answer — every job falls back to the fixed wait, which is the behaviour
+        this scheduler had before the gate existed.
+        """
+        self.media_index = media_index
+
+    def _setting_int(self, key: str, fallback: int) -> int:
+        try:
+            return int(self.settings.get_int(key, fallback))
+        except Exception:
+            return fallback
+
+    def _setting_bool(self, key: str) -> bool:
+        try:
+            return bool(self.settings.get_bool(key, False))
+        except Exception:
+            return False
     
     def schedule_job(self, notification_id: str, series_title_slug: str, season_number: int, 
                      wait_time: int, media_type: str):
@@ -77,38 +99,9 @@ class AutoSyncScheduler:
         Schedule an auto-sync job
         If a job for the same series/season exists, extend its wait time instead
         
-        TODO: Dynamic Wait Time with Sonarr API Integration
-        =====================================================
-        Instead of using a fixed wait time, query Sonarr's queue to dynamically
-        determine optimal wait time based on actual download status.
-        
-        APPROACH:
-        1. Query Sonarr API: GET /api/v3/queue?seriesId={series_id}
-        2. Filter queue for episodes from the same season
-        3. If queue has pending episodes:
-           - Extend wait time (up to max 15 minutes)
-           - Check periodically until queue is empty
-        4. If queue is empty:
-           - Proceed with dry-run immediately (no need to wait)
-        5. Respect max_wait_time cap (900s/15 minutes)
-        
-        CONFIGURATION NEEDED:
-        - SONARR_API_URL: Base URL for Sonarr API (e.g., http://localhost:8989)
-        - SONARR_API_KEY: API key for authentication
-        - USE_DYNAMIC_WAIT: Boolean toggle (default: false, use fixed wait time)
-        - SONARR_QUEUE_CHECK_INTERVAL: How often to check queue (default: 30s)
-        
-        BENEFITS:
-        - No need to guess appropriate wait time
-        - Adapts to actual download speed
-        - Reduces unnecessary waiting when all episodes are ready
-        - Better handles slow downloads by waiting longer
-        
-        IMPLEMENTATION NOTES:
-        - Add sonarr_api_client module with queue checking methods
-        - Modify this schedule_job method to optionally use dynamic wait
-        - Add periodic queue checking in _execute_job wait loop
-        - Log queue status for debugging
+        The wait itself is decided in `_wait_for_go` below: either the fixed
+        window this setting names, or — when the gate is switched on — a
+        question put to Sonarr, with this window kept as the ceiling.
         """
         batch_key = f"{series_title_slug}_S{season_number}"
         
@@ -203,10 +196,11 @@ class AutoSyncScheduler:
         falling through to an anonymous system actor.
         """
         try:
-            # Wait until scheduled time
-            while time.time() < job.scheduled_time:
-                time.sleep(1)
-            
+            decided_by = self._wait_for_go(job)
+            log_sync("AutoSyncScheduler",
+                     f"{job.get_batch_key()} released by {decided_by}",
+                     icon="🚦", notification_id=job.notification_ids[0])
+
             log_batch("AutoSyncScheduler", f"Executing auto-sync job for {job.get_batch_key()}", 
                      len(job.notification_ids), icon="⚡", notification_ids=job.notification_ids)
             
@@ -289,6 +283,109 @@ class AutoSyncScheduler:
                     del self.jobs[batch_key]
                     print(f"🗑️  Removed auto-sync batch job {batch_key} from scheduler (batching complete)")
     
+
+    def _sleep_until(self, deadline: float) -> None:
+        """Sleep in short steps so a cancelled job is noticed promptly."""
+        while time.time() < deadline:
+            time.sleep(min(1.0, max(0.0, deadline - time.time())))
+
+    def _wait_for_go(self, job: 'AutoSyncJob') -> str:
+        """
+        Hold the job until it should run, and say what decided it.
+
+        Two paths, and the first one is the old one, unchanged:
+
+          * the gate is off, or there is nothing to ask, or the question cannot
+            be answered — wait out the fixed window exactly as before;
+          * the gate is on and Sonarr answers — settle briefly so episodes
+            arriving together batch into one sync, then ask until nothing is
+            still arriving.
+
+        The fixed window is never abandoned, only demoted. `max_wait_time` stays
+        the ceiling for the whole job, so a queue row that is stuck — one was
+        observed sitting in `importPending` for six days — ends in a sync rather
+        than in a season that silently never syncs again.
+
+        Returns a short phrase naming what released the job, which is written to
+        the sync log so an operator can tell an asked answer from a timed one.
+        """
+        if not self._setting_bool('AUTOSYNC_GATE_ENABLED') or self.media_index is None:
+            self._sleep_until(job.scheduled_time)
+            return 'the fixed wait'
+
+        tvdb_id = self._tvdb_id_for(job)
+        if not tvdb_id:
+            self._sleep_until(job.scheduled_time)
+            return 'the fixed wait (no series identifier)'
+
+        settle = self._setting_int('AUTOSYNC_GATE_SETTLE_SECONDS', 10)
+        poll = max(5, self._setting_int('AUTOSYNC_GATE_POLL_SECONDS', 30))
+        ceiling = job.created_at + job.max_wait_time
+
+        # Never settle past the point the fixed wait would have fired anyway;
+        # switching the gate on must not make anything slower.
+        self._sleep_until(min(time.time() + settle, job.scheduled_time, ceiling))
+
+        asked = 0
+        while True:
+            # Belt and braces. `MediaIndex.in_flight_for_season` already returns
+            # a value on every path, but this call sits inside `_execute_job`'s
+            # try/except, which marks the whole batch failed. A gate that threw
+            # would therefore turn "could not check" into "sync failed" — the
+            # exact inversion this feature promises never to make.
+            try:
+                answer = self.media_index.in_flight_for_season(
+                    tvdb_id, job.season_number)
+            except Exception as exc:  # noqa: BLE001 - a gate must never fail a sync
+                log_sync('AutoSyncScheduler',
+                         f"{job.get_batch_key()}: gate raised ({exc}) — using the fixed wait",
+                         icon='↩️', notification_id=job.notification_ids[0])
+                self._sleep_until(min(job.scheduled_time, ceiling))
+                return 'the fixed wait (the gate raised)'
+            asked += 1
+
+            if not answer.known:
+                # No usable answer. Serve out whatever is left of the window the
+                # operator configured, then behave as before. Recorded rather
+                # than swallowed: a gate that has quietly stopped working should
+                # be visible in the log, not inferred from timing.
+                log_sync('AutoSyncScheduler',
+                         f"{job.get_batch_key()}: {answer.reason} — using the fixed wait",
+                         icon='↩️', notification_id=job.notification_ids[0])
+                self._sleep_until(min(job.scheduled_time, ceiling))
+                return f'the fixed wait ({answer.reason})'
+
+            if answer.clear:
+                return f'Sonarr ({answer.reason}, asked {asked}×)'
+
+            if time.time() >= ceiling:
+                log_sync('AutoSyncScheduler',
+                         f"{job.get_batch_key()}: still {answer.blocking} arriving "
+                         f"at the ceiling — going anyway",
+                         icon='⏱️', notification_id=job.notification_ids[0])
+                return f'the ceiling ({answer.reason})'
+
+            self._sleep_until(min(time.time() + poll, ceiling))
+
+    def _tvdb_id_for(self, job: 'AutoSyncJob'):
+        """The durable identifier for this job's series, from its notification.
+
+        Read from the notification rather than carried on the job so that a job
+        created before this feature existed still resolves. Every series
+        notification this application has ever stored carries one.
+        """
+        try:
+            if not (self.coordinator and self.coordinator.series_webhook_model):
+                return None
+            notification = self.coordinator.series_webhook_model.get(
+                job.notification_ids[0])
+            if not notification:
+                return None
+            value = notification.get('tvdb_id')
+            return value if value not in (None, '') else None
+        except Exception:
+            return None
+
     def cancel_job(self, series_title_slug: str, season_number: int) -> bool:
         """Cancel a scheduled auto-sync job"""
         batch_key = f"{series_title_slug}_S{season_number}"

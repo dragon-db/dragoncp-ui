@@ -178,18 +178,36 @@ _DB_SETTINGS: List[Setting] = [
             'How long to wait for more episodes of a season before starting a transfer.',
             kind='number', default='60', minimum=30, maximum=900),
 
-    Setting('DISCORD_NOTIFICATIONS_ENABLED', DB, 'notifications', 'Discord notifications',
-            'Send a message when a transfer finishes, fails or a rename completes.',
+    # ---- asking instead of waiting ---------------------------------------
+    # Off by default, and that is not timidity: switching it on changes when
+    # every automatic sync starts, and the honest default for that is the
+    # behaviour the operator already has. The switch is also the rollback —
+    # read at the moment a job decides, so turning it off takes effect on the
+    # next sync with no restart.
+    Setting('AUTOSYNC_GATE_ENABLED', DB, 'automation', 'Wait for the download instead of the clock',
+            'Ask Sonarr whether a season is still downloading rather than waiting a '
+            'fixed time. Falls back to the fixed wait whenever Sonarr cannot answer.',
             kind='boolean', default='false'),
-    Setting('DISCORD_WEBHOOK_URL', DB, 'notifications', 'Discord webhook URL',
-            'Where those messages go.', kind='password', sensitive=True),
-    Setting('DISCORD_APP_URL', DB, 'notifications', 'App URL',
-            'Used to link back to this app from a notification.',
-            default='http://localhost:5000'),
-    Setting('DISCORD_ICON_URL', DB, 'notifications', 'Notification icon',
-            'Image shown beside the message.'),
-    Setting('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', DB, 'notifications',
-            'Manual-sync thumbnail', 'Image used for manually started transfers.'),
+    Setting('AUTOSYNC_GATE_POLL_SECONDS', DB, 'automation', 'How often to ask (seconds)',
+            'The floor between questions for one season. A burst of episode '
+            'notifications is still one question, not one per episode.',
+            kind='number', default='30', minimum=10, maximum=300),
+    Setting('AUTOSYNC_GATE_SETTLE_SECONDS', DB, 'automation', 'Settle before asking (seconds)',
+            'A short pause before the first question, so episodes arriving together '
+            'are batched into one sync rather than racing each other.',
+            kind='number', default='10', minimum=0, maximum=120),
+    # The sweep's own settings moved onto the Sonarr and Radarr connectors in
+    # this release. Two services can want different schedules, and one can be
+    # trusted to act while the other is only watched — a single global pair
+    # could express neither, and a setting that cannot express the situation is
+    # a setting people work around.
+
+    # The five DISCORD_* settings that used to live here moved to the connector
+    # layer in 2.3.0. They were never really settings: a webhook URL is one
+    # *destination among several*, and this registry holds singleton keys whose
+    # existence is known at import time. They are rows in `connector`,
+    # `connector_secret` and `connector_target` now, migrated automatically on
+    # first start by `DatabaseManager._migrate_discord_to_connector`.
 
     Setting('BACKUP_RETENTION_ENABLED', DB, 'backups', 'Prune old versions',
             'Remove old backup versions automatically once a new one is stored.',
@@ -244,7 +262,8 @@ GROUPS: Tuple[Tuple[str, str], ...] = (
     ('disks', 'Disk reporting'),
     ('security', 'Security'),
     ('automation', 'Automation'),
-    ('notifications', 'Notifications'),
+    # 'notifications' was here until Discord became a connector. Groups are
+    # rendered from this list, so an empty one is an empty card on the screen.
     ('backups', 'Backups'),
     ('runtime', 'Runtime'),
 )

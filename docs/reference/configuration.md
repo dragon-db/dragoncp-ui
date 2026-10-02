@@ -284,7 +284,14 @@ A two-column key-value table in `dragoncp.db` (`models/database.py`,
 background work, because they are read straight from SQLite with no request
 context needed. That is the whole reason a setting lives here.
 
-Thirteen keys live here, all of them listed in `settings_registry.py`:
+Eleven keys live here, all of them listed in `settings_registry.py`.
+
+The five `DISCORD_*` keys that used to be among them are gone. They were never
+really settings: a webhook URL is one *destination among several*, and this
+table holds singleton values whose existence is known at import time. Discord is
+a connector now — rows in `connector`, `connector_secret` and `connector_target`
+— and existing installs are migrated automatically on first start. See
+[the integrations page](../features/integrations/README.md).
 
 | Key | Default when no row exists | Bounds |
 |---|---|---|
@@ -292,11 +299,6 @@ Thirteen keys live here, all of them listed in `settings_registry.py`:
 | `AUTO_SYNC_SERIES` | `false` | — |
 | `AUTO_SYNC_ANIME` | `false` | — |
 | `SERIES_ANIME_SYNC_WAIT_TIME` | `60` **seconds** | 30-900 |
-| `DISCORD_NOTIFICATIONS_ENABLED` | `false` | — |
-| `DISCORD_WEBHOOK_URL` | empty — notifications are skipped | — |
-| `DISCORD_APP_URL` | `http://localhost:5000` | — |
-| `DISCORD_ICON_URL` | empty | — |
-| `DISCORD_MANUAL_SYNC_THUMBNAIL_URL` | empty | — |
 | `BACKUP_RETENTION_ENABLED` | `true` | — |
 | `BACKUP_RETENTION_KEEP` | `2` | 1-50 |
 | `BACKUP_RETENTION_GRACE_HOURS` | `24` | 0-720 |
@@ -365,7 +367,7 @@ trigger.
 - [Installation](../getting-started/installation.md)
 - [Runtime and deployment](../operations/runtime-and-deployment.md)
 - [Troubleshooting](../operations/troubleshooting.md)
-- [API reference](api.md) — `/api/config`, `/api/webhook/settings`, `/api/discord/settings`
+- [API reference](api.md) — `/api/config`, `/api/webhook/settings`, `/api/connectors`
 - [Database schema](database-schema.md) — the `app_settings` table
 - [Authentication](../features/auth/README.md)
 - [Webhooks](../features/webhooks/README.md)

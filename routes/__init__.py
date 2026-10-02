@@ -14,6 +14,7 @@ from .simulation import simulation_bp, init_simulation_routes
 from .explore import explore_bp, init_explore_routes
 from .activity import activity_bp, init_activity_routes
 from .remote_daemon import remote_daemon_bp, init_remote_daemon_routes
+from .connectors import connectors_bp, init_connector_routes
 
 __all__ = [
     'auth_bp',
@@ -27,6 +28,7 @@ __all__ = [
     'explore_bp',
     'activity_bp',
     'remote_daemon_bp',
+    'connectors_bp',
     'init_media_routes',
     'init_transfer_routes',
     'init_backup_routes',
@@ -35,5 +37,6 @@ __all__ = [
     'init_simulation_routes',
     'init_explore_routes',
     'init_activity_routes',
-    'init_remote_daemon_routes'
+    'init_remote_daemon_routes',
+    'init_connector_routes'
 ]

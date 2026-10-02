@@ -59,7 +59,7 @@ _CODE_RE = re.compile(r'[Ss](\d{1,4})[\s._-]?[Ee](\d{1,4})')
 _MULTI_RE = re.compile(r'[\s._-]*(?:[Ee])?(\d{1,4})')
 
 # Absolute-numbered anime that never went through Sonarr's rename, e.g.
-# "[SubsPlease] Maou no Musume wa Yasashi Sugiru!! - 07 (1080p) [5F530970].mkv"
+# "[Group] Example Anime Title!! - 07 (1080p) [5F530970].mkv"
 _ABSOLUTE_RE = re.compile(r'[\s._-]-[\s._-](\d{1,4})(?:v\d)?[\s._-]*[\(\[]')
 
 # "Season 01", "Season 1", "season 2"

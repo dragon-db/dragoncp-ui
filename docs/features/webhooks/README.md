@@ -178,7 +178,7 @@ Written by this feature:
 - `radarr_webhook` — one row per movie notification. Notable columns: `notification_id` (unique), `title`, `year`, `folder_path`, `file_path`, `poster_url`, `requested_by`, `quality`, `size`, `languages` and `subtitles` (JSON strings), `release_title`, `release_indexer`, `release_size`, `tmdb_id`, `imdb_id`, `status`, `error_message`, `transfer_id`, `raw_webhook_data`, `created_at`, `completed_at`, `updated_at`.
 - `sonarr_webhook` — one row per series/anime notification. Adds `media_type`, `series_title`, `series_title_slug`, `series_id`, `series_path`, `season_number`, `season_path`, `episode_count`, `episodes` and `episode_files` (JSON), `tags`, `banner_url`, `original_language`, `download_client`, plus the auto-sync fields `requires_manual_sync`, `manual_sync_reason`, `auto_sync_scheduled_at`, `dry_run_result`, `dry_run_performed_at`.
 - `rename_webhook` — one row per Sonarr `Rename` event: `renamed_files` (JSON), `total_files`, `success_count`, `failed_count`, `status`, `error_message` (which also holds the operation log).
-- `app_settings` — read and written for `AUTO_SYNC_MOVIES`, `AUTO_SYNC_SERIES`, `AUTO_SYNC_ANIME`, `SERIES_ANIME_SYNC_WAIT_TIME`, and the `DISCORD_*` keys.
+- `app_settings` — read and written for `AUTO_SYNC_MOVIES`, `AUTO_SYNC_SERIES`, `AUTO_SYNC_ANIME` and `SERIES_ANIME_SYNC_WAIT_TIME`. The `DISCORD_*` keys moved to the connector tables in 2.3.0; see [Integrations](../integrations/README.md).
 
 Read and joined against: `transfers` (via `transfer_id`, indexed on both webhook tables).
 
@@ -205,7 +205,6 @@ Management (all behind `require_auth`):
 - `POST /api/webhook/notifications/<id>/complete` and the series/anime equivalents
 - `POST /api/webhook/notifications/<id>/delete` and the series/anime equivalents
 - `GET|POST /api/webhook/settings` — auto-sync toggles and `series_anime_sync_wait_time` (clamped to 30–900 s on write)
-- `GET|POST /api/discord/settings`, `POST /api/discord/test`
 - `GET /api/webhook/rename/notifications`, `.../<id>`, `.../<id>/json`, `.../<id>/delete`, `.../<id>/verify`
 
 Full contracts: [../../reference/api.md](../../reference/api.md). Note that the API reference currently describes the three receivers as "public"; they have been behind `require_webhook_auth` since the auth module was added, and are only unauthenticated when neither `WEBHOOK_SECRET` nor `WEBHOOK_ALLOWED_IPS` is configured.

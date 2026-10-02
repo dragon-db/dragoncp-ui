@@ -275,7 +275,7 @@ export function SettingsPanel() {
   if (!groups.length) {
     return (
       <Notice tone="info" title="No settings to show here">
-        Auto-sync and Discord settings live on the Automation tab.
+        Auto-sync settings live on the Automation tab; connectors have their own section.
       </Notice>
     );
   }
@@ -335,8 +335,8 @@ export function SettingsPanel() {
       </div>
 
       <p className="text-[12px] text-muted-foreground">
-        Auto-sync and Discord settings have their own controls on the Automation tab. They are
-        stored the same way — in the database, effective immediately.
+        Auto-sync has its own controls on the Automation tab, and outside services live under
+        Integrations. All of it is stored the same way — in the database, effective immediately.
       </p>
 
       {changeCount > 0 && (

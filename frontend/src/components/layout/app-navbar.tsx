@@ -22,10 +22,23 @@ const CRUMBS: Array<[string, Crumb]> = [
   ["/media/tvshows", { section: "Library", label: "TV Shows" }],
   ["/media/anime", { section: "Library", label: "Anime" }],
   ["/backups", { section: "System", label: "Backups" }],
+  ["/activity", { section: "System", label: "Activity" }],
   ["/settings", { section: "System", label: "Settings" }],
 ];
 
 function resolveCrumb(pathname: string): Crumb {
+  // Integrations are one page per connector and the list comes from the server,
+  // so there is nothing static to match against. The id in the path is the
+  // name — "discord" is Discord — which holds for any connector added later
+  // without this table needing to hear about it.
+  if (pathname.startsWith("/integrations/")) {
+    const id = pathname.split("/")[2] ?? "";
+    return {
+      section: "Integrations",
+      label: id ? id.charAt(0).toUpperCase() + id.slice(1) : "Integrations",
+    };
+  }
+
   const match = CRUMBS.find(([prefix]) => pathname === prefix || pathname.startsWith(prefix + "/"));
   return match?.[1] ?? { section: "Workspace", label: "Dashboard" };
 }

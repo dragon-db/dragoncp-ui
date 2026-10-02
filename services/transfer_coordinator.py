@@ -5,10 +5,8 @@ Main orchestrator that coordinates transfer, backup, webhook, and notification s
 """
 
 import os
-import re
 import time
 import json
-import requests
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -19,11 +17,15 @@ from services.transfer_service import TransferService
 from services.notification_service import NotificationService
 from services.webhook_service import WebhookService
 from services.auto_sync_scheduler import AutoSyncScheduler
+from services.autosync_sweep import AutoSyncSweep
+from services.media_index import MediaIndex
 from services.sync_logger import log_sync, log_validation, log_state_change
 from services.queue_manager import QueueManager
 from services.path_service import PathService
 from services.settings_service import SettingsService
 from services.remote_daemon import RemoteDaemonService
+from services.connectors import notify
+from services.connectors.events import ACCENT_BLOCKED, WARNING, Event, Field
 
 # The model owns the definition of "active"; importing it here keeps one list
 # rather than two that can drift.
@@ -81,9 +83,24 @@ class TransferCoordinator:
         self.notification_service = NotificationService(config, self.settings_service, self.transfer_model, self.webhook_model, self.series_webhook_model)
         self.webhook_service = WebhookService(config, self.webhook_model, self.series_webhook_model, self)
         self.auto_sync_scheduler = AutoSyncScheduler(db_manager, self.settings)
-        
+
+        # The title index: one row per film or series, keyed by the identifier
+        # the service will not change. Built here so the scheduler, the webhook
+        # path and the catch-up sweep all read and write the same instance.
+        self.media_index = MediaIndex(db_manager, config=config)
+
         # Set coordinator reference in scheduler and queue manager (circular dependencies)
         self.auto_sync_scheduler.set_coordinator(self)
+        self.auto_sync_scheduler.set_media_index(self.media_index)
+
+        # The safety net under the webhook: a webhook that never arrives leaves
+        # no trace here, so the only way to notice is to ask the service what it
+        # did. Started unconditionally; the loop honours the setting each pass,
+        # so switching it on needs no restart.
+        self.autosync_sweep = AutoSyncSweep(
+            db_manager, self.settings_service, self.media_index,
+            coordinator=self, config=config)
+        self.autosync_sweep.start()
         self.queue_manager.set_coordinator(self)
         
         print(f"✅ TransferCoordinator initialized")
@@ -685,6 +702,18 @@ class TransferCoordinator:
                           season_number: int, media_type: str):
         """Schedule an auto-sync job for series/anime"""
         wait_time = self.settings_service.get_int('SERIES_ANIME_SYNC_WAIT_TIME', 60)
+
+        # Fold the title into the index before the job starts, so the gate has
+        # an identifier to ask about. Nothing here reaches the network and
+        # nothing here can stop a sync: a failure leaves the index unchanged and
+        # the job falls back to the fixed wait.
+        try:
+            notification = self.series_webhook_model.get(notification_id)
+            if notification:
+                self.media_index.record_series_notification(notification, media_type)
+        except Exception as exc:  # noqa: BLE001 - indexing must never block a sync
+            print(f"⚠️  Could not index {series_title_slug}: {exc}")
+
         self.auto_sync_scheduler.schedule_job(
             notification_id=notification_id,
             series_title_slug=series_title_slug,
@@ -799,95 +828,42 @@ class TransferCoordinator:
         print(f"⚠️  Marked {notification_id} for manual sync: {reason}")
     
     def send_manual_sync_discord_alert(self, notification: Dict, validation_result: Dict):
-        """Send Discord notification when manual sync is required"""
+        """Announce that an automatic sync refused and wants a person.
+
+        The most consequential message this app sends: something was going to
+        run by itself, looked wrong, and stopped. Nobody is watching the screen
+        when it happens, which is the entire reason it is pushed.
+        """
         try:
-            # Check if Discord notifications are enabled
-            if not self.settings_service.get_bool('DISCORD_NOTIFICATIONS_ENABLED'):
-                return
-            
-            webhook_url = self.settings_service.get('DISCORD_WEBHOOK_URL')
-            if not webhook_url:
-                return
-            
             media_type = notification['media_type']
             series_title = notification['series_title']
             season_number = notification['season_number']
             season_path = notification['season_path']
-            
-            # Get app URL for the link
-            app_url = self.settings_service.get('DISCORD_APP_URL')
-            
-            # Create embed
-            embed = {
-                'title': f'**{series_title}** - Season {season_number}',
-                'description': 'Media Type: ' + media_type.upper(),
-                'color': 15844367,  # Gold/warning color
-                'fields': [
-                    {   
-                        'name': 'Season Path',
-                        'value': f'```{season_path}```',
-                        'inline': False
-                    },
-                    {
-                        'name': 'Reason',
-                        'value': validation_result['reason'],
-                        'inline': False
-                    },
-                    {
-                        'name': 'File Analysis',
-                        'value': (
-                            f"```\n"
-                            f"Server Files: {validation_result.get('server_file_count', 0)}\n"
-                            f"Local Files: {validation_result.get('local_file_count', 0)}\n"
-                            f"Would Delete: {validation_result.get('deleted_count', 0)} media files\n"
-                            f"Would Add: {validation_result.get('incoming_count', 0)} media files\n"
-                            f"```"
-                        ),
-                        'inline': False
-                    }
-                ],
-                'footer': {
-                    'text': 'DRAGONCP Auto-Sync Safety Check'
-                },
-                'timestamp': datetime.utcnow().isoformat()
-            }
-            
-            # Add app URL if valid
-            if app_url and self._is_valid_discord_url(app_url):
-                embed['url'] = app_url
-            
-            # Add icon if configured
-            icon_url = self.settings_service.get('DISCORD_ICON_URL')
-            if icon_url:
-                embed['author'] = {
-                    'name': 'Manual Sync Alert ⚠️',
-                    'icon_url': icon_url
-                }
-            
-            # Send to Discord
-            payload = {'embeds': [embed]}
-            response = requests.post(
-                webhook_url,
-                json=payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=10
-            )
-            
-            if response.status_code == 204:
-                print(f"✅ Discord manual sync alert sent for {series_title} Season {season_number}")
-            else:
-                print(f"⚠️  Discord alert failed: {response.status_code}")
-                
+
+            notify(Event(
+                key='autosync.blocked',
+                severity=WARNING,
+                accent=ACCENT_BLOCKED,
+                title=f"**{series_title}** - Season {season_number}",
+                summary='Media Type: ' + media_type.upper(),
+                fields=(
+                    Field('Season Path', season_path, monospace=True),
+                    Field('Reason', validation_result['reason']),
+                    Field(
+                        'File Analysis',
+                        f"Server Files: {validation_result.get('server_file_count', 0)}\n"
+                        f"Local Files: {validation_result.get('local_file_count', 0)}\n"
+                        f"Would Delete: {validation_result.get('deleted_count', 0)} media files\n"
+                        f"Would Add: {validation_result.get('incoming_count', 0)} media files",
+                        monospace=True,
+                    ),
+                ),
+                author='Manual Sync Alert ⚠️',
+                footer='DRAGONCP Auto-Sync Safety Check',
+                context={'media_type': media_type},
+            ))
+
         except Exception as e:
-            print(f"❌ Error sending Discord manual sync alert: {e}")
+            print(f"❌ Error announcing the manual sync alert: {e}")
             import traceback
             traceback.print_exc()
-    
-    def _is_valid_discord_url(self, url: str) -> bool:
-        """Validate URL format for Discord embeds"""
-        try:
-            # Discord accepts http/https URLs with proper domain format
-            url_pattern = r'^https?://(?:(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d{1,5})?(?:/.*)?$'
-            return bool(re.match(url_pattern, url))
-        except Exception:
-            return False

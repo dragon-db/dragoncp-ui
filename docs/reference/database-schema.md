@@ -444,7 +444,163 @@ CREATE TABLE app_settings (
 
 **Model:** `AppSettings` in `models/settings.py`
 
-**No changes from v1.**
+**Changed in 2.3.0:** the five `DISCORD_*` keys were removed. Discord became a
+connector, and its webhook URL is a row in `connector_target` /
+`connector_secret` rather than a settings key. Existing rows are migrated and
+deleted automatically by `DatabaseManager._migrate_discord_to_connector`.
+
+---
+
+## Table: `connector`
+
+**Purpose:** one link to an outside service. Connectors are a *list*, not a
+fixed set of keys, which is why they sit outside `settings_registry`.
+
+**Schema:**
+```sql
+CREATE TABLE connector (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connector_id TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    config TEXT NOT NULL DEFAULT '{}',
+    last_check_at DATETIME,
+    last_check_ok INTEGER,
+    last_check_message TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+**Column Descriptions:**
+- `connector_id` - stable id matching a registered adapter: `discord`, `sonarr`, `radarr`, `jellyfin`
+- `enabled` - off means nothing is sent to or read from it
+- `config` - JSON, **non-secret settings only**
+- `last_check_*` - what the Test connection button last found
+
+**Model:** `ConnectorStore` in `models/connector.py`. **Added in 2.3.0.**
+
+---
+
+## Table: `connector_secret`
+
+**Purpose:** credentials, in their own table under one rule: **no read path
+reaches a response body.** Not redacted, not partially shown — there is nothing
+to call. Easier to keep true than remembering which keys inside a config blob
+need masking.
+
+**Schema:**
+```sql
+CREATE TABLE connector_secret (
+    connector_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (connector_id, name)
+)
+```
+
+**Column Descriptions:**
+- `name` - either a config field name (`api_key`) or a destination reference (`target:tgt_abc123`)
+- `value` - stored unencrypted, the same posture the Discord webhook URL had before this
+
+**Added in 2.3.0.**
+
+---
+
+## Table: `connector_target`
+
+**Purpose:** one destination belonging to a connector — a named Discord webhook.
+
+**Schema:**
+```sql
+CREATE TABLE connector_target (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id TEXT UNIQUE NOT NULL,
+    connector_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    secret_ref TEXT NOT NULL,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_send_at DATETIME,
+    last_send_ok INTEGER,
+    last_send_error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (connector_id, label)
+)
+```
+
+**Column Descriptions:**
+- `label` - the operator's own name for it, unique per connector, offered by name in the routing table
+- `secret_ref` - key into `connector_secret` holding the actual URL
+- `is_default` - exactly one per connector; enforced in `update_target` / `create_target`, not by a constraint
+- `enabled` - "out of service": messages routed here are held, **not** redirected
+
+**Added in 2.3.0.**
+
+---
+
+## Table: `notification_route`
+
+**Purpose:** which destination each announcement goes to.
+
+**Schema:**
+```sql
+CREATE TABLE notification_route (
+    event_key TEXT NOT NULL,
+    connector_id TEXT NOT NULL,
+    target_id TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (event_key, connector_id)
+)
+```
+
+**Column Descriptions:**
+- `event_key` - one of the keys in `services/connectors/events.py`
+- `target_id` - **NULL means "use the connector's default"**, which is also what a missing row means. That is the rule that keeps a notification added in a later version from shipping silent.
+- `enabled` - off means this announcement is not made at all
+
+Deliberately not a foreign key: deleting a destination sets pointing rows to
+NULL rather than removing them, so those notifications fall back to the default
+instead of going quiet.
+
+**Added in 2.3.0.**
+
+---
+
+## Table: `connector_delivery`
+
+**Purpose:** what was actually sent and what happened to it — the whole answer
+to "why didn't I get told about that", which previously required reading the
+server console.
+
+**Schema:**
+```sql
+CREATE TABLE connector_delivery (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    connector_id TEXT NOT NULL,
+    target_id TEXT,
+    target_label TEXT,
+    event_key TEXT,
+    title TEXT,
+    ok INTEGER NOT NULL,
+    skipped_reason TEXT,
+    status_code INTEGER,
+    error TEXT,
+    duration_ms INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)
+```
+
+**Column Descriptions:**
+- `skipped_reason` - set when the message was held back deliberately (switched off, destination out of service, no default)
+- `error` - set when it was attempted and failed. Already redacted; never contains a credential.
+
+Trimmed to the last 100 rows per connector on every write, so there is no sweep
+to schedule and the table cannot grow between sweeps.
+
+**Added in 2.3.0.**
 
 ---
 
@@ -881,6 +1037,10 @@ All indexes are created with `CREATE INDEX IF NOT EXISTS` to allow safe re-execu
 - `idx_rename_webhook_notification_id` on `rename_webhook(notification_id)` - Primary lookup
 - `idx_rename_webhook_status` on `rename_webhook(status)` - Status filtering
 - `idx_rename_webhook_created_at` on `rename_webhook(created_at)` - Time-based queries
+
+**Connector Indexes:**
+- `idx_connector_target_owner` on `connector_target(connector_id)` - Destination lookup
+- `idx_connector_delivery_recent` on `connector_delivery(connector_id, id DESC)` - Recent-first history
 
 **Backup Indexes:**
 - `idx_backup_transfer_id` on `backup(transfer_id)` - Transfer linking

@@ -82,7 +82,7 @@ class EpisodeKeyTests(unittest.TestCase):
 
     def test_absolute_numbered_anime_without_a_code(self):
         # Un-renamed scene release: the season comes from the folder.
-        name = '[SubsPlease] Maou no Musume wa Yasashi Sugiru!! - 07 (1080p) [5F530970].mkv'
+        name = '[Group] Example Anime Title!! - 07 (1080p) [5F530970].mkv'
         self.assertEqual(parse_episode_keys(name, season_hint=1), (EpisodeKey(1, 7),))
         # Without a season hint there is nothing to anchor to.
         self.assertEqual(parse_episode_keys(name), ())
@@ -95,7 +95,7 @@ class EpisodeKeyTests(unittest.TestCase):
 
     def test_v2_release_tag_does_not_confuse_the_parser(self):
         name = ('Alpha - Bravo, Charlie of the Delta (2016) - S01E16 - 016 - '
-                'The Greed of a Pig [v2 (anime) Bluray-1080p v2][EN+JA][SCY-Dragon DB].mkv')
+                'An Episode Title Here [v2 (anime) Bluray-1080p v2][EN+JA][SCY-Dragon DB].mkv')
         self.assertEqual(parse_episode_keys(name), (EpisodeKey(1, 16),))
 
 
