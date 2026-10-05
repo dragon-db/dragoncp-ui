@@ -26,7 +26,7 @@ This document describes the current SQLite schema used by DragonCP.
 - `admin_account`
 - `activity`
 - `sync_run`, `sync_run_stage`, `sync_run_event` *(the sync engine, 2.3.0)*
-- `alert` *(the Notifications tab, 2.3.0)*
+- `alert` *(the Notifications page, 2.3.0)*
 - `scheduled_job` *(the scheduler, 2.3.0)*
 - `sweep_finding` *(gaps the auto-scanner has seen)*
 
@@ -91,7 +91,7 @@ Created in 2.3.0 by `DatabaseManager._create_sync_engine_tables`, which
 `init_database` calls on every start, all with `CREATE TABLE IF NOT EXISTS`:
 `sync_run` (one pass through the nine-stage pipeline), `sync_run_stage` (where
 each stage of a run got to, and why), `sync_run_event` (each stage's log
-lines), `alert` (the Notifications tab) and `scheduled_job` (each background
+lines), `alert` (the Notifications page) and `scheduled_job` (each background
 job's last run). An upgraded database picks them up empty and nothing is
 backfilled into them, though the first start's restart recovery may open
 alerts for webhooks the old in-memory scheduler had taken and dropped (see
@@ -1353,7 +1353,8 @@ CREATE TABLE sync_run_stage (
 ## Table: `sync_run_event`
 
 **Purpose:** The log, one line per row, each tagged with the stage it belongs
-to. That tag is what lets the pipeline view show each stage's own output.
+to. That tag is what lets a sync's page under Pipeline show each stage's own
+output.
 
 **Schema:**
 ```sql
@@ -1393,7 +1394,7 @@ for. Every new line is also broadcast as the `sync_run_event` socket event; see
 
 ## Table: `alert`
 
-**Purpose:** The Notifications tab: everything that needs a person. Opened by
+**Purpose:** The Notifications page: everything that needs a person. Opened by
 the sync engine, the auto-scanner and the scheduler; closed by an admin acting
 on it, or by DragonCP itself for the two kinds that clear on their own.
 
@@ -1433,7 +1434,7 @@ CREATE TABLE alert (
   `services/alert_service.py` (`KINDS` and one method per kind)
 - `severity` - `warning`, or `failure` for a failed transfer. `info` is defined
   but no kind uses it
-- `title`, `message` - what the Notifications tab shows. A `transfer_failed`
+- `title`, `message` - what the Notifications page shows. A `transfer_failed`
   alert for a restore is titled "Restore failed: …", its message ends "Run it
   again from the Backups page.", and its `actions` are `["dismiss"]`
 - `state` - `open`, then `done`, `wrong` (Mark as wrong) or `dismissed`

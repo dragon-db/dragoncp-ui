@@ -118,8 +118,10 @@ class TransferCoordinator:
 
         print(f"✅ TransferCoordinator initialized")
 
-        # Clean up stale transfer tracking before resuming
-        self.queue_manager.force_unregister_stale_transfers()
+        # Clean up stale transfer tracking before resuming. Nothing is started
+        # here: the sync engine first looks at what the restart interrupted
+        # (`start_background`), then the queue moves on.
+        self.queue_manager.force_unregister_stale_transfers(promote=False)
 
         # Resume any transfers that were running when the app was stopped. Their
         # completion watchers start in `start_background()`: a watcher that
@@ -138,6 +140,11 @@ class TransferCoordinator:
         if self._background_started:
             return
         self._background_started = True
+        # Recovery first. A completion watcher that finds its transfer already
+        # ended releases its queue slot, and releasing a slot starts the next
+        # queued transfer — which recovery would then take for one a restart
+        # cut off. So the engine looks before anything is allowed to move.
+        self.sync_engine.start()
         import threading
         for transfer_id in self._resumed_transfer_ids or []:
             threading.Thread(
@@ -145,7 +152,9 @@ class TransferCoordinator:
                 args=(transfer_id,),
                 daemon=True
             ).start()
-        self.sync_engine.start()
+        # After recovery: a transfer started now goes through the engine's
+        # hooks like any other, instead of being mistaken for an interrupted one.
+        self.queue_manager.promote_waiting()
         self.scheduler.start()
 
     def _hook(self, name: str, *args) -> None:
@@ -608,6 +617,9 @@ class TransferCoordinator:
         transfer = self.transfer_model.get(transfer_id)
         if not transfer:
             return False, 'missing'
+        if transfer.get('status') in ('queued', 'pending', 'running', 'paused'):
+            # Already on its way: a second request must not start a second rsync.
+            return False, 'already_active'
         dest_path = transfer['dest_path']
         reset = {
             'rsync_process_id': None, 'end_time': None, 'paused_at': None,

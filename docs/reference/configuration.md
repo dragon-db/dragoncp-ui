@@ -221,15 +221,21 @@ Worth knowing about the fallback wait:
   answers again; dismissed by a person, it stays closed for 24 hours even if
   Sonarr is still down (since 2026-10-05). A Sonarr connector that is off or
   unconfigured uses the timer silently.
-- **The screens still use the old wording.** The registry's label and
-  description ("Fallback wait (seconds)", "Used only when Sonarr cannot be
-  asked…") are served by `GET /api/config`, but the React settings panel skips
-  the `automation` group (`HANDLED_ELSEWHERE` in
+- **The screens say it is a fallback, in their own words.** The registry's
+  label and description ("Fallback wait (seconds)", "Used only when Sonarr
+  cannot be asked…") are served by `GET /api/config`, but the React settings
+  panel skips the `automation` group (`HANDLED_ELSEWHERE` in
   `frontend/src/components/settings/settings-panel.tsx`). The field an operator
-  actually edits is the hard-coded *Series/Anime Wait Time (seconds)* on
-  Settings → Automation, saved through `/api/webhook/settings`, and the
-  auto-sync popover on the Webhooks page says "TV & anime wait Ns after the last
-  episode". Neither says the value only applies when Sonarr cannot be asked.
+  actually edits is on Settings → Automation, saved through
+  `/api/webhook/settings`; since 2026-10-05 it is labelled **Fallback wait
+  (seconds)** with its own sentence saying it is used only when Sonarr cannot
+  be asked, and the auto-sync popover on the Webhooks page says "TV & anime
+  start once Sonarr has nothing more for the season; if Sonarr cannot be asked,
+  Ns after the last episode." Before, the field read *Series/Anime Wait Time
+  (seconds)* and the popover "TV & anime wait Ns after the last episode", and
+  neither said the value only applies when Sonarr cannot be asked. Both are
+  hard-coded in the page, so a later change to the registry's wording does not
+  reach them.
 
 The rest of the Ready check is constants in `services/sync_engine/engine.py`.
 **No setting changes them:**

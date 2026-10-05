@@ -292,7 +292,10 @@ A grouped row takes the most urgent status among its episodes, in this order:
 syncing, failed, queued (path), queued (slot), ready, pending, manual sync
 required - and shows "Completed" only when none of those are present. So a
 season showing "Failed" means at least one episode failed, not that the whole
-season did.
+season did. Since 2026-10-05 an episode or movie that is `pending` with the
+manual-sync flag raised - stopped by the safety check, or interrupted by a
+restart - counts as manual sync required and reads "Manual" (`effectiveStatus`);
+before, nothing produced that status, and such a row read "Pending".
 
 Sizes count the imported file per episode rather than the release size, which
 would otherwise be counted once per episode of a season pack, and an episode

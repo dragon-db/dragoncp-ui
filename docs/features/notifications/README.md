@@ -2,7 +2,7 @@
 
 DragonCP announces ten things. Four report work as it ends: a sync finished, a sync failed, a file rename finished, and the retention rule deleted old backups. Six come from the sync engine and are about something a person should know or decide: an automatic sync refused to run because it looked unsafe, a restart may have left a sync undone, a season went ahead without a download that is stuck in Sonarr or still going after 30 minutes, the auto-scanner found something to sync, Sonarr stopped answering, and a background job keeps failing. A sync message carries the title involved, the folder it landed in, how many files moved, how fast, which kind of sync it was, and - for webhook-driven syncs - who requested it and the poster image for the show or film.
 
-Everything that needs a person is also kept in the application as an **alert**: the backend of a new **Notifications** tab, where each alert waits with the actions that make sense for it - Sync now, Retry, Sync anyway, Run now, Mark as done, Mark as wrong, Dismiss. **Not built yet:** that tab's screen. Today alerts can be read and acted on only through the API, so for most operators the Discord message is the alert.
+Everything that needs a person is also kept in the application as an **alert**, listed on the **Notifications** page (sidebar → Workspace → Notifications, or the bell in the header), where each alert waits with the actions that make sense for it - Sync now, Retry, Sync anyway, Run now, Mark as done, Mark as wrong, Dismiss. The page has **Open** and **Closed** tabs; **Sync anyway** asks to confirm; each alert about a sync links to it (**Open the sync**); a closed one says who closed it and how. While anything is open the bell carries a dot and the sidebar item a count, and with realtime on a toast says when a new one opens. The page arrived on 2026-10-05; before it, alerts could be read and acted on only through the API, so the Discord message was the alert.
 
 **Where those messages go is configured under Integrations, not here.** How the connector layer decides which destination each announcement uses, how it delivers without blocking the caller, and how credentials are stored is [the integrations page](../integrations/README.md). This page is about what each message contains and what triggers it. The pipeline that produces most of them is [the sync engine](../sync-engine/README.md).
 
@@ -20,6 +20,7 @@ Primary files: `services/notification_service.py`, `services/sync_engine/engine.
 | Transfers with no sync run behind them (started before 2.3.0) | `services/transfer_coordinator.py` (`_post_transfer_completion`) |
 | Alerts: wording, actions, deduplication, and the one Discord message each | `services/alert_service.py`, stored by `models/alert.py` |
 | What opens each alert | `services/sync_engine/engine.py`, `services/sync_engine/recovery.py`, `services/auto_scanner.py`, `services/scheduler.py` |
+| The Notifications page, the bell and the sidebar count | `frontend/src/components/pages/notifications.tsx`, `frontend/src/components/pipeline/alert-card.tsx`, `frontend/src/hooks/useSync.ts` (`useAlerts`, `useAlertSummary`, `useAlertAction`) |
 | The auto-scanner's report | `services/auto_scanner.py` (`_announce`) |
 | Trigger for the rename notification | `services/rename_service.py` (`process_rename_webhook`) |
 | Trigger for the retention notification | `services/backups/service.py` |
@@ -43,7 +44,7 @@ Every sync runs through the sync engine's pipeline, and its last stage, **Tell**
 | --- | --- | --- |
 | Completed | "Sync finished" (`transfer.completed`) | - |
 | Failed | "Sync failed" (`transfer.failed`) | *Failed*, with Retry - not announced a second time |
-| Failed because a restart lost the result | No "Sync failed". The *Result unknown* alert is announced instead (`sync.interrupted`) | *Result unknown*, with Retry and Mark as done |
+| Failed because a restart lost the result - rsync was already gone when DragonCP started again, or ended where DragonCP could not read how | No "Sync failed". The *Result unknown* alert is announced instead (`sync.interrupted`) | *Result unknown*, with Retry and Mark as done |
 | Cancelled | Nothing: whoever cancelled it already knows | - |
 
 Two kinds of sync never announce, and their Tell stage says so: simulations - a restarted simulated transfer included - and backup restores. A sync that stops before it becomes a transfer never sends this message either. A safety-check refusal is told through its own alert (below); a sync the queue would not start opens a *Failed* alert, which is not announced; one whose folders could not be worked out is only recorded on its run.
@@ -110,7 +111,7 @@ An alert is opened by the sync engine, by its start-up recovery, by the auto-sca
 | Integration | Sonarr did not answer when a batch asked; closes itself when a later batch finds it answering | `integration.down` | Dismiss |
 | Scheduler | A background job failed three times in a row; closes itself on the job's next success | `scheduler.failing` | Run now · Dismiss |
 
-Every alert reads the same on Discord: the alert's title, its sentence as the description, whatever labelled fields that kind carries (the reason and the counts, what is stuck, how many webhooks were waiting), and a last field, **What to do**, reading "Open DragonCP → Notifications to act on it." - a tab whose screen is not built yet. The author line is "DragonCP Notifications"; warnings are orange (`15105570`, the colour of a partial rename).
+Every alert reads the same on Discord: the alert's title, its sentence as the description, whatever labelled fields that kind carries (the reason and the counts, what is stuck, how many webhooks were waiting), and a last field, **What to do**, reading "Open DragonCP → Notifications to act on it." - the Notifications page in the sidebar. The author line is "DragonCP Notifications"; warnings are orange (`15105570`, the colour of a partial rename).
 
 What each action does is on [the sync engine page](../sync-engine/README.md), under *Alerts*.
 
@@ -148,13 +149,14 @@ The connector's **App URL** is attached as the embed's clickable `url`, but only
 - **Of a transfer's outcomes, only finished and failed are announced.** Cancelled and paused transfers never are. A pause is treated as "not an outcome" throughout the coordinator, and a cancelled sync's Tell stage records why it stayed quiet.
 - **A restart is announced.** It runs through the pipeline as a sync of its own - safety check, queue, then the usual finish - so its result arrives labelled "Manual Sync (restart)". A restarted simulated transfer is the exception (below), and a restore is never restarted. Before 2.3.0 `TransferCoordinator.restart_transfer()` started rsync with no completion watcher, and the restarted run finished without a message.
 - **A batch a person released is a manual sync.** Pressing Sync on a webhook whose batch is still open does not start a second sync: it tells that batch to go now, as Go now on the batch does, and so does a restart that joins it. From then on the batch counts as a person's: its result is announced as "Manual Sync", and if its safety check stops it, the alert opens without an `autosync.blocked` message. With automatic sync off - where every webhook opens a batch held for a person - that is every sync. A press that finds the batch already past its ready check does not release it, and the batch keeps the label of the kind that opened it. Fixed 2026-10-05: a released batch used to keep its kind, so a sync an admin started was announced as "Automated Sync", and a refusal of it as an automatic one.
-- **A manual sync the safety check stops is not announced.** Its alert is opened, but with no screen for alerts yet, the only visible trace is the manual-sync flag on any webhook that rode on it.
+- **A manual sync the safety check stops is not announced.** Its alert opens on the Notifications page, where **Sync anyway** is, and any webhook that rode on it reads **Manual** on the Webhooks page. Until the page arrived on 2026-10-05 the manual-sync flag on those webhooks was the only visible trace.
+- **"Result unknown" covers a copy whose rsync was gone at start-up.** A `running` transfer whose rsync process no longer exists when DragonCP starts is recorded as failed with the "Result unknown: ..." sentence, so it gets the *Result unknown* alert, not "Sync failed": it may have finished before DragonCP stopped, or been cut off with it. Until 2026-10-05 it was recorded as "Transfer process was interrupted" and announced as a failed sync, with a *Failed* alert.
 - **Backup restores never notify.** A restore is recorded in the pipeline (kind `restore`), and its Tell stage records that restores are not announced: the result is on the Backups page and in the activity trail. A failed restore does open an alert, which is not announced either: titled "Restore failed", saying to run it again from the Backups page, and offering only Dismiss - a restore is never retried from the transfer list.
 - **Simulations do not notify.** They run through the pipeline as kind `simulation`, whose Tell stage is skipped ("Rehearsals are not announced on Discord."), and a failed simulation opens no alert. A restarted simulated transfer is treated the same: a restart is kind `restart` whatever it retries, but its run carries the simulation flag, and Tell skips any run that does. Fixed 2026-10-05; before, a restarted simulation's result was announced like real work. See [../simulation/README.md](../simulation/README.md).
 - **"Result unknown" needs a run.** A transfer started before 2.3.0 whose result was lost in the upgrade restart is finished the old way, so it is still announced as "Sync failed", with the "Result unknown: ..." sentence as its Error Details.
 - **Dismissing a recurring alert quiets it for a day.** Alerts are deduplicated while open. Once a person dismisses an *Auto-scanner*, *Integration* or *Scheduler* alert, or marks it wrong, the same subject opens - and announces - no new alert for 24 hours (`QUIET_AFTER_DISMISS` in `services/alert_service.py`). After that, if the cause is still there the next time it is checked - the auto-scanner looks at every scan, the scheduler at every run - the alert opens and is announced again. Alerts that each report one event - after a restart, result unknown, stuck download, waited 30 minutes, safety check, failed - are not affected. Fixed 2026-10-05: a dismissed recurring alert used to come back at the very next check, so a Sonarr season the scanner kept finding short, or a scan that kept failing, was announced again every 15 minutes at the default interval.
 - **The *Integration* alert closes only when Sonarr is asked again.** That happens when a later Sonarr batch reaches its ready check. Until one does, the alert stays open however long Sonarr has been back. Only Sonarr raises it: nothing asks Radarr that question.
-- **New announcements need no setup.** A route that was never configured means the default destination, so the five added in 2.3.0 go to the default webhook from the first time they fire. Each can be switched off on the Discord page's Notifications tab.
+- **New announcements need no setup.** A route that was never configured means the default destination, so the five added in 2.3.0 go to the default webhook from the first time they fire. Each can be switched off on the Discord page's **Routing** tab (called Notifications until 2026-10-05; the name now belongs to the alerts page).
 - **The "default thumbnail" is not manual-sync-only.** It is the fallback for *every* message with no image of its own; a poster URL only overrides it when a matching notification row is found. Automated syncs with no poster, alerts and the auto-scanner's report all show this image.
 - **The notification lookup is a full table scan.** `send_discord_notification` calls `get_all()` on the notification model and loops looking for a matching `transfer_id`, even though both models expose an indexed `get_by_transfer_id()`. `get_all()` is called with no limit, so the cost grows with notification history.
 - **A rejected message is retried once.** The transport tries again on 429 and on 500, 502, 503 and 504 only, honouring `Retry-After` up to ten seconds; anything else is given up. Each delivery's outcome is listed on the connector's Activity tab.
@@ -184,15 +186,15 @@ Full schema: [../../reference/database-schema.md](../../reference/database-schem
 
 Announcements are produced internally; configuring where they go is the connector API, under `/api/connectors` - see [the API reference](../../reference/api.md#connectors).
 
-The alerts behind the Notifications tab have their own endpoints:
+The alerts behind the Notifications page have their own endpoints:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/alerts` | Alerts, newest first. `state` = `open` (default), `done`, `wrong`, `dismissed` or `all`; `kind` filters, and `total` counts what the filters match |
-| GET | `/api/alerts/summary` | How many are open, by severity - the tab's badge |
+| GET | `/api/alerts` | Alerts, newest first. `state` = `open` (default), `done`, `wrong`, `dismissed`, several of them comma separated (the Closed tab asks for `done,wrong,dismissed`), or `all`; `kind` filters, and `total` counts what the filters match |
+| GET | `/api/alerts/summary` | How many are open, by severity - the bell's dot and the sidebar count |
 | POST | `/api/alerts/<alert_id>/action` | Act on one: `{"action": "sync_now"}`, or `retry`, `sync_anyway`, `run_now`, `mark_done`, `mark_wrong`, `dismiss` |
 
-Socket event: `alerts_changed`, carrying the open counts, whenever an alert opens, recurs or closes. Full contracts are on [the sync engine page](../sync-engine/README.md).
+Socket event: `alerts_changed`, carrying the open counts, whenever an alert opens, recurs or closes. With realtime on, the app writes those counts straight into the bell and the sidebar, refreshes the alert lists, and shows a toast when the count rises; the page polls every 30 seconds either way. Full contracts are on [the sync engine page](../sync-engine/README.md).
 
 `/api/discord/settings` and `/api/discord/test` were removed in 2.3.0.
 

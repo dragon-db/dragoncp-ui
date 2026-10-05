@@ -14,15 +14,17 @@ DragonCP is a Flask-based sync orchestrator for media libraries that:
 - Runs `rsync` from remote source paths to local destination paths.
 - Applies queue controls for folder conflicts (the same folder, or one inside the other) and concurrency limits.
 - Performs a dry-run safety check before every sync, except where a kind's own review already did it (Explore, restore), there is nothing on the media server to check (simulation, a restarted one included), or the copy cannot delete anything (a single-file sync, a retried Explore plan's file list). A dry run rsync could not finish fails the check.
-- Opens alerts for what needs a person — a refused or failed sync, work a restart interrupted — most of which are also announced on Discord. The Notifications screen that will list them is not built yet; they are served by `/api/alerts`.
+- Opens alerts for what needs a person — a refused or failed sync, work a restart interrupted — most of which are also announced on Discord. The web app's Notifications page lists them (`/api/alerts`), and its Pipeline page shows every sync stage by stage (`/api/sync/runs`).
 - Persists transfer/webhook/sync/alert/backup state in SQLite.
 - Streams progress to clients over authenticated WebSocket.
 
 Core bootstrap and wiring happen in `app.py`: the `TransferCoordinator` is built
 with the database and Socket.IO, the routes are initialised, the connector layer
 is configured, and only then does `transfer_coordinator.start_background()` start
-the completion watchers, the sync engine and the scheduler — so what they find at
-start-up can be announced. Blueprints are registered under `/api`.
+the sync engine (whose start-up recovery runs first), the completion watchers,
+the queue's waiting work and the scheduler — so what they find at start-up can
+be announced, and nothing the queue starts is mistaken for a copy the restart
+interrupted. Blueprints are registered under `/api`.
 
 ## 2. High-Level Runtime Architecture
 
@@ -105,7 +107,7 @@ Queue states represented through transfer + webhook state coupling:
 Implementation details now in place:
 - queued transfer rows persist `queue_reason` (`path` or `slot`) in `transfers`
 - same-folder promotions re-register queue ownership before rsync starts
-- startup rebuilds running transfer reservations from DB before resuming monitors, then gives queued transfers theirs oldest first, one owner per set of colliding folders, so two queued transfers cannot block each other (`_restore_queued_reservations_internal`)
+- startup rebuilds running transfer reservations from DB before resuming monitors, then gives queued transfers theirs oldest first, one owner per set of colliding folders, so two queued transfers cannot block each other (`_restore_queued_reservations_internal`); the rebuild starts nothing (`force_unregister_stale_transfers(promote=False)`), and queued work is promoted only after the sync engine's recovery has run (`QueueManager.promote_waiting`, in `TransferCoordinator.start_background`), so recovery does not mistake a copy the queue is just starting for one the restart cut off — bar the completion-watcher gap recorded in `../operations/known-issues.md`
 - deleting a queued or paused transfer cancels it first, freeing its reservation and closing its sync (`_cancel_before_delete` in `routes/transfers.py`)
 - a restart reuses its transfer row and goes through the same two checks (`TransferCoordinator.requeue_transfer`); it no longer starts rsync directly
 - the sync engine is told when a queued transfer starts (`before_transfer_start`) and when a slot wait is re-filed as a folder wait (`on_transfer_waiting`)
@@ -161,7 +163,8 @@ After a DragonCP restart, an rsync that survived is reattached, but its exit
 status cannot be read; the transfer is then marked `failed` with a message
 starting "Result unknown", and the engine raises a *Result unknown* alert rather
 than reporting a failed sync (`UNKNOWN_RESULT_MESSAGE` in
-`services/transfer_service.py`).
+`services/transfer_service.py`). A `running` transfer whose rsync is already
+gone at start-up is marked the same way (`resume_active_transfers`).
 
 The same execution path runs simulated transfers, pointed at local fixture files
 instead of over SSH and held to a bandwidth ceiling. See
@@ -172,7 +175,7 @@ engine's Safety check stage, computes:
 - Incoming media files.
 - Deletions.
 - Estimated server/local file count comparison.
-- Safety decision (`safe_to_sync`) with reason string: unsafe first when rsync did not finish — an exit code other than 0 or 24, reported with rsync's last error line and `rsync_exit_code` — then when the media server lists fewer media files than this disk holds, or when it would delete more media files than it brings in.
+- Safety decision (`safe_to_sync`) with reason string: unsafe first when rsync did not finish — an exit code other than 0 or 24, reported with the first error line that names a cause (not rsync's closing `rsync error:` summary or an ssh `Warning:`) and `rsync_exit_code` — then when the media server lists fewer media files than this disk holds, or when it would delete more media files than it brings in.
 
 ## 6. Persistence Model and State Tracking
 

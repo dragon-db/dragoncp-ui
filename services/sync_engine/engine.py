@@ -779,6 +779,15 @@ class SyncEngine:
         self._event(run_id, S.RECEIVE, f"{what} received.")
         total = len(self.store.webhook_ids(run_id))
         message = f"Joined this batch ({total} webhook{'s' if total != 1 else ''} in it now)."
+        # The stage's sentence follows the batch as it grows; the join itself
+        # is the log line written below.
+        noun = f"{total} webhook{'s' if total != 1 else ''}"
+        self.store.set_stage(
+            run_id, S.BATCH, S.PASSED,
+            f"Follow-up batch for {unit.label}, behind run {open_run['parent_run_id']}: "
+            f"{noun} in it." if open_run.get('parent_relation') == 'follow_up'
+            and open_run.get('parent_run_id') else
+            f"One batch for {unit.label}: {noun} in it.")
 
         if open_run['state'] in (S.WAITING_STATE, S.HELD):
             # The old timer, kept for when Sonarr cannot answer, grows with
@@ -1742,16 +1751,24 @@ class SyncEngine:
         key = make_unit_key(transfer['dest_path'])
 
         with self.unit_lock(key):
+            live = self.store.find_live(key)
+            if live is not None and live['state'] in S.ACTIVE_STATES:
+                return SubmitResult(False, live['run_id'], 'failed', live['state'],
+                                    'This folder is being copied right now. Retry once that '
+                                    'copy has finished.')
             open_run = self.store.find_open(key)
-            if open_run is not None and open_run['run_id'] != (previous or {}).get('run_id'):
-                if previous:
+            if open_run is not None:
+                # Already waiting — possibly the restart pressed a moment ago,
+                # still in its safety check. Join it rather than open a second.
+                if previous and previous['run_id'] != open_run['run_id'] and \
+                        previous['state'] in S.TERMINAL_STATES:
                     for table in (SERIES_TABLE, MOVIE_TABLE):
                         ids = [i for i in self.store.webhook_ids(previous['run_id'], table)]
                         if ids:
                             self.store.move_webhooks(table, ids, open_run['run_id'])
-                self._event(open_run['run_id'], S.BATCH,
-                            f"{actor.label} restarted an earlier transfer for this folder; "
-                            f"it joined this batch instead of copying twice.")
+                    self._event(open_run['run_id'], S.BATCH,
+                                f"{actor.label} restarted an earlier transfer for this "
+                                f"folder; it joined this batch instead of copying twice.")
                 return self._promote(open_run, actor)
 
             request = SyncRequest(
@@ -1871,10 +1888,15 @@ class SyncEngine:
 
     def summarise(self, run: Dict[str, Any],
                   strip: Optional[Dict[str, str]] = None,
-                  webhook_count: Optional[int] = None) -> Dict[str, Any]:
-        """A run as a list row: what, how far, and the stage strip."""
+                  webhook_count: Optional[int] = None,
+                  current_summary: Optional[str] = None) -> Dict[str, Any]:
+        """A run as a list row: what, how far, the stage strip, and what the stage
+        it is on last said."""
         if strip is None:
-            strip = {k: v['status'] for k, v in self.store.stages(run['run_id']).items()}
+            stages = self.store.stages(run['run_id'])
+            strip = {k: v['status'] for k, v in stages.items()}
+            if current_summary is None:
+                current_summary = (stages.get(run.get('current_stage') or '') or {}).get('summary')
         label = run.get('title') or run.get('folder_name') or 'Sync'
         if run.get('season_name'):
             label = f"{label} — {run['season_name']}"
@@ -1890,6 +1912,7 @@ class SyncEngine:
             'state': run['state'],
             'state_label': S.describe_state(run['state']),
             'current_stage': run.get('current_stage'),
+            'current_summary': current_summary,
             'outcome': run.get('outcome'),
             'outcome_message': run.get('outcome_message'),
             'transfer_id': run.get('transfer_id'),
@@ -1917,8 +1940,10 @@ class SyncEngine:
         ids = [r['run_id'] for r in runs]
         strips = self.store.stage_strips(ids)
         counts = self.store.webhook_counts(ids)
+        sentences = self.store.current_summaries(runs)
         return {
-            'runs': [self.summarise(r, strips.get(r['run_id'], {}), counts.get(r['run_id'], 0))
+            'runs': [self.summarise(r, strips.get(r['run_id'], {}), counts.get(r['run_id'], 0),
+                                    sentences.get(r['run_id']))
                      for r in runs],
             'total': self.store.count(states=states, kinds=kinds, search=search,
                                       include_simulation=include_simulation),
@@ -1988,8 +2013,9 @@ class SyncEngine:
             except Exception:  # noqa: BLE001
                 alerts = []
 
-        summary = self.summarise(run, {k: v['status'] for k, v in stage_rows.items()},
-                                 None)
+        summary = self.summarise(
+            run, {k: v['status'] for k, v in stage_rows.items()}, None,
+            (stage_rows.get(run.get('current_stage') or '') or {}).get('summary'))
         webhooks = self.store.webhooks(run_id)
         summary['webhook_count'] = len(webhooks)
         return {

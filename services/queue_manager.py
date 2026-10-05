@@ -542,10 +542,15 @@ class QueueManager:
                 'active_destinations': list(self.active_destinations.values())
             }
     
-    def force_unregister_stale_transfers(self):
+    def force_unregister_stale_transfers(self, promote: bool = True):
         """
         Cleanup method to remove stale entries from tracking and rebuild queue state.
         Should be called on app startup or periodically.
+
+        `promote=False` rebuilds without starting anything. Start-up uses it so
+        the sync engine can look at what a restart interrupted before the queue
+        starts moving again — otherwise a copy started here reads as one the
+        restart cut off. `promote_waiting()` then starts what is free to start.
         """
         with self.lock:
             all_transfers = self.transfer_model.get_all(
@@ -609,8 +614,18 @@ class QueueManager:
             if restored_queued_count:
                 print(f"🧾 Restored {restored_queued_count} queued destination reservation(s) from database")
 
-            while self.coordinator and len(self.running_transfers) < self.MAX_CONCURRENT_TRANSFERS:
-                running_before = len(self.running_transfers)
-                self._promote_next_queued_transfer()
-                if len(self.running_transfers) == running_before:
-                    break
+            if promote:
+                self._promote_while_room()
+
+    def promote_waiting(self) -> None:
+        """Start every queued transfer that has a free slot and a free folder."""
+        with self.lock:
+            self._promote_while_room()
+
+    def _promote_while_room(self) -> None:
+        """Promote until the slots are full or nothing more can start (lock held)."""
+        while self.coordinator and len(self.running_transfers) < self.MAX_CONCURRENT_TRANSFERS:
+            running_before = len(self.running_transfers)
+            self._promote_next_queued_transfer()
+            if len(self.running_transfers) == running_before:
+                break

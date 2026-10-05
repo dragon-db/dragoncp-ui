@@ -280,8 +280,10 @@ not to `dragoncp_backend.log`: one summary per stage in `sync_run_stage`, and th
 stage's own lines in `sync_run_event`, at most 2,000 per run with the oldest
 dropped first. That is where Sonarr's answers during the ready check, the
 fallback timer's deadline, the safety check's counts and the queue wait are.
-Read them with `GET /api/sync/runs/<run_id>` (every stage with its lines) or
-`GET /api/sync/runs/<run_id>/events?after=<id>`. There is no screen for runs yet.
+Read them on the sync's own page under **Pipeline** (`/pipeline/<run_id>`, every
+stage with its lines), or with `GET /api/sync/runs/<run_id>` or
+`GET /api/sync/runs/<run_id>/events?after=<id>`. A transfer's detail on Transfers
+and an episode's on Webhooks link to their sync.
 
 What the new pieces do write to the backend log is short, and mostly about
 themselves:
@@ -306,8 +308,9 @@ Two consequences:
   lines (`Safe to sync: False`, `Reason: ...`) and an INFO
   `Alert opened: sync_refused — ...`. The exception, since 2026-10-05, is a dry
   run rsync could not finish — the media server unreachable, the folder
-  missing: it prints `❌ Dry-run did not finish: exit N: <rsync's last error
-  line>`, which the ❌ puts at ERROR.
+  missing: it prints `❌ Dry-run did not finish: exit N: <cause>`, which the ❌
+  puts at ERROR. The cause is the first error line that names one (`ssh: Could
+  not resolve hostname …`), not rsync's closing `rsync error: … (code N)` line.
 
 ## Reading The Logs From The API
 
@@ -447,9 +450,11 @@ and released.
 
 A sync stuck *before* it has a transfer - waiting on Sonarr, held because
 automatic sync is off, stopped by the safety check, interrupted by a restart -
-leaves no transfer lines at all. Ask the pipeline instead:
-`GET /api/sync/runs?state=open` lists the runs not yet copying, each with the
-stage it is at, and `?state=refused,interrupted` the ones stopped for a person.
+leaves no transfer lines at all. Ask the pipeline instead: the **Pipeline** page's
+*In progress* and *Needs a person* filters, or `GET /api/sync/runs?state=open`
+for the runs not yet copying, each with the stage it is at and what that stage
+last said (`current_summary`), and `?state=refused,interrupted` for the ones
+stopped for a person.
 
 ### Practical Filters
 

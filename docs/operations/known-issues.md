@@ -96,11 +96,21 @@ of announcing "Sync failed". A transfer from before 2.3.0 still in flight across
 the upgrade has no run, so it is announced as "Sync failed" with that sentence.
 History rows carrying either of the old sentences were never confirmed.
 
+The start-up case was missed by that fix, and was fixed the same day. A
+transfer still marked `running` whose rsync was already gone when DragonCP
+started again — which is what a restart that stops rsync along with DragonCP
+leaves — was recorded as "Transfer process was interrupted"
+(`TransferService.resume_active_transfers`), as on `main`. The engine read that
+as an ordinary failure: "Sync failed" on Discord and a *Failed* alert, for a
+result nobody saw. It is now recorded with the same "Result unknown: …"
+sentence, and gets the *Result unknown* alert.
+
 ## Syncing
 
-All but the first entry here were fixed on 2026-10-05, by the sync engine or
-by the review that followed it — see
-[the sync engine](../features/sync-engine/README.md). The first is still open.
+Three entries here are open: the first two, and "A completion watcher can
+still start queued work before recovery", which follows the fix it qualifies.
+The rest were fixed on 2026-10-05, by the sync engine or by the review that
+followed it — see [the sync engine](../features/sync-engine/README.md).
 Entries marked *branch only* only ever existed on the unreleased
 `global-connectors` branch; they are kept because a development instance may
 have run them.
@@ -131,6 +141,24 @@ deep are what Explore's repair finds and moves back
 ([Explore](../features/explore/README.md), "Repairing misplaced files";
 `services/explore/repair.py`).
 
+### ~~Two retries of one transfer could both reach the queue~~ — **fixed** 2026-10-05, branch only
+
+A restart opens a new sync run that carries the transfer's id from the start,
+but the transfer row stays `failed` until that run reaches its Queue stage —
+after its safety check's dry run. A second **Retry** in that window passed
+`SyncEngine.restart_transfer`'s status check, found the first retry as the
+newest run owning the transfer, did not join it, and opened a second restart
+run; both then called `TransferCoordinator.requeue_transfer`, which could start
+a second rsync for the same transfer into the same folder.
+
+Now a retry while a sync for the folder is waiting joins that sync instead of
+opening another, a retry while the folder is being copied is refused ("This
+folder is being copied right now"), and `requeue_transfer` refuses a transfer
+that is already queued, starting, running or paused
+(`tests/test_sync_engine.py`: `test_retry_pressed_twice_starts_one_copy`,
+`test_retry_while_the_folder_is_copying_is_refused`). The sync page also opens
+the new retry after Retry, so it no longer invites the second press.
+
 ### ~~A dry run that fails to run passes the safety check~~ — **fixed** 2026-10-05
 
 `TransferService.perform_dry_run_rsync` ignored rsync's exit status and its
@@ -146,12 +174,16 @@ only Sonarr batches.
 rsync's own verdict now comes first. An exit code other than 0, or 24 (files
 vanished mid-scan, as when Sonarr moves an import — still a complete answer),
 makes the dry run unsafe with the reason "The dry run did not finish (rsync exit
-N): <rsync's last error line>", and the result carries `rsync_exit_code`. The
-Safety stage stops the sync for a person, with **Sync anyway** as the way past
-it. The on-demand dry runs (`POST /api/media/dry-run` and the webhook dry-run
-endpoints) call the same method and report the same.
+N): <cause>", and the result carries `rsync_exit_code`. The cause is the first
+error line that names one — "ssh: Could not resolve hostname …" — not rsync's
+closing `rsync error: … (code N)` summary or an ssh `Warning:` host-key notice;
+the first version of the fix quoted the last line, which is usually that
+summary. The Safety stage stops the sync for a person, with **Sync anyway** as
+the way past it. The on-demand dry runs (`POST /api/media/dry-run` and the
+webhook dry-run endpoints) call the same method and report the same.
 `tests/test_dry_run_visibility.py::DryRunThatDidNotFinishTests` covers an
-unreachable server, a missing folder, and exit 24 still counting as an answer.
+unreachable server, a missing folder, exit 24 still counting as an answer, and
+the reason naming the cause rather than the exit code.
 
 ### ~~A restarted simulation, a single file and an Explore retry were judged by a folder dry run~~ — **fixed** 2026-10-05, branch only
 
@@ -226,6 +258,41 @@ A restart is now a sync run of its own — safety check, then the queue, then th
 usual finish and announcement (`SyncEngine.restart_transfer`,
 `TransferCoordinator.requeue_transfer`).
 
+### ~~A copy the queue started at start-up was called interrupted~~ — **fixed** 2026-10-05, branch only
+
+The queue rebuilt its state and started queued work while the coordinator was
+being built (`force_unregister_stale_transfers()` promoting), before the sync
+engine's start-up recovery ran. Promotion starts each transfer on a thread of
+its own, which marks the row `pending` and moves the sync to copying before
+rsync runs. When recovery caught one in between — a copying sync whose transfer
+was still `pending` — it took it for a copy the restart had cut off: the sync
+was marked interrupted, its webhooks flagged for a manual sync, and a false
+"Some syncs might have been skipped" alert opened and was announced on Discord.
+
+The rebuild now starts nothing (`force_unregister_stale_transfers(promote=False)`
+in the coordinator's constructor). The engine's recovery runs, then
+`QueueManager.promote_waiting()` starts whatever has a free slot and a free
+folder (`TransferCoordinator.start_background`). Recovery also puts a `pending`
+transfer back in the queue whatever state its sync is in, and returns a copying
+sync whose transfer had not started to the queue rather than calling it
+interrupted (`services/sync_engine/recovery.py`, `_back_in_queue`).
+`tests/test_sync_engine.py`:
+`RecoveryTests::test_a_copy_starting_again_after_a_restart_is_not_called_interrupted`,
+and `QueueOverlapTests::test_after_a_restart_a_series_and_its_season_do_not_block_each_other`
+for the rebuild starting nothing until `promote_waiting()`. The completion
+watchers were a second path that promoted early; see the next entry.
+
+### ~~A completion watcher could start queued work before recovery~~ — **fixed** 2026-10-05, branch only
+
+`start_background()` started a completion watcher for every transfer
+`resume_active_transfers()` found `running`, and only then the sync engine. A
+watcher whose rsync was gone at start-up found its transfer already ended and
+released its queue slot, which promotes queued work — so a queued transfer
+could start before recovery had looked, and recovery could then take that copy
+for one a restart cut off. The engine now starts first: recovery runs, then the
+watchers, then `queue_manager.promote_waiting()` (`TransferCoordinator.start_background`).
+Not covered by a test; the order is three lines in that method.
+
 ### ~~A whole-series copy and a copy of one of its seasons could run at once~~ — **fixed** 2026-10-05
 
 The queue compared destinations for equality only, so a copy of a whole series
@@ -297,9 +364,10 @@ done** rewrote the transfer as completed.
 
 `SyncEngine.restart_transfer` now refuses a restore: "A restore is run again
 from the Backups page, where its preview shows what it will replace." The
-Transfers page shows that refusal only as "Could not restart the transfer". A
-failed restore's alert is titled "Restore failed: …", ends "Run it again from
-the Backups page.", and offers only **Dismiss** (`AlertService.transfer_failed`;
+Transfers page shows that sentence; until later the same day it showed only
+"Could not restart the transfer". A failed restore's alert is titled "Restore
+failed: …", ends "Run it again from the Backups page.", and offers only
+**Dismiss** (`AlertService.transfer_failed`;
 `test_a_restore_is_not_restarted_from_the_transfer_list`).
 
 ### ~~Movie webhooks named the wrong queue wait and carried no needs-a-person flag~~ — **fixed** 2026-10-05, branch only
@@ -412,8 +480,9 @@ What remains:
   engine decided at each stage — Sonarr's answers, the fallback timer, the
   safety counts, every skip — is stored with the run in the database
   (`sync_run_event`), and the engine logs only its start-up, its recovery
-  summary and its own failures. With no screen for runs yet, that record is
-  readable only through `/api/sync/runs/<run_id>`. See [Logging](logging.md).
+  summary and its own failures. That record is read on the sync's own page under
+  Pipeline (since 2026-10-05) or through `/api/sync/runs/<run_id>`, not with
+  `grep`. See [Logging](logging.md).
 - **Severity is inferred from message text, not the stream.** A line reading
   `Transfer ... finished with status: failed` is recorded as ERROR purely
   because it contains "failed"; Socket.IO's routine stderr chatter lands at INFO.
@@ -471,27 +540,48 @@ What remains:
 
 ## UI
 
-- **The pipeline view and the Notifications tab are not built** — **verified**
-  2026-10-05. The sync engine and its alerts have an API (`/api/sync/…`,
-  `/api/alerts`, `/api/scheduler/jobs`) and no screen. What that means today:
-  - Alerts open and are announced on Discord with "Open DragonCP →
-    Notifications to act on it." There is no such tab: reading an alert and
-    acting on it — Sync now, Retry, Sync anyway, Mark as done — is API-only.
-  - A sync the safety check stopped cannot be pushed through from the UI.
-    **Sync anyway** is API-only (`POST /api/sync/runs/<run_id>/sync-anyway`).
-    Pressing Sync on the webhook again runs the same dry run and stops again;
-    Explore's reviewed override is the only on-screen way past it.
-  - A press of Sync, Restart or a Library-tab Sync answers before the safety
-    check runs, so the toast says it started ("Sync started", "Transfer
-    restarted"). The transfer appears on Transfers only once the dry run
-    passes; if it does not, nothing appears, any webhook riding on it gets the
-    manual-sync flag, and the alert is visible nowhere in the app.
-  - The fallback wait's new meaning is not on screen. The Automation tab still
-    labels it "Series/Anime Wait Time (seconds)", and the Webhooks page's
-    auto-sync popover says "TV & anime wait Ns after the last episode" —
-    true now only when Sonarr cannot be asked.
-  - Discord's routing tab is still called Notifications, the name the alerts
-    inbox is meant to take.
+- ~~**The pipeline view and the Notifications tab are not built.**~~ Fixed
+  2026-10-05, branch only. The sync engine and its alerts had an API
+  (`/api/sync/…`, `/api/alerts`, `/api/scheduler/jobs`) and no screen. Now:
+  - The **Notifications** page lists open and closed alerts with their actions
+    — Sync now, Retry, Sync anyway (with a confirm), Run now, Mark as done, Mark
+    as wrong, Dismiss — and the header bell and a sidebar count say when one is
+    open. Discord's "Open DragonCP → Notifications to act on it." now points
+    somewhere.
+  - A sync the safety check stopped can be pushed through on screen: **Sync
+    anyway** on its alert, or on the sync's own page under **Pipeline**.
+  - A refusal is visible: the sync is on the Pipeline page as stopped, its
+    alert on Notifications, and its webhooks read **Manual** on the Webhooks
+    page instead of Pending.
+  - The fallback wait's meaning is on screen: the Automation tab labels it
+    **Fallback wait (seconds)** with a sentence saying it applies only when
+    Sonarr cannot be asked, and the auto-sync popover says "TV & anime start
+    once Sonarr has nothing more for the season; if Sonarr cannot be asked, Ns
+    after the last episode."
+  - Discord's routing tab is called **Routing**, and the scheduled
+    auto-scanner has a status card on the Sonarr and Radarr Connection tabs.
+  - A restart from Transfers says what the server said — "Restart requested:
+    the safety check runs first, then the queue." or its refusal — rather than
+    "Transfer restarted".
+- ~~**A press of Sync answered "Sync started" before the safety check ran.**~~
+  Fixed 2026-10-05. Sync on the Webhooks page now shows the server's own
+  sentence (and its refusal as an error), and a Library-tab Sync says the syncs
+  are on their way, safety check first. A refusal by the dry run that follows
+  is on Notifications and Pipeline, and the webhooks read Manual.
+- ~~**Retry on a sync's own page did not refresh that page.**~~ Fixed
+  2026-10-05. Retry now refreshes the sync queries and opens the new retry's
+  own page, so the finished sync is no longer left on screen offering Retry.
+- ~~**A sync's page read "No such sync" for any failed request.**~~ Fixed
+  2026-10-05. Only a 404 says "No such sync"; any other failure says "Could not
+  load this sync" with the server's reason and a Try again button.
+- ~~**The Transfers page never knew who started a transfer, or its route.**~~
+  Fixed 2026-10-05. `/api/transfers/all` and `/api/transfers/active` left out
+  `started_by_kind`, `started_by_name`, `started_by_account_id`, `transport` and
+  `sync_run_id` (and `/transfers/all` `queue_reason` too), though the page draws
+  them: every transfer read "Started by: not recorded", the row's "by …" fact
+  was missing, and neither the **Fast** badge nor the *Route* fact ever showed.
+  The same was true on `main`. Both listings return the fields now
+  (`routes/transfers.py`), and a transfer's detail links to its sync.
 - **No dashboard panel renders an error.** Failed requests fall back to empty
   states, so a dead backend looks identical to an idle system. The backend
   already returns per-disk `error` strings that the UI discards.

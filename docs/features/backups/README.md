@@ -410,13 +410,13 @@ at startup.
 
 - **Restores are not announced, and are retried only from this page.** The
   run's Tell stage says so: the result is on this page, in Transfers and in the
-  activity trail. A failed restore does open an alert for the Notifications
-  tab, whose screen is not built yet: titled "Restore failed: …", ending "Run it
-  again from the Backups page.", and offering only **Dismiss**. **Retry** on a
-  failed restore's row in Transfers is refused too: the restart endpoint
-  answers "A restore is run again from the Backups page, where its preview
-  shows what it will replace.", though the page itself shows only "Could not
-  restart the transfer". Fixed 2026-10-05
+  activity trail. A failed restore does open an alert on the Notifications
+  page: titled "Restore failed: …", ending "Run it again from the Backups
+  page.", and offering only **Dismiss**. **Retry** on a failed restore's row in
+  Transfers is refused too: the restart endpoint answers "A restore is run again
+  from the Backups page, where its preview shows what it will replace.", and
+  since 2026-10-05 the page shows that sentence rather than "Could not restart
+  the transfer". Fixed 2026-10-05
   — before, the alert was an ordinary *Failed* one: its **Retry** sent the
   restore's transfer row through the pipeline's generic restart (a dry run
   against the media server, then rsync) rather than the restore runner, and its

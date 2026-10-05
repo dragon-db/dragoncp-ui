@@ -144,7 +144,7 @@ invisible to the server's own stale-connection reaper.
 Two cards. Neither is documented in depth here.
 
 - **Webhook Auto-Sync** - Auto-sync Movies, Auto-sync TV Shows, Auto-sync Anime, and
-  Series/Anime Wait Time (seconds). See [auto-sync](../auto-sync/README.md) for what
+  **Fallback wait (seconds)**. See [auto-sync](../auto-sync/README.md) for what
   these actually drive.
 - **Notifications** - a pointer, not a form: Discord moved to Integrations → Discord, and
   **Open Discord settings** goes there. See [notifications](../notifications/README.md).
@@ -161,12 +161,20 @@ webhook of a batch, each later webhook adds the same again, and it never runs pa
 15 minutes after the first. The deadline is stored on the batch and re-read at every
 step, so a later webhook really does extend it.
 
-**The screen has not caught up with that.** The registry renamed the setting
-**Fallback wait (seconds)** and describes it as above, but that label reaches only the
-grouped configuration payload: the Core Config tab leaves the automation group to this
-tab, and this tab draws its own label, *Series/Anime Wait Time (seconds)*, under
-"Control movie/series/anime auto-sync behavior and wait window". The auto-sync popover on
-the Webhooks page still reads "TV & anime wait Ns after the last episode."
+**The screen says so.** Since 2026-10-05 the field reads **Fallback wait (seconds)**,
+with the sentence "Used only when Sonarr cannot be asked: how long a TV or anime season
+waits for more episodes before syncing, plus this again for each later episode, never
+more than 15 minutes. When Sonarr answers, it decides instead." The auto-sync popover on
+the Webhooks page says "TV & anime start once Sonarr has nothing more for the season; if
+Sonarr cannot be asked, Ns after the last episode." Both used to describe the old fixed
+wait — the field was *Series/Anime Wait Time (seconds)* and the popover read "TV & anime
+wait Ns after the last episode." The label and sentence are written into this tab rather
+than read from the registry. Today the label is the registry's and the sentence says
+what its description says, in slightly different words, but nothing keeps the two in
+step: the Core Config tab leaves the automation group to this tab, so the
+registry's own label and description reach only the grouped configuration payload. The
+card's own description is unchanged: "Control movie/series/anime auto-sync behavior and
+wait window".
 
 **Wait time is clamped differently at each end.** The page only guards against zero and
 non-numbers (minimum 1). The registry clamps to 30-900 seconds wherever it is written.
@@ -193,7 +201,8 @@ button that sends to *that* webhook, which is the question the old single Test b
 could not answer once there was more than one destination.
 
 **Neither is the auto-scanner.** Its switch and interval are per service, on the Sonarr
-and Radarr Connection tabs under Integrations.
+and Radarr Connection tabs under Integrations, where an Auto-scanner card shows its next
+scan and what the last one found.
 
 ## Where a save goes
 

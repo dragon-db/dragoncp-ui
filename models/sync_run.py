@@ -328,6 +328,25 @@ class SyncRunStore:
                     out.setdefault(row['run_id'], {})[row['stage']] = row['status']
         return out
 
+    def current_summaries(self, runs: Iterable[Dict[str, Any]]) -> Dict[str, str]:
+        """The sentence each run's current stage last wrote — what a list row says
+        the run is doing now ("Sonarr: 2 still downloading…")."""
+        wanted = {r['run_id']: r.get('current_stage') for r in runs
+                  if r.get('run_id') and r.get('current_stage')}
+        if not wanted:
+            return {}
+        out: Dict[str, str] = {}
+        ids = list(wanted)
+        with self.db.get_connection() as conn:
+            for start in range(0, len(ids), 400):
+                batch = ids[start:start + 400]
+                for row in conn.execute(
+                        f"SELECT run_id, stage, summary FROM sync_run_stage "
+                        f"WHERE run_id IN ({', '.join('?' for _ in batch)})", batch).fetchall():
+                    if wanted.get(row['run_id']) == row['stage'] and row['summary']:
+                        out[row['run_id']] = row['summary']
+        return out
+
     # ---------------------------------------------------------------- events
 
     def add_event(self, run_id: str, stage: str, message: str,

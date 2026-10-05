@@ -178,6 +178,13 @@ class DryRunThatDidNotFinishTests(unittest.TestCase):
         self.assertIn('did not finish (rsync exit 255)', result['reason'])
         self.assertIn('Connection refused', result['reason'])
 
+    def test_the_reason_names_the_cause_not_the_exit_code(self):
+        result = self.dry_run(255, "Warning: Permanently added 'remote.example' to the list of known hosts.\n"
+                                   "ssh: Could not resolve hostname remote.example: Name or service not known\n"
+                                   "rsync: connection unexpectedly closed (0 bytes received so far) [Receiver]\n"
+                                   "rsync error: unexplained error (code 255) at io.c(232) [Receiver=3.2.7]\n")
+        self.assertIn('Could not resolve hostname', result['reason'])
+
     def test_a_missing_folder_is_not_safe(self):
         result = self.dry_run(23, 'rsync: change_dir failed: No such file or directory (2)\n')
         self.assertFalse(result['safe_to_sync'])

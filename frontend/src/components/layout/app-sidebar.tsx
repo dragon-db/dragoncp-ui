@@ -3,6 +3,7 @@ import { Link, useLocation } from "@tanstack/react-router";
 import { useAuthStore } from "@/stores/auth";
 import { useLogout } from "@/hooks/useAuth";
 import { useConnectors } from "@/hooks/useConnectors";
+import { useAlertSummary } from "@/hooks/useSync";
 import { ConnectorIcon } from "@/components/integrations/connector-icon";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -26,6 +27,8 @@ import {
   IconLayoutDashboard,
   IconTransfer,
   IconWebhook,
+  IconRoute,
+  IconBell,
   IconCategory2,
   IconMovie,
   IconDeviceTv,
@@ -50,6 +53,13 @@ const workspaceItems: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: IconLayoutDashboard },
   { to: "/transfers", label: "Transfers", icon: IconTransfer },
   { to: "/webhooks", label: "Webhooks", icon: IconWebhook },
+  {
+    to: "/pipeline",
+    label: "Pipeline",
+    icon: IconRoute,
+    match: (p) => p === "/pipeline" || p.startsWith("/pipeline/"),
+  },
+  { to: "/notifications", label: "Notifications", icon: IconBell },
 ];
 
 const mediaItems: NavItem[] = [
@@ -108,6 +118,11 @@ export function AppSidebar() {
   const connectorsQuery = useConnectors();
   const connectors = connectorsQuery.data ?? [];
 
+  // Open alerts, on the item that lists them: the one count in this menu that
+  // means someone has to do something.
+  const openAlerts = useAlertSummary().data?.open ?? 0;
+  const counts: Record<string, number> = { "/notifications": openAlerts };
+
   const closeMobile = () => setOpenMobile(false);
   const isActive = (item: NavItem) =>
     item.match ? item.match(location.pathname) : location.pathname === item.to;
@@ -149,6 +164,14 @@ export function AppSidebar() {
                   >
                     <item.icon />
                     <span>{item.label}</span>
+                    {(counts[item.to] ?? 0) > 0 && (
+                      <span
+                        className="ml-auto min-w-5 rounded-full border border-amber-500/40 bg-amber-500/15 px-1.5 text-center font-mono text-[10px] leading-4 text-amber-300"
+                        title={`${counts[item.to]} open`}
+                      >
+                        {counts[item.to] > 99 ? "99+" : counts[item.to]}
+                      </span>
+                    )}
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}

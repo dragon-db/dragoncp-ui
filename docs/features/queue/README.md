@@ -197,29 +197,52 @@ message saying which, because someone is watching it.
 
 ```mermaid
 flowchart TD
-    A[App start: coordinator construction] --> B[force_unregister_stale_transfers]
+    A[App start: coordinator construction] --> B[force_unregister_stale_transfers, promote=False]
     B --> C[Clear in-memory maps]
     C --> D[Restore running transfers from DB, collisions allowed]
     D --> E[Restore queued reservations from DB, oldest first, one per set of colliding folders]
-    E --> F[Promote queued work into free slots]
-    F --> G[resume_active_transfers]
-    G --> H[Reattach to live rsync PIDs, mark dead ones failed]
+    E --> G[resume_active_transfers]
+    G --> H[Reattach to live rsync PIDs, mark dead ones failed: Result unknown]
     H --> I[Connector layer configured: start_background]
-    I --> J[Start post-completion watchers]
-    J --> K[Sync engine recovery]
-    K --> L[Pending transfer of a queued sync goes back to the queue, maps rebuilt again]
+    I --> K[Sync engine recovery]
+    K --> L[Pending transfers go back to the queue, maps rebuilt again, still promote=False]
+    L --> J[Start post-completion watchers]
+    J --> M[promote_waiting: start queued work into free slots]
 ```
 
-Queue state is process-local, so start-up rebuilds it from the database:
-1. `QueueManager.force_unregister_stale_transfers()`, during coordinator construction, clears both maps and re-registers every row still marked `running` as it is — even where one's folder is inside another's, because both are writing either way and refusing one would only hide it from the queue (`check_overlap=False`)
-2. the same method then gives queued rows their reservations back, oldest first, with one owner per set of colliding folders: a row whose folder is the same as, inside or around one already reserved — by a running transfer or an older queued one — gets none, and waits as a folder wait (`_restore_queued_reservations_internal`). Folder waits are included, though they held no reservation before the restart
-3. it promotes queued work into any free slots
-4. `TransferService.resume_active_transfers()` reattaches to rsync processes that are still alive and marks the rest `failed`
-5. once the connector layer is configured, `TransferCoordinator.start_background()` starts a completion watcher for each of those transfers, so queue release, notification updates, Discord announcements and backup sorting still happen
-6. the sync engine's recovery leaves a sync whose transfer is still `queued` to carry on; a transfer left `pending` while its sync was still queued — promoted, and about to start when DragonCP stopped — is put back as a slot wait, and `force_unregister_stale_transfers()` runs again so it starts normally
+Queue state is process-local, so start-up rebuilds it from the database — and
+the rebuild starts nothing, leaving promotion until the sync engine has looked
+at what the restart interrupted:
+1. `QueueManager.force_unregister_stale_transfers(promote=False)`, during coordinator construction, clears both maps and re-registers every row still marked `running` as it is — even where one's folder is inside another's, because both are writing either way and refusing one would only hide it from the queue (`check_overlap=False`)
+2. the same method then gives queued rows their reservations back, oldest first, with one owner per set of colliding folders: a row whose folder is the same as, inside or around one already reserved — by a running transfer or an older queued one — gets none, and waits as a folder wait (`_restore_queued_reservations_internal`). Folder waits are included, though they held no reservation before the restart. With `promote=False` it stops there
+3. `TransferService.resume_active_transfers()` reattaches to rsync processes that are still alive and marks the rest `failed` with "Result unknown: …" (`UNKNOWN_RESULT_MESSAGE`)
+4. once the connector layer is configured, `TransferCoordinator.start_background()` runs the sync engine's recovery first:
+5. recovery leaves a sync whose transfer is still `queued` to carry on; a transfer left `pending` — promoted, and about to start when DragonCP stopped — is put back as a slot wait, whether its sync was still queued or already marked as copying, and `force_unregister_stale_transfers(promote=False)` runs again so the maps include it
+6. then a completion watcher starts for each transfer step 3 found running, so queue release, notification updates, Discord announcements and backup sorting still happen
+7. `QueueManager.promote_waiting()` then starts every queued transfer that has a free slot and a free folder — the same loop the rebuild used to run at step 2 (`_promote_while_room`)
 
 This recovery closes the gap where a restarted app could have running rsync
 processes but no in-memory folder reservations.
+
+**Why promotion waits for recovery** (since 2026-10-05). Promotion hands each
+transfer to `start_queued_transfer()` on a thread of its own, which marks the
+row `pending` and tells the engine the copy is starting before rsync runs.
+When the rebuild at step 2 promoted, those threads raced the engine's recovery:
+a copy could still be `pending` when recovery looked, and recovery — which then
+treated a copying sync with a `pending` transfer as one the restart had cut off
+— marked it interrupted and opened a false "Some syncs might have been skipped"
+alert. Now the rebuild starts nothing, `promote_waiting()` runs once recovery
+is over, and recovery puts a `pending` transfer back in the queue whatever
+state its sync was in. The completion watchers start after recovery as well: a
+watcher whose transfer step 3 marked failed calls `unregister_transfer()`,
+which promotes queued work, so starting them first would have promoted before
+recovery had looked.
+`tests/test_sync_engine.py` pins both halves:
+`QueueOverlapTests::test_after_a_restart_a_series_and_its_season_do_not_block_each_other`
+checks that the rebuild starts nothing and `promote_waiting()` starts the
+oldest, and
+`RecoveryTests::test_a_copy_starting_again_after_a_restart_is_not_called_interrupted`
+that a `pending` copy goes back to the queue without an alert.
 
 ### 6. How notifications follow the queue
 

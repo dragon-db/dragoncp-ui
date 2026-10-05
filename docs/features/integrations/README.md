@@ -40,7 +40,7 @@ Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors
 | Library, Queue and History tabs | `routes/media_library.py`, `services/media_index.py` |
 | Storage | `models/connector.py`, tables `connector`, `connector_secret`, `connector_target`, `notification_route`, `connector_delivery`; `media_item` (the title index); `scheduled_job` and `sweep_finding` (the auto-scanner) |
 | API | `routes/connectors.py`, `routes/media_library.py`, `routes/sync_engine.py` (scheduler jobs) |
-| UI | `frontend/src/components/pages/integrations.tsx`, `frontend/src/components/integrations/`, `frontend/src/hooks/useConnectors.ts`, `frontend/src/hooks/useMediaLibrary.ts` |
+| UI | `frontend/src/components/pages/integrations.tsx`, `frontend/src/components/integrations/` (the auto-scanner card is `scanner-status.tsx`), `frontend/src/hooks/useConnectors.ts`, `frontend/src/hooks/useMediaLibrary.ts`, `frontend/src/hooks/useSync.ts` (`useSchedulerJobs`, `useRunJob`) |
 
 ## What an operator sees
 
@@ -52,12 +52,12 @@ them:
   Discord webhook URL; the URL is stored on the server and never shown again.
   Each row has a Test button that sends a real message, and an "in service"
   switch.
-- **Notifications** — every announcement the app can make, one per row, each
+- **Routing** — every announcement the app can make, one per row, each
   with a destination dropdown and an on/off switch. A row set to "Use default"
   goes wherever the default webhook points. The sync engine added five rows in
-  2.3.0. The tab keeps this name for now: renaming it **Routing**, so it is not
-  confused with the alerts inbox the sync engine adds, is decided but not
-  built — and neither is the inbox's own screen.
+  2.3.0. Until 2026-10-05 this tab was called Notifications; it was renamed so
+  it is not confused with DragonCP's own **Notifications** page, the alerts
+  that need a person.
 - **Activity** — the last hundred messages this connector handled, including
   the ones it held back and why.
 - **Appearance** — the app URL a message links back to, the icon shown beside
@@ -81,7 +81,9 @@ them:
   whether DragonCP knows the title: an import for a title DragonCP has never
   heard of is what a lost webhook leaves behind.
 - **Connection** — the address, the API key, the **Scheduled auto-scanner**
-  switch and **Scan every (minutes)**, and a Test connection button.
+  switch and **Scan every (minutes)**, and a Test connection button. Below
+  them, an **Auto-scanner** card shows what the switch is doing (see *The
+  scheduled auto-scanner*).
 
 A connector that is switched off says so above its tabs, and the Library,
 Queue and History tabs ask for it to be turned on.
@@ -319,9 +321,25 @@ backend log.
   `scheduler.failing`, with **Run now**; the next success closes it. Dismissed
   or marked wrong while the job still fails, it stays closed for 24 hours.
 
-There is no screen for jobs yet: `GET /api/scheduler/jobs` lists them, and
-`POST /api/scheduler/jobs/<name>/run` runs one (`sonarr_auto_scanner`,
-`radarr_auto_scanner`).
+**On screen.** Each service's Connection tab ends with an **Auto-scanner** card
+for its job (`sonarr_auto_scanner`, `radarr_auto_scanner`):
+
+- the schedule — "Every 15 min · next scan at …" — or "Switched off", with a
+  pointer to the switch above;
+- the last scan: "Last scan 5 min ago: …" with its summary, in red when it
+  failed, and how many times in a row when more than once;
+- up to eight of that scan's finds, each with its first reason and what became
+  of it — Started a sync (a link to that sync), Already on its way, Held back
+  for the next scan, Waiting for a person, or Could not start — and "and N more
+  in the activity trail" beyond eight;
+- **Scan now**, while the scanner is on; it reads "Scanning…" while a scan runs.
+
+When the job does not run, the card says why it can tell: with the connector
+itself turned off, that the service is off and must be turned on first; with
+the connector on, that the scanner's switch is off. A connector that is on but
+missing its address or API key also reads as switched off. Jellyfin and Discord have no card. There is no
+page listing every job: `GET /api/scheduler/jobs` lists them, and
+`POST /api/scheduler/jobs/<name>/run` runs one.
 
 Worth knowing:
 
@@ -420,10 +438,6 @@ History tabs, which only Sonarr and Radarr can fill — see Jellyfin above.
 
 ## What is not here yet
 
-- **Screens for the alerts and the pipeline.** The Notifications tab and the
-  pipeline view exist only as API (see [the sync engine](../sync-engine/README.md)).
-  Discord's routing tab keeps the name Notifications until it is renamed
-  Routing alongside them.
 - **Radarr is never asked whether a film is still downloading** — decided: a
   Radarr webhook means a finished film. The check exists and is unused.
 - **Jellyfin** connects and tests; nothing reads it, and its page shows tabs

@@ -79,6 +79,8 @@ export interface Transfer {
    * that never had a faster option look identical afterwards.
    */
   transport?: "daemon" | "ssh" | null;
+  /** The sync this transfer belongs to — every transfer since 2.3.0 has one. */
+  sync_run_id?: string | null;
   log_count: number;
   logs?: string[];
   rsync_process_id?: number;
@@ -186,6 +188,14 @@ export interface WebhookNotification {
   episode_count?: number;
   dry_run_result?: unknown;
   dry_run_performed_at?: string;
+  /** The sync this webhook rides on. */
+  sync_run_id?: string | null;
+  /**
+   * Set when a safety check stopped its sync or a restart interrupted it; the
+   * status stays `pending`, so this is what says it is waiting for a person.
+   */
+  requires_manual_sync?: number | boolean | null;
+  manual_sync_reason?: string | null;
 }
 
 export interface RenameNotification {

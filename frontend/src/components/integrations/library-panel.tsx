@@ -191,7 +191,7 @@ function SyncButton({
       const result = await sync.mutateAsync(item.external_id);
       if (result.success) {
         toast.success(
-          `${result.transfers_started ?? 1} sync(s) started for ${item.title ?? "this title"}`
+          `${result.transfers_started ?? 1} sync(s) on their way for ${item.title ?? "this title"} — safety check first, then the queue`
         );
       } else {
         toast.info(result.error ?? "Nothing to fetch any more");

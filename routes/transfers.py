@@ -338,6 +338,15 @@ def api_all_transfers():
                 "created_at": transfer["created_at"],
                 "log_count": transfer["log_count"],
                 "is_simulation": bool(transfer.get("is_simulation")),
+                # Who started it, how it reached the media host, why it waits
+                # and which sync it belongs to — the page draws all four, and
+                # leaving them out of this list made them read as unknown.
+                "started_by_kind": transfer.get("started_by_kind"),
+                "started_by_name": transfer.get("started_by_name"),
+                "started_by_account_id": transfer.get("started_by_account_id"),
+                "transport": transfer.get("transport"),
+                "queue_reason": transfer.get("queue_reason"),
+                "sync_run_id": transfer.get("sync_run_id"),
                 **build_progress_stats(transfer)
             }
             formatted_transfers.append(formatted_transfer)
@@ -396,10 +405,18 @@ def api_active_transfers():
                 # it started, which is the difference between a slow copy and a
                 # backed-up queue.
                 "created_at": transfer["created_at"],
-                "queue_reason": transfer.get("queue_reason"),
                 "rsync_process_id": transfer.get("rsync_process_id"),
                 "log_count": transfer["log_count"],
                 "is_simulation": bool(transfer.get("is_simulation")),
+                # Who started it, how it reached the media host, why it waits
+                # and which sync it belongs to — the page draws all four, and
+                # leaving them out of this list made them read as unknown.
+                "started_by_kind": transfer.get("started_by_kind"),
+                "started_by_name": transfer.get("started_by_name"),
+                "started_by_account_id": transfer.get("started_by_account_id"),
+                "transport": transfer.get("transport"),
+                "queue_reason": transfer.get("queue_reason"),
+                "sync_run_id": transfer.get("sync_run_id"),
                 **build_progress_stats(transfer)
             }
             formatted_transfers.append(formatted_transfer)

@@ -23,9 +23,10 @@ more for it on the way. Everything a sync does after that is the
 ### 1. The webhook is stored and handed to the engine
 
 Always, whatever the switch says. With the switch **off**, the batch is opened
-and **held**: the pipeline shows it waiting for a person, and pressing Sync on
-any of its webhooks (or Go now on the batch) sends the whole batch. With the
-switch **on**, it carries on to the ready check.
+and **held**: the Pipeline page lists it as *Waiting for a person*, under
+*Needs a person*, and pressing Sync on any of its webhooks (or **Sync now** on
+the batch's own page) sends the whole batch. With the switch **on**, it carries
+on to the ready check.
 
 ### 2. Movies go straight on
 
@@ -49,6 +50,12 @@ starts **Fallback wait** seconds after the first webhook (default 60, allowed
 minutes after the first. There is no switch for asking Sonarr — whether it
 answers decides.
 
+The screens say the same. Settings → Automation labels the field **Fallback
+wait (seconds)** and explains it is used only when Sonarr cannot be asked, and
+the Auto-sync popover on the Webhooks page reads "TV & anime start once Sonarr
+has nothing more for the season; if Sonarr cannot be asked, Ns after the last
+episode." Until 2026-10-05 both still described the old fixed wait.
+
 ## Behaviour worth knowing
 
 - **Switching automatic sync on does not start batches already held.** They
@@ -59,7 +66,9 @@ answers decides.
   is what catches those, when it is switched on.
 - **An automatic sync never goes ahead past a failed safety check.** It stops,
   opens an alert and announces "automatic sync refused" on Discord; only an
-  admin can choose Sync anyway.
+  admin can choose **Sync anyway**, on the alert (Notifications) or on the
+  sync's own page (Pipeline). Its webhooks read **Manual** on the Webhooks page
+  until then.
 - **A batch a person released is a manual sync from then on.** Sync on any of
   its webhooks, or Go now, while the batch is held or still in its ready check
   — or a restart that joins it — releases it. A refusal then opens the alert

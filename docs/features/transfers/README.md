@@ -340,10 +340,20 @@ The log is by far the largest thing on a transfer row and no listing displays it
 only how many lines there are — so selecting it meant reading and JSON-parsing
 megabytes per request to render counts. The column list is read once from
 `PRAGMA table_info(transfers)` and cached per process, so any column added later
-appears in listings automatically. `json_valid` guards rows written before the
-column held JSON. Filtering, searching and paging are all applied in SQL;
-filtering used to happen after the limit, which meant a page of recent completed
-transfers could hide every failed one.
+appears in the rows the model returns automatically. `json_valid` guards rows
+written before the column held JSON. Filtering, searching and paging are all
+applied in SQL; filtering used to happen after the limit, which meant a page of
+recent completed transfers could hide every failed one.
+
+The endpoints do not pass rows through as they are: `routes/transfers.py` picks
+the fields each listing returns, so a new column reaches the page only once it
+is named there. Who started a transfer (`started_by_kind`, `started_by_name`,
+`started_by_account_id`), its route (`transport`), its queue reason and its sync
+(`sync_run_id`) were missing from both `/transfers/all` and `/transfers/active`
+until 2026-10-05 (`/transfers/active` had `queue_reason`), so the Transfers page
+said "not recorded" for every transfer's starter and never showed the **Fast**
+badge or the route. Both listings return them now, and a transfer's detail links
+to its sync.
 
 ### 9a. Paging the history
 
@@ -414,33 +424,61 @@ select and parse the log body.
 
 ### 10. Startup recovery
 
-`TransferService.resume_active_transfers()` runs during coordinator construction.
-Rows still marked `running` whose recorded PID is alive get a
-`_resume_transfer_monitoring()` thread; rows whose process is gone are marked
-`failed` with "Transfer process was interrupted". The `_post_transfer_completion()`
-watchers for all of them start later, in `TransferCoordinator.start_background()`,
-which `app.py` calls once the connector layer is configured — so a result found
-at start-up can actually be announced — and they do the usual queue release,
-Finish and Tell, and backup sorting.
+Start-up runs in a fixed order, and the queue's own promotion waits until the
+sync engine has looked at what the restart interrupted:
 
-`start_background()` then starts the sync engine, whose recovery
-(`services/sync_engine/recovery.py`) looks at every sync that was in flight.
-Nothing restarts by itself:
+1. While the coordinator is built, the queue rebuilds its state from the
+   database without starting anything
+   (`QueueManager.force_unregister_stale_transfers(promote=False)`).
+2. `TransferService.resume_active_transfers()`, also during construction: rows
+   still marked `running` whose recorded PID is alive get a
+   `_resume_transfer_monitoring()` thread; rows whose process is gone are marked
+   `failed` with "Result unknown: DragonCP restarted while this was copying and
+   could not read how rsync finished. …" (`UNKNOWN_RESULT_MESSAGE`) — the copy
+   may have finished before DragonCP stopped, or been cut off with it.
+3. `TransferCoordinator.start_background()`, which `app.py` calls once the
+   connector layer is configured — so a result found at start-up can actually
+   be announced — starts the `_post_transfer_completion()` watchers for all of
+   those rows; they do the usual queue release, Finish and Tell, and backup
+   sorting.
+4. It then starts the sync engine, whose recovery
+   (`services/sync_engine/recovery.py`) looks at every sync that was in flight.
+5. Only then does the queue start whatever has a free slot and a free folder
+   (`QueueManager.promote_waiting()`), so a copy started now goes through the
+   engine's hooks like any other.
 
-- a sync whose transfer is still `queued` carries on — the queue rebuilt its own
-  state at construction;
-- a transfer left `pending` while its sync was still in the queue — promoted, and
-  about to start — is put back in the queue as a slot wait, and the queue is
-  rebuilt again so it starts normally;
-- a sync whose transfer finished, failed or was cancelled while DragonCP was
-  down is closed as usual — so a copy whose rsync died with DragonCP is
-  announced as a failed sync and gets a *Failed* alert with **Retry**;
-- a reattached rsync is watched to the end, but its result cannot be read
-  (Behaviour worth knowing): the row is marked `failed` with a message starting
-  "Result unknown", and the engine opens a *Result unknown* alert (**Retry**,
+One gap, read from the code and not reproduced: the watchers of step 3 check
+their transfer at once, and one whose transfer step 2 marked "Result unknown"
+releases its queue slot straight away. Releasing a slot promotes queued work
+(`QueueManager.unregister_transfer`), so a queued transfer can start in step 3,
+before or during step 4. See [known issues](../../operations/known-issues.md),
+under Syncing.
+
+Recovery restarts nothing by itself:
+
+- a sync whose transfer is still `queued` carries on; one already marked as
+  copying is put back in the queue state;
+- a transfer left `pending` — promoted, and about to start — is put back in the
+  queue as a slot wait, and the queue's state is rebuilt again, without starting
+  anything, so step 5 starts it normally. That holds whether its sync was still
+  in the queue or had already been marked as copying; such a sync goes back to
+  the queue too, instead of being called interrupted;
+- a sync whose transfer had finished, failed or been cancelled is closed as
+  usual. A transfer marked "Result unknown" in step 2 is one of these: the
+  engine reads that wording and opens a *Result unknown* alert (**Retry**,
   **Mark as done**, **Dismiss**) instead of announcing "Sync failed";
+- a reattached rsync is watched to the end, but its result cannot be read
+  (Behaviour worth knowing), so it ends the same way: `failed`, "Result unknown",
+  and the *Result unknown* alert;
 - a sync that was still waiting or being checked, with no transfer yet, is
   marked interrupted with an *After a restart* alert.
+
+Two things were different until 2026-10-05. The queue started queued work in
+step 1, before recovery ran; a copy promoted then could still be `pending` when
+recovery looked, and recovery marked its sync interrupted with a false "Some
+syncs might have been skipped" alert. And step 2 recorded a dead rsync as
+"Transfer process was interrupted", which the engine took for an ordinary
+failure: "Sync failed" on Discord and a *Failed* alert.
 
 See [Sync engine](../sync-engine/README.md), "After a restart".
 
@@ -461,18 +499,22 @@ See [Sync engine](../sync-engine/README.md), "After a restart".
   restarted process did not start, so when it ends the row is marked `failed`
   with a message starting "Result unknown: DragonCP restarted while this was
   copying…" (`UNKNOWN_RESULT_MESSAGE`). A process already gone when monitoring
-  attaches gets the same. The engine reads that wording and opens a *Result
-  unknown* alert — **Retry**, **Mark as done**, **Dismiss**, announced on Discord
-  under the `sync.interrupted` event — instead of a "Sync failed" message and a
-  *Failed* alert. Until 2.3.0 this path recorded the transfer as `completed`, so
-  an rsync that failed after a restart could show as a success. A transfer with
-  no sync run (from before the engine) is still reported as a plain failed sync.
+  attaches gets the same, and so, since 2026-10-05, does a `running` row whose
+  rsync was already gone at start-up (section 10). The engine reads that
+  wording and opens a *Result unknown* alert — **Retry**, **Mark as done**,
+  **Dismiss**, announced on Discord under the `sync.interrupted` event — instead
+  of a "Sync failed" message and a *Failed* alert. Until 2.3.0 the reattached
+  path recorded the transfer as `completed`, so an rsync that failed after a
+  restart could show as a success. A transfer with no sync run (from before the
+  engine) is still reported as a plain failed sync, with the "Result unknown"
+  sentence as its error.
 - **Which restart case is the common one depends on how DragonCP stops.**
   Not verified: the committed systemd example sets no `KillMode`, and systemd's
   default stops every process in the service's control group, rsync included —
-  so a service restart should normally take the "Transfer process was
-  interrupted" path (a failed sync with **Retry**), and "Result unknown" is for an
-  rsync that outlived DragonCP's own process.
+  so after a service restart rsync is normally already gone, and an rsync that
+  outlived DragonCP's own process is the rarer case. Both now end as "Result
+  unknown". Until 2026-10-05 the common case was recorded as "Transfer process
+  was interrupted" and announced as an ordinary failed sync.
 - **A restart is a new sync, not a re-run of the old one.** It runs the safety
   check first — bar the skips in the next bullet — so a restart can be refused
   by the dry run, and it waits its turn in the queue like anything else — it
@@ -496,21 +538,28 @@ See [Sync engine](../sync-engine/README.md), "After a restart".
 - **A dry run that did not finish stops the sync.** rsync's exit status is read
   before its output: anything but 0, or 24 (files vanished mid-scan, as when
   Sonarr moves an import), makes the dry run unsafe with "The dry run did not
-  finish (rsync exit N): <rsync's last error line>". An unreachable media server
-  or a missing source folder therefore stops the sync for a person. Fixed
-  2026-10-05 — before, only the output lines were read, and such a dry run
-  reported zero files to copy and zero to delete, which passed.
+  finish (rsync exit N): <cause>", the cause being the first error line that
+  names one ("ssh: Could not resolve hostname …") rather than rsync's closing
+  `rsync error: … (code N)` summary or an ssh `Warning:` line. An unreachable
+  media server or a missing source folder therefore stops the sync for a
+  person. Fixed 2026-10-05 — before, only the output lines were read, and such a
+  dry run reported zero files to copy and zero to delete, which passed.
 - **A manual sync can be refused, quietly.** When the safety check stops one, no
   transfer is created; the run is "Stopped for a person" and a *Safety check*
   alert offers **Sync anyway** (also `POST /api/sync/runs/<run_id>/sync-anyway`).
   A sync a person started is not announced on Discord when refused — whether the
   press opened its own batch or released a webhook or auto-scanner batch that
-  was still held or waiting — and the Notifications screen that will list alerts
-  is not built yet, so for now such a refusal is visible only through the API
-  (`GET /api/alerts`, `GET /api/sync/runs/<run_id>`). Only a batch that started
+  was still held or waiting. The refusal is on the Notifications page and on the
+  sync's own page under Pipeline, each with **Sync anyway**, and any webhook on
+  it reads **Manual**. The toast that answers the press is the server's own
+  sentence on the Webhooks page, and "on their way — safety check first" on a
+  Library tab, so it no longer claims a start the safety check then refuses;
+  nothing appears on Transfers for a refused sync. Only a batch that started
   by itself is announced, which includes one a press joined after its ready
   check had already passed. Until 2026-10-05 a batch a press released was
-  announced as an automatic refusal too.
+  announced as an automatic refusal too, and until the Pipeline and
+  Notifications pages arrived the same day such a refusal was visible only
+  through the API.
 - **A `pending` transfer cannot be cancelled.** `cancel_transfer()` handles
   `queued`, `paused` and `running` and returns `False` for anything else, so the
   API answers "Failed to cancel transfer" for a row in the brief `pending` window

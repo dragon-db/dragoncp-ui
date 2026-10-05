@@ -1,7 +1,7 @@
 # Automated Tests
 
 Last updated: 2026-10-05
-Primary files: everything under `tests/` — thirty-six modules, 957 tests
+Primary files: everything under `tests/` — thirty-six modules, 962 tests
 
 ## Purpose
 
@@ -10,7 +10,7 @@ stored, how transfer listings are queried, the simulation tool's safety guards,
 and the rename webhook — and now also covers Explore, backups, connectors and
 Integrations, accounts and attribution, settings, the fast transfer server, and
 (since 2.3.0) the sync engine, its scheduler, the auto-scanner and the
-Notifications tab's alerts. It is still deliberately narrow: it pins behaviour
+alerts behind the Notifications page. It is still deliberately narrow: it pins behaviour
 that previously broke, or a rule that was decided, rather than trying to cover
 the application.
 
@@ -30,8 +30,8 @@ From the repository root:
 ./venv/bin/python -m pytest tests/ -q
 ```
 
-On 2026-10-05 this reports `957 passed, 15 subtests passed`, in just under
-four minutes.
+On 2026-10-05 this reports `962 passed, 15 subtests passed`, in about three
+and a half minutes.
 
 A single module:
 
@@ -49,7 +49,7 @@ without pytest:
 There is no `pytest.ini`, `pyproject.toml`, `setup.cfg` or `conftest.py` in the
 repository, and `tests/` has no `__init__.py`. Even so,
 `./venv/bin/python -m unittest discover -s tests` runs the whole suite: checked
-on 2026-10-05 with the project's Python 3.12.3, it reports `Ran 957 tests` and
+on 2026-10-05 with the project's Python 3.12.3, it reports `Ran 962 tests` and
 `OK`. (An earlier revision of this page said it failed with
 `Start directory is not importable`; it no longer does.)
 
@@ -191,11 +191,12 @@ tree, using a realistic Sonarr-style `Rename` payload with a
   then asserts the files were still moved - so the operator gets a failure they
   can act on rather than a silent divergence between disk and database.
 
-### `tests/test_listing_pagination.py` - paging the arrivals and transfer lists (19 tests)
+### `tests/test_listing_pagination.py` - paging the arrivals and transfer lists (20 tests)
 
 Pins that filtering, searching and paging all happen in SQL rather than in
-Python after the fact, that a page boundary cannot drop or duplicate a row, and
-that bulk clear refuses what it should.
+Python after the fact, that a page boundary cannot drop or duplicate a row,
+that bulk clear refuses what it should, and that the Manual filter finds movie
+notifications as well as series ones.
 
 ### `tests/test_test_mode_and_compaction.py` - the test-mode flag and log compaction (8 tests)
 
@@ -227,7 +228,7 @@ What the engine changed, and these tests now pin:
   because that copy could then not mark it synced ("being copied right now").
 - **An empty request starts nothing.**
 
-### `tests/test_sync_engine.py` - the sync engine (54 tests)
+### `tests/test_sync_engine.py` - the sync engine (56 tests)
 
 Drives `SyncEngine` with a real temporary database and fakes for everything
 that would touch the network or start rsync: Sonarr's connection check and its
@@ -275,8 +276,10 @@ build on. See [../features/sync-engine/README.md](../features/sync-engine/README
   simulation and a single-file sync skip the dry run without calling it; and
   **Sync anyway** on a run the queue then refuses reports failure and leaves the
   run `failed`.
-- **`FinishTests`** (18) - completion marks every webhook `completed` and is
-  announced once, as "Automated Sync"; finishing twice is harmless; a failure
+- **`FinishTests`** (19) - completion marks every webhook `completed` and is
+  announced once, as "Automated Sync"; finishing twice is harmless; a transfer
+  is linked to its title in the title index, which learns the local folder from
+  it; a failure
   marks the webhooks failed and opens a *Failed* alert offering **Retry**; a
   cancel is not announced; a `Result unknown` failure opens its own *Result
   unknown* alert instead of *Failed* and is not announced; a webhook attached
@@ -297,12 +300,18 @@ build on. See [../features/sync-engine/README.md](../features/sync-engine/README
   - a restarted simulation is neither announced nor alerted;
   - a restart of an Explore plan's transfer skips the folder dry run;
   - a restore is not restarted from the transfer list ("Backups page").
-- **`RecoveryTests`** (3) - after a restart a waiting batch becomes
+- **`RecoveryTests`** (4) - after a restart a waiting batch becomes
   `interrupted`, its webhook is flagged for a manual sync, and one *After a
   restart* alert opens whose **Sync now** starts the copy; a held batch is left
   alone, with no alert; webhooks the old in-memory scheduler had taken
   (`auto_sync_scheduled_at` set, no run) raise one alert, once, and a row
   nobody scheduled is not counted.
+  - **`test_a_copy_starting_again_after_a_restart_is_not_called_interrupted`**
+    - *pins a specific regression.* A run whose transfer is still `pending`
+    when recovery looks — about to start — goes back to `queued`, with its
+    transfer back in the queue, and opens no *After a restart* alert. Before
+    2026-10-05 a copy the queue had just started at start-up could be caught
+    like that and called interrupted.
 - **`QueueOverlapTests`** (5) - `QueueManager` itself: two seasons of one show
   may copy together; the same season never twice; a whole-series copy collides
   with any of its seasons, and the other way round; a folder whose name merely
@@ -310,9 +319,11 @@ build on. See [../features/sync-engine/README.md](../features/sync-engine/README
   - **`test_after_a_restart_a_series_and_its_season_do_not_block_each_other`**
     - *pins a specific regression.* A queued whole-series copy and a queued
     copy of one of its seasons, rebuilt at start-up
-    (`force_unregister_stale_transfers`), must not both hold a reservation: the
-    older one starts and the season waits behind it. Before 2026-10-05 each got
-    one and neither ever started.
+    (`force_unregister_stale_transfers(promote=False)`), must not both hold a
+    reservation. The rebuild itself starts nothing; `promote_waiting()`, which
+    start-up calls once the sync engine's recovery is over, starts the older one
+    and the season waits behind it. Before 2026-10-05 each got a reservation and
+    neither ever started.
 
 ### `tests/test_scheduler.py` - the scheduler (8 tests)
 
@@ -389,7 +400,7 @@ the rules decided on 2026-10-02:
 It replaces `tests/test_autosync_sweep.py`, which was deleted with the library
 sweep in 2.3.0.
 
-### `tests/test_sync_engine_routes.py` - the pipeline, Notifications and scheduler routes (19 tests)
+### `tests/test_sync_engine_routes.py` - the pipeline, Notifications and scheduler routes (20 tests)
 
 Mounts `routes/sync_engine.py` on a bare Flask app over `EngineTestCase`, with
 a real `SchedulerService` holding one fake `sonarr_auto_scanner` job. Sign-in is
@@ -398,8 +409,9 @@ stood in for by patching the three token checks in `auth`, except in
 
 - **`PipelineRouteTests`** (12) - `/api/sync/catalogue` serves the nine stages
   and the kinds the engine runs, with the state groups and alert actions;
-  `/api/sync/runs` lists a run with its nine-stage strip, webhook count and
-  label (`Example Show — Season 01`) and filters by state group and by one or
+  `/api/sync/runs` lists a run with its nine-stage strip, webhook count, label
+  (`Example Show — Season 01`) and `current_summary` (what the run is doing
+  now), and filters by state group and by one or
   several kinds; `/api/sync/runs/<run_id>` shows every stage with its own log
   lines, the run's webhooks and the actions available; a skipped stage says
   why; an unknown run is 404, for the run and for its events; `/events` honours
@@ -409,11 +421,13 @@ stood in for by patching the three token checks in `auth`, except in
   already finished; **Cancel** works once and is 409 ("This sync already
   ended.") the second time; **Sync anyway** is 409 unless the safety check
   refused the run, and then goes ahead.
-- **`AlertRouteTests`** (4) - `/api/alerts` and `/api/alerts/summary` show a
+- **`AlertRouteTests`** (5) - `/api/alerts` and `/api/alerts/summary` show a
   refused sync's alert and the open count; acting on it with `sync_anyway`
   starts the copy and closes the alert; `total` follows the `kind` filter (two
-  alerts open, one of them asked for, `total` 1); an unknown action is 400, an
-  unknown alert 404, and acting on an alert already closed 409.
+  alerts open, one of them asked for, `total` 1); a dismissed alert is listed by
+  `state=done,wrong,dismissed` — the Notifications page's Closed tab — and no
+  longer counted as open; an unknown action is 400, an unknown alert 404, and
+  acting on an alert already closed 409.
 - **`SchedulerRouteTests`** (2) - `/api/scheduler/jobs` lists the job with its
   switch; **Run now** runs it once and returns its last result; an unknown job
   is 404.
@@ -478,7 +492,7 @@ first line of each module's own docstring, not a review of what it covers.
 | `test_backups.py` | 139 | "Backups — slots, versions, and putting a version back." |
 | `test_connector_routes.py` | 21 | "The connector HTTP layer." |
 | `test_connectors.py` | 85 | "The connector layer: one way to talk to an outside service." |
-| `test_dry_run_visibility.py` | 14 | "Saying what actually happened." |
+| `test_dry_run_visibility.py` | 15 | "Saying what actually happened." |
 | `test_frontend_serving.py` | 8 | "The production Flask process serves the React SPA, not the retired client." |
 | `test_media_library_routes.py` | 27 | "The library and history HTTP layer." |
 | `test_remote_daemon.py` | 65 | "The transfer server on the remote host." |
@@ -488,12 +502,15 @@ first line of each module's own docstring, not a review of what it covers.
 | `test_version.py` | 7 | "One version, in one place." |
 
 One class in that table was added on 2026-10-05 to pin a fix, so it is named
-here: **`DryRunThatDidNotFinishTests`** (3) in `test_dry_run_visibility.py`. A
+here: **`DryRunThatDidNotFinishTests`** (4) in `test_dry_run_visibility.py`. A
 dry run rsync could not finish — exit 255 with "Connection refused", exit 23 for
 a missing folder — is not safe, its reason says "did not finish (rsync exit
 N)" with rsync's error, and the result carries `rsync_exit_code`; exit 24,
-files vanishing mid-scan, still counts as a complete answer. rsync itself is
-replaced by a canned result, so no process runs.
+files vanishing mid-scan, still counts as a complete answer. The reason quotes
+the line that names the cause: given an ssh host-key `Warning:`, a
+"Could not resolve hostname" line and rsync's closing `rsync error: … (code
+255)`, it carries the hostname line. rsync itself is replaced by a canned
+result, so no process runs.
 
 ## What the tests deliberately do not cover
 

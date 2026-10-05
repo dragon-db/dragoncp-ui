@@ -90,6 +90,7 @@ class PipelineRouteTests(RouteTestCase):
         self.assertEqual(len(row['stages']), 9)
         self.assertEqual(row['webhook_count'], 1)
         self.assertEqual(row['label'], 'Example Show — Season 01')
+        self.assertTrue(row['current_summary'], 'a row says what the run is doing now')
 
     def test_runs_filter_by_state_group_and_kind(self):
         self.waiting_run()
@@ -225,6 +226,15 @@ class AlertRouteTests(RouteTestCase):
         body = self.client.get('/api/alerts?kind=sync_refused').get_json()
         self.assertEqual(len(body['alerts']), 1)
         self.assertEqual(body['total'], 1)
+
+    def test_closed_alerts_list_together(self):
+        self.refused()
+        alert_id = self.client.get('/api/alerts').get_json()['alerts'][0]['alert_id']
+        self.client.post(f'/api/alerts/{alert_id}/action', json={'action': 'dismiss'})
+        body = self.client.get('/api/alerts?state=done,wrong,dismissed').get_json()
+        self.assertEqual([a['alert_id'] for a in body['alerts']], [alert_id])
+        self.assertEqual(body['total'], 1)
+        self.assertEqual(self.client.get('/api/alerts').get_json()['total'], 0)
 
     def test_a_closed_or_unknown_alert_or_action_is_refused(self):
         self.refused()

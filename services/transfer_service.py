@@ -470,8 +470,15 @@ class TransferService:
             # 24 is files vanishing mid-scan (Sonarr moving an import), which is
             # still a complete answer.
             if result.returncode not in (0, 24):
-                lines = (result.stderr or '').strip().splitlines()
-                why = lines[-1].strip() if lines else 'rsync gave no error output'
+                # The first line that names a cause: "ssh: Could not resolve
+                # hostname …", "rsync: change_dir … No such file or directory".
+                # rsync's closing "rsync error: … (code N)" line only restates
+                # the exit code, and ssh's host-key notices are not the problem.
+                lines = [line.strip() for line in (result.stderr or '').splitlines()
+                         if line.strip()]
+                causes = [line for line in lines
+                          if not line.startswith(('rsync error:', 'Warning:'))]
+                why = (causes or lines or ['rsync gave no error output'])[0]
                 validation_result['safe_to_sync'] = False
                 validation_result['reason'] = (
                     f"The dry run did not finish (rsync exit {result.returncode}): {why}")
@@ -1437,10 +1444,14 @@ class TransferService:
                     ).start()
                     resumed_count += 1
                 else:
-                    # Process is no longer running, mark as failed
+                    # rsync is gone and nobody saw how it ended: it may have
+                    # finished before DragonCP stopped, or been cut off with it.
+                    # Recorded as failed so it can be retried, but worded as
+                    # what it is, so the pipeline raises "Result unknown" rather
+                    # than announcing a failure nobody saw.
                     self.transfer_model.update(transfer['transfer_id'], {
                         'status': 'failed',
-                        'progress': 'Transfer process was interrupted',
+                        'progress': UNKNOWN_RESULT_MESSAGE,
                         'end_time': datetime.now().isoformat()
                     })
                     print(f"❌ Transfer {transfer['transfer_id']} marked as failed (process not found)")

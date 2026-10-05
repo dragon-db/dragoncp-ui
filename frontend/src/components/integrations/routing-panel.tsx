@@ -92,7 +92,7 @@ export function RoutingPanel({ connector }: { connector: Connector }) {
 
   if (!defaultTarget) {
     return (
-      <SectionCard label="Notifications">
+      <SectionCard label="Routing">
         <SectionEmpty
           icon={IconInbox}
           title="Nothing to route yet"
@@ -104,7 +104,7 @@ export function RoutingPanel({ connector }: { connector: Connector }) {
 
   return (
     <SectionCard
-      label="Notifications"
+      label="Routing"
       description={`Each announcement DragonCP can make, and where it goes. “Use default” means “${defaultTarget.label}”, so a notification added in a later version arrives instead of going silent.`}
       actions={
         <Button onClick={onSave} disabled={!dirty || saveRoutes.isPending}>

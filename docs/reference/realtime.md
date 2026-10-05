@@ -1,13 +1,13 @@
 # Realtime (Socket.IO) Reference
 
 Last updated: 2026-10-05
-Primary files: `websocket.py`, `app.py`, `services/transfer_service.py`, `services/transfer_coordinator.py`, `services/queue_manager.py`, `services/backups/service.py`, `services/rename_service.py`, `services/sync_engine/engine.py`, `services/alert_service.py`, `routes/webhooks.py`, `frontend/src/services/socket.ts`, `frontend/src/hooks/useRuntime.ts`
+Primary files: `websocket.py`, `app.py`, `services/transfer_service.py`, `services/transfer_coordinator.py`, `services/queue_manager.py`, `services/backups/service.py`, `services/rename_service.py`, `services/sync_engine/engine.py`, `services/alert_service.py`, `routes/webhooks.py`, `frontend/src/services/socket.ts`, `frontend/src/hooks/useRuntime.ts`, `frontend/src/hooks/useSync.ts`
 
 ## Realtime is opt-in
 
 Nothing in DragonCP connects a socket by itself. The browser creates the Socket.IO client with `autoConnect: false` (`frontend/src/services/socket.ts`) and only calls `connectSocket()` when `realtimeRequested` is true in the runtime store. That flag is set by the **Enable realtime** button in the connection popover (`frontend/src/components/layout/realtime-status.tsx`, which calls `enableRealtime()` in `frontend/src/hooks/useRuntime.ts`). Until someone presses it, the app runs with no socket at all.
 
-With realtime off, every page still works, because the React Query hooks poll on their own timers: active transfers every 5 seconds, one transfer's status or its open log every 2 seconds, and queue status every 5 seconds (`frontend/src/hooks/useTransfers.ts`). Transfer **history** does not poll at all - `useAllTransfers` sets no `refetchInterval`, so the History tab only refreshes on an explicit refetch, webhook and rename notifications every 10 seconds (`frontend/src/hooks/useWebhooks.ts`), runtime status on its own interval (`frontend/src/hooks/useConfig.ts`). Turning realtime on does not switch polling off — the socket runs *alongside* the polling and mostly serves to make updates appear sooner and to raise toasts.
+With realtime off, every page still works, because the React Query hooks poll on their own timers: active transfers every 5 seconds, one transfer's status or its open log every 2 seconds, and queue status every 5 seconds (`frontend/src/hooks/useTransfers.ts`). Transfer **history** does not poll at all - `useAllTransfers` sets no `refetchInterval`, so the History tab only refreshes on an explicit refetch, webhook and rename notifications every 10 seconds (`frontend/src/hooks/useWebhooks.ts`), runtime status on its own interval (`frontend/src/hooks/useConfig.ts`), and the sync engine's pages from `frontend/src/hooks/useSync.ts`: a sync still moving every 2.5 seconds, a page of syncs every 4 seconds while one on it is moving and every 15 otherwise, alerts and the open-alert count every 30 seconds. Turning realtime on does not switch polling off — the socket runs *alongside* the polling and mostly serves to make updates appear sooner and to raise toasts.
 
 What this means if you build on these events:
 
@@ -41,7 +41,7 @@ that asked for that transfer's output. See
 | `rename_webhook_received` | A Sonarr `Rename` webhook was parsed and stored, before the renames are executed | `services/rename_service.py:83` | `notification_id`, `series_title`, `total_files`, `media_type`, `timestamp` |
 | `rename_completed` | The rename run finished **and** its history row was updated successfully | `services/rename_service.py:146` | The whole result object: `notification_id`, `series_title`, `media_type`, `total_files`, `success_count`, `failed_count`, `status` (`completed` / `partial` / `failed`), `renamed_files`, `completed_at`, `message` |
 | `backup_retention` | The automatic retention sweep deleted stored versions after a sync | `services/backups/service.py` (`_apply_retention_quietly`) | `deleted` (count), `reclaimed` (bytes), `summary` (the titles as a phrase), `items` (up to 10 removed versions, each with its display name, sizes and full library/backup paths). Only emitted when something was actually removed |
-| `sync_run_updated` | A sync run changed: every stage outcome the engine records (`_stage`), every write to the run's own row (`_update`, so every state change), and after the rest of a run's stages are marked skipped (`_skip_rest`) or a refusal's Tell stage is recorded (`_refuse`) | `services/sync_engine/engine.py:382` (`_emit_run`) | The run as one list row, built by `SyncEngine.summarise()`: `run_id`, `kind`, `kind_label`, `label` (e.g. `Example Show — Season 01`), `title`, `season_name`, `media_type`, `source`, `state`, `state_label`, `current_stage`, `outcome`, `outcome_message`, `transfer_id`, `parent_run_id`, `parent_relation`, `is_simulation`, `requested_by` (`kind`, `name`, `label`), `stages` (nine `{id, status}` objects, in pipeline order), `webhook_count` (**always `null` here**; only the REST list fills it), `next_check_at` (ISO-8601), `created_at`, `updated_at`, `started_at`, `finished_at` |
+| `sync_run_updated` | A sync run changed: every stage outcome the engine records (`_stage`), every write to the run's own row (`_update`, so every state change), and after the rest of a run's stages are marked skipped (`_skip_rest`) or a refusal's Tell stage is recorded (`_refuse`) | `services/sync_engine/engine.py:382` (`_emit_run`) | The run as one list row, built by `SyncEngine.summarise()`: `run_id`, `kind`, `kind_label`, `label` (e.g. `Example Show — Season 01`), `title`, `season_name`, `media_type`, `source`, `state`, `state_label`, `current_stage`, `current_summary` (the sentence that stage last wrote), `outcome`, `outcome_message`, `transfer_id`, `parent_run_id`, `parent_relation`, `is_simulation`, `requested_by` (`kind`, `name`, `label`), `stages` (nine `{id, status}` objects, in pipeline order), `webhook_count` (**always `null` here**; only the REST list fills it), `next_check_at` (ISO-8601), `created_at`, `updated_at`, `started_at`, `finished_at` |
 | `sync_run_event` | A line was added to a run's log: every stage outcome recorded with a sentence, plus the engine's free-standing lines (a webhook joining, a follow-up opening, a restart, what recovery found after a restart) | `services/sync_engine/engine.py:371` (`_event`) | `run_id`, `event`: the stored `sync_run_event` row — `id`, `run_id`, `stage`, `level` (`info` / `success` / `warning` / `error`), `message`, `data` (object or `null`), `created_at` |
 | `alerts_changed` | An alert opened or was bumped (`raise_alert`), an admin acted on one (`act`), or DragonCP closed one itself because Sonarr answered again or a failing job succeeded (`integration_up`, `job_recovered`) | `services/alert_service.py:130` (`_emit`) | `open` (how many alerts are open), `by_severity` (open counts keyed by severity, e.g. `{"warning": 2, "failure": 1}`). Counts only: no alert is in the payload |
 
@@ -59,12 +59,18 @@ REST equivalent that holds the same fact, which is what a page must poll (see
 
 Behaviours worth knowing before you rely on an event:
 
-- **Nothing in the React client listens to the three sync-engine events yet.**
-  `frontend/src/` has no reference to `sync_run_updated`, `sync_run_event` or
-  `alerts_changed`, nor to `/api/sync/` or `/api/alerts` (checked 2026-10-05):
-  the pipeline view and the Notifications tab that will use them are not built.
-  Whoever builds them must poll the REST equivalents above and treat the events
-  as a reason to refetch sooner.
+- **The React client binds all three, as reasons to refetch sooner.** Since
+  2026-10-05 `useRuntimeConnection` (`frontend/src/hooks/useRuntime.ts`)
+  subscribes through `onSyncRunUpdated`, `onSyncRunEvent` and `onAlertsChanged`
+  (`frontend/src/services/socket.ts`). `sync_run_updated` invalidates the run
+  lists and that run, `sync_run_event` the run, each query key at most once
+  every 1.5 seconds; `alerts_changed` is written straight into the cached
+  open-alert summary — the header bell and the sidebar count — invalidates the
+  alert lists, and raises a toast when the open count went up. The Pipeline,
+  sync and Notifications pages poll the REST equivalents regardless
+  (`frontend/src/hooks/useSync.ts`), so nothing depends on the socket. The
+  client reads only `run_id` from the two run events; the row and the line
+  themselves are fetched.
 - **`sync_run_updated` is not throttled and arrives in bursts.** One step of a
   run usually emits it more than once — once for the stage, once for the run's
   state — and each emit re-reads the run and its nine stage rows from SQLite.
@@ -201,10 +207,11 @@ The table above accounts for every server emit: twenty-one call sites across `se
 - **Not verified**: behaviour under multiple backend workers. The connection map, the sweeper thread and the queue manager's state are all process-local, and `socketio_runtime_info` names `gunicorn --config deploy/gunicorn.conf.py app:app` as the recommended production server, but I did not read that config or test a multi-worker run, so I cannot say how emits and idle cleanup behave across workers.
 - **Not verified**: behaviour across a real process restart with an active
   browser and transfer; release validation for the React cutover covers this.
-- **Not verified**: the three sync-engine events on a running server. Their
-  rows above are read from the code; no test exercises them, because the engine
-  and alert-service tests (`tests/test_sync_engine.py` and the modules built on
-  it) construct both without a socket, and no client listens yet.
+- **Not verified**: the three sync-engine events on a running server, and the
+  client's handling of them in a browser. Their rows above are read from the
+  code; no test exercises them, because the engine and alert-service tests
+  (`tests/test_sync_engine.py` and the modules built on it) construct both
+  without a socket, and the frontend has no tests.
 
 ## Related documentation
 

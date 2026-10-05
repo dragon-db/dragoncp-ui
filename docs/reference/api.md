@@ -607,7 +607,11 @@ Output JSON:
 
 `safe_to_sync` is `false` when rsync did not finish — an exit code other than
 `0` or `24` (files that vanished mid-scan) — with `reason` reading
-`The dry run did not finish (rsync exit N): <rsync's last error line>`; the
+`The dry run did not finish (rsync exit N): <cause>`. `<cause>` is the first
+line of rsync's error output that names one — `ssh: Could not resolve hostname
+…`, `rsync: change_dir … No such file or directory` — skipping rsync's closing
+`rsync error: … (code N)` line and ssh's `Warning:` host-key notices; failing
+that, the first line, and `rsync gave no error output` when there is none. The
 counts are whatever rsync listed before it stopped, except `local_file_count`,
 which is read from this disk either way. `rsync_exit_code` is absent when
 rsync never ran or ran out of time (`SSH credentials not configured`,
@@ -892,7 +896,7 @@ Output JSON:
   `search`, for a tab badge that should not move while someone types
 
 Each transfer object carries the listing fields described under
-`/transfers/active` below, plus `end_time` and `created_at`.
+`/transfers/active` below, except `rsync_process_id`, plus `end_time`.
 
 Implementation notes:
 - Filtering, searching and paging all happen in SQL. `status` previously
@@ -976,7 +980,15 @@ Each transfer object contains:
 | `rsync_process_id` | PID of the running rsync, if any |
 | `log_count` | Number of stored log lines (the lines themselves are not included) |
 | `is_simulation` | True for rows created by the simulation tool |
+| `started_by_kind`, `started_by_name`, `started_by_account_id` | Who started it, as in the activity trail: `admin`, `automated` or `system`, the name as it read then, and the account id when a signed-in person started it. Null on rows from before attribution was recorded |
+| `transport` | The route rsync took to the media host: `daemon` (the fast transfer server) or `ssh`. Written when rsync starts; null before that, for a simulation (which never leaves this machine), and on rows from before the column existed |
+| `sync_run_id` | The sync run the transfer belongs to (section 13); null on transfers from before the sync engine |
 | `progress_percent`, `bytes_transferred`, `total_bytes`, `speed_bps`, `eta_seconds` | Parsed rsync progress; see `database-schema.md` |
+
+Until 2026-10-05 neither listing returned `started_by_*`, `transport` or
+`sync_run_id`, and `/transfers/all` did not return `queue_reason` either; the
+Transfers page draws all of them, so every transfer there read "not recorded"
+for who started it and the fast route never showed.
 
 Implementation notes:
 - `queue_status.active_destinations` currently contains the transfer IDs that own reserved destinations, not the normalized path strings themselves.
@@ -1170,8 +1182,11 @@ Notifications are returned as whole table rows, here and in the other
 endpoints that return movie, series or anime notifications, so each also
 carries `sync_run_id` — the sync run it rides on now (section 13), `null` for a
 notification stored before the sync engine existed — and `sync_attached_at`,
-when it joined that run. Rename notifications live in a separate table and do
-not have these columns.
+when it joined that run. They carry `requires_manual_sync` and
+`manual_sync_reason` too (movie rows since 2026-10-05); the web app shows a
+`pending` notification with the flag raised as Manual, and links a
+notification's detail to `/pipeline/<sync_run_id>` when it has one. Rename
+notifications live in a separate table and do not have these columns.
 
 Implementation notes:
 - Ordering, paging and counting run across both tables in one query. The
@@ -3012,6 +3027,7 @@ Output JSON:
       "state": "waiting",
       "state_label": "Waiting for the download",
       "current_stage": "ready",
+      "current_summary": "Sonarr is reachable (…). Waiting until 09:12:14 so the rest of the burst can join, then asking.",
       "outcome": null,
       "outcome_message": null,
       "transfer_id": null,
@@ -3045,6 +3061,13 @@ Output JSON:
 - `state_counts` — runs per state across the whole table. It honours
   `simulations` only, so it does not move with `state`, `kind` or `search`.
 - `label` — the title, with ` — <season>` when there is one.
+- `current_summary` — the sentence the stage named in `current_stage` last
+  wrote: what a run still moving is doing now, and for a finished run whatever
+  its last stage said (`SyncRunStore.current_summaries`, read for the whole
+  page at once). `null` when that stage has written nothing. Every place a run
+  appears as a list row carries it — this list, the run itself and its
+  `related` runs, `/sync/lookup` and the `sync_run_updated` socket event. Added
+  2026-10-05.
 - `source` — `sonarr` or `radarr` when a service is behind the request; often
   `null` otherwise.
 - `transfer_id` — `null` until the run reaches the queue, where its transfer is
@@ -3277,13 +3300,17 @@ for the same folder is already on its way, or when the queue refused the
 transfer — then `state` is `failed` and `message` says why.
 
 ### GET `/alerts`
-What it does: the Notifications tab — alerts, newest first. An alert is
+What it does: the Notifications page — alerts, newest first. An alert is
 something that needs a person; it stays open until an admin acts on it.
 
 Auth: required.
 
 Query params:
-- `state` — `open` (default), `done`, `wrong`, `dismissed`, or `all`
+- `state` — `open` (default), `done`, `wrong`, `dismissed`, several of them
+  separated by commas, or `all`. The Closed tab asks for
+  `done,wrong,dismissed`. Spaces around a state are ignored; a name that is not
+  a state matches nothing, so `all` inside a comma list does not mean all.
+  Several states are accepted since 2026-10-05
 - `kind` — one kind, or several separated by commas (table below)
 - `limit` / `offset` — paging; `limit` defaults to `50` and is clamped to 1–200
 
@@ -3331,7 +3358,7 @@ Output JSON:
 }
 ```
 
-- `total` — alerts in the requested `state` and, when given, `kind`.
+- `total` — alerts in the requested `state` (or states) and, when given, `kind`.
 - `open`, `by_severity` — the `/alerts/summary` figures, always for open
   alerts.
 - `severity` — `warning`, or `failure` for a failed transfer.
@@ -3363,7 +3390,8 @@ Output JSON:
 | `job_failing` | Scheduler | a background job failed three times in a row; closes itself (`auto`) on its next success | `run_now`, `dismiss` |
 
 ### GET `/alerts/summary`
-What it does: how many alerts are open — the badge on the tab.
+What it does: how many alerts are open — the dot on the header bell and the
+count beside Notifications in the sidebar.
 
 Auth: required.
 

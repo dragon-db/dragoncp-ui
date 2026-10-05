@@ -273,7 +273,12 @@ export function SettingsPage() {
               </div>
               <Separator className="bg-neutral-800" />
               <div className="space-y-2">
-                <Label className="text-neutral-200">Series/Anime Wait Time (seconds)</Label>
+                <Label className="text-neutral-200">Fallback wait (seconds)</Label>
+                <p className="text-xs text-neutral-500">
+                  Used only when Sonarr cannot be asked: how long a TV or anime season waits for
+                  more episodes before syncing, plus this again for each later episode, never more
+                  than 15 minutes. When Sonarr answers, it decides instead.
+                </p>
                 <Input
                   type="number"
                   value={webhookDraft.series_anime_sync_wait_time}

@@ -23,14 +23,20 @@ sidebar — and gave every sync one pipeline.
   ready check, safety check, queue, transfer, finish, tell — whether a webhook,
   the auto-scanner, a press of Sync, an Explore plan, a restart, a restore or a
   simulation started it. Each stage records what it decided and why, including
-  why it was skipped, with its own log lines. The screens that show this are
-  the next piece of work; the record starts with this release.
+  why it was skipped, with its own log lines.
+- **A new Pipeline page shows every sync** — what started it, how far it got
+  and what it is doing right now — with filters for what is in progress, what
+  needs a person, what failed and what synced. Opening one shows each stage in
+  turn: what it decided, what it decided on (Sonarr's answers, the safety
+  check's counts, the copy's progress and rsync's own output) and its log, with
+  Go now, Sync anyway, Retry and Cancel where they apply. A transfer on the
+  Transfers page and an episode on the Webhooks page each link to their sync.
 - **Episodes no longer sync before the season has finished downloading.** A
   Sonarr webhook now waits ten seconds, then asks Sonarr whether anything else
   for that season is still downloading, and asks again by Sonarr's own time
   estimate. A download stuck in Sonarr does not hold the season up; a slow one
   holds it for at most 30 minutes. When Sonarr cannot be asked, the old fixed
-  timer takes over.
+  timer takes over — Settings now calls it the **Fallback wait** and says so.
 - **A burst of episode webhooks is one transfer, and one arriving mid-copy is
   one more** — queued behind the copy, never a third.
 - **A restart no longer loses episodes silently.** A batch waiting to sync was
@@ -39,17 +45,25 @@ sidebar — and gave every sync one pipeline.
   interrupted becomes an alert, with Sync now, Mark as done, Mark as wrong and
   Dismiss.
 - **Restart goes through the queue and the safety check** like every other
-  sync, instead of starting at once.
+  sync, instead of starting at once. Pressing Restart says so, and a refusal
+  says why.
 - **Two seasons of one series may copy at the same time; the same season never,
   and a whole-series copy waits for any season copy of that series.**
 - **A new scheduled auto-scanner** catches what a lost webhook would have
   missed: on a schedule, it asks Sonarr and Radarr what they imported since the
   last scan and syncs whatever no webhook delivered. One switch per service on its
-  integration page, off by default. It never fetches the whole backlog.
-- **Alerts.** Anything that needs a person — a sync the safety check stopped, a
-  failed transfer, a download stuck in Sonarr, a restart that interrupted a
-  sync — opens an alert with the actions that fit it. The Notifications tab
-  that lists them is the next piece of work.
+  integration page, off by default, where a card shows when it next scans, what
+  the last scan found, and a Scan now button. It never fetches the whole
+  backlog.
+- **Alerts, on a new Notifications page.** Anything that needs a person — a
+  sync the safety check stopped, a failed transfer, a download stuck in Sonarr,
+  a restart that interrupted a sync — opens an alert with the actions that fit
+  it: Sync now, Retry, Sync anyway, Mark as done and so on. The Notifications
+  page lists them, open and closed. The bell in the header now leads there and
+  lights up when something is waiting for you — it used to light up for every
+  webhook still pending — and the sidebar shows how many. An episode or movie
+  the safety check stopped reads **Manual** on the Webhooks page instead of
+  Pending.
 
 ### Integrations
 
@@ -59,7 +73,7 @@ sidebar — and gave every sync one pipeline.
 - **Discord now supports several webhooks**, each with a name you choose. One is
   the default.
 - **Every notification can be pointed at a specific webhook.** A new
-  Notifications tab lists all ten announcements DragonCP makes — sync finished,
+  Routing tab lists all ten announcements DragonCP makes — sync finished,
   sync failed, rename finished, old backups deleted, automatic sync refused,
   sync may have been skipped, synced without a stuck download, auto-scanner
   found something, Sonarr or Radarr not answering, background job failing —
@@ -83,7 +97,15 @@ sidebar — and gave every sync one pipeline.
 - **A dry run that could not run no longer counts as safe.** When rsync could
   not reach the media server, or the folder was missing, the safety check saw
   an empty list of changes and let the sync through. It now stops the sync and
-  shows rsync's own error.
+  shows the error that caused it — a host name that could not be resolved, a
+  folder that is not there.
+- **The Transfers page shows who started each transfer, and the fast route.**
+  The transfer lists never sent either, so every transfer said "not recorded"
+  for who started it and the Fast badge never appeared.
+- **A copy cut short by a restart is no longer reported as a success, or as a
+  failure nobody saw.** When DragonCP restarts during a copy and cannot tell how
+  rsync ended, the transfer now says "Result unknown" and an alert asks you to
+  check the folder, with Retry and Mark as done.
 - **Deleting a waiting transfer no longer blocks its folder.** A queued or
   paused transfer deleted from the list kept its place in the queue until the
   next restart, so later syncs to the same folder waited behind nothing. It is

@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,6 +10,7 @@ import {
 import { StatusBadge } from "@/components/webhooks/webhook-bits";
 import { DryRunSummary } from "@/components/dry-run/dry-run-report";
 import {
+  effectiveStatus,
   episodeEntries,
   episodeFileOf,
   fileBytes,
@@ -26,6 +28,7 @@ import {
   IconRefresh,
   IconTrash,
   IconHistory,
+  IconRoute,
 } from "@tabler/icons-react";
 
 export interface EpisodeActions {
@@ -93,8 +96,33 @@ export function EpisodeDetailPanel({
   const releaseType = releaseTypeOf(notification);
   const media = file?.mediaInfo;
 
+  const needsPerson = effectiveStatus(notification) === "MANUAL_SYNC_REQUIRED";
+
   return (
     <div className="flex flex-col gap-4">
+      {/* Where this arrival stands in the pipeline, and why it is waiting when
+          it is waiting for a person. */}
+      {(notification.sync_run_id || needsPerson) && (
+        <section className="flex flex-wrap items-center gap-2">
+          {needsPerson && (
+            <span className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 text-xs text-amber-300">
+              Waiting for a person
+              {notification.manual_sync_reason ? `: ${notification.manual_sync_reason}` : "."}
+            </span>
+          )}
+          {notification.sync_run_id && (
+            <Link
+              to="/pipeline/$runId"
+              params={{ runId: notification.sync_run_id }}
+              className="inline-flex items-center gap-1 text-xs font-medium text-brand-hover hover:underline"
+            >
+              <IconRoute className="size-3.5" />
+              Open its sync
+            </Link>
+          )}
+        </section>
+      )}
+
       {/* Release */}
       <section className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
@@ -283,7 +311,7 @@ export function EpisodeList({ item, actions }: { item: WebhookItem; actions: Epi
                   <span className="font-mono text-[11px] text-foreground/80">
                     {formatSize(fileBytes(entry.current))}
                   </span>
-                  <StatusBadge status={entry.current.status} size="sm" />
+                  <StatusBadge status={effectiveStatus(entry.current)} size="sm" />
                 </span>
               </span>
             </AccordionTrigger>

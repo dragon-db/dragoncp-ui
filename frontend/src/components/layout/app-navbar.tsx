@@ -1,6 +1,6 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import { useActiveTransfers } from "@/hooks/useTransfers";
-import { useWebhookNotifications } from "@/hooks/useWebhooks";
+import { useAlertSummary } from "@/hooks/useSync";
 import { useAppVersion, useTestMode } from "@/hooks/useConfig";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -18,6 +18,8 @@ const CRUMBS: Array<[string, Crumb]> = [
   ["/dashboard", { section: "Workspace", label: "Dashboard" }],
   ["/transfers", { section: "Workspace", label: "Transfers" }],
   ["/webhooks", { section: "Workspace", label: "Webhooks" }],
+  ["/pipeline", { section: "Workspace", label: "Pipeline" }],
+  ["/notifications", { section: "Workspace", label: "Notifications" }],
   ["/media/movies", { section: "Library", label: "Movies" }],
   ["/media/tvshows", { section: "Library", label: "TV Shows" }],
   ["/media/anime", { section: "Library", label: "Anime" }],
@@ -53,10 +55,9 @@ export function AppNavbar() {
   const running = activeQuery.data?.queue_status.running_count ?? 0;
   const queued = activeQuery.data?.queue_status.queued_count ?? 0;
 
-  const notificationsQuery = useWebhookNotifications();
-  const pendingCount = (notificationsQuery.data?.notifications ?? []).filter(
-    (n) => n.status === "pending"
-  ).length;
+  // The bell is for what needs a person — open alerts — not for every webhook
+  // still waiting its turn, which is the pipeline doing its job.
+  const openAlerts = useAlertSummary().data?.open ?? 0;
 
   return (
     <header className="flex h-[58px] shrink-0 items-center gap-3 border-b border-border px-4 md:px-6">
@@ -115,15 +116,19 @@ export function AppNavbar() {
       {/* Notifications — the link carries the button styling itself; a <button>
           nested inside the <a> would be an interactive element inside another. */}
       <Link
-        to="/webhooks"
+        to="/notifications"
         className={cn(
           buttonVariants({ variant: "ghost", size: "icon" }),
           "relative size-8 text-muted-foreground hover:text-foreground"
         )}
-        title={pendingCount > 0 ? `${pendingCount} pending webhook(s)` : "Webhooks"}
+        title={
+          openAlerts > 0
+            ? `${openAlerts} notification${openAlerts === 1 ? "" : "s"} need you`
+            : "Notifications"
+        }
       >
         <IconBell className="size-[18px]" />
-        {pendingCount > 0 && (
+        {openAlerts > 0 && (
           <span className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-brand-accent ring-2 ring-background" />
         )}
       </Link>

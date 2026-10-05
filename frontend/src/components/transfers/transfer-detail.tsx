@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { Link } from "@tanstack/react-router";
 import { ActorBadge } from "@/components/activity/actor-badge";
 import { Button } from "@/components/ui/button";
 import { Chip, Fact, PathBlock, ProgressMeter } from "@/components/transfers/transfer-bits";
@@ -19,6 +20,7 @@ import {
   IconCircleX,
   IconPlayerPause,
   IconPlayerPlay,
+  IconRoute,
   IconTrash,
 } from "@tabler/icons-react";
 
@@ -210,6 +212,18 @@ export function TransferDetailPanel({
           >
             not recorded
           </span>
+        )}
+        {/* Every transfer since 2.3.0 belongs to a sync; its stages say why it
+            ran, what the safety check found and what was announced. */}
+        {transfer.sync_run_id && (
+          <Link
+            to="/pipeline/$runId"
+            params={{ runId: transfer.sync_run_id }}
+            className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-brand-hover hover:underline"
+          >
+            <IconRoute className="size-3.5" />
+            Open its sync
+          </Link>
         )}
       </section>
 

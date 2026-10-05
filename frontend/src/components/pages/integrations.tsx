@@ -8,12 +8,13 @@ import { QueuePanel } from "@/components/integrations/queue-panel";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SectionCard } from "@/components/layout/section-card";
 import { ConnectorForm } from "@/components/integrations/connector-form";
+import { ScannerStatus } from "@/components/integrations/scanner-status";
 import { errorText } from "@/lib/api-error";
 import { DeliveryLog } from "@/components/integrations/delivery-log";
 import { RoutingPanel } from "@/components/integrations/routing-panel";
 import { TargetsPanel } from "@/components/integrations/targets-panel";
 import { useConnector, useSaveConnector } from "@/hooks/useConnectors";
-import { IconAdjustmentsHorizontal, IconBell, IconHistory, IconInbox } from "@tabler/icons-react";
+import { IconAdjustmentsHorizontal, IconHistory, IconInbox, IconRoute } from "@tabler/icons-react";
 
 /**
  * One connector, as its own small application.
@@ -123,9 +124,12 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
               <IconInbox className="h-4 w-4" />
               {titleCase(connector.target_noun ?? "destination")}s
             </TabsTrigger>
+            {/* "Routing", not "Notifications": DragonCP's own Notifications
+                page lists what needs a person; this tab decides which Discord
+                webhook each announcement goes to. */}
             <TabsTrigger value="routing" className="h-8">
-              <IconBell className="h-4 w-4" />
-              Notifications
+              <IconRoute className="h-4 w-4" />
+              Routing
             </TabsTrigger>
             <TabsTrigger value="activity" className="h-8">
               <IconHistory className="h-4 w-4" />
@@ -211,7 +215,14 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
 
           <TabsContent value="settings" className="mt-4 space-y-4">
             {hasSettings ? (
-              <ConnectorForm connector={connector} />
+              <>
+                <ConnectorForm connector={connector} />
+                <ScannerStatus
+                  source={connector.id}
+                  displayName={connector.display_name}
+                  connectorEnabled={connector.enabled}
+                />
+              </>
             ) : (
               <SectionCard label="Nothing to configure" contentClassName="px-4 py-6">
                 <p className="text-sm text-muted-foreground">This connector needs no settings.</p>

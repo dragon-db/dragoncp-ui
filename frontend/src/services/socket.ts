@@ -308,6 +308,47 @@ export function onRenameCompleted(callback: (data: RenameWebhookEvent) => void):
   return () => socket?.off("rename_completed", callback);
 }
 
+/** `sync_run_updated`: a run's list row, sent whenever the run changes. */
+export interface SyncRunUpdate {
+  run_id: string;
+  state: string;
+  label?: string;
+  current_stage?: string | null;
+}
+
+/** `sync_run_event`: one new log line on a run. */
+export interface SyncRunEventUpdate {
+  run_id: string;
+  event: { id: number; stage: string; level: string; message: string; created_at: string };
+}
+
+/** `alerts_changed`: the open counts behind the Notifications badge. */
+export interface AlertsChangedUpdate {
+  open: number;
+  by_severity: Record<string, number>;
+}
+
+export function onSyncRunUpdated(callback: (data: SyncRunUpdate) => void): () => void {
+  if (!socket) return () => {};
+
+  socket.on("sync_run_updated", callback);
+  return () => socket?.off("sync_run_updated", callback);
+}
+
+export function onSyncRunEvent(callback: (data: SyncRunEventUpdate) => void): () => void {
+  if (!socket) return () => {};
+
+  socket.on("sync_run_event", callback);
+  return () => socket?.off("sync_run_event", callback);
+}
+
+export function onAlertsChanged(callback: (data: AlertsChangedUpdate) => void): () => void {
+  if (!socket) return () => {};
+
+  socket.on("alerts_changed", callback);
+  return () => socket?.off("alerts_changed", callback);
+}
+
 export function sendActivityPing(): void {
   if (socket?.connected) {
     socket.emit("activity");

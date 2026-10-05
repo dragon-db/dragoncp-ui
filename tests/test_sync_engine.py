@@ -745,6 +745,42 @@ class FinishTests(EngineTestCase):
         self.assertEqual(self.stage(result.run_id, S.SAFETY)['status'], S.SKIPPED)
         self.assertEqual(self.coordinator.transfer_service.calls, [])
 
+    def test_retry_pressed_twice_starts_one_copy(self):
+        run_id, transfer_id = self.started()
+        self.coordinator.finish(transfer_id, 'failed', 'Transfer failed with exit code: 12')
+        # The first press is still in its safety check when the second lands:
+        # the transfer still reads failed, so only the open sync can say no.
+        self.engine.inline = False
+        first = self.engine.restart_transfer(transfer_id)
+        self.assertEqual(self.get_run(first.run_id)['state'], S.CHECKING)
+        second = self.engine.restart_transfer(transfer_id)
+        self.engine.inline = True
+        self.assertTrue(second.ok, second.message)
+        self.assertEqual(second.run_id, first.run_id, 'the second press joins the first')
+        restarts = [r for r in self.store.list(limit=20) if r['kind'] == S.RESTART]
+        self.assertEqual(len(restarts), 1, 'one retry, so one rsync')
+
+    def test_retry_while_the_folder_is_copying_is_refused(self):
+        run_id, transfer_id = self.started()
+        self.coordinator.finish(transfer_id, 'failed', 'Transfer failed with exit code: 12')
+        other = self.sonarr(self.series_webhook('e9', 9))
+        self.clock.advance(SETTLE_SECONDS)
+        self.tick()
+        self.assertEqual(self.get_run(other.run_id)['state'], S.TRANSFERRING)
+        result = self.engine.restart_transfer(transfer_id)
+        self.assertFalse(result.ok)
+        self.assertIn('being copied right now', result.message)
+
+    def test_a_follow_up_batch_keeps_saying_it_is_one(self):
+        first = self.sonarr(self.series_webhook('e1', 1))
+        self.clock.advance(SETTLE_SECONDS)
+        self.tick()
+        follow = self.sonarr(self.series_webhook('e2', 2))
+        self.sonarr(self.series_webhook('e3', 3))
+        summary = self.stage(follow.run_id, S.BATCH)['summary']
+        self.assertIn('Follow-up batch', summary)
+        self.assertIn(first.run_id, summary)
+
     def test_a_restore_is_not_restarted_from_the_transfer_list(self):
         self.coordinator.transfer_model.create({
             'transfer_id': 'restore_1', 'media_type': 'movies', 'folder_name': 'Example Film (2024)',
@@ -828,6 +864,19 @@ class RecoveryTests(EngineTestCase):
         ok, message, _ = self.alerts.act(alerts[0]['alert_id'], 'sync_now')
         self.assertTrue(ok, message)
         self.assertEqual(self.webhook('e1')['status'], 'syncing')
+
+    def test_a_copy_starting_again_after_a_restart_is_not_called_interrupted(self):
+        from services.sync_engine.recovery import recover_after_restart
+        run = self.sonarr(self.series_webhook('e1', 1))
+        self.clock.advance(SETTLE_SECONDS)
+        self.tick()
+        transfer_id = self.get_run(run.run_id)['transfer_id']
+        self.coordinator.transfer_model.update(transfer_id, {'status': 'pending'})
+        recover_after_restart(self.engine)
+        self.assertEqual(self.get_run(run.run_id)['state'], S.QUEUED)
+        self.assertEqual(self.open_alerts('restart_unfinished'), [])
+        self.assertEqual(self.coordinator.transfer_model.get(transfer_id)['status'], 'queued',
+                         'back in the queue, where it starts normally')
 
     def test_held_batches_survive_a_restart_untouched(self):
         from services.sync_engine.recovery import recover_after_restart
@@ -916,7 +965,10 @@ class QueueOverlapTests(unittest.TestCase):
 
         queue = QueueManager(_Model())
         queue.set_coordinator(_Coordinator())
-        queue.force_unregister_stale_transfers()
+        queue.force_unregister_stale_transfers(promote=False)
+        self.assertEqual(queue.running_transfers, {},
+                         'nothing starts before the sync engine has looked at the restart')
+        queue.promote_waiting()
         self.assertIn('series', queue.running_transfers,
                       'the oldest starts; the season waits behind it instead of both waiting')
         self.assertNotIn('season', queue.running_transfers)

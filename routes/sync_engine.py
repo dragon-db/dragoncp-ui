@@ -211,7 +211,8 @@ def _alerts():
 @sync_engine_bp.route('/alerts')
 @require_auth
 def api_alerts():
-    """Alerts, newest first. `state`: open (default), done, wrong, dismissed or all."""
+    """Alerts, newest first. `state`: open (default), done, wrong, dismissed, several
+    of them comma separated (the Closed tab asks for done,wrong,dismissed), or all."""
     alerts = _alerts()
     if alerts is None:
         return _unavailable()

@@ -10,11 +10,8 @@ why, the log lines each stage wrote, the transfer it became and how it ended.
 A kind of sync may run a stage differently or skip it, but a skipped stage
 always says why in a sentence an admin can read, and no sync skips the queue.
 The record is kept in the database as it happens, so a restart forgets nothing
-and an admin can read back exactly what happened to any webhook or transfer.
-
-> **Not built yet:** the React screens for this — the pipeline view and the
-> Notifications tab. Everything below is served by the API today
-> (see [API](#api)); the screens are the next piece of work.
+and an admin can read back exactly what happened to any webhook or transfer —
+on the **Pipeline** page, one sync at a time, or through the [API](#api).
 
 ## Where it lives
 
@@ -25,13 +22,87 @@ and an admin can read back exactly what happened to any webhook or transfer.
 | The engine: batching, ready check, safety check, queue hand-off, finish, tell | `services/sync_engine/engine.py` |
 | What happens to unfinished syncs at start-up | `services/sync_engine/recovery.py` |
 | Runs, stages, log lines and webhook links in the database | `models/sync_run.py` |
-| Alerts (the Notifications tab) | `services/alert_service.py`, `models/alert.py` |
+| Alerts (the Notifications page) | `services/alert_service.py`, `models/alert.py` |
 | The scheduler that runs background jobs | `services/scheduler.py` |
 | The scheduled auto-scanner | `services/auto_scanner.py` |
 | Sonarr's "is anything for this season still downloading" answer | `services/connectors/adapters/_arr.py` (`InFlight`, `classify_row`) |
-| Where the engine plugs into transfers (start, pause, resume, finish) | `services/transfer_coordinator.py` |
+| Where the engine plugs into transfers (start, pause, resume, finish), and the start-up order | `services/transfer_coordinator.py` (`start_background`) |
 | Folder conflicts in the queue | `services/queue_manager.py` |
 | HTTP | `routes/sync_engine.py` |
+| The Pipeline, sync and Notifications pages | `frontend/src/components/pages/pipeline.tsx`, `pipeline-run.tsx`, `notifications.tsx`, `frontend/src/components/pipeline/`, `frontend/src/hooks/useSync.ts` |
+| The auto-scanner card on the Sonarr and Radarr pages | `frontend/src/components/integrations/scanner-status.tsx` |
+
+## Screens
+
+Everything below is drawn by the React app; [the frontend
+reference](../../reference/frontend.md#pipeline-and-notifications-pages) has
+the components.
+
+**Pipeline** (sidebar → Workspace → Pipeline, `/pipeline`) lists every sync,
+newest first. Four tiles head it — In progress, Needs a person (held, stopped
+by the safety check, or interrupted by a restart), Failed, Synced — and filter
+chips narrow the list to one of those groups, or to Cancelled. A select picks
+one kind of sync, a search box matches the title, folder, season, destination,
+run id or transfer id, and a **Rehearsals** switch (on by default) shows or
+hides simulations. The tiles and chip counts follow the Rehearsals switch but
+not the kind or the search, because they come from the server's per-state
+tally. Each row shows the title, the kind, the state, a nine-segment strip — one
+segment per stage, coloured by how it ended — the stage the sync is on, one
+sentence, who asked, how long ago and how many webhooks rode on it. The sentence
+is what the current stage last said for a sync still moving ("Sonarr: 2 still
+downloading (…). Asking again at …"), and how it ended for one that has
+finished: the rsync error, the safety check's reason. A row opens the sync.
+
+**The sync's own page** (`/pipeline/<run_id>`) has:
+
+- a header with the state, the kind and who asked, and the actions that fit:
+  **Sync now** on a held batch, **Go now** on one in its ready check, **Sync
+  anyway** (asks to confirm) on one the safety check stopped, **Retry** on a
+  failed or cancelled one with a transfer, and **Cancel** (asks to confirm) on
+  one that has not finished;
+- one sentence on where it stands, in the state's colour — for a batch waiting
+  on Sonarr or the timer, with the time of its next step;
+- the nine stages as cards, three to a row on narrower screens and all nine in
+  a row from the `lg` breakpoint; the card for the stage a moving sync is on is
+  highlighted, and picking a card opens that stage below;
+- every stage, top to bottom: its sentence, when it ran and for how long, the
+  kind's note when this kind runs it differently or skips it, the facts it
+  decided on, and its own log lines. Identify shows both folders. Ready check
+  shows how it decided (asking Sonarr or the fixed timer), how many times it
+  asked, how many are still downloading, Sonarr's time left, when the timer
+  ends, when it gives up waiting, and the downloading and stuck lists. Safety
+  check shows what it would copy and delete and the files on each side, with the
+  file lists. Transfer shows progress, the route (fast or SSH), how much moved,
+  speed, time left, rsync's closing figures and the rsync output, refreshed every
+  2 seconds while it copies. The stage the sync is on, and any stage that is
+  working, waiting, failed or stopped, start open;
+- beside them, the sync's alerts with their buttons, the webhooks that rode on
+  it (**Manual** when one is waiting for a person), its transfer with a link to
+  Transfers, and related syncs — the one it follows or retries, and any
+  follow-up or retry of it.
+
+An id the server does not know — a rehearsal since cleaned up, say — shows "No
+such sync".
+
+**Notifications** (sidebar → Workspace → Notifications, or the bell in the
+header, `/notifications`) lists the alerts: **Open** and **Closed** tabs, 25 to
+a page. Each alert shows its title, what happened, how many times it was raised
+while open, its buttons — **Sync anyway** asks to confirm — and **Open the
+sync**; a closed one says who closed it and how. The sidebar item carries the
+open count, and the bell a dot, while anything is open.
+
+**From other pages:** a transfer's detail on Transfers and an episode's detail
+on Webhooks each have **Open its sync**. An episode a safety check stopped, or a
+restart interrupted, shows **Manual** instead of Pending, and its detail says
+"Waiting for a person: <reason>". The Sonarr and Radarr Connection tabs under
+Integrations carry an **Auto-scanner** card — see
+[below](#the-scheduled-auto-scanner).
+
+The pages poll: every 2.5 seconds for a sync still moving, every 4 seconds for
+a list holding one, and every 15 seconds (list) or not at all (a finished sync)
+otherwise; alerts every 30 seconds. With realtime on, the socket events below
+make them refresh sooner, and a toast says so when something new needs a
+person.
 
 ## How it works
 
@@ -71,6 +142,14 @@ Joining and the queued→copying switch happen under one lock per folder, so a
 webhook cannot slip between "the batch is open" and "the copy started". As a
 last net, a webhook that joined after rsync started is moved to a follow-up
 when the copy finishes, because the copy may already have listed the folder.
+
+The stage's sentence follows the batch as it grows. It opens as "Opened a new
+batch for Example Show — Season 01 with 1 webhook."; each webhook, press of Sync
+or restart that joins rewrites it to "One batch for Example Show — Season 01: 3
+webhooks in it.", and the join itself is a log line on the stage ("Joined this
+batch (3 webhooks in it now)."). An auto-scanner find that lands on an open
+batch only adds a log line. A follow-up batch keeps saying it is one: "Follow-up
+batch for Example Show — Season 01, behind run run_…: 2 webhooks in it."
 
 ### 4. Ready check — still downloading?
 
@@ -112,10 +191,17 @@ shows the counts: files to copy, files to delete, files on each side.
 It is also stopped when the dry run itself does not finish. rsync's exit
 status is read before its output: anything but 0, or 24 (files vanished
 mid-scan, as when Sonarr moves an import), stops the sync with "The dry run did
-not finish (rsync exit N): …" and rsync's last error line, so an unreachable
-media server or a missing folder is never read as "nothing to change". Until
-2026-10-05 it was read that way: such a dry run listed nothing, and an empty
-list passed.
+not finish (rsync exit N): …", so an unreachable media server or a missing
+folder is never read as "nothing to change". Until 2026-10-05 it was read that
+way: such a dry run listed nothing, and an empty list passed.
+
+The "…" is the first error line that names a cause — "ssh: Could not resolve
+hostname …", "rsync: change_dir … No such file or directory". rsync's closing
+`rsync error: … (code N)` line, which only restates the exit code, and ssh's
+`Warning:` host-key notices are passed over; when nothing else is there, the
+first line is used, and with no error output at all, "rsync gave no error
+output". The first build of this check quoted the last line, which is usually
+that closing summary.
 
 A stopped sync is **refused**: nothing is written, its webhooks — movies and
 series alike — are flagged as needing a person, and a *Safety check* alert
@@ -173,7 +259,7 @@ auto-scanner batch that a person released — Sync or Go now while it was held o
 waiting, or a restart that joined it — is announced as "Manual Sync".
 Cancelled syncs, restores and simulations — restarted simulations included —
 are not announced, and the stage says why. Anything that needs a person opens
-an alert in the Notifications tab.
+an alert on the Notifications page.
 
 ## Kinds of sync
 
@@ -238,13 +324,36 @@ restarts behind anyone's back either.
 | Waiting in the ready check, or in the safety check | Marked **interrupted**; an *After a restart* alert offers **Sync now**, **Mark as done**, **Mark as wrong**, **Dismiss** |
 | Held for a person | Still held |
 | In the queue | Carries on by itself. A transfer that was just starting goes back into the queue |
+| Marked as copying, but its transfer had not started — still `queued`, or `pending` (about to start) | Back in the queue, and the sync says so; a `pending` transfer is put back as a slot wait. Until 2026-10-05 such a sync was marked interrupted |
 | Copying, and rsync survived | DragonCP watches it again and finishes the run when it ends |
-| Copying, and the result cannot be read | The transfer is marked failed with "Result unknown: …"; a *Result unknown* alert opens instead of a "Sync failed" message, with **Retry** and **Mark as done** |
-| Finished while DragonCP was down | Finished normally |
+| Copying, and rsync was already gone at start-up, or its result cannot be read once it ends | The transfer is marked failed with "Result unknown: …"; a *Result unknown* alert opens instead of a "Sync failed" message, with **Retry** and **Mark as done** |
+| The copy had ended, but DragonCP stopped before closing the sync | Finished normally |
 
 Webhooks the old in-memory scheduler had taken and a restart dropped (from
 before this engine, up to 7 days back) are found once and raise one alert per
 folder.
+
+**The queue waits for recovery.** At start-up the queue rebuilds
+its state from the database without starting anything
+(`force_unregister_stale_transfers(promote=False)`, while the coordinator is
+built); rsync processes that survived are reattached, and a `running` transfer
+whose rsync is gone is recorded as "Result unknown: …"; then, once the
+connector layer is up, the sync engine's recovery runs, and only after it does
+the queue start whatever has a free slot and a free folder
+(`QueueManager.promote_waiting()`, in `TransferCoordinator.start_background`).
+A copy started from the queue at that point goes through the engine's hooks
+like any other. The completion watchers for transfers found running start after
+recovery too, because a watcher whose transfer already ended releases its slot,
+and releasing a slot promotes what is waiting.
+
+Until 2026-10-05 the queue started queued work while the coordinator was being
+built, before recovery ran. A copy promoted then could still be `pending` when
+recovery looked; recovery took it for a copy the restart had cut off, marked
+its sync interrupted and opened a false "Some syncs might have been skipped"
+alert. And a `running` transfer whose rsync was gone at start-up was recorded as
+"Transfer process was interrupted", which the engine treated as an ordinary
+failure — "Sync failed" on Discord and a *Failed* alert — rather than as a
+result nobody saw.
 
 ## The scheduled auto-scanner
 
@@ -281,6 +390,16 @@ Limits:
 Each scan's result is in the activity trail (`scanner.run`) and, when it
 started anything, on Discord (`scanner.found`).
 
+**On screen**, below the settings on each service's Connection tab, an
+**Auto-scanner** card shows the scanner's job: "Switched off" with a pointer to
+the switch above it, or "Every 15 min · next scan at …"; the last scan's result
+("Last scan 5 min ago: …", in red when it failed, with how many times in a row
+when more than once); up to eight of that scan's finds, each with what became of
+it — a started one links to its sync — and **Scan now** while the scanner is
+on. The card says "Switched off" whenever the job does not run: the switch is
+off, or the connector itself is off or has no address or API key — though its
+sentence mentions only the switch.
+
 ## The scheduler
 
 One service runs everything DragonCP does on a clock. This release has two
@@ -296,11 +415,11 @@ jobs: the Sonarr and Radarr auto-scanners. For every job:
 
 ## Alerts
 
-The Notifications tab lists what needs a person. Each alert has a kind, a
-title, what happened, links to the run, and the actions that make sense for
-it. An alert for the same thing is not opened twice: a repeat bumps the open
-one's count. Alerts that need a person are also announced on Discord once,
-when they open.
+The Notifications page lists what needs a person (see [Screens](#screens)).
+Each alert has a kind, a title, what happened, links to the run, and the
+actions that make sense for it. An alert for the same thing is not opened
+twice: a repeat bumps the open one's count. Alerts that need a person are also
+announced on Discord once, when they open.
 
 Three kinds watch a condition rather than report an event — *Auto-scanner*,
 *Integration* and *Scheduler*. Once a person dismisses one, or marks it wrong,
@@ -313,7 +432,7 @@ scanner's default interval.
 | Kind | Opens when | Actions |
 |---|---|---|
 | After a restart | A sync was waiting when DragonCP stopped | Sync now · Mark as done · Mark as wrong · Dismiss |
-| Result unknown | A copy's result was lost in a restart | Retry · Mark as done · Dismiss |
+| Result unknown | A copy's result was lost in a restart: its rsync was gone at start-up, or ended where DragonCP could not read how | Retry · Mark as done · Dismiss |
 | Stuck download | A season synced without a download stuck in Sonarr | Dismiss |
 | Waited 30 minutes | A season synced while Sonarr was still downloading | Dismiss |
 | Safety check | The dry run stopped a sync | Sync anyway · Dismiss |
@@ -332,8 +451,10 @@ activity trail (`alert.resolve`).
 
 ## Behaviour worth knowing
 
-- **Every webhook is visible as part of a run.** The webhook list can link to
-  its run (`GET /api/sync/lookup?notification_id=…`), and so can a transfer.
+- **Every webhook is visible as part of a run.** An episode's or a movie's
+  detail on the Webhooks page, and a transfer's detail on Transfers, link to
+  their sync (**Open its sync**), from the `sync_run_id` on the row; any other
+  client can ask `GET /api/sync/lookup?notification_id=…` or `?transfer_id=…`.
 - **A batch belongs to a folder, not a series.** A whole-series sync and a
   season webhook for the same series are different batches; the queue keeps
   them from copying at the same time.
@@ -363,7 +484,7 @@ activity trail (`alert.resolve`).
 | `sync_run` | One row per run: kind, folders, state, current stage, outcome, transfer, parent run (follow-up or retry), who asked, ready-check timing | `models/sync_run.py` |
 | `sync_run_stage` | Nine rows per run: status, summary, detail, start and finish | `models/sync_run.py` |
 | `sync_run_event` | The log lines, each tagged with its stage | `models/sync_run.py` |
-| `alert` | The Notifications tab | `models/alert.py` |
+| `alert` | The Notifications page | `models/alert.py` |
 | `scheduled_job` | Each job's last run and result | `services/scheduler.py` |
 
 Links from existing tables: `sonarr_webhook.sync_run_id` and
@@ -377,22 +498,26 @@ in [the schema reference](../../reference/database-schema.md).
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/sync/catalogue` | The stages, the kinds of sync and every skip reason |
-| GET | `/api/sync/runs` | Runs, newest first, with their stage strip. Filters: `state` (a state or `open`, `active`, `live`, `finished`, `all`), `kind`, `search`, `limit`, `offset`, `simulations` |
-| GET | `/api/sync/runs/<run_id>` | One run: every stage with its summary, detail and log lines; its webhooks, transfer, related runs, alerts, and the actions available |
+| GET | `/api/sync/runs` | Runs, newest first, with their stage strip and `current_summary` — the sentence the stage a run is on last wrote. Filters: `state` (a state, several comma separated, or `open`, `active`, `live`, `finished`, `all`), `kind`, `search`, `limit`, `offset`, `simulations` |
+| GET | `/api/sync/runs/<run_id>` | One run: every stage with its summary, detail and log lines; its webhooks, transfer, related runs, alerts, and the actions available. Carries `current_summary` too |
 | GET | `/api/sync/runs/<run_id>/events` | Log lines after `after`, optionally for one `stage` |
 | GET | `/api/sync/lookup` | The run behind a `transfer_id` or a `notification_id` |
 | POST | `/api/sync/runs/<run_id>/go-now` | Skip the wait. `409` "This sync already ended." once the run has finished |
 | POST | `/api/sync/runs/<run_id>/cancel` | Cancel |
 | POST | `/api/sync/runs/<run_id>/sync-anyway` | Go ahead despite the safety check. `409`, with the run `failed`, when the queue will not take it |
-| GET | `/api/alerts` | Alerts; `state` = `open` (default), `done`, `wrong`, `dismissed`, `all`; `kind` filters, and `total` counts what the filters match |
-| GET | `/api/alerts/summary` | Open counts, for the tab's badge |
+| GET | `/api/alerts` | Alerts; `state` = `open` (default), `done`, `wrong`, `dismissed`, several of them comma separated (the Closed tab asks for `done,wrong,dismissed`), or `all`; `kind` filters, and `total` counts what the filters match |
+| GET | `/api/alerts/summary` | Open counts, for the bell and the sidebar count |
 | POST | `/api/alerts/<alert_id>/action` | Act on an alert: `{"action": "sync_now"}` etc. |
 | GET | `/api/scheduler/jobs` | Jobs with their switch, interval, last and next run |
 | POST | `/api/scheduler/jobs/<name>/run` | Run a job now |
 
 Socket events: `sync_run_updated` (a run's list row changed), `sync_run_event`
-(a new log line) and `alerts_changed` (the open counts). Pages poll as well;
-see [realtime](../../reference/realtime.md).
+(a new log line) and `alerts_changed` (the open counts). With realtime on, the
+app refreshes the run lists and that run on `sync_run_updated`, and the run on
+`sync_run_event` — each at most once every 1.5 seconds — and takes the open
+counts straight from `alerts_changed`, refreshing the alert lists and showing a
+toast when the count rises. Pages poll either way; see
+[realtime](../../reference/realtime.md).
 
 ## Related
 
@@ -402,3 +527,4 @@ see [realtime](../../reference/realtime.md).
 - [Integrations](../integrations/README.md) — Sonarr, Radarr and Discord
 - [Notifications](../notifications/README.md) — what each Discord message says
 - [Auto-sync](../auto-sync/README.md) — the automatic-sync switches
+- [Frontend reference](../../reference/frontend.md#pipeline-and-notifications-pages) — the components behind the screens

@@ -253,6 +253,7 @@ export function useTriggerWebhookSync() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["webhooks"] });
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
+      queryClient.invalidateQueries({ queryKey: ["sync"] });
     },
   });
 }

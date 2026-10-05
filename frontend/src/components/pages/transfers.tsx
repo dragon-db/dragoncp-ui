@@ -630,12 +630,17 @@ export function TransfersPage() {
     },
     onStop: (transfer) => setStopTarget(transfer),
     onRestart: async (transfer) => {
+      // A restart is a new sync now: the safety check runs first, then the
+      // queue. The server says which, and why when it refuses — a restore, for
+      // one, is run again from the Backups page.
       try {
-        await restartMutation.mutateAsync(transfer.id);
-        toast.success("Transfer restarted");
+        const result = (await restartMutation.mutateAsync(transfer.id)) as { message?: string };
+        toast.success(result.message || "Restart requested");
         refreshAll();
-      } catch {
-        toast.error("Could not restart the transfer");
+      } catch (error) {
+        toast.error(
+          error instanceof Error && error.message ? error.message : "Could not restart the transfer"
+        );
       }
     },
     onDelete: (transfer) => setDeleteTarget(transfer),

@@ -50,15 +50,7 @@ def recover_after_restart(engine) -> Dict[str, int]:
                           'by itself.')
             found['still_queued'] += 1
         elif status == 'pending':
-            # About to start when the process stopped. A pending row belongs to
-            # neither the running set nor the queue, so it would sit there
-            # forever; putting it back in the queue lets it start normally.
-            engine.coordinator.transfer_model.update(run['transfer_id'], {
-                'status': 'queued', 'queue_reason': 'slot',
-                'progress': 'Back in the queue after a restart'})
-            engine._event(run['run_id'], S.QUEUE,
-                          'DragonCP restarted just as this was starting; it went back into '
-                          'the queue.')
+            _back_in_queue(engine, run)
             requeue = True
             found['still_queued'] += 1
         elif status in ('running',):
@@ -70,16 +62,21 @@ def recover_after_restart(engine) -> Dict[str, int]:
             _interrupt(engine, run)
             found['interrupted'] += 1
 
-    if requeue and engine.coordinator is not None:
-        try:
-            engine.coordinator.queue_manager.force_unregister_stale_transfers()
-        except Exception:  # noqa: BLE001
-            log.exception('Could not rebuild the queue after recovery')
-
     for run in store.in_states([S.TRANSFERRING, S.FINISHING]):
         transfer = _transfer(engine, run.get('transfer_id'))
         status = (transfer or {}).get('status')
-        if status == 'running':
+        if status in ('queued', 'pending'):
+            # Not copying after all: back in the queue, which carries it on.
+            if status == 'pending':
+                _back_in_queue(engine, run)
+                requeue = True
+            else:
+                engine._event(run['run_id'], S.QUEUE,
+                              'DragonCP restarted. This is still in the queue and carries '
+                              'on by itself.')
+            engine._set_state(run['run_id'], S.QUEUED, S.QUEUE)
+            found['still_queued'] += 1
+        elif status == 'running':
             engine._event(run['run_id'], S.TRANSFER,
                           'DragonCP restarted while this was copying. rsync was still '
                           'running, so DragonCP is watching it again.', 'warning')
@@ -93,10 +90,31 @@ def recover_after_restart(engine) -> Dict[str, int]:
             _interrupt(engine, run)
             found['interrupted'] += 1
 
+    if requeue and engine.coordinator is not None:
+        try:
+            # Rebuilt without starting anything: the coordinator promotes once
+            # recovery is over, so what starts goes through the engine's hooks.
+            engine.coordinator.queue_manager.force_unregister_stale_transfers(promote=False)
+        except Exception:  # noqa: BLE001
+            log.exception('Could not rebuild the queue after recovery')
+
     found['legacy_alerts'] = _legacy_webhooks(engine)
     if any(found.values()):
         log.info('Sync engine recovery: %s', found)
     return found
+
+
+def _back_in_queue(engine, run: Dict[str, Any]) -> None:
+    """A transfer that was about to start when DragonCP stopped.
+
+    A pending row belongs to neither the running set nor the queue, so it would
+    sit there forever; putting it back in the queue lets it start normally.
+    """
+    engine.coordinator.transfer_model.update(run['transfer_id'], {
+        'status': 'queued', 'queue_reason': 'slot',
+        'progress': 'Back in the queue after a restart'})
+    engine._event(run['run_id'], S.QUEUE,
+                  'DragonCP restarted just as this was starting; it went back into the queue.')
 
 
 def _transfer(engine, transfer_id):

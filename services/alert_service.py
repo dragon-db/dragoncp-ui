@@ -151,7 +151,9 @@ class AlertService:
 
     def list(self, state: Optional[str] = 'open', kinds=None, limit: int = 50,
              offset: int = 0) -> Dict[str, Any]:
-        states = None if state in (None, '', 'all') else [state]
+        """`state` is one state, several comma separated, or `all`."""
+        states = None if state in (None, '', 'all') else \
+            [s.strip() for s in str(state).split(',') if s.strip()]
         rows = self.store.list(states=states, kinds=kinds, limit=limit, offset=offset)
         return {'alerts': [self.present(r) for r in rows],
                 'total': self.store.count(states, kinds), **self.summary()}
