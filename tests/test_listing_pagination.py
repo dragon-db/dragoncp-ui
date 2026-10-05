@@ -251,6 +251,17 @@ class NotificationCatalogTests(unittest.TestCase):
             self.catalog.status_counts(), {"failed": 1, "pending": 2}
         )
 
+    def test_the_manual_filter_finds_movies_too(self):
+        self.add_movie("m1", "2026-01-01 10:00:00", status="pending")
+        self.add_series("s1", "2026-01-02 10:00:00", status="pending")
+        with self.db.get_connection() as conn:
+            conn.execute("UPDATE radarr_webhook SET requires_manual_sync = 1")
+            conn.execute("UPDATE sonarr_webhook SET requires_manual_sync = 1")
+            conn.commit()
+
+        self.assertEqual(self.catalog.manual_sync_count(), 2)
+        self.assertEqual(self.catalog.manual_sync_count(media_type="movies"), 1)
+
     def test_legacy_series_media_type_still_matches_tvshows(self):
         self.add_series("legacy", "2026-01-01 10:00:00", media_type="series")
 

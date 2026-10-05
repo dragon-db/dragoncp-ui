@@ -81,6 +81,261 @@ rather than a defect, so it lives in
 that can write to, rename or delete a media file and what test mode does to
 each, plus why simulations are safe despite being exempt from the dry run.
 
+### ~~A copy whose result a restart lost was recorded as completed~~ — **fixed** 2026-10-05
+
+When DragonCP restarted during a copy and reattached to the rsync process, it
+could not read rsync's exit status once the copy ended, and recorded the
+transfer as `completed` anyway — "Transfer finished after restart (exit status
+unavailable)", or "Transfer process ended before restart monitoring attached".
+That was a success nobody saw.
+
+`services/transfer_service.py` now records it as `failed`, with a sentence
+starting "Result unknown:" (`UNKNOWN_RESULT_MESSAGE`), and the sync engine turns
+that into a *Result unknown* alert asking a person to check the folder, instead
+of announcing "Sync failed". A transfer from before 2.3.0 still in flight across
+the upgrade has no run, so it is announced as "Sync failed" with that sentence.
+History rows carrying either of the old sentences were never confirmed.
+
+## Syncing
+
+All but the first entry here were fixed on 2026-10-05, by the sync engine or
+by the review that followed it — see
+[the sync engine](../features/sync-engine/README.md). The first is still open.
+Entries marked *branch only* only ever existed on the unreleased
+`global-connectors` branch; they are kept because a development instance may
+have run them.
+
+### A single-file transfer lands in a folder named after the file — **verified** 2026-10-05
+
+`POST /api/transfer` with `type=file` and an `episode_name` appends the episode
+name to the destination as well as the source (`routes/transfers.py`,
+`api_transfer`). `TransferService.start_rsync_process` then creates that
+destination as a directory (`os.makedirs(dest_path, exist_ok=True)`) and hands rsync
+`f"{dest_path}/"` — "into this folder". So
+`Season 01/Example Show - S01E01.mkv` is not copied over the episode file: it
+is copied into a new folder of that name,
+`Season 01/Example Show - S01E01.mkv/Example Show - S01E01.mkv`. Where the
+episode file already exists on this disk, the folder cannot be created and the
+transfer fails at once with "Failed to create destination: [Errno 17] File
+exists: …". Test mode skips the directory creation and runs rsync with
+`--dry-run`, so nothing is written there either way.
+
+The same code is on `main` (`git show main:routes/transfers.py`). It is
+API-only: no screen in the React app sends `type=file` — `useStartTransfer` in
+`frontend/src/hooks/useTransfers.ts` is the only client of `POST /api/transfer`,
+and nothing calls it. Since 2026-10-05 a single-file sync skips the safety
+check's dry run (rsync deletes nothing when it is given one file), so nothing
+before the copy notices either. This is the path the retired Browse Media
+screen's single-episode download took, and the files it stranded one level too
+deep are what Explore's repair finds and moves back
+([Explore](../features/explore/README.md), "Repairing misplaced files";
+`services/explore/repair.py`).
+
+### ~~A dry run that fails to run passes the safety check~~ — **fixed** 2026-10-05
+
+`TransferService.perform_dry_run_rsync` ignored rsync's exit status and its
+error output. When rsync could not reach the media server, or the source folder
+was not there, it printed nothing the parser counts: every count was zero and
+the verdict was "All safety checks passed". The run's Safety stage then read
+"Safe to sync: 0 file(s) to copy, 0 to delete; the media server holds 0, this
+disk N". Only missing SSH credentials, a timeout (5 minutes) or an exception
+counted as unsafe. The method predates the sync engine, but since 2.3.0 every
+manual sync, Radarr webhook, auto-scanner find and restart relies on it, not
+only Sonarr batches.
+
+rsync's own verdict now comes first. An exit code other than 0, or 24 (files
+vanished mid-scan, as when Sonarr moves an import — still a complete answer),
+makes the dry run unsafe with the reason "The dry run did not finish (rsync exit
+N): <rsync's last error line>", and the result carries `rsync_exit_code`. The
+Safety stage stops the sync for a person, with **Sync anyway** as the way past
+it. The on-demand dry runs (`POST /api/media/dry-run` and the webhook dry-run
+endpoints) call the same method and report the same.
+`tests/test_dry_run_visibility.py::DryRunThatDidNotFinishTests` covers an
+unreachable server, a missing folder, and exit 24 still counting as an answer.
+
+### ~~A restarted simulation, a single file and an Explore retry were judged by a folder dry run~~ — **fixed** 2026-10-05, branch only
+
+A restart is its own kind of sync whatever it retries, and that kind always ran
+the safety check. A restarted simulation therefore ran a dry run against the
+media server for sandbox paths that exist only on this machine — and was then
+announced on Discord, with a *Failed* alert on failure, like real work. A
+restarted Explore transfer was judged by a dry run of the whole season folder,
+with files only this disk has counted as deletions, although the retry copies
+the plan's own file list and deletes nothing. A manual single-file sync ran the
+folder dry run against a file.
+
+The Safety stage now skips the dry run, and says why, for any run carrying the
+simulation flag, for a single-file sync, and for a restart of a transfer that
+carries an Explore file list (`SyncEngine._safety_step`). Tell skips any run
+carrying the simulation flag, and no alert opens for one (`SyncEngine._tell`).
+`tests/test_sync_engine.py`: `test_a_restarted_simulation_skips_the_dry_run`,
+`test_a_single_file_needs_no_dry_run`,
+`test_a_retried_explore_plan_is_not_judged_by_a_folder_dry_run`,
+`test_a_restarted_simulation_is_not_announced`.
+
+### ~~Batches waiting to sync were lost on a restart~~ — **fixed** 2026-10-05
+
+The old scheduler (`services/auto_sync_scheduler.py`, removed) held each
+series/anime batch in memory, with a thread sleeping until its deadline. A
+restart during the wait dropped it: the webhooks stayed `pending`, their
+`auto_sync_scheduled_at` slipped into the past, and nothing rescheduled them
+(issue #47). Batches are now sync runs in the database. One that was waiting is
+marked interrupted at start-up and raised as an *After a restart* alert —
+nothing restarts by itself. Webhooks the old scheduler had taken and a restart
+dropped, up to 7 days back, are found once at start-up and raised the same way,
+one alert per folder (`services/sync_engine/recovery.py`).
+
+### ~~A later webhook no longer pushed the batch back~~ — **fixed** 2026-10-05, branch only
+
+The fallback wait is meant to grow by the wait again for every later webhook.
+On the `global-connectors` branch the scheduler read its deadline once
+(`_sleep_until(job.scheduled_time)`), so later webhooks joined the batch without
+extending it; `main` was unaffected. The deadline is now stored on the batch and
+re-read at every step (`SyncEngine._join`;
+`tests/test_sync_engine.py::ReadyCheckTests::test_every_webhook_pushes_the_timer_back`).
+
+### ~~The gate's poll and settle settings were never read~~ — **fixed** 2026-10-05, branch only
+
+The scheduler was handed a settings object with no `get_int`, the error was
+swallowed, and every sync used 30 and 10 seconds whatever was saved; the tests'
+fake settings hid it. The settings are gone — see
+[Settings](../features/settings/README.md): the pause before the first question
+is a fixed 10 seconds, and the next question follows Sonarr's own estimate.
+
+### ~~The missed-import sweep bypassed every safety net~~ — **fixed** 2026-10-05, branch only
+
+`services/autosync_sweep.py` (removed) started transfers directly — no batch, no
+dry run, no check for a sync already on its way — and compared the library
+against the disk only; the import history it fetched was unused. Its
+replacement, the scheduled auto-scanner, reads the import history first and
+hands every find to the sync pipeline like a webhook (`services/auto_scanner.py`;
+see [Integrations](../features/integrations/README.md)).
+
+### ~~A manual sync raced the waiting batch~~ — **fixed** 2026-10-05
+
+Pressing Sync on a webhook started a transfer of its own while the automatic
+batch for the same season kept waiting, and the batch, when its turn came,
+could mark the webhooks failed while the manual copy ran. A press of Sync now
+joins the waiting batch and tells it to go now (`SyncEngine.sync_notifications`).
+
+### ~~Restarting a transfer skipped the queue and was never announced~~ — **fixed** 2026-10-05
+
+`TransferCoordinator.restart_transfer()` started rsync directly: no folder
+check, no slot limit and no completion watcher, so nothing announced the result.
+A restart is now a sync run of its own — safety check, then the queue, then the
+usual finish and announcement (`SyncEngine.restart_transfer`,
+`TransferCoordinator.requeue_transfer`).
+
+### ~~A whole-series copy and a copy of one of its seasons could run at once~~ — **fixed** 2026-10-05
+
+The queue compared destinations for equality only, so a copy of a whole series
+and a copy of one of its season folders were both admitted, writing into the
+same folder. A folder inside or around a busy destination now counts as busy;
+two different seasons of one show may still copy side by side
+(`QueueManager._overlaps`; `tests/test_sync_engine.py::QueueOverlapTests`).
+
+### ~~After a restart, a queued series and a queued season of it blocked each other~~ — **fixed** 2026-10-05, branch only
+
+A side effect of the rule above. Start-up rebuilt one queue reservation for
+every queued transfer whose *exact* folder was not already reserved, so a
+queued whole-series copy and a queued copy of one of its seasons both got one.
+At promotion each found the other's reservation in its way, and neither started
+— other transfers finishing did not help — until one was cancelled.
+
+Start-up now reserves oldest first, one owner per set of colliding folders: a
+queued transfer whose folder is the same as, inside or around one already
+reserved gets no reservation and waits as a folder wait, which is what the queue
+holds while it runs (`QueueManager._restore_queued_reservations_internal`;
+`tests/test_sync_engine.py::QueueOverlapTests::test_after_a_restart_a_series_and_its_season_do_not_block_each_other`).
+
+### ~~Deleting a waiting transfer left its folder reserved and its sync stuck~~ — **fixed** 2026-10-05
+
+The delete endpoints removed a transfer's row without telling the queue. A
+queued transfer's folder reservation stayed until the next restart, so later
+transfers for that folder could wait behind one that no longer existed — on
+`main` too. Since 2.3.0 it also stranded the transfer's sync: the run stayed "In
+the queue", later webhooks and presses of Sync for the folder joined it and
+never started, and cancelling the run failed because its transfer was gone. A
+deleted paused transfer left its run showing Paused for good.
+
+Single delete, bulk delete by ids and bulk delete by filter now cancel a queued
+or paused transfer through the coordinator before deleting its row, which frees
+the reservation, lets the queue promote what was waiting, and closes the sync as
+cancelled (`_cancel_before_delete` in `routes/transfers.py`, with
+`Transfer.waiting_ids_among` and `waiting_ids_matching`). A `pending` row — the
+moment between admission and rsync starting — cannot be cancelled and is
+deleted as before. Two safety nets in the engine cover a queued run whose
+transfer row has gone anyway: the next request for that folder closes it as
+cancelled ("Its transfer was deleted from the transfer list before it started.")
+and opens a new batch, and cancelling the run closes it directly
+(`tests/test_sync_engine.py`:
+`test_a_deleted_queued_transfer_does_not_strand_the_folder`,
+`test_cancelling_a_run_whose_transfer_was_deleted_closes_it`).
+
+### ~~A batch a person released was announced as an automatic sync~~ — **fixed** 2026-10-05, branch only
+
+Pressing Sync on a webhook whose batch was still held or waiting told that
+batch to go now, and the batch kept its kind. With automatic sync off — where
+every webhook opens a batch held for a person — every sync an admin started was
+therefore announced as "Automated Sync", and a safety-check refusal of it was
+announced on Discord (`autosync.blocked`) as an automatic one.
+
+A Sonarr, Radarr or auto-scanner batch that a person released — Sync or Go now
+while it was held or waiting, or a restart that joined it — now counts as
+started by a person (`go_now` on the run; `_started_by_a_person` in
+`services/sync_engine/engine.py`). Its result is announced as "Manual Sync",
+and a refusal opens its alert without the Discord message
+(`test_a_held_batch_a_person_released_is_a_manual_sync`).
+
+### ~~A failed restore could be retried as a sync~~ — **fixed** 2026-10-05
+
+**Retry** on a failed restore's row in Transfers (the restart endpoint), and
+since 2.3.0 **Retry** on its *Failed* alert, sent the restore's transfer row
+through the generic restart — since 2.3.0 a dry run against the media server,
+then rsync — with a source path in the backup area. The alert's **Mark as
+done** rewrote the transfer as completed.
+
+`SyncEngine.restart_transfer` now refuses a restore: "A restore is run again
+from the Backups page, where its preview shows what it will replace." The
+Transfers page shows that refusal only as "Could not restart the transfer". A
+failed restore's alert is titled "Restore failed: …", ends "Run it again from
+the Backups page.", and offers only **Dismiss** (`AlertService.transfer_failed`;
+`test_a_restore_is_not_restarted_from_the_transfer_list`).
+
+### ~~Movie webhooks named the wrong queue wait and carried no needs-a-person flag~~ — **fixed** 2026-10-05, branch only
+
+Since 2.3.0 the engine writes every webhook on a sync the same way, movies
+included, with two gaps. Re-filing a slot wait as a folder wait moved series
+rows only, so a movie waiting for its folder kept saying `QUEUED_SLOT`. And
+`radarr_webhook` had no manual-sync columns, so a movie the safety check
+stopped, or a restart interrupted, went back to `pending` with nothing to say
+it needed a person.
+
+The engine now moves movie and series webhooks alike when a wait is re-filed
+(`SyncEngine.on_transfer_waiting`), and `radarr_webhook` has
+`requires_manual_sync` and `manual_sync_reason`, set and cleared as on
+`sonarr_webhook` (`tests/test_sync_engine.py`:
+`test_a_movie_waiting_for_its_folder_says_so`,
+`test_a_refused_movie_carries_the_needs_a_person_flag`), and the Webhooks
+page's **Manual** filter reads both tables (`NotificationCatalog._tables_for`
+in `models/webhook.py`; `tests/test_listing_pagination.py`:
+`test_the_manual_filter_finds_movies_too`).
+
+### ~~A dismissed alert came back on every scan~~ — **fixed** 2026-10-05, branch only
+
+Alerts were deduplicated only while open. An *Auto-scanner*, *Scheduler* or
+*Integration* alert dismissed while its cause remained therefore opened again —
+and was announced on Discord again — at the next check: every 15 minutes at the
+scanner's default interval.
+
+Dismissed or marked wrong, one of those three now stays closed for 24 hours
+(`QUIET_AFTER_DISMISS` and `raise_alert(quiet_after_dismiss=True)` in
+`services/alert_service.py`; `AlertStore.closed_by_a_person_since`). After that,
+if the cause is still there, it opens and is announced again. Alerts about one
+event — after a restart, result unknown, stuck download, waited 30 minutes,
+safety check, failed — are not affected
+(`tests/test_scheduler.py::SchedulerTests::test_a_dismissed_failing_job_stays_quiet_for_a_day`).
+
 ## Configuration that silently does nothing
 
 **Three of the entries that were here are fixed.** `AUTO_SYNC_SERIES` and
@@ -111,6 +366,15 @@ What remains:
 - **`ed25519` SSH keys cannot work on the browse path.** `ssh.py:155` uses
   `paramiko.RSAKey.from_private_key_file`.
 - **`DragonCPConfig.save_config()` has no callers** (`config.py:119`).
+- ~~**A connector saved by a pre-release build can scan with its switch shown
+  off.**~~ Fixed 2026-10-05, branch only. When the Sonarr or Radarr **Scheduled
+  auto-scanner** switch had never been saved, `ArrConnector.auto_scanner_enabled`
+  fell back to the old sweep's two switches, while the Connection tab showed
+  only the stored value of the new one: off. The sweep's fields never shipped
+  in a release, so nothing reads them now: the scanner runs only when its own
+  switch is on, at its own interval (default 15 minutes). A development
+  database that still holds the old fields runs no scanner until the switch is
+  turned on.
 - ~~**The one-year immutable policy on hashed assets does nothing.**~~ Fixed.
   `frontend_serving.py` set `public`, `max_age` and `immutable` on `/assets/*`
   but never cleared the `no-cache` that Flask's `send_from_directory` applies by
@@ -134,9 +398,22 @@ What remains:
 - **Only the first secret on a line is redacted.**
   `logging_setup._sanitize_message` breaks out of its marker loop after the
   first match, so a line carrying two secrets leaks the second.
-- **Failed validations are logged at INFO.** `services/sync_logger.log_validation`
-  marks failures with ❌ but logs them at INFO, so a failed dry-run never
-  appears under the log viewer's default `ERROR` filter.
+- **A refused safety check rarely reaches the `ERROR` filter** — **verified**
+  2026-10-05. Before 2.3.0 the cause was `services/sync_logger.log_validation`,
+  which marked failures with ❌ but logged them at INFO; nothing calls it any
+  more. The verdict now lives on the sync run's Safety stage. A refusal on the
+  counts — more deletions than arrivals, fewer files on the media server — is
+  in the log only as the dry run's own INFO lines (`Safe to sync: False`,
+  `Reason: …`) and an INFO `Alert opened: sync_refused — …` from
+  `dragoncp.alerts`. The exception, since 2026-10-05, is a dry run rsync could
+  not finish: it prints `❌ Dry-run did not finish: exit N: …`, which the ❌
+  puts at ERROR.
+- **A sync's stage-by-stage record is not in the log file.** What the sync
+  engine decided at each stage — Sonarr's answers, the fallback timer, the
+  safety counts, every skip — is stored with the run in the database
+  (`sync_run_event`), and the engine logs only its start-up, its recovery
+  summary and its own failures. With no screen for runs yet, that record is
+  readable only through `/api/sync/runs/<run_id>`. See [Logging](logging.md).
 - **Severity is inferred from message text, not the stream.** A line reading
   `Transfer ... finished with status: failed` is recorded as ERROR purely
   because it contains "failed"; Socket.IO's routine stderr chatter lands at INFO.
@@ -179,10 +456,12 @@ What remains:
   so the files are renamed on disk and the UI never hears about it.
 - **Every event but one is broadcast to every client.** `transfer_logs` is
   room-scoped (`services/transfer_service.py:164`); no other emit passes `room`,
-  `to` or `namespace`.
+  `to` or `namespace` — the sync engine's `sync_run_updated`, `sync_run_event`
+  and `alerts_changed` included.
 - **Emits are swallowed.** `services/backups/service.py` wraps them in a helper that swallows and logs; the old code used bare
   `try/except: pass`, and `routes/webhooks.py` routes them through
-  `emit_socketio_event()`, which does the same.
+  `emit_socketio_event()`, which does the same. The sync engine and the alert
+  service swallow theirs silently.
 - ~~**`TransferUpdate` overstates its payload.**~~ Fixed. Only `transfer_id` is
   required now; the rest are optional, because `transfer_queued` sends just an
   id and a message. The consumers were already defensive, so nothing behaved
@@ -192,6 +471,27 @@ What remains:
 
 ## UI
 
+- **The pipeline view and the Notifications tab are not built** — **verified**
+  2026-10-05. The sync engine and its alerts have an API (`/api/sync/…`,
+  `/api/alerts`, `/api/scheduler/jobs`) and no screen. What that means today:
+  - Alerts open and are announced on Discord with "Open DragonCP →
+    Notifications to act on it." There is no such tab: reading an alert and
+    acting on it — Sync now, Retry, Sync anyway, Mark as done — is API-only.
+  - A sync the safety check stopped cannot be pushed through from the UI.
+    **Sync anyway** is API-only (`POST /api/sync/runs/<run_id>/sync-anyway`).
+    Pressing Sync on the webhook again runs the same dry run and stops again;
+    Explore's reviewed override is the only on-screen way past it.
+  - A press of Sync, Restart or a Library-tab Sync answers before the safety
+    check runs, so the toast says it started ("Sync started", "Transfer
+    restarted"). The transfer appears on Transfers only once the dry run
+    passes; if it does not, nothing appears, any webhook riding on it gets the
+    manual-sync flag, and the alert is visible nowhere in the app.
+  - The fallback wait's new meaning is not on screen. The Automation tab still
+    labels it "Series/Anime Wait Time (seconds)", and the Webhooks page's
+    auto-sync popover says "TV & anime wait Ns after the last episode" —
+    true now only when Sonarr cannot be asked.
+  - Discord's routing tab is still called Notifications, the name the alerts
+    inbox is meant to take.
 - **No dashboard panel renders an error.** Failed requests fall back to empty
   states, so a dead backend looks identical to an idle system. The backend
   already returns per-disk `error` strings that the UI discards.
@@ -213,10 +513,14 @@ What remains:
   arrivals still carrying it, which a flag-only match would have listed as
   outstanding work. Nine arrivals on production are genuinely awaiting manual
   sync and were unfindable.
-- **`requires_manual_sync` is never cleared.** Once
-  `TransferCoordinator.mark_for_manual_sync` raises it, nothing lowers it - not
-  a later sync, not completion. Any query using the flag alone will keep
-  reporting arrivals that were long since dealt with.
+- **`requires_manual_sync` is rarely cleared.** Since 2.3.0 the sync engine
+  raises it — when the safety check stops a sync (manual ones included), when a
+  restart interrupts a waiting batch, and for webhooks the old scheduler
+  dropped; on movie webhooks too since 2026-10-05 — and only two things lower it: **Sync anyway**, and **Mark as done**
+  on an *After a restart* alert. A later successful sync still leaves it
+  raised, so any query using the flag alone will keep reporting arrivals that
+  were long since dealt with. (`TransferCoordinator.mark_for_manual_sync`, which
+  used to raise it, has no callers.)
 - **`PARTIAL_SYNC` is rendered but never returned** by any backend code.
 - **Undefined CSS variables.** `webhook-bits.tsx:29` builds the poster fallback
   from `var(--surface-3)` and `var(--surface-2)`; neither is defined anywhere in
@@ -248,12 +552,25 @@ What remains:
   cutover. It now reuses a current build or runs `npm ci` and `npm run build`.
 - **The queue's own test file is untracked.** `test/test_queue_behaviors.py`
   (singular `test/`) is a hand-rolled script outside git, so the most
-  concurrency-sensitive subsystem has no tracked coverage.
+  concurrency-sensitive subsystem has little tracked coverage. The exception,
+  since 2.3.0, is the rule for which destinations collide:
+  `tests/test_sync_engine.py` (`QueueOverlapTests`) drives the real
+  `QueueManager`, and since 2026-10-05 also its start-up rebuild of queued
+  reservations, with the promotion that follows it. Promotion when a running
+  transfer finishes, and the slot cap, are still exercised only by the
+  untracked script.
+- **Three kinds of sync run have no tests** — **verified** 2026-10-05. Nothing
+  in `tests/` exercises a `simulation` run or its deletion at cleanup, a
+  restore's run (`SyncEngine.begin_restore`), or Explore's removals-only record
+  (`SyncEngine.record_finished_run`). The backup and Explore suites run without
+  the sync engine and take each service's no-engine path; the simulation suite's
+  coordinator is a mock, engine included.
 
 ---
 
 ## Related
 
+- [Sync engine](../features/sync-engine/README.md)
 - [Configuration](../reference/configuration.md)
 - [Logging](logging.md)
 - [Realtime contract](../reference/realtime.md)

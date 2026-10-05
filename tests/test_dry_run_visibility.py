@@ -139,5 +139,54 @@ class TestModeIsVisibleTests(unittest.TestCase):
         page = (REPO_ROOT / 'frontend' / 'src' / 'components' / 'pages' / 'backups.tsx').read_text()
         self.assertIn('result.dry_run', page)
 
+
+class DryRunThatDidNotFinishTests(unittest.TestCase):
+    """
+    A dry run that could not run is not a dry run that found nothing.
+
+    The safety check reads rsync's list of what would change. When rsync never
+    reached the media server, or the folder was missing, that list is empty —
+    and an empty list used to read as "nothing to delete, safe to sync".
+    """
+
+    def setUp(self):
+        import subprocess
+        import tempfile
+        from tests.test_transfer_routing import build_service
+        from services.transfer_service import TransferService
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dest = tmp.name
+        patcher = patch.object(TransferService, '_build_ssh_host_key_options',
+                               return_value=['-o', 'StrictHostKeyChecking=accept-new'])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.service = build_service()
+        self.completed = subprocess.CompletedProcess
+
+    def dry_run(self, code, stderr=''):
+        answer = self.completed(args=[], returncode=code, stdout='', stderr=stderr)
+        with patch('services.transfer_service.subprocess.run', return_value=answer):
+            return self.service.perform_dry_run_rsync('/remote/tv/Example Show (2020)/Season 01',
+                                                      self.dest)
+
+    def test_an_unreachable_media_server_is_not_safe(self):
+        result = self.dry_run(255, 'ssh: connect to host remote.example port 22: '
+                                   'Connection refused\n')
+        self.assertFalse(result['safe_to_sync'])
+        self.assertIn('did not finish (rsync exit 255)', result['reason'])
+        self.assertIn('Connection refused', result['reason'])
+
+    def test_a_missing_folder_is_not_safe(self):
+        result = self.dry_run(23, 'rsync: change_dir failed: No such file or directory (2)\n')
+        self.assertFalse(result['safe_to_sync'])
+        self.assertEqual(result['rsync_exit_code'], 23)
+
+    def test_files_vanishing_mid_scan_is_still_an_answer(self):
+        result = self.dry_run(24, 'file has vanished: "a.mkv"\n')
+        self.assertTrue(result['safe_to_sync'], result['reason'])
+
+
 if __name__ == '__main__':
     unittest.main()

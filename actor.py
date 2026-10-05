@@ -108,6 +108,9 @@ AUTO_RETENTION = automated_actor('retention')
 #: and the batch window closed", and the Activity screen should be able to
 #: separate them without reading the summary text.
 AUTO_LIBRARY_SWEEP = automated_actor('library-sweep')
+#: The scheduled auto-scanner, which replaced the sweep in 2.3.0. A sync it
+#: starts means the service imported something no webhook delivered.
+AUTO_SCANNER = automated_actor('auto-scanner')
 #: Files kept out of the way of a sync. Named separately from the person who
 #: started the sync, and from retention, so the History tab can tell "this
 #: version was created for you" apart from "this version was taken away".
@@ -137,6 +140,7 @@ NAMED_AUTOMATION = {
         AUTO_WEBHOOK_RENAME,
         AUTO_RETENTION,
         AUTO_LIBRARY_SWEEP,
+        AUTO_SCANNER,
     )
 }
 

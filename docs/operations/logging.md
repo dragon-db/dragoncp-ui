@@ -1,7 +1,7 @@
 # Backend Logging
 
-Last updated: 2026-08-06
-Primary files: `logging_setup.py`, `services/sync_logger.py`, `routes/logs.py`, `frontend/src/components/settings/backend-log-panel.tsx`
+Last updated: 2026-10-05
+Primary files: `logging_setup.py`, `services/sync_logger.py`, `routes/logs.py`, `frontend/src/components/settings/backend-log-panel.tsx`, `models/sync_run.py`
 
 ## Purpose
 
@@ -12,6 +12,10 @@ log viewer endpoints read that same file, so what an operator sees in Settings �
 Diagnostics → Backend logs and what they see over SSH is the same text. The
 React viewer supports severity and text filters, automatic or manual refresh,
 and an authenticated full-file download.
+
+One thing is deliberately not in it: what the sync pipeline decided at each
+stage of a sync. Since 2.3.0 that is kept in the database with the sync's run —
+see [The Sync Pipeline Keeps Its Own Record](#the-sync-pipeline-keeps-its-own-record).
 
 ## Where The Log File Lives
 
@@ -165,7 +169,12 @@ nobody handled; it is not a complete list of everything that went wrong.
 ## The Per-Sync Log Format
 
 `services/sync_logger.py` exists so that series and anime syncs can be followed
-across the several services that touch them. It emits a single, greppable shape:
+across the several services that touch them. Since 2.3.0 it has one caller left,
+the transfer coordinator's `start_transfer()`: the webhook service's trigger code
+and the old auto-sync scheduler that also wrote these lines were replaced by the
+sync engine, which keeps its own record instead (see
+[below](#the-sync-pipeline-keeps-its-own-record)). The shape is still worth
+knowing, for that caller and for older logs. It is a single, greppable line:
 
 ```
 🎯 [TransferCoordinator] [transfer_id:rehearsal_reh_1785202435_caa5dd_0] > start_transfer() called
@@ -177,26 +186,30 @@ The parts, in order:
 - **icon** - an emoji chosen by the caller, defaulting to 📋. Purely visual, but
   the ❌/✅ convention interacts with the severity inference described above for
   ordinary `print()` output.
-- **`[service]`** - the component that emitted the line, for example
-  `[TransferCoordinator]`, `[WebhookService]`, `[AutoSyncScheduler]`. This is the
-  field to use for "who did this", because the `module:line` column is useless
-  here: all of these records are emitted from one place and always read
-  `sync_logger:50`, under the logger name `dragoncp.services.sync_logger`.
+- **`[service]`** - the component that emitted the line. Today that is only
+  `[TransferCoordinator]`; logs from before 2.3.0 also carry `[WebhookService]`
+  and `[AutoSyncScheduler]`. This is the field to use for "who did this",
+  because the `module:line` column is useless here: all of these records are
+  emitted from one place and always read `sync_logger:50`, under the logger
+  name `dragoncp.services.sync_logger`.
 - **`[notification_id:...]` and/or `[transfer_id:...]`** - present only when the
   caller passed them, notification first, transfer second, both bracketed
   separately when both are present. These are always the full, untruncated ids,
   deliberately, so the same string works as a grep pattern and as a database key.
+  The remaining caller passes only the transfer id, so new lines never carry a
+  notification id.
 - **`>`** - separator.
 - **indent** - three spaces per indent level, used to nest a detail line under the
   step it belongs to (`dest_path:` under `start_transfer() called`).
 - **message**.
 
-Records default to INFO. This is worth knowing: a failed validation logged
-through the helper gets a ❌ icon but is still an INFO record, so it will not
-appear when the log viewer is filtered to ERROR. Filter on the id, not the level,
-when investigating a sync.
+Records default to INFO. This was worth knowing before 2.3.0: a failed
+validation logged through the helper got a ❌ icon but was still an INFO record,
+so it never appeared when the log viewer was filtered to ERROR. Filter on the
+id, not the level, when investigating a sync in older logs.
 
-Three helpers build on the same shape:
+Three helpers build on the same shape. None has a caller since 2.3.0; they are
+described so older logs can be read:
 
 - batch logging appends ` (N items)` to the message and, when the batch is five
   notifications or fewer, follows it with one `   - notification_id: <id>` line
@@ -205,14 +218,29 @@ Three helpers build on the same shape:
   when it failed
 - state-change logging emits `🔄 ... State change: <old> → <new>`
 
-Callers today are the transfer coordinator, the webhook service and the auto-sync
-scheduler. See [queue management](../features/queue/README.md) for what the
-states themselves mean.
+See [queue management](../features/queue/README.md) for what the states
+themselves mean.
 
 ### Following One Stuck Sync End To End
 
-The structured lines are only part of the story. The rest of the lifecycle -
-queue registration, rsync start, monitoring, completion, notification updates -
+Since 2.3.0 the thread through a sync is its **run** in the sync pipeline, not
+the log. Start there - from a webhook's id or a transfer's:
+
+```
+GET /api/sync/lookup?notification_id=<webhook id>     (or ?transfer_id=<transfer id>)
+GET /api/sync/runs/<run_id>
+```
+
+The backend log takes over once the run has a transfer, and a transfer is
+created only when the run reaches its Queue stage - after the ready check and
+the safety check. A sync still waiting on Sonarr, held for a person, or stopped
+by the safety check has no transfer id and no transfer lines at all. (The
+safety check's dry run does print - `🔍 Starting dry-run validation`, the source
+and destination folders, `📊 Dry-run results: ...` - but those lines carry
+neither a run id nor a transfer id; grep the season folder's path to find them.)
+
+Once there is a transfer, the structured lines are only part of the story. The
+rest of the lifecycle - queue registration, rsync start, monitoring, completion -
 is narrated by plain `print()` calls that embed the bare transfer id in the
 message. So the widest net is a grep for the raw id, not for the `transfer_id:`
 prefix:
@@ -223,13 +251,18 @@ grep "<transfer-id>" logs/dragoncp_backend.log
 
 That single grep picks up the sync-logger lines, the queue manager's
 registration and unregistration, the transfer record creation, the rsync command,
-the monitoring thread, the completion status and the notification/Discord
-follow-up, because they all mention the id. Narrowing to `transfer_id:<id>` gives
-only the coordinator's structured steps; use it when the wide grep is too noisy.
+the monitoring thread and the completion status, because they all mention the
+id. Narrowing to `transfer_id:<id>` gives only the coordinator's structured
+steps; use it when the wide grep is too noisy. What happened after the copy -
+which webhooks were marked, what was announced - is on the run's Finish and Tell
+stages.
 
-For a webhook-driven sync that has not produced a transfer yet, grep
-`notification_id:<id>` instead - that is the id the scheduler and webhook service
-carry before a transfer exists.
+A transfer id names the kind of sync that made it: `series_webhook_...` (a
+Sonarr batch), `webhook_...` (Radarr), `transfer_...` (a press of Sync),
+`scanner_...` (the auto-scanner), and `explore_...`, `restore_...` and
+`simulation_...`; a restart keeps the id of the transfer it retries. Before
+2.3.0 a webhook's transfer id embedded the notification id, so grepping a
+notification id found its transfer; it no longer does - use the lookup above.
 
 To follow something across a rotation, include the rotated files, remembering
 that `.1` is newer than `.2`:
@@ -237,6 +270,44 @@ that `.1` is newer than `.2`:
 ```
 grep -h "<transfer-id>" logs/dragoncp_backend.log.2 logs/dragoncp_backend.log.1 logs/dragoncp_backend.log
 ```
+
+## The Sync Pipeline Keeps Its Own Record
+
+Every sync since 2.3.0 is a run in the sync engine
+([sync engine](../features/sync-engine/README.md)). What each of its nine stages
+decided - and why a stage was skipped - is written to the database with the run,
+not to `dragoncp_backend.log`: one summary per stage in `sync_run_stage`, and the
+stage's own lines in `sync_run_event`, at most 2,000 per run with the oldest
+dropped first. That is where Sonarr's answers during the ready check, the
+fallback timer's deadline, the safety check's counts and the queue wait are.
+Read them with `GET /api/sync/runs/<run_id>` (every stage with its lines) or
+`GET /api/sync/runs/<run_id>/events?after=<id>`. There is no screen for runs yet.
+
+What the new pieces do write to the backend log is short, and mostly about
+themselves:
+
+| Logger | What it writes |
+| --- | --- |
+| `dragoncp.sync_engine` | `Sync engine started` at start-up. At ERROR with a traceback: `Sync engine recovery failed`, `Sync engine tick failed`, and `Sync run <run_id> failed while advancing` - that run is then failed with the error as its reason |
+| `dragoncp.sync_engine.recovery` | `Sync engine recovery: {...}` once at start-up, only when it found something: how many runs it marked interrupted, left queued, reattached to, or finished because their transfer ended while DragonCP was down, and how many folders of webhooks the old scheduler dropped |
+| `dragoncp.alerts` | `Alert opened: <kind> — <title>` at INFO for each new alert; a repeat of one still open is not logged |
+| `dragoncp.auto_scanner` | `Auto-scanner · Sonarr · <summary>` at INFO after each scan that reached its service |
+| `dragoncp.scheduler` | `Scheduler started with 2 job(s): sonarr_auto_scanner, radarr_auto_scanner` at start-up; `Scheduled job <name> failed` with a traceback when a job raises |
+| `dragoncp.services.transfer_coordinator` (a `print`) | `⚠️  Sync engine hook <name> failed: <error>` and a traceback: the engine's bookkeeping for a transfer failed, and the transfer itself carried on |
+
+Two consequences:
+
+- **A scan that cannot reach its service is silent.** It returns a failure
+  without raising, so neither the scanner nor the scheduler logs it. Its summary
+  is the job's last result (`GET /api/scheduler/jobs`); after three in a row,
+  `Alert opened: job_failing — ...` appears.
+- **A refused sync rarely reaches ERROR.** The safety check's verdict is on the
+  run. A refusal on the counts is in the log only as the dry run's own INFO
+  lines (`Safe to sync: False`, `Reason: ...`) and an INFO
+  `Alert opened: sync_refused — ...`. The exception, since 2026-10-05, is a dry
+  run rsync could not finish — the media server unreachable, the folder
+  missing: it prints `❌ Dry-run did not finish: exit N: <rsync's last error
+  line>`, which the ❌ puts at ERROR.
 
 ## Reading The Logs From The API
 
@@ -322,6 +393,14 @@ The two signals worth internalising are the pairing and the return code. Every
 successful rsync reports return code `0`. The monitoring line also gives the
 rsync PID, which is what to check on the host if the log has gone quiet.
 
+A sync that runs the safety check - a webhook batch, a press of Sync, an
+auto-scanner find, a restart - leaves the dry run's lines a little before that
+trail: `🔍 Starting dry-run validation`, `🔄 Executing dry-run: rsync -avv
+--dry-run ...`, `📊 Dry-run results:` and `   Safe to sync: True`. They name the
+folders, not the transfer, which does not exist yet. A single-file sync, and a
+restart of a simulated transfer or of an Explore plan's transfer, skip the dry
+run and leave none of these lines; the run's Safety stage says why.
+
 ### What A Failing Transfer Looks Like
 
 Failures come in two flavours.
@@ -366,6 +445,12 @@ Both cases are queue state questions rather than logging questions; see
 [queue management](../features/queue/README.md) for how paths and slots are held
 and released.
 
+A sync stuck *before* it has a transfer - waiting on Sonarr, held because
+automatic sync is off, stopped by the safety check, interrupted by a restart -
+leaves no transfer lines at all. Ask the pipeline instead:
+`GET /api/sync/runs?state=open` lists the runs not yet copying, each with the
+stage it is at, and `?state=refused,interrupted` the ones stopped for a person.
+
 ### Practical Filters
 
 - default ERROR view for "is anything broken right now"
@@ -374,6 +459,10 @@ and released.
 - `search=dragoncp.crash` for exceptions nobody handled
 - `search=Logging configured at` to confirm which file and level the running
   process picked up after a restart
+- `level=ALL` plus `search=Alert opened` for every alert opened, in order
+- `level=ALL` plus `search=dragoncp.auto_scanner` for one line per scan
+- `search=dragoncp.sync_engine` for the engine's own failures, and with
+  `level=ALL` its start-up and recovery lines
 
 ## Files Most Relevant To Logging Behaviour
 
@@ -381,3 +470,5 @@ and released.
 - `services/sync_logger.py` - the structured per-sync record shape
 - `routes/logs.py` - the two operator endpoints and the bounded backward scan
 - `app.py` - calls the logging setup at startup and emits the HTTP access records
+- `models/sync_run.py` - where a sync's stage-by-stage record is kept instead of the log
+- `services/sync_engine/engine.py`, `services/sync_engine/recovery.py`, `services/alert_service.py`, `services/auto_scanner.py`, `services/scheduler.py` - the named loggers in the table above

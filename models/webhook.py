@@ -953,9 +953,8 @@ class NotificationCatalog:
 
     def _tables_for(self, media_type: str = None, status: str = None) -> List[str]:
         """Which tables a filter selects."""
-        # Only the series table records the manual-sync flag.
-        if status == MANUAL_SYNC_FILTER:
-            return [] if media_type in _MOVIE_TYPES else ['sonarr_webhook']
+        # Both tables record the manual-sync flag since 2.3.0, so the
+        # manual-sync filter selects tables like any other.
         if not media_type:
             return ['radarr_webhook', 'sonarr_webhook']
         return ['radarr_webhook'] if media_type in _MOVIE_TYPES else ['sonarr_webhook']

@@ -55,6 +55,26 @@ def init_webhook_routes(app_config, app_transfer_coordinator, app_rename_service
     rename_service = app_rename_service
 
 
+def _submit_webhook(kind, source, table, media_type, notification_id, auto_sync_enabled):
+    """Hand a stored webhook to the sync engine.
+
+    Always handed over, automatic sync or not: with it off, the engine opens
+    the batch and holds it for a person, so the webhook is visible in the
+    pipeline either way and a later press of Sync picks up the whole batch.
+    """
+    from services.sync_engine.engine import SyncRequest
+    transfer_coordinator.index_notification(table, notification_id, media_type)
+    return transfer_coordinator.sync_engine.submit(SyncRequest(
+        kind=kind, source=source, media_type=media_type,
+        webhooks=[(table, notification_id)], hold=not auto_sync_enabled,
+    ))
+
+
+def _manual_sync(notification_ids):
+    """An admin pressed Sync: the engine groups by folder and does the rest."""
+    return transfer_coordinator.sync_engine.sync_notifications(notification_ids)
+
+
 _notification_catalog = None
 
 
@@ -167,31 +187,26 @@ def api_webhook_movies_receiver():
             auto_sync=auto_sync_enabled,
         )
         
+        result = _submit_webhook('radarr_webhook', 'radarr', 'radarr_webhook', 'movies',
+                                 notification_id, auto_sync_enabled)
         if auto_sync_enabled:
-            print(f"🎬 Auto-sync enabled, triggering sync for {parsed_data['title']}")
-            # Trigger automatic sync
-            success, message = transfer_coordinator.trigger_webhook_sync(notification_id)
-            if success:
-                return jsonify({
-                    "status": "success",
-                    "message": f"Webhook received and auto-sync started for {parsed_data['title']}",
-                    "notification_id": notification_id,
-                    "auto_sync": True
-                })
-            else:
-                return jsonify({
-                    "status": "warning",
-                    "message": f"Webhook received but auto-sync failed: {message}",
-                    "notification_id": notification_id,
-                    "auto_sync": False
-                })
+            print(f"🎬 Auto-sync enabled: {result.message}")
+            return jsonify({
+                "status": "success" if result.ok else "warning",
+                "message": (f"Webhook received. {result.message}" if result.ok
+                            else f"Webhook received but auto-sync failed: {result.message}"),
+                "notification_id": notification_id,
+                "auto_sync": result.ok,
+                "run_id": result.run_id,
+            })
         else:
-            print(f"🎬 Auto-sync disabled, storing notification for manual sync")
+            print(f"🎬 Auto-sync disabled, holding notification for manual sync")
             return jsonify({
                 "status": "success",
                 "message": f"Webhook received for {parsed_data['title']}. Manual sync required.",
                 "notification_id": notification_id,
-                "auto_sync": False
+                "auto_sync": False,
+                "run_id": result.run_id,
             })
         
     except Exception as e:
@@ -317,28 +332,25 @@ def api_webhook_series_receiver():
             auto_sync=auto_sync_enabled,
         )
         
+        result = _submit_webhook('sonarr_webhook', 'sonarr', 'sonarr_webhook', 'tvshows',
+                                 notification_id, auto_sync_enabled)
         if auto_sync_enabled:
-            print(f"📺 Series auto-sync enabled, scheduling auto-sync for {parsed_data['series_title']}")
-            # Schedule auto-sync job
-            transfer_coordinator.schedule_auto_sync(
-                notification_id=notification_id,
-                series_title_slug=parsed_data['series_title_slug'],
-                season_number=parsed_data['season_number'],
-                media_type='tvshows'
-            )
+            print(f"📺 Series auto-sync: {result.message}")
             return jsonify({
-                "status": "success",
-                "message": f"Series webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Auto-sync scheduled.",
+                "status": "success" if result.ok else "warning",
+                "message": f"Series webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. {result.message}",
                 "notification_id": notification_id,
-                "auto_sync": True
+                "auto_sync": result.ok,
+                "run_id": result.run_id,
             })
         else:
-            print(f"📺 Series auto-sync disabled, storing notification for manual sync")
+            print(f"📺 Series auto-sync disabled, holding notification for manual sync")
             return jsonify({
                 "status": "success",
                 "message": f"Series webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Manual sync required.",
                 "notification_id": notification_id,
-                "auto_sync": False
+                "auto_sync": False,
+                "run_id": result.run_id,
             })
         
     except Exception as e:
@@ -464,28 +476,25 @@ def api_webhook_anime_receiver():
             auto_sync=auto_sync_enabled,
         )
         
+        result = _submit_webhook('sonarr_webhook', 'sonarr', 'sonarr_webhook', 'anime',
+                                 notification_id, auto_sync_enabled)
         if auto_sync_enabled:
-            print(f"🍙 Anime auto-sync enabled, scheduling auto-sync for {parsed_data['series_title']}")
-            # Schedule auto-sync job
-            transfer_coordinator.schedule_auto_sync(
-                notification_id=notification_id,
-                series_title_slug=parsed_data['series_title_slug'],
-                season_number=parsed_data['season_number'],
-                media_type='anime'
-            )
+            print(f"🍙 Anime auto-sync: {result.message}")
             return jsonify({
-                "status": "success",
-                "message": f"Anime webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Auto-sync scheduled.",
+                "status": "success" if result.ok else "warning",
+                "message": f"Anime webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. {result.message}",
                 "notification_id": notification_id,
-                "auto_sync": True
+                "auto_sync": result.ok,
+                "run_id": result.run_id,
             })
         else:
-            print(f"🍙 Anime auto-sync disabled, storing notification for manual sync")
+            print(f"🍙 Anime auto-sync disabled, holding notification for manual sync")
             return jsonify({
                 "status": "success",
                 "message": f"Anime webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Manual sync required.",
                 "notification_id": notification_id,
-                "auto_sync": False
+                "auto_sync": False,
+                "run_id": result.run_id,
             })
         
     except Exception as e:
@@ -733,20 +742,22 @@ def api_webhook_notification_json(notification_id):
 def api_webhook_sync(notification_id):
     """Manually trigger sync for a webhook notification (movies)"""
     try:
-        success, message = transfer_coordinator.trigger_webhook_sync(notification_id)
-        
-        if success:
+        result = _manual_sync([notification_id])
+
+        if result['ok']:
             record('notification.sync', f"Synced the movie notification {notification_id}",
                    target_type='notification', target_id=notification_id,
-                   detail={'media_type': 'movie', 'manual': True})
+                   detail={'media_type': 'movie', 'manual': True,
+                           'run_ids': result['run_ids']})
             return jsonify({
                 "status": "success",
-                "message": message
+                "message": result['message'],
+                "run_ids": result['run_ids'],
             })
         else:
             return jsonify({
                 "status": "error",
-                "message": message
+                "message": result['message']
             }), 400
             
     except Exception as e:
@@ -762,20 +773,22 @@ def api_webhook_sync(notification_id):
 def api_series_webhook_sync(notification_id):
     """Manually trigger sync for a series webhook notification"""
     try:
-        success, message = transfer_coordinator.trigger_series_webhook_sync(notification_id)
-        
-        if success:
+        result = _manual_sync([notification_id])
+
+        if result['ok']:
             record('notification.sync', f"Synced the series notification {notification_id}",
                    target_type='notification', target_id=notification_id,
-                   detail={'media_type': 'series', 'manual': True})
+                   detail={'media_type': 'series', 'manual': True,
+                           'run_ids': result['run_ids']})
             return jsonify({
                 "status": "success",
-                "message": message
+                "message": result['message'],
+                "run_ids": result['run_ids'],
             })
         else:
             return jsonify({
                 "status": "error",
-                "message": message
+                "message": result['message']
             }), 400
             
     except Exception as e:
@@ -813,9 +826,8 @@ def api_series_webhook_sync_batch():
                 "message": "notification_ids must be strings"
             }), 400
 
-        success, message, transfer_ids = transfer_coordinator.sync_notification_group(
-            notification_ids
-        )
+        result = _manual_sync(notification_ids)
+        success = result['ok']
 
         # After the call, and reflecting what it actually returned: recording
         # "synced" up front made a refused or failed batch read as a success.
@@ -824,13 +836,17 @@ def api_series_webhook_sync_batch():
             f"{'Synced' if success else 'Failed to sync'} a group of "
             f"{len(notification_ids)} notification(s) as one transfer",
             target_type='notification',
-            detail={'notification_count': len(notification_ids)},
+            detail={'notification_count': len(notification_ids),
+                    'run_ids': result['run_ids']},
         )
 
         return jsonify({
             "status": "success" if success else "error",
-            "message": message,
-            "transfer_ids": transfer_ids,
+            "message": result['message'],
+            # Transfers are created once each batch passes its safety check,
+            # so a fresh request has run ids to follow, not transfer ids yet.
+            "transfer_ids": [],
+            "run_ids": result['run_ids'],
         }), (200 if success else 400)
 
     except Exception as e:
@@ -848,20 +864,22 @@ def api_series_webhook_sync_batch():
 def api_anime_webhook_sync(notification_id):
     """Manually trigger sync for an anime webhook notification"""
     try:
-        success, message = transfer_coordinator.trigger_series_webhook_sync(notification_id)
-        
-        if success:
+        result = _manual_sync([notification_id])
+
+        if result['ok']:
             record('notification.sync', f"Synced the anime notification {notification_id}",
                    target_type='notification', target_id=notification_id,
-                   detail={'media_type': 'anime', 'manual': True})
+                   detail={'media_type': 'anime', 'manual': True,
+                           'run_ids': result['run_ids']})
             return jsonify({
                 "status": "success",
-                "message": message
+                "message": result['message'],
+                "run_ids": result['run_ids'],
             })
         else:
             return jsonify({
                 "status": "error",
-                "message": message
+                "message": result['message']
             }), 400
             
     except Exception as e:

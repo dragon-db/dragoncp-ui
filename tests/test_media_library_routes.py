@@ -378,7 +378,7 @@ class MediaLibraryRouteTests(unittest.TestCase):
             def sync_one(self, source, external_id):
                 return {'success': True, 'transfers_started': 1}
 
-        media_routes.init_media_library_routes(self.index, sweep=_StubSweep())
+        media_routes.init_media_library_routes(self.index, scanner=_StubSweep())
         self.addCleanup(media_routes.init_media_library_routes, self.index)
         response = self.client.post('/api/library/sonarr/sync', json={})
         self.assertEqual(response.status_code, 400)
@@ -391,7 +391,7 @@ class MediaLibraryRouteTests(unittest.TestCase):
                 return {'success': False,
                         'error': 'Everything the service holds is already here'}
 
-        media_routes.init_media_library_routes(self.index, sweep=_StubSweep())
+        media_routes.init_media_library_routes(self.index, scanner=_StubSweep())
         self.addCleanup(media_routes.init_media_library_routes, self.index)
         response = self.client.post('/api/library/sonarr/sync',
                                     json={'external_id': '900001'})

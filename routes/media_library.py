@@ -2,10 +2,10 @@
 """
 The library and history views — what the service holds, and what we hold.
 
-Read-only, and structurally so: every handler here reaches Sonarr or Radarr
-through the connector adapters, which refuse any verb other than GET or HEAD.
-There is no route in this file that can change anything on the other side, and
-no route that starts a transfer.
+Read-only towards the services, and structurally so: every handler here
+reaches Sonarr or Radarr through the connector adapters, which refuse any verb
+other than GET or HEAD. The one route that acts — Sync on a title — acts on
+*this* side, through the sync engine like every other sync.
 
 The library view exists to answer a question this application could not answer
 before the title index: **which parts of the Sonarr library have we actually
@@ -26,13 +26,13 @@ media_library_bp = Blueprint('media_library', __name__)
 logger = logging.getLogger('dragoncp.routes.media_library')
 
 _index = None
-_sweep = None
+_scanner = None
 
 
-def init_media_library_routes(media_index, sweep=None):
-    global _index, _sweep
+def init_media_library_routes(media_index, scanner=None):
+    global _index, _scanner
     _index = media_index
-    _sweep = sweep
+    _scanner = scanner
 
 
 def _guard(source: str):
@@ -124,7 +124,7 @@ def api_library_sync(source):
     problem = _guard(source)
     if problem:
         return problem
-    if _sweep is None:
+    if _scanner is None:
         return jsonify({'success': False,
                         'error': 'Syncing from the library view is not available'}), 503
 
@@ -134,7 +134,7 @@ def api_library_sync(source):
         return jsonify({'success': False, 'error': 'external_id is required'}), 400
 
     try:
-        result = _sweep.sync_one(source, external_id)
+        result = _scanner.sync_one(source, external_id)
     except Exception as exc:  # noqa: BLE001
         logger.exception('Library sync failed for %s:%s', source, external_id)
         return jsonify({'success': False, 'error': str(exc)}), 500

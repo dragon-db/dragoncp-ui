@@ -5,7 +5,7 @@ difference into a plan you review before anything is written. It replaces the
 old Browse Media page, which walked the remote server and guessed at sync state
 from transfer timestamps.
 
-Last updated: 2026-07-30
+Last updated: 2026-10-05
 
 ## The idea in one paragraph
 
@@ -24,6 +24,7 @@ badge, count and action on the page comes from those four labels.
 | Lining them up and labelling | `services/explore/compare.py` |
 | Turning a comparison into an operation + verdict | `services/explore/planner.py` |
 | Carrying a plan out | `services/explore/executor.py` |
+| Handing each season to the sync pipeline | `services/explore/executor.py` (`_sync_request`), `services/sync_engine/engine.py` |
 | Snapshots, plan tokens, per-file outcomes | `services/explore/store.py` |
 | Repairing files stranded a level too deep | `services/explore/repair.py` |
 | The facade the routes call | `services/explore/service.py` |
@@ -113,6 +114,20 @@ Because each transfer is rooted at its own pair of season folders, a season
 spelled `Season 01` on the remote and `Season 1` locally needs no special
 handling: the run reads from one and writes into the other, and the file list is
 bare filenames that cannot recreate a folder. See the naming note below.
+
+**Each season's transfer is a sync like any other.** Since 2.3.0 an approved
+plan hands every season to the sync engine as an *Explore* sync
+([sync engine](../sync-engine/README.md)), and waits for the queue's answer
+(`submit(..., wait=True)`) because the moves made beforehand have to be rolled
+back if the transfer is refused. The run records what the review already
+checked instead of running a second dry run — "The Explore plan was judged safe
+before it was approved: 4 file(s) to fetch, 1 moved to the backup area first.",
+with "reviewed" in place of "judged safe" when the plan was overridden. It never
+takes in webhooks, because a plan is an exact file list, and it skips the ready
+check. The queue still holds it behind anything writing to the same folder —
+and, since 2.3.0, behind a copy of the whole series that folder belongs to. Its
+finished or failed message on Discord is labelled **Explore**; before 2.3.0 it
+read "Manual Sync".
 
 **Season folders that Sonarr would have named differently are flagged, not
 blocked.** Sonarr writes `Season {season:00}`, so `Season 01` and `Specials`.
@@ -414,12 +429,26 @@ and produce no backup record, leaving the moved files in the backup directory
 with nothing pointing at them. It now writes a completed transfer row
 (`operation_type='explore_prune'`) and indexes its backup, which is exactly what
 restore already does for its own synthetic run. A pure removal is the run you are
-most likely to want to undo.
+most likely to want to undo. Since 2.3.0 it is also recorded in the sync pipeline
+as a finished *Explore* run (`SyncEngine.record_finished_run`): Queue and
+Transfer skipped — "Nothing to download: 2 file(s) moved to the backup area." —
+and nothing announced.
 
 **A queued sync moves its backups first.** Files being superseded or removed are
 moved before the transfer is handed to the queue, so a run waiting on a slot
-leaves those episodes in backup until it starts. If the transfer fails to start,
-the moves are rolled back and the library is left exactly as it was.
+leaves those episodes in backup until it starts. If the transfer fails to start
+— including when the sync pipeline turns it away — the moves are rolled back and
+the library is left exactly as it was.
+
+**Restarting a failed Explore transfer re-runs the plan's file list.** The rerun
+uses the stored file list (`transfers.explore_*`) and goes through the pipeline
+as a *Restart*, not as Explore: the plan's review is not repeated, and the
+safety check is skipped, with its reason on the stage — the retry copies the
+plan's own files and deletes nothing, the plan was checked before it was
+approved, and a dry run of the whole season folder would judge a different
+copy. Fixed 2026-10-05: before, the restart was judged by that folder dry run,
+with files only this disk has counted as deletions
+(`tests/test_sync_engine.py::FinishTests::test_a_retried_explore_plan_is_not_judged_by_a_folder_dry_run`).
 
 **Comparison is manual.** There is no schedule. A full-library pass has not been
 measured against the real remote yet, and scheduling work of unknown cost against
@@ -509,6 +538,7 @@ rate limited, 502 remote listing failed.
 | `explore_plan` | an evaluated operation, its verdict and expiry |
 | `transfer_file` | what a run did, file by file |
 | `transfers.explore_*` | the approved file list, so a queued or restarted run rebuilds the same command |
+| `sync_run` (kind `explore`) | one run per season transfer, and one finished run per removals-only season; the plan id, mode and counts in `options`. Linked from the transfer by `transfers.sync_run_id` |
 
 ## Tests
 
@@ -520,11 +550,17 @@ PYTHONPATH=venv/lib/python3.12/site-packages python3 -m unittest \
   tests.test_explore_backups tests.test_explore_repair
 ```
 
-129 tests: the identity parser against real filename shapes from the library, the
+156 tests: the identity parser against real filename shapes from the library, the
 comparison labels, planning and safety, multi-season plans, re-fetching a file
 that already matches, reading rsync's itemised dry-run output and reconciling it
 with the plan, scoping backups to a series and season, an end-to-end run with the
 ssh boundary faked, and the HTTP layer.
+
+They run without the sync engine: the fake coordinator has none, so the executor
+takes its direct `start_transfer()` fallback. The engine side of an approved plan
+is pinned in `tests/test_sync_engine.py`
+(`test_explore_runs_synchronously_and_stands_alone`); the removals-only record
+(`record_finished_run`) has no test.
 
 The repair tests run against a real directory on disk — the repair is a rename
 and an rmdir, so faking the filesystem would test nothing. They cover the shape
@@ -542,5 +578,6 @@ title is wrong.
 ## Related
 
 - [../../plans/explore-rebuild.md](../../plans/explore-rebuild.md) — the design and why the old code was replaced
+- [../sync-engine/README.md](../sync-engine/README.md) — the pipeline each approved season runs through
 - [../queue/README.md](../queue/README.md) — what happens after a transfer starts
 - [../backups/README.md](../backups/README.md) — restoring what a sync moved

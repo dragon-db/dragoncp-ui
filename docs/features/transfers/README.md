@@ -1,20 +1,25 @@
 # Transfers
 
-Last updated: 2026-08-01
+Last updated: 2026-10-05
 
 A transfer copies one folder (or one episode file) from the remote media server
 onto local storage and keeps a record of how it went. The operator sees a live
 percentage, throughput, ETA and the running rsync output; anything the copy would
 have destroyed at the destination is set aside first, so it can be restored. A
 transfer can be paused and picked up again later, cancelled, restarted after a
-failure, and its record deleted once it is no longer interesting.
+failure, and its record deleted once it is no longer interesting. Every transfer
+is the copy step of a sync in the [sync engine](../sync-engine/README.md): the
+engine decides when the transfer is created — after the sync's safety check,
+with the queue deciding when it starts — and closes the sync when the copy ends.
 
 ## Where it lives
 
 | Concern | File |
 |---|---|
-| rsync command, monitor loop, progress parsing, pause/cancel/restart | `services/transfer_service.py` |
-| Orchestration: queue admission, resume, post-completion follow-up | `services/transfer_coordinator.py` |
+| rsync command, monitor loop, progress parsing, pause/cancel, reattaching after a restart | `services/transfer_service.py` |
+| Orchestration: queue admission, re-running a row through the queue (`requeue_transfer`), resume, post-completion follow-up, lifecycle hooks into the sync engine | `services/transfer_coordinator.py` |
+| When a transfer is created, restart as a new sync, closing the sync and telling Discord | `services/sync_engine/engine.py` |
+| What happens to a sync's transfer after a DragonCP restart | `services/sync_engine/recovery.py` |
 | HTTP endpoints | `routes/transfers.py` |
 | Row storage, log storage, listing query | `models/transfer.py` |
 | Concurrency and destination locking | `services/queue_manager.py` |
@@ -22,6 +27,7 @@ failure, and its record deleted once it is no longer interesting.
 | SSH host-key policy shared with the browse path | `ssh.py` |
 | Path-component validation for request input | `security.py` |
 | Storage tests | `tests/test_transfer_logging.py`, `tests/test_transfer_listing.py` |
+| Restart through the queue, a lost result after a restart, the safety-check skips, a deleted transfer's sync | `tests/test_sync_engine.py` |
 
 ## How it works
 
@@ -34,31 +40,64 @@ null byte, then builds the source and destination from the configured base paths
 (`MOVIE_PATH`/`MOVIE_DEST_PATH` and the TV/anime equivalents). Before anything
 starts, `assert_path_within_bounds()` resolves the destination and rejects it if
 it escapes the configured base — component validation alone would not catch a
-symlink pointing out of the tree. The transfer id is `transfer_<unix seconds>`.
+symlink pointing out of the tree.
 
 `type=file` requires an `episode_name` and appends it to both sides; `type=folder`
-does not. That distinction reappears later in the rsync arguments.
+does not. That distinction reappears later in the rsync arguments — and on the
+destination side it is a bug: the file is copied into a new folder named after
+it rather than over it (Behaviour worth knowing).
 
-The same entry point is used by everything else that syncs:
-`services/webhook_service.py` (movie and series webhook triggers) and
-`services/simulation_service.py` both call
-`TransferCoordinator.start_transfer()`.
+The request then goes to the sync engine as a **manual sync**
+(`SyncEngine.submit()`), not straight to the queue, and the answer comes back
+before any transfer exists. It carries the sync's `run_id`, the run's state in
+`transfer_state` (`checking` for a fresh request) and a message; `transfer_id`
+is `null`. What happens next is the engine's — see
+[Sync engine](../sync-engine/README.md):
+
+- if the same destination folder already has a batch that has not started
+  copying — a webhook batch waiting for Sonarr, say — the request joins it
+  rather than starting a second transfer, and tells it to go now if it is still
+  waiting or held;
+- if the folder is being copied right now, the request goes into the one
+  follow-up batch behind that copy, opening it if needed;
+- the ready check is skipped, and the safety check — a dry run of the same
+  copy — runs first. If it refuses, no transfer is created (see Behaviour worth
+  knowing). A `type=file` request skips the dry run: rsync deletes nothing when
+  it is given a single file;
+- at the Queue stage the engine creates the transfer, with an id of
+  `transfer_<unix seconds>_<six hex characters>`.
+
+The activity entry for the request names the sync run, not a transfer.
+
+Every other way a sync starts goes through the engine too — Sonarr and Radarr
+webhooks, the auto-scanner, Explore, simulations and restarts. Apart from
+fallbacks that Explore and simulations use only when no engine exists, the
+engine's Queue stage is the only caller of `TransferCoordinator.start_transfer()`;
+a restart uses `requeue_transfer()` instead (section 8). Explore and simulations
+wait for the queue's answer before returning (`submit(..., wait=True)`), because
+they have to roll back or report at once.
 
 ### 2. Admission
 
 `TransferCoordinator.start_transfer()` decides whether the transfer runs now or
-waits. It asks `QueueManager.check_duplicate_destination()` whether the
-destination is already reserved, and `QueueManager.register_transfer()` whether a
-slot is free. Either check can produce a `queued` row with `queue_reason` set to
-`path` or `slot`; only when both pass is a `pending` row created and rsync
-started. The details of queueing and promotion are in
-[../queue/README.md](../queue/README.md).
+waits. It asks `QueueManager.check_duplicate_destination()` whether another
+transfer already holds the destination folder — or a folder inside or around it,
+so a whole-series copy and a copy of one of its seasons never run together — and
+`QueueManager.register_transfer()` whether a slot is free. Either check can
+produce a `queued` row with `queue_reason` set to `path` or `slot`; only when
+both pass is a `pending` row created and rsync started. The details of queueing
+and promotion are in [../queue/README.md](../queue/README.md).
 
-For a transfer that can start, the coordinator asks
-`BackupService._get_dynamic_backup_dir()` for a per-transfer directory under
-`BACKUP_PATH` (named `<safe folder name>_<transfer_id>`), then calls
-`TransferService.start_rsync_process()`, then starts a
-`_post_transfer_completion()` watcher thread.
+For a transfer that can start, the coordinator asks the backups service for the
+transfer's staging directory, `<BACKUP_PATH>/.staging/<transfer_id>`
+(`BackupsService.staging_dir()`); with no `BACKUP_PATH` configured the row is
+marked `failed` and nothing runs. It then tells the sync engine the copy is
+starting (`before_transfer_start` — the run moves to copying and its webhooks to
+`syncing`, under the folder's lock, so a webhook arriving from then on goes to a
+follow-up batch), calls `TransferService.start_rsync_process()`, records on the
+run which route rsync took — SSH, the fast transfer server, or local for a
+simulation (`on_transfer_started`) — and starts a `_post_transfer_completion()`
+watcher thread.
 
 ### 3. The rsync command
 
@@ -97,6 +136,9 @@ spaces, so a path containing spaces would break it.
 
 Source and destination are appended last. A folder transfer uses a trailing slash
 on the source so the folder's *contents* are synced; a file transfer does not.
+The destination always carries a trailing slash, and is created as a directory
+beforehand — which, for a file transfer, is what puts the file into a folder of
+its own name (Behaviour worth knowing).
 
 Two variations:
 
@@ -133,9 +175,12 @@ For each line:
    `PROGRESS_WRITE_INTERVAL` (1 second). Any other line is written immediately,
    and carries the newest figures with it so the columns never lag behind a tick
    the interval skipped.
-4. Every line is emitted over the socket as `transfer_progress` with the tail,
-   the running log count and the current stats. The throttle is only about
-   database writes; the UI sees every tick.
+4. Every line is emitted over the socket as `transfer_progress` with the line,
+   the running log count and the current stats, to every client. The tail goes
+   separately as `transfer_logs`, only into the transfer's own room — joined
+   with `transfer_logs_subscribe` by whoever has the row open — and not at all
+   when nobody is subscribed. The throttle is only about database writes; the
+   UI sees every tick.
 
 A skipped progress line is held in `pending_progress` and flushed once rsync
 stops writing, otherwise a finished transfer would be left displaying whatever
@@ -188,11 +233,24 @@ With no recorded intent, exit code 0 is `completed` and anything else is
 and the cached total estimate is discarded.
 
 `_post_transfer_completion()` in the coordinator polls the row every five seconds
-and, once it is no longer `running`/`pending`, releases the queue slot, updates
-linked webhook rows, sends the Discord notification for `completed`/`failed`, and
-finalizes the backup record. A `paused` row is the exception: the slot is
-released but webhook state and backup finalization are deliberately left alone,
-because the transfer is expected to resume.
+and, once it is no longer `running`/`pending`, releases the queue slot and hands
+the outcome to the sync engine (`on_transfer_finished`). The run's Finish stage
+marks every webhook on it synced, failed or cancelled; its Tell stage announces
+`completed` and `failed` on Discord, labelled by how the sync started
+("Automated Sync", "Manual Sync", "Auto-scanner"…; a webhook or auto-scanner
+batch a person released with Sync or Go now is a "Manual Sync"), and opens a
+*Failed* alert with **Retry** for a failure — except a failure whose result a
+restart lost, which gets its own alert instead (section 10), and a failed
+restore, whose alert offers only **Dismiss** and points at the Backups page.
+Cancelled syncs, restores and simulations — restarted simulations included —
+are not announced, and a failed simulation opens no alert. A transfer with no
+run — one created before the engine existed — is finished the old way: webhook
+rows by transfer id, then the Discord notification. Either way the watcher then files what the transfer
+displaced into the backup tree (`sort_after_transfer`). A `paused` row is the
+exception: the slot is released but webhook state and backup sorting are
+deliberately left alone, because the transfer is expected to resume. Calling
+`on_transfer_finished` more than once for the same run is harmless; only the
+first call closes it.
 
 ### 7. Pause and resume
 
@@ -213,9 +271,15 @@ five-second poll, so a resume issued straight away is not told the queue is full
 `TransferCoordinator.resume_transfer()` only accepts a `paused` row and goes back
 through `QueueManager.register_transfer()` rather than starting rsync directly,
 so a resume respects the concurrency cap and cannot collide with a transfer that
-claimed the same destination while this one was paused. Depending on the answer
-it either becomes `queued` again (with `queue_reason='slot'`) or moves to
-`pending` and starts a fresh rsync run plus a fresh watcher thread.
+claimed the same folder — or one inside or around it — while this one was
+paused. Depending on the answer it either becomes `queued` again (with
+`queue_reason='slot'`), moves to `pending` and starts a fresh rsync run plus a
+fresh watcher thread, or — when another transfer holds the folder — is refused
+with "Another transfer is already syncing to this destination" and stays paused.
+
+Both are recorded on the transfer's sync run (`on_transfer_paused`,
+`on_transfer_resumed`): the Transfer stage says who paused it, and a resume that
+has to wait puts the run back at its Queue stage.
 
 ### 8. Cancel, restart, delete
 
@@ -224,17 +288,44 @@ no live process, so cancelling them is a row update. A `running` row is checked
 for a live PID first: if one exists, the intent is recorded and the process
 terminated; if not — a row whose process already exited — the row is still moved
 to `cancelled`, because otherwise it would be stuck as `running` forever. The
-coordinator then unregisters it from the queue.
+coordinator then unregisters it from the queue. A queued or paused transfer has
+no watcher thread, so the coordinator closes its sync run itself
+(`on_transfer_finished(..., 'cancelled')`); a running one is closed by its
+watcher.
 
-`restart_transfer()` accepts `failed`, `cancelled` and `completed` rows. It
-resets the row to `pending`, clears the recorded PID, sets a new `start_time`,
-clears `end_time`, and calls `start_rsync_process()` again with a freshly
-computed backup directory.
+Restart goes through the sync engine (`SyncEngine.restart_transfer()`, which both
+`POST /transfer/<id>/restart` and an alert's **Retry** call) and accepts
+`failed`, `cancelled` and `completed` rows — except a restore's, which it
+refuses: "A restore is run again from the Backups page, where its preview shows
+what it will replace." It never starts rsync directly. It opens a new sync run
+of kind `restart`, linked to the run it retries and taking over that run's
+webhooks; the ready check is skipped, the safety check runs — unless the
+transfer is a simulation's, a single file, or an Explore plan's, each of which
+skips it with its reason (Behaviour worth knowing) — and then the run waits its
+turn in the queue like any other sync.
+
+At the Queue stage, `TransferCoordinator.requeue_transfer()` reuses the same
+transfer row: it clears the PID, end time, pause time and progress figures, sets
+a new `start_time`, points the row at the new run, and puts it through the same
+two checks as a new transfer — `queued` with `queue_reason` `path` or `slot`, or
+started straight away with a fresh watcher thread. Because the id is unchanged,
+so is the staging directory and its `.rsync-partial` folder, and rsync carries on
+from the previous attempt's partial files.
+
+If the folder already has a batch that has not started copying, the restart
+does not run at all: any webhooks on the old run move onto that batch, which is
+told to go now if it is still waiting, so the folder is copied once. The transfer
+that was restarted keeps its `failed` or `cancelled` status; the batch's own
+transfer does the copy.
 
 `POST /transfer/<id>/delete` refuses only a `running` row (with a message telling
-the operator to cancel first) and otherwise deletes the record via
-`Transfer.delete()`. It deletes the database row only; files on disk, including
-partial files and the transfer's backup directory, are not touched.
+the operator to cancel first). A `queued` or `paused` row is cancelled first,
+exactly as above — so its queue reservation is freed and its sync run closed as
+cancelled — and then the record is deleted via `Transfer.delete()`
+(`_cancel_before_delete` in `routes/transfers.py`). A `pending` row cannot be
+cancelled (Behaviour worth knowing) and is deleted as it is. Only the database
+row goes; files on disk, including partial files and the transfer's backup
+directory, are not touched.
 
 ### 9. Listing versus detail
 
@@ -290,7 +381,9 @@ batches of `DELETE_BATCH` (400), safely inside SQLite's 999-variable limit.
 `POST /transfers/bulk-delete` accepts either explicit `ids` or `all_matching`
 with the same filter the list was showing. The `all_matching` form re-runs the
 query on the server, which is what lets "select all" mean every match rather
-than the rows a browser happened to have loaded.
+than the rows a browser happened to have loaded. Either way, every queued or
+paused transfer among the rows is cancelled before anything is deleted, as for
+a single delete (`Transfer.waiting_ids_among`, `waiting_ids_matching`).
 
 Deleting `completed` records used to have a consequence beyond the list:
 `get_sync_status` read them to decide the SYNCED / OUT_OF_SYNC badges in Browse
@@ -324,9 +417,32 @@ select and parse the log body.
 `TransferService.resume_active_transfers()` runs during coordinator construction.
 Rows still marked `running` whose recorded PID is alive get a
 `_resume_transfer_monitoring()` thread; rows whose process is gone are marked
-`failed` with "Transfer process was interrupted". The coordinator also restarts a
-`_post_transfer_completion()` watcher for each resumed id, so queue release,
-webhook updates, notifications and backup finalization still happen.
+`failed` with "Transfer process was interrupted". The `_post_transfer_completion()`
+watchers for all of them start later, in `TransferCoordinator.start_background()`,
+which `app.py` calls once the connector layer is configured — so a result found
+at start-up can actually be announced — and they do the usual queue release,
+Finish and Tell, and backup sorting.
+
+`start_background()` then starts the sync engine, whose recovery
+(`services/sync_engine/recovery.py`) looks at every sync that was in flight.
+Nothing restarts by itself:
+
+- a sync whose transfer is still `queued` carries on — the queue rebuilt its own
+  state at construction;
+- a transfer left `pending` while its sync was still in the queue — promoted, and
+  about to start — is put back in the queue as a slot wait, and the queue is
+  rebuilt again so it starts normally;
+- a sync whose transfer finished, failed or was cancelled while DragonCP was
+  down is closed as usual — so a copy whose rsync died with DragonCP is
+  announced as a failed sync and gets a *Failed* alert with **Retry**;
+- a reattached rsync is watched to the end, but its result cannot be read
+  (Behaviour worth knowing): the row is marked `failed` with a message starting
+  "Result unknown", and the engine opens a *Result unknown* alert (**Retry**,
+  **Mark as done**, **Dismiss**) instead of announcing "Sync failed";
+- a sync that was still waiting or being checked, with no transfer yet, is
+  marked interrupted with an *After a restart* alert.
+
+See [Sync engine](../sync-engine/README.md), "After a restart".
 
 ## Behaviour worth knowing
 
@@ -340,33 +456,94 @@ webhook updates, notifications and backup finalization still happen.
   it; it has no access to the original stdout pipe, so no further log lines or
   progress figures are recorded for that run. The percentage freezes at whatever
   was last written until the process exits.
-- **That recovery path can record a failure as success.** When the exit status is
-  unavailable (the rsync process is not a child of the restarted app) the code
-  marks the transfer `completed` with "Transfer finished after restart (exit
-  status unavailable)", and a `NoSuchProcess` is likewise recorded as completed.
-  An rsync that fails after an app restart may therefore show as completed.
-- **Restart bypasses the queue.** `TransferCoordinator.restart_transfer()` calls
-  `TransferService.restart_transfer()` directly. It does not go through
-  `QueueManager.register_transfer()` and does not start a
-  `_post_transfer_completion()` watcher. A restarted transfer is therefore not
-  counted against `MAX_CONCURRENT_TRANSFERS`, does not take the destination lock,
-  and on finishing will not update webhook rows, send a Discord notification or
-  finalize its backup record. Pause and resume are unaffected — resume does go
-  through the queue.
+- **After an app restart, a reattached transfer's result is unknown.**
+  `_resume_transfer_monitoring()` cannot read the exit status of an rsync the
+  restarted process did not start, so when it ends the row is marked `failed`
+  with a message starting "Result unknown: DragonCP restarted while this was
+  copying…" (`UNKNOWN_RESULT_MESSAGE`). A process already gone when monitoring
+  attaches gets the same. The engine reads that wording and opens a *Result
+  unknown* alert — **Retry**, **Mark as done**, **Dismiss**, announced on Discord
+  under the `sync.interrupted` event — instead of a "Sync failed" message and a
+  *Failed* alert. Until 2.3.0 this path recorded the transfer as `completed`, so
+  an rsync that failed after a restart could show as a success. A transfer with
+  no sync run (from before the engine) is still reported as a plain failed sync.
+- **Which restart case is the common one depends on how DragonCP stops.**
+  Not verified: the committed systemd example sets no `KillMode`, and systemd's
+  default stops every process in the service's control group, rsync included —
+  so a service restart should normally take the "Transfer process was
+  interrupted" path (a failed sync with **Retry**), and "Result unknown" is for an
+  rsync that outlived DragonCP's own process.
+- **A restart is a new sync, not a re-run of the old one.** It runs the safety
+  check first — bar the skips in the next bullet — so a restart can be refused
+  by the dry run, and it waits its turn in the queue like anything else — it
+  counts against `MAX_CONCURRENT_TRANSFERS`, takes the destination lock, and on
+  finishing updates webhooks, announces the result and sorts its backups. Until 2.3.0 it started rsync directly and did
+  none of that. The Transfers page shows the same row going back through
+  `queued`/`pending`/`running`, because the row is reused; the sync behind it is
+  new, linked to the one it retries.
+- **Some syncs skip the safety check's dry run, and say why.** A restart of a
+  simulated transfer skips it, as a fresh simulation does: a dry run against the
+  media server could only fail for sandbox files that live on this machine. A
+  restart of an Explore plan's transfer skips it: the retry copies the plan's
+  own file list and deletes nothing, the plan was checked before it was
+  approved, and a dry run of the whole season folder would judge a different
+  copy. A single-file sync (`type=file`) skips it, because rsync deletes nothing
+  when it is given one file. The Safety stage gives the reason in each case. A
+  restarted simulation is not announced either, and opens no alert when it
+  fails. Fixed 2026-10-05 — before, every restart and every single-file sync
+  ran the folder dry run, against the media server even for a simulation's
+  sandbox paths, and a restarted simulation was announced like real work.
+- **A dry run that did not finish stops the sync.** rsync's exit status is read
+  before its output: anything but 0, or 24 (files vanished mid-scan, as when
+  Sonarr moves an import), makes the dry run unsafe with "The dry run did not
+  finish (rsync exit N): <rsync's last error line>". An unreachable media server
+  or a missing source folder therefore stops the sync for a person. Fixed
+  2026-10-05 — before, only the output lines were read, and such a dry run
+  reported zero files to copy and zero to delete, which passed.
+- **A manual sync can be refused, quietly.** When the safety check stops one, no
+  transfer is created; the run is "Stopped for a person" and a *Safety check*
+  alert offers **Sync anyway** (also `POST /api/sync/runs/<run_id>/sync-anyway`).
+  A sync a person started is not announced on Discord when refused — whether the
+  press opened its own batch or released a webhook or auto-scanner batch that
+  was still held or waiting — and the Notifications screen that will list alerts
+  is not built yet, so for now such a refusal is visible only through the API
+  (`GET /api/alerts`, `GET /api/sync/runs/<run_id>`). Only a batch that started
+  by itself is announced, which includes one a press joined after its ready
+  check had already passed. Until 2026-10-05 a batch a press released was
+  announced as an automatic refusal too.
 - **A `pending` transfer cannot be cancelled.** `cancel_transfer()` handles
   `queued`, `paused` and `running` and returns `False` for anything else, so the
   API answers "Failed to cancel transfer" for a row in the brief `pending` window
-  between admission and rsync starting.
-- **Deleting a queued transfer leaks its destination reservation.** The delete
-  endpoint removes the row without calling `QueueManager.unregister_transfer()`,
-  and a queued transfer holds an entry in `active_destinations`. Until the app
-  restarts (where `force_unregister_stale_transfers()` rebuilds the maps), later
-  transfers to that destination can be queued behind a transfer that no longer
-  exists.
-- **Transfer ids are second-granularity.** `transfer_<int(time.time())>` from
-  `routes/transfers.py`, against a `UNIQUE` `transfer_id` column. Two manual
-  transfers started within the same second would collide on insert. Not verified:
-  what the UI shows when that happens.
+  between admission and rsync starting, and a delete in that window removes the
+  row without cancelling it.
+- **Deleting a waiting transfer cancels it first.** A `queued` or `paused`
+  transfer is cancelled before its row is deleted — by a single delete, a bulk
+  delete by ids, or a bulk delete by filter — so its queue reservation is freed,
+  whatever was waiting on that folder can be promoted, and its sync run closes
+  as cancelled. Two safety nets cover a queued sync whose transfer row has gone
+  anyway: the next request for that folder closes it as cancelled ("Its transfer
+  was deleted from the transfer list before it started.") and opens a new
+  batch, and **Cancel** on the run closes it directly. Fixed 2026-10-05 —
+  before, the delete removed the row only: the reservation stayed until a
+  restart, the sync stayed "In the queue" collecting later webhooks for that
+  folder that never started, cancelling it failed, and a deleted paused
+  transfer left its run showing Paused for good.
+- **A single-file transfer lands in a folder named after the file.** For
+  `type=file` the episode name is part of `dest_path`, which is created as a
+  directory and handed to rsync with a trailing slash, so
+  `Season 01/Example Show - S01E01.mkv` is copied to
+  `Season 01/Example Show - S01E01.mkv/Example Show - S01E01.mkv` instead of over
+  the episode. When the episode file already exists here, creating that folder
+  fails and so does the transfer ("Failed to create destination: …"). The same
+  code is on `main`. API-only: no screen sends `type=file`. See
+  [known issues](../../operations/known-issues.md), under Syncing.
+- **Transfer ids carry a random suffix.** The engine names a new transfer
+  `<prefix>_<unix seconds>_<six hex characters>` — `transfer_` for a manual
+  sync, `webhook_` and `series_webhook_` for Radarr and Sonarr, `scanner_` for
+  the auto-scanner — so two syncs started in the same second no longer collide
+  on the `UNIQUE` `transfer_id` column, as manual ones could when the id was
+  `transfer_<unix seconds>`. A restart keeps the id it retries; Explore,
+  simulations and restores bring their own.
 - **`--update` and `--delete` together.** A destination file that is newer than
   the remote copy is kept, but a destination file with no remote counterpart is
   removed (into the backup directory, not deleted outright).
@@ -379,15 +556,17 @@ webhook updates, notifications and backup finalization still happen.
   `POST /transfers/cleanup`, which removes duplicate *completed* rows per
   destination path, keeping the most recent by `end_time`, then `updated_at`,
   then `created_at`, then id.
-- **Logs are broadcast to every connected client.** `transfer_progress` and
-  `transfer_complete` are emitted globally, not into a per-transfer room. This is
-  a known gap in `docs/plans/rsync-log-streaming.md`.
-- **The frontend listens for a `transfer_failed` socket event that the backend
-  never emits** (`frontend/src/services/socket.ts`); failures arrive as
-  `transfer_complete` with `status: "failed"`.
+- **Figures go to everyone; the log tail only to whoever is watching.**
+  `transfer_progress` (the line, the log count and the stats) and
+  `transfer_complete` are emitted to every connected client; the last 100 log
+  lines travel as `transfer_logs` into the transfer's own room, and are not sent
+  at all when nobody has subscribed.
+- **There is no `transfer_failed` socket event.** Failures arrive as
+  `transfer_complete` with `status: "failed"`, as `frontend/src/services/socket.ts`
+  notes.
 - **Simulation rows are real transfers.** They live in the same table and run the
   same code; only `is_simulation` tells them apart, and cleanup deletes by that
-  flag.
+  flag — their sync runs included.
 
 ## Data
 
@@ -401,6 +580,7 @@ full definition.
 | `parsed_title`, `parsed_season` | `Transfer._parse_metadata()` at creation — strips years, dots and underscores from the folder name and pulls a season number out of the season name |
 | `status`, `progress` | Every stage; `progress` holds the most recent rsync output line |
 | `queue_reason` | `path` or `slot` for queued rows |
+| `sync_run_id` | The sync run that owns the transfer: set at creation by the engine, and moved to the new run by `requeue_transfer()` on a restart. A row without one predates the engine and is finished the old way |
 | `rsync_process_id` | Set when rsync starts, cleared on restart |
 | `logs` | `Transfer.add_log()`, JSON array, collapsed and capped as described above |
 | `progress_percent`, `bytes_transferred`, `total_bytes`, `speed_bps`, `eta_seconds` | Parsed by the monitor loop and folded into the same UPDATE as the log line |
@@ -420,27 +600,31 @@ contracts are in [../../reference/api.md](../../reference/api.md).
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/transfer` | Start (or queue) a transfer |
+| POST | `/transfer` | Ask for a manual sync. Answers with `run_id` and the run's state; `transfer_id` is `null`, because the transfer is created after the safety check |
 | GET | `/transfer/{id}/status` | One transfer with progress figures and full log |
 | GET | `/transfer/{id}/logs` | Stored log lines and count |
 | POST | `/transfer/{id}/cancel` | Cancel a queued, paused or running transfer |
 | POST | `/transfer/{id}/pause` | Stop rsync, keep partial files |
 | POST | `/transfer/{id}/resume` | Continue a paused transfer, re-admitted through the queue |
-| POST | `/transfer/{id}/restart` | Run a failed, cancelled or completed transfer again |
-| POST | `/transfer/{id}/delete` | Delete the record (not while running) |
+| POST | `/transfer/{id}/restart` | Retry a failed, cancelled or completed transfer as a new sync: safety check, then the queue. Answers with `run_id`. Refuses a restore |
+| POST | `/transfer/{id}/delete` | Delete the record (not while running); a queued or paused transfer is cancelled first |
 | GET | `/transfers/all` | History page — `limit`, `offset`, `status`, `statuses`, `search` |
 | GET | `/transfers/active` | Running/pending/queued/paused plus queue status |
 | GET | `/transfers/queue/status` | Queue counters only |
-| POST | `/transfers/bulk-delete` | Delete many records by id, or every record a filter finds |
+| POST | `/transfers/bulk-delete` | Delete many records by id, or every record a filter finds; queued and paused ones are cancelled first |
 | POST | `/transfers/cleanup` | Drop duplicate completed rows per destination |
 
 Every endpoint is behind `@require_auth`. Socket events emitted from this
-feature: `transfer_progress` and `transfer_complete` (`transfer_service.py`),
-`transfer_queued` (`transfer_coordinator.py`), `transfer_promoted`
-(`queue_manager.py`).
+feature: `transfer_progress`, `transfer_complete` and `transfer_logs`
+(`transfer_service.py`), `transfer_queued` (`transfer_coordinator.py`),
+`transfer_promoted` (`queue_manager.py`). The sync run behind a transfer is
+`GET /api/sync/lookup?transfer_id=<id>`; runs, their stages and alerts have
+their own endpoints and socket events, listed in
+[../sync-engine/README.md](../sync-engine/README.md).
 
 ## Related
 
+- [../sync-engine/README.md](../sync-engine/README.md) — the pipeline a transfer is the copy step of: batching, the safety check, restart recovery, alerts
 - [../queue/README.md](../queue/README.md) — admission, the destination lock, and promotion
 - [../simulation/README.md](../simulation/README.md) — running this pipeline against local fixtures
 - [../../architecture/system-overview.md](../../architecture/system-overview.md) — where transfers sit in the system

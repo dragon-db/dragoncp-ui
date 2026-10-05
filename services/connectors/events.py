@@ -133,6 +133,35 @@ CATALOGUE: Tuple[EventType, ...] = (
         'An automatic sync looked unsafe and stopped, waiting for a person.',
         WARNING,
     ),
+    EventType(
+        'sync.interrupted', 'Sync may have been skipped',
+        'DragonCP restarted while a sync was waiting or copying. The alert in '
+        'Notifications says what to check.',
+        WARNING,
+    ),
+    EventType(
+        'sync.stuck', 'Synced without a stuck download',
+        'A season synced while something for it was stuck in Sonarr, or after '
+        'waiting the full 30 minutes for a slow download.',
+        WARNING,
+    ),
+    EventType(
+        'scanner.found', 'Auto-scanner found something',
+        'The scheduled auto-scanner found something the service has and this disk '
+        'does not, and started syncing it — or could not close a gap.',
+        INFO,
+    ),
+    EventType(
+        'integration.down', 'Sonarr or Radarr not answering',
+        'A connected service stopped answering, so automatic sync fell back to '
+        'the fixed timer. Sent once until it answers again.',
+        WARNING,
+    ),
+    EventType(
+        'scheduler.failing', 'Background job failing',
+        'A scheduled background job failed several times in a row.',
+        WARNING,
+    ),
 )
 
 #: What the routing table shows and what a caller may announce.

@@ -309,24 +309,45 @@ class SimulationService:
                 scenario, transfer_id, folder_name, season, dest_path
             )
 
-        started, state = self.coordinator.start_transfer(
-            transfer_id=transfer_id,
-            source_path=source_path,
-            dest_path=dest_path,
-            operation_type='folder',
-            media_type=scenario.media_type,
-            folder_name=folder_name,
-            season_name=season,
-            is_simulation=True,
-            simulation_bwlimit=scenario.bwlimit_kbps,
-        )
-        if not started:
-            raise RuntimeError(f"coordinator refused the transfer ({state})")
+        engine = getattr(self.coordinator, 'sync_engine', None)
+        if engine is not None:
+            # Through the sync engine like every real sync, so a rehearsal shows
+            # its pipeline too. The engine links the notification and keeps its
+            # status in step with the transfer.
+            from services.sync_engine.engine import SyncRequest
+            table = 'radarr_webhook' if scenario.media_type == 'movies' else 'sonarr_webhook'
+            result = engine.submit(SyncRequest(
+                kind='simulation', media_type=scenario.media_type,
+                source_path=source_path, dest_path=dest_path,
+                folder_name=folder_name, season_name=season, title=folder_name,
+                transfer_id=transfer_id, is_simulation=True,
+                simulation_bwlimit=scenario.bwlimit_kbps,
+                webhooks=[(table, notification_id)] if notification_id else [],
+                options={'scenario': scenario.key},
+            ), wait=True)
+            started, state = (result.ok and bool(result.queue_state),
+                              result.queue_state or result.message)
+            if not started:
+                raise RuntimeError(f"the pipeline refused the transfer ({state})")
+        else:
+            started, state = self.coordinator.start_transfer(
+                transfer_id=transfer_id,
+                source_path=source_path,
+                dest_path=dest_path,
+                operation_type='folder',
+                media_type=scenario.media_type,
+                folder_name=folder_name,
+                season_name=season,
+                is_simulation=True,
+                simulation_bwlimit=scenario.bwlimit_kbps,
+            )
+            if not started:
+                raise RuntimeError(f"coordinator refused the transfer ({state})")
 
-        # Mirror what the webhook service does once a transfer exists, so the
-        # notification's status tracks the transfer through the queue.
-        if notification_id:
-            self._link_notification(scenario, notification_id, transfer_id, state)
+            # Mirror what the webhook service does once a transfer exists, so the
+            # notification's status tracks the transfer through the queue.
+            if notification_id:
+                self._link_notification(scenario, notification_id, transfer_id, state)
 
         print(f"🎭 Simulation transfer {transfer_id} -> {state}")
         return transfer_id
@@ -455,6 +476,13 @@ class SimulationService:
                 "DELETE FROM sonarr_webhook WHERE is_simulation = 1"
             ).rowcount
             conn.commit()
+
+        engine = getattr(self.coordinator, 'sync_engine', None)
+        if engine is not None:
+            try:
+                engine.store.delete_simulation_runs()
+            except Exception as error:  # noqa: BLE001
+                print(f"⚠️  Could not remove the simulation's pipeline runs: {error}")
 
         removed_files = False
         if os.path.isdir(self.root):

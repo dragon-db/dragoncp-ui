@@ -69,11 +69,29 @@ class GateDecisionTests(unittest.TestCase):
         self.assertFalse(answer.clear)
 
     def test_every_blocking_state_holds(self):
-        for state in ('downloading', 'importPending', 'importing',
-                      'importBlocked', 'failedPending'):
+        for state in ('downloading', 'importPending', 'importing'):
             with self.subTest(state=state), answering([row(trackedDownloadState=state)]):
                 answer = sonarr().in_flight(219, 4)
             self.assertEqual(answer.blocking, 1, f'{state} should hold')
+
+    def test_stuck_states_do_not_hold_but_are_counted(self):
+        """Stuck does not block (decided 2026-10-02).
+
+        A download blocked from importing, or failed and waiting on a retry
+        decision, will not finish on its own. Holding the season for it means
+        the season never syncs; the sync goes and says what it went without.
+        """
+        for state in ('importBlocked', 'failedPending'):
+            with self.subTest(state=state), answering([row(trackedDownloadState=state)]):
+                answer = sonarr().in_flight(219, 4)
+            self.assertEqual(answer.blocking, 0, f'{state} must not hold')
+            self.assertEqual(answer.stuck, 1, f'{state} is stuck')
+            self.assertTrue(answer.stuck_detail)
+
+    def test_the_time_left_comes_back_as_seconds(self):
+        with answering([row(trackedDownloadState='downloading', timeleft='00:03:10')]):
+            answer = sonarr().in_flight(219, 4)
+        self.assertEqual(answer.eta_seconds, 190)
 
     def test_imported_does_not_hold(self):
         """The load-bearing one.
@@ -281,114 +299,13 @@ class MediaItemStoreTests(unittest.TestCase):
 
 
 # ===========================================================================
-# The scheduler's wait
+# The wait itself
 # ===========================================================================
-
-class _Settings:
-    def __init__(self, **values):
-        self.values = values
-
-    def get_bool(self, key, default=False):
-        return bool(self.values.get(key, default))
-
-    def get_int(self, key, default=0):
-        return int(self.values.get(key, default))
-
-
-class _Index:
-    def __init__(self, answer):
-        self.answer = answer
-        self.asked = 0
-
-    def in_flight_for_season(self, tvdb_id, season_number):
-        self.asked += 1
-        return self.answer
-
-
-class SchedulerWaitTests(unittest.TestCase):
-    """The wait must degrade to the fixed window on every unusable path."""
-
-    def _scheduler(self, settings, index=None, tvdb_id=900001):
-        from services.auto_sync_scheduler import AutoSyncJob, AutoSyncScheduler
-        scheduler = AutoSyncScheduler(db_manager=None, settings=settings)
-        scheduler.media_index = index
-        scheduler._tvdb_id_for = lambda job: tvdb_id
-        job = AutoSyncJob('n1', 'example-show', 4, time.time() + 0.4)
-        return scheduler, job
-
-    def test_gate_off_waits_the_fixed_window(self):
-        scheduler, job = self._scheduler(_Settings(AUTOSYNC_GATE_ENABLED=False),
-                                         _Index(None))
-        started = time.time()
-        decided = scheduler._wait_for_go(job)
-        self.assertIn('fixed wait', decided)
-        self.assertGreaterEqual(time.time() - started, 0.35)
-
-    def test_no_index_waits_the_fixed_window(self):
-        scheduler, job = self._scheduler(_Settings(AUTOSYNC_GATE_ENABLED=True), None)
-        self.assertIn('fixed wait', scheduler._wait_for_go(job))
-
-    def test_no_identifier_waits_the_fixed_window(self):
-        from services.connectors.adapters._arr import InFlight
-        scheduler, job = self._scheduler(
-            _Settings(AUTOSYNC_GATE_ENABLED=True),
-            _Index(InFlight(known=True)), tvdb_id=None)
-        self.assertIn('fixed wait', scheduler._wait_for_go(job))
-
-    def test_an_unusable_answer_waits_the_fixed_window(self):
-        from services.connectors.adapters._arr import InFlight
-        index = _Index(InFlight(known=False, reason='Sonarr is not connected'))
-        scheduler, job = self._scheduler(
-            _Settings(AUTOSYNC_GATE_ENABLED=True, AUTOSYNC_GATE_SETTLE_SECONDS=0),
-            index)
-        decided = scheduler._wait_for_go(job)
-        self.assertIn('fixed wait', decided)
-        self.assertIn('not connected', decided)
-        self.assertEqual(index.asked, 1, 'it asks once, then stops asking')
-
-    def test_a_clear_answer_releases_early(self):
-        from services.connectors.adapters._arr import InFlight
-        scheduler, job = self._scheduler(
-            _Settings(AUTOSYNC_GATE_ENABLED=True, AUTOSYNC_GATE_SETTLE_SECONDS=0),
-            _Index(InFlight(known=True, blocking=0, reason='nothing in flight')))
-        started = time.time()
-        decided = scheduler._wait_for_go(job)
-        self.assertIn('Sonarr', decided)
-        self.assertLess(time.time() - started, 0.35,
-                        'a clear answer must not wait out the window')
-
-    def test_the_ceiling_always_ends_the_wait(self):
-        """A queue row stuck for days must not hold a season for ever."""
-        from services.connectors.adapters._arr import InFlight
-        scheduler, job = self._scheduler(
-            _Settings(AUTOSYNC_GATE_ENABLED=True, AUTOSYNC_GATE_SETTLE_SECONDS=0,
-                      AUTOSYNC_GATE_POLL_SECONDS=10),
-            _Index(InFlight(known=True, blocking=3, reason='3 still arriving')))
-        job.max_wait_time = 1
-        job.created_at = time.time() - 0.5
-        decided = scheduler._wait_for_go(job)
-        self.assertIn('ceiling', decided)
-
-    def test_an_index_that_raises_still_falls_back(self):
-        """The inversion this feature must never make.
-
-        `_wait_for_go` runs inside the block that marks a whole batch failed, so
-        an exception escaping the gate would turn "could not check whether the
-        season is ready" into "the sync failed" — strictly worse than the timer
-        it replaced.
-        """
-        class Exploding:
-            def in_flight_for_season(self, *a, **k):
-                raise RuntimeError('boom')
-        scheduler, job = self._scheduler(
-            _Settings(AUTOSYNC_GATE_ENABLED=True, AUTOSYNC_GATE_SETTLE_SECONDS=0),
-            Exploding())
-        decided = scheduler._wait_for_go(job)
-        self.assertIn('fixed wait', decided)
-
-
-if __name__ == '__main__':
-    unittest.main()
+#
+# The wait moved from the in-memory AutoSyncScheduler into the sync engine,
+# which keeps it in the database. Its tests are in tests/test_sync_engine.py
+# (ReadyCheckTests): the settle, waiting by Sonarr's time left, the 30-minute
+# cap, the timer fallback and the extension that used to be ignored.
 
 
 # ===========================================================================
@@ -453,20 +370,20 @@ class TestModeIsARehearsalNotAHaltTests(unittest.TestCase):
     every verb but GET regardless of mode; see `ReadOnlyTests`.
     """
 
-    def test_the_scheduler_does_not_consult_test_mode(self):
+    def test_the_engine_does_not_consult_test_mode(self):
         import inspect
 
-        from services import auto_sync_scheduler
+        from services.sync_engine import engine
         self.assertNotIn('test_mode_enabled',
-                         inspect.getsource(auto_sync_scheduler),
-                         'the scheduler must not gate automation on test mode')
+                         inspect.getsource(engine),
+                         'the sync engine must not gate automation on test mode')
 
     def test_the_film_webhook_route_does_not_either(self):
         import inspect
 
         import routes.webhooks as webhook_routes
         source = inspect.getsource(webhook_routes)
-        trigger = source.index('Auto-sync enabled, triggering sync')
+        trigger = source.index("_submit_webhook('radarr_webhook'")
         window = source[max(0, trigger - 1500):trigger]
         self.assertNotIn('test_mode_enabled()', window)
 

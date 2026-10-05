@@ -15,10 +15,18 @@ info:
     and `routes/`. Every blueprint is registered under the `/api` prefix, which
     is part of the server URL below, so paths here are written without it.
 
-    `GET /` is not listed: it serves the React application shell and is not an
-    API route.
+    `GET /` and `GET /<path>` are not listed: they serve the React application
+    shell and are not API routes. The eight `/remote-transfer/*` endpoints
+    (`routes/remote_daemon.py`) are not listed yet either; see
+    `../features/fast-transfers/README.md`.
 
-    Endpoint count: 100 method+path operations.
+    Endpoint count: 143 method+path operations.
+
+    ## Sync runs
+
+    Every sync goes through the sync engine and is a run with a `run_id`. The
+    webhook receivers and the manual sync endpoints answer with the run, not a
+    transfer: the transfer is only created when the run reaches the queue.
 
     ## Authentication
 
@@ -47,6 +55,8 @@ servers:
 tags:
   - name: Authentication
     description: Login, logout, token verification and refresh
+  - name: Activity
+    description: The read-only activity trail
   - name: Configuration
     description: Runtime configuration and SSH connection management
   - name: Media Browsing
@@ -60,7 +70,9 @@ tags:
   - name: Webhooks - Renames
     description: Rename-event history and on-demand verification
   - name: Webhooks - Settings
-    description: Auto-sync and Discord notification settings
+    description: Auto-sync switches and the fallback wait
+  - name: Connectors
+    description: Discord, Sonarr, Radarr and other services; destinations, routing and delivery history
   - name: Backups
     description: Pre-sync backup listing, restore and reindex
   - name: Debug
@@ -71,6 +83,14 @@ tags:
     description: Run the real transfer pipeline against throwaway files
   - name: Explore
     description: Compare the remote library with the local one and plan a sync
+  - name: Sync Engine
+    description: Sync runs, their nine stages and log lines, and acting on a run
+  - name: Alerts
+    description: The Notifications tab - everything that needs a person
+  - name: Scheduler
+    description: Background jobs on a clock (the Sonarr and Radarr auto-scanners)
+  - name: Media Library
+    description: Library, Queue and History views of Sonarr and Radarr, and Sync on a title
 
 security:
   - bearerAuth: []
@@ -183,6 +203,56 @@ components:
         value.
       schema:
         type: string
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      description: A sync run id, e.g. `run_3f2a9c1d0b7e`.
+      schema:
+        type: string
+    AlertId:
+      name: alert_id
+      in: path
+      required: true
+      schema:
+        type: string
+    JobName:
+      name: name
+      in: path
+      required: true
+      description: A scheduler job name, e.g. `sonarr_auto_scanner`.
+      schema:
+        type: string
+    ConnectorId:
+      name: connector_id
+      in: path
+      required: true
+      schema:
+        type: string
+    TargetId:
+      name: target_id
+      in: path
+      required: true
+      schema:
+        type: string
+    LibrarySource:
+      name: source
+      in: path
+      required: true
+      description: Any other value is a 404.
+      schema:
+        type: string
+        enum: [sonarr, radarr]
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, clamped to 1-200.
+      schema:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 200
 
   schemas:
     SuccessResponse:
@@ -305,6 +375,9 @@ components:
         One page of the combined notification list. Rows carry `media_type`
         (`movie` for movie rows, the stored value for series rows) and
         `display_title`, so a caller need not know which table a row came from.
+        Rows are whole table rows, so they also carry `sync_run_id` (the sync
+        run the notification rides on; null for one stored before the sync
+        engine) and `sync_attached_at`.
       allOf:
         - $ref: '#/components/schemas/NotificationList'
         - type: object
@@ -452,6 +525,163 @@ components:
                 type: object
                 additionalProperties: true
 
+    SyncRunSummary:
+      type: object
+      description: |
+        One sync run as a list row. api.md section 13 describes every field.
+        `stages` always holds the nine stages in order: receive, identify,
+        batch, ready, safety, queue, transfer, finish, tell.
+      additionalProperties: true
+      properties:
+        run_id: { type: string }
+        kind:
+          type: string
+          enum: [sonarr_webhook, radarr_webhook, auto_scanner, manual, explore, restart, restore, simulation]
+        kind_label: { type: string }
+        label: { type: string }
+        title: { type: string, nullable: true }
+        season_name: { type: string, nullable: true }
+        media_type: { type: string, nullable: true }
+        source: { type: string, nullable: true }
+        state:
+          type: string
+          enum: [held, waiting, checking, queued, transferring, paused, finishing,
+                 completed, failed, cancelled, refused, interrupted]
+        state_label: { type: string }
+        current_stage: { type: string, nullable: true }
+        outcome: { type: string, nullable: true }
+        outcome_message: { type: string, nullable: true }
+        transfer_id:
+          type: string
+          nullable: true
+          description: Null until the run reaches the queue, where its transfer is created.
+        parent_run_id: { type: string, nullable: true }
+        parent_relation:
+          type: string
+          nullable: true
+          description: "`follow_up` or `retry`"
+        is_simulation: { type: boolean }
+        requested_by:
+          type: object
+          properties:
+            kind: { type: string, enum: [admin, automated, system] }
+            name: { type: string }
+            label: { type: string }
+        stages:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              status:
+                type: string
+                enum: [pending, running, waiting, passed, skipped, failed, refused]
+        webhook_count: { type: integer, nullable: true }
+        next_check_at: { type: string, nullable: true }
+        created_at: { type: string }
+        updated_at: { type: string }
+        started_at: { type: string, nullable: true }
+        finished_at: { type: string, nullable: true }
+
+    SyncRunActionResult:
+      type: object
+      description: >-
+        What the engine did with a request. Answered by the run actions and
+        listed per run by the Library sync.
+      properties:
+        status:
+          type: string
+          enum: [success, error]
+          description: Present on the run action endpoints only.
+        ok: { type: boolean }
+        run_id: { type: string, nullable: true }
+        action:
+          type: string
+          enum: [opened, joined, follow_up, held, promoted, skipped, cancelled, failed]
+        state: { type: string }
+        message: { type: string }
+        transfer_id: { type: string, nullable: true }
+        queue_state:
+          type: string
+          nullable: true
+          description: "`running`, `QUEUED_SLOT` or `QUEUED_PATH` when the queue was reached in the same request"
+
+    Alert:
+      type: object
+      description: One alert in the Notifications tab. api.md section 13 lists the kinds and actions.
+      additionalProperties: true
+      properties:
+        alert_id: { type: string }
+        kind:
+          type: string
+          enum: [restart_unfinished, transfer_unknown, stuck_download, ready_timeout,
+                 sync_refused, transfer_failed, scanner_gap, integration_down, job_failing]
+        kind_label: { type: string }
+        severity: { type: string }
+        title: { type: string }
+        message: { type: string, nullable: true }
+        state: { type: string, enum: [open, done, wrong, dismissed] }
+        run_id: { type: string, nullable: true }
+        transfer_id: { type: string, nullable: true }
+        unit_key: { type: string, nullable: true }
+        link: { type: string, nullable: true }
+        actions:
+          type: array
+          items:
+            type: string
+            enum: [sync_now, retry, sync_anyway, run_now, mark_done, mark_wrong, dismiss]
+        action_buttons:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              label: { type: string }
+        data: { type: object, additionalProperties: true }
+        occurrences: { type: integer }
+        created_at: { type: string }
+        updated_at: { type: string }
+        resolved_at: { type: string, nullable: true }
+        resolved_action: { type: string, nullable: true }
+        resolved_by_kind: { type: string, nullable: true }
+        resolved_by_name: { type: string, nullable: true }
+        resolved_by_account_id: { type: integer, nullable: true }
+
+    AlertSummary:
+      type: object
+      properties:
+        status: { type: string }
+        open: { type: integer }
+        by_severity:
+          type: object
+          additionalProperties: { type: integer }
+
+    SchedulerJob:
+      type: object
+      properties:
+        name: { type: string }
+        label: { type: string }
+        description: { type: string }
+        enabled: { type: boolean }
+        interval_seconds: { type: number, nullable: true }
+        running: { type: boolean }
+        last_run_at: { type: string, nullable: true }
+        last_finished_at: { type: string, nullable: true }
+        last_ok: { type: boolean, nullable: true }
+        last_result:
+          type: object
+          additionalProperties: true
+          description: What the last run returned, without any stack trace. `summary` is the sentence to show.
+        consecutive_failures: { type: integer }
+        next_run_at: { type: string, nullable: true }
+
+    LibraryError:
+      type: object
+      description: The Media Library endpoints answer errors as `success` and `error`, not `status`.
+      properties:
+        success: { type: boolean, enum: [false] }
+        error: { type: string }
+
   responses:
     Success:
       description: Success
@@ -479,6 +709,27 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     ServerError:
       description: Server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ManualSyncStarted:
+      description: The engine accepted the request; one run per folder
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              status: { type: string, enum: [success] }
+              message: { type: string }
+              run_ids:
+                type: array
+                items: { type: string }
+    ManualSyncRefused:
+      description: >-
+        Nothing could be synced - the notification does not exist, is already
+        completed, rides on a run that is copying right now, or its folders could
+        not be worked out. `message` says which.
       content:
         application/json:
           schema:
@@ -1026,7 +1277,14 @@ paths:
   /transfer:
     post:
       tags: [Transfers]
-      summary: Start a transfer, or queue it when a slot or the destination path is busy
+      summary: Sync a named folder or file as a manual run through the sync engine
+      description: >-
+        The folder's batch, the safety dry run, then the queue. The transfer is
+        created only once the safety check passes, so the answer carries the
+        run to follow: `transfer_id` is null and `transfer_state` is the run's
+        state (`checking` for a new run). When the engine cannot work out the
+        folders the body is `status: error` with the `run_id` of the run
+        recorded as failed, still with HTTP 200.
       requestBody:
         required: true
         content:
@@ -1046,11 +1304,14 @@ paths:
                   type: string
                 episode_name:
                   type: string
-                  description: Required when type is `file`.
+                  description: >-
+                    Required when type is `file`. Known defect: it is appended
+                    to the destination too, so the file lands in a new folder
+                    named after it; see api.md.
               required: [media_type, folder_name]
       responses:
         '200':
-          description: Transfer admitted
+          description: Run opened or joined
           content:
             application/json:
               schema:
@@ -1060,8 +1321,15 @@ paths:
                     type: string
                   transfer_id:
                     type: string
+                    nullable: true
+                    description: Null - no transfer exists yet when this returns.
+                  run_id:
+                    type: string
                   transfer_state:
                     type: string
+                    description: >-
+                      The run's state, not the queue's. Formerly `running`,
+                      `QUEUED_SLOT` or `QUEUED_PATH`.
                   message:
                     type: string
                   source:
@@ -1192,12 +1460,29 @@ paths:
   /transfer/{transfer_id}/restart:
     post:
       tags: [Transfers]
-      summary: Restart a failed or cancelled transfer
+      summary: Retry a failed, cancelled or completed transfer as a restart run through the sync engine
+      description: >-
+        The safety check runs first, then the queue; the transfer keeps its id.
+        The dry run is skipped, with the reason on the run, for a simulation's
+        transfer, a single file, or an Explore plan's transfer. If a sync for
+        the same folder is open and not yet copying, the restart joins it
+        instead. A refusal after the run opens is recorded on the run, not in
+        this response. Refusals here (`Transfer not found`, a transfer in any
+        other status, a restore, which is run again from the Backups page) are
+        reported as `status: error` with HTTP 200.
       parameters:
         - $ref: '#/components/parameters/TransferId'
       responses:
         '200':
-          $ref: '#/components/responses/Success'
+          description: Run opened or joined, or a refusal in the body
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [success, error] }
+                  message: { type: string }
+                  run_id: { type: string }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1205,6 +1490,10 @@ paths:
     post:
       tags: [Transfers]
       summary: Delete a transfer record; a running transfer must be cancelled first
+      description: >-
+        A queued or paused transfer is cancelled before its row is deleted, so
+        its queue reservation is freed and its sync run closes as cancelled. A
+        pending one cannot be cancelled and is deleted as it is.
       parameters:
         - $ref: '#/components/parameters/TransferId'
       responses:
@@ -1247,7 +1536,8 @@ paths:
         With `all_matching`, the filter is re-evaluated on the server rather
         than trusting a list of ids, so "select all" means every match and not
         only the rows a client had loaded; `ids` is then ignored. Transfers that
-        are still running are never deleted and come back in `skipped`.
+        are still running are never deleted and come back in `skipped`. Queued
+        and paused ones are cancelled first, as for a single delete.
         Deleting completed records also removes the sync history Browse Media
         reads, so the media they copied will show as not yet synced.
       requestBody:
@@ -1362,10 +1652,11 @@ paths:
   /webhook/movies:
     post:
       tags: [Webhooks - Receivers]
-      summary: Receive a Radarr movie webhook, store it, and auto-sync when enabled
+      summary: Receive a Radarr movie webhook, store it, and hand it to the sync engine as a radarr_webhook run
       description: |
         Test payloads are detected and answered with a test success without
-        creating a notification.
+        creating a notification. Every stored notification joins or opens a
+        run; with auto-sync off the run is opened `held` for a person.
       security:
         - webhookSignature: []
         - {}
@@ -1387,12 +1678,18 @@ paths:
                 properties:
                   status:
                     type: string
+                    enum: [success, warning]
+                    description: "`warning` when auto-sync is on and the engine refused the request"
                   message:
                     type: string
                   notification_id:
                     type: string
                   auto_sync:
                     type: boolean
+                    description: Auto-sync was on and the engine accepted the request.
+                  run_id:
+                    type: string
+                    description: The sync run the notification joined or opened.
         '401':
           description: Missing or invalid X-DragonCP-Signature
           content:
@@ -1410,6 +1707,13 @@ paths:
     post:
       tags: [Webhooks - Receivers]
       summary: Receive a Sonarr TV webhook; a Rename event runs the local rename replay instead of a sync
+      description: |
+        An import is stored and handed to the sync engine as a `sonarr_webhook`
+        run, which waits in the ready check before the safety check and the
+        queue; with auto-sync off the run is opened `held`. The answer carries
+        `status` (`success`, or `warning` when the engine refused it),
+        `message`, `notification_id`, `auto_sync` and the `run_id` it joined or
+        opened.
       security:
         - webhookSignature: []
         - {}
@@ -1452,6 +1756,7 @@ paths:
     post:
       tags: [Webhooks - Receivers]
       summary: Receive a Sonarr anime webhook; same handling as the series receiver with media type anime
+      description: Same answer as the series receiver, `run_id` included.
       security:
         - webhookSignature: []
         - {}
@@ -1653,42 +1958,47 @@ paths:
   /webhook/notifications/{notification_id}/sync:
     post:
       tags: [Webhooks - Management]
-      summary: Trigger the sync for a movie notification by hand
+      summary: Sync a movie notification by hand, as a manual run through the sync engine
+      description: >-
+        The id is looked up in both notification tables, so this and the series
+        and anime variants accept any notification id. A run for the folder that
+        has not started copying is joined (and told to go now if it is waiting);
+        a folder being copied gets a follow-up run.
       parameters:
         - $ref: '#/components/parameters/NotificationId'
       responses:
         '200':
-          $ref: '#/components/responses/Success'
+          $ref: '#/components/responses/ManualSyncStarted'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/ManualSyncRefused'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /webhook/series/notifications/{notification_id}/sync:
     post:
       tags: [Webhooks - Management]
-      summary: Trigger the sync for a series notification by hand
+      summary: Sync a series notification by hand, as a manual run through the sync engine
       parameters:
         - $ref: '#/components/parameters/NotificationId'
       responses:
         '200':
-          $ref: '#/components/responses/Success'
+          $ref: '#/components/responses/ManualSyncStarted'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/ManualSyncRefused'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
   /webhook/anime/notifications/{notification_id}/sync:
     post:
       tags: [Webhooks - Management]
-      summary: Trigger the sync for an anime notification by hand
+      summary: Sync an anime notification by hand, as a manual run through the sync engine
       parameters:
         - $ref: '#/components/parameters/NotificationId'
       responses:
         '200':
-          $ref: '#/components/responses/Success'
+          $ref: '#/components/responses/ManualSyncStarted'
         '400':
-          $ref: '#/components/responses/BadRequest'
+          $ref: '#/components/responses/ManualSyncRefused'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1961,7 +2271,7 @@ paths:
         '500':
           $ref: '#/components/responses/ServerError'
 
-  # ==================== WEBHOOK AND DISCORD SETTINGS ====================
+  # ==================== WEBHOOK SETTINGS ====================
 
   /webhook/settings:
     get:
@@ -1993,6 +2303,11 @@ paths:
     post:
       tags: [Webhooks - Settings]
       summary: Update the auto-sync settings; the wait time is clamped to 30-900 seconds
+      description: >-
+        The `auto_sync_*` switches decide whether a webhook's run starts by
+        itself or is opened `held` for a person. `series_anime_sync_wait_time`
+        is the sync engine's fallback timer, used only when Sonarr cannot be
+        asked whether a season is still downloading.
       requestBody:
         required: true
         description: Any subset of the four settings.
@@ -2019,41 +2334,135 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /discord/settings:
+  # ==================== CONNECTORS ====================
+  #
+  # /discord/settings and /discord/test were removed; Discord is a connector.
+  # No response from these endpoints ever contains a credential: secrets come
+  # back only as `secrets_set` booleans, and `<redacted>` sent on save means
+  # "unchanged".
+
+  /connectors:
     get:
-      tags: [Webhooks - Settings]
-      summary: Return the Discord notification settings
+      tags: [Connectors]
+      summary: Every connector this build knows about, configured or not
       responses:
         '200':
-          description: Discord settings
+          description: Connector list
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  status:
-                    type: string
-                  settings:
-                    type: object
-                    properties:
-                      webhook_url:
-                        type: string
-                      app_url:
-                        type: string
-                      manual_sync_thumbnail_url:
-                        type: string
-                      icon_url:
-                        type: string
-                      enabled:
-                        type: boolean
+                  status: { type: string }
+                  connectors:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
         '401':
           $ref: '#/components/responses/Unauthorized'
-    post:
-      tags: [Webhooks - Settings]
-      summary: Update the Discord notification settings
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /connectors/events:
+    get:
+      tags: [Connectors]
+      summary: The notification catalogue and where each announcement currently goes
+      responses:
+        '200':
+          description: Every event, routed or not, and the notifying connectors with their destinations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  connectors:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /connectors/routes:
+    put:
+      tags: [Connectors]
+      summary: Save the routing table; a null target_id means "use the connector's default"
       requestBody:
         required: true
-        description: Any subset of the five settings.
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [routes]
+              properties:
+                routes:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      event_key: { type: string }
+                      connector_id: { type: string }
+                      target_id: { type: string, nullable: true }
+                      enabled: { type: boolean, default: true }
+      responses:
+        '200':
+          description: How many rows were saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  saved: { type: integer }
+        '400':
+          description: >-
+            Not a list, an unknown event or connector, or a destination that
+            does not belong to the connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /connectors/{connector_id}:
+    get:
+      tags: [Connectors]
+      summary: One connector, plus its stored routes
+      parameters:
+        - $ref: '#/components/parameters/ConnectorId'
+      responses:
+        '200':
+          description: The connector
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  connector:
+                    type: object
+                    additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Connectors]
+      summary: Save a connector's settings; secret fields are stored apart and never returned
+      parameters:
+        - $ref: '#/components/parameters/ConnectorId'
+      requestBody:
+        required: false
         content:
           application/json:
             schema:
@@ -2061,37 +2470,255 @@ paths:
               properties:
                 enabled:
                   type: boolean
-                webhook_url:
-                  type: string
-                app_url:
-                  type: string
-                manual_sync_thumbnail_url:
-                  type: string
-                icon_url:
-                  type: string
+                  description: Omit to leave it alone.
+                config:
+                  type: object
+                  additionalProperties: true
+                  description: >-
+                    Any subset of the connector's fields. A secret sent as
+                    `<redacted>` is not written; a secret sent as "" is deleted.
       responses:
         '200':
-          $ref: '#/components/responses/Success'
+          description: Saved; the connector as it now stands
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  message: { type: string }
+                  connector:
+                    type: object
+                    additionalProperties: true
         '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /discord/test:
-    post:
-      tags: [Webhooks - Settings]
-      summary: Send a test embed to the configured Discord webhook
-      responses:
-        '200':
-          $ref: '#/components/responses/Success'
-        '400':
-          description: Discord notifications disabled, or the webhook URL is missing, invalid or failed
+          description: "`config` is not an object, or names a key the connector does not declare"
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /connectors/{connector_id}/check:
+    post:
+      tags: [Connectors]
+      summary: Reach the service now and report what happened; the result is stored on the connector
+      parameters:
+        - $ref: '#/components/parameters/ConnectorId'
+      responses:
+        '200':
+          description: Check result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  result:
+                    type: object
+                    properties:
+                      ok: { type: boolean }
+                      message: { type: string }
+                      detail: { type: object, additionalProperties: true }
+        '400':
+          description: The connector declares supports_check false (Discord); test a destination instead
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /connectors/{connector_id}/targets:
+    post:
+      tags: [Connectors]
+      summary: Add a destination to a notifying connector; the first one becomes the default
+      parameters:
+        - $ref: '#/components/parameters/ConnectorId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, credential]
+              properties:
+                label: { type: string, maxLength: 60 }
+                credential:
+                  type: string
+                  description: Validated by the connector, e.g. a Discord webhook URL.
+                make_default: { type: boolean }
+      responses:
+        '200':
+          description: The new destination's id and the connector's destinations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  target_id: { type: string }
+                  targets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '400':
+          description: >-
+            Not a notifying connector, a missing, too long or duplicate label,
+            or a credential the connector rejects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /connectors/{connector_id}/targets/{target_id}:
+    patch:
+      tags: [Connectors]
+      summary: Rename a destination, replace its credential, take it in or out of service, or make it the default
+      parameters:
+        - $ref: '#/components/parameters/ConnectorId'
+        - $ref: '#/components/parameters/TargetId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string, maxLength: 60 }
+                credential:
+                  type: string
+                  description: "`<redacted>` means unchanged."
+                enabled: { type: boolean }
+                make_default: { type: boolean }
+      responses:
+        '200':
+          description: The connector's destinations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  targets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '400':
+          description: Not a notifying connector, an invalid label, or a credential the connector rejects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown connector, or the destination no longer exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [Connectors]
+      summary: Remove a destination and its credential; routes pointing at it fall back to the default
+      parameters:
+        - $ref: '#/components/parameters/ConnectorId'
+        - $ref: '#/components/parameters/TargetId'
+      responses:
+        '200':
+          description: The connector's remaining destinations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  targets:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '400':
+          description: Not a notifying connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown connector, or the destination no longer exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /connectors/{connector_id}/targets/{target_id}/test:
+    post:
+      tags: [Connectors]
+      summary: Send a real test message to one destination now, ignoring routing
+      parameters:
+        - $ref: '#/components/parameters/ConnectorId'
+        - $ref: '#/components/parameters/TargetId'
+      responses:
+        '200':
+          $ref: '#/components/responses/Success'
+        '400':
+          description: Not a notifying connector, or the service refused the message (its explanation, redacted)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown connector, or the destination no longer exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /connectors/{connector_id}/deliveries:
+    get:
+      tags: [Connectors]
+      summary: Recent announcements this connector handled, newest first, with what happened to each
+      parameters:
+        - $ref: '#/components/parameters/ConnectorId'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            maximum: 100
+      responses:
+        '200':
+          description: Delivery history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  deliveries:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   # ==================== BACKUPS ====================
   #
@@ -3088,7 +3715,7 @@ paths:
   /simulation/cleanup:
     post:
       tags: [Simulation]
-      summary: Remove every simulation row and the files the simulation generated
+      summary: Remove every simulation row, the simulation's sync runs and the files it generated
       responses:
         '200':
           description: Cleanup summary
@@ -3449,7 +4076,12 @@ paths:
   /webhook/series/notifications/sync-batch:
     post:
       tags: [Webhooks - Management]
-      summary: Sync a group of series/anime notifications as one transfer per season
+      summary: Sync a group of notifications as one manual run per destination folder (one per season)
+      description: >-
+        The grouping is re-derived on the server from each notification's
+        destination folder; ids are looked up in both notification tables.
+        Notifications already completed, or riding on a run that is copying
+        right now, are skipped and named in `message`.
       requestBody:
         required: true
         content:
@@ -3460,10 +4092,11 @@ paths:
               properties:
                 notification_ids:
                   type: array
-                  items: { type: integer }
+                  minItems: 1
+                  items: { type: string, minLength: 1 }
       responses:
         '200':
-          description: One entry per season started
+          description: One run per folder
           content:
             application/json:
               schema:
@@ -3471,15 +4104,803 @@ paths:
                 properties:
                   status: { type: string }
                   message: { type: string }
-                  transfers:
+                  transfer_ids:
+                    type: array
+                    maxItems: 0
+                    items: { type: string }
+                    description: >-
+                      Always empty: each run creates its transfer once its safety
+                      check passes, after this call returns.
+                  run_ids:
+                    type: array
+                    items: { type: string }
+        '400':
+          description: >-
+            Empty or non-list notification_ids, a non-string id, or nothing in
+            the group could be synced (`status: error`, with `message` and
+            `run_ids`)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  # ==================== SYNC ENGINE ====================
+  #
+  # Every sync is a run through nine stages: receive, identify, batch, ready,
+  # safety, queue, transfer, finish, tell. Every endpoint below answers 503
+  # with "The sync engine is not running" when the engine, the alert service
+  # or the scheduler is not wired up. See api.md section 13.
+
+  /sync/catalogue:
+    get:
+      tags: [Sync Engine]
+      summary: The stages, every kind of sync and how it runs each stage, the run states and the alert vocabulary
+      responses:
+        '200':
+          description: The pipeline the engine runs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  stages:
                     type: array
                     items:
                       type: object
                       properties:
-                        season: { type: integer, nullable: true }
-                        notification_id: { type: integer }
-                        transfer_id: { type: string, nullable: true }
-        '400':
-          description: Empty or non-list notification_ids
+                        id: { type: string }
+                        label: { type: string }
+                        tagline: { type: string }
+                        description: { type: string }
+                  kinds:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        label: { type: string }
+                        description: { type: string }
+                        mergeable: { type: boolean }
+                        stages:
+                          type: object
+                          description: Stage id -> {mode, note}; mode is run, diff or skip.
+                          additionalProperties:
+                            type: object
+                            properties:
+                              mode: { type: string, enum: [run, diff, skip] }
+                              note: { type: string }
+                  stage_statuses:
+                    type: array
+                    items: { type: string }
+                  states:
+                    type: object
+                    description: open, active and terminal state lists, and a label per state
+                    additionalProperties: true
+                  state_groups:
+                    type: object
+                    description: The groups /sync/runs?state= accepts - open, active, live, finished
+                    additionalProperties:
+                      type: array
+                      items: { type: string }
+                  alert_actions:
+                    type: object
+                    additionalProperties: { type: string }
+                  alert_kinds:
+                    type: object
+                    additionalProperties: { type: string }
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /sync/runs:
+    get:
+      tags: [Sync Engine]
+      summary: One page of runs, newest first, each with its stage strip
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: >-
+            One state, several comma-separated, or one group - open, active,
+            live, finished, all (the default).
+          schema: { type: string, default: all }
+        - name: kind
+          in: query
+          required: false
+          description: One kind, or several comma-separated.
+          schema: { type: string }
+        - name: search
+          in: query
+          required: false
+          description: >-
+            Title, folder, season, destination path, run id or transfer id. `q`
+            is accepted as well.
+          schema: { type: string }
+        - name: simulations
+          in: query
+          required: false
+          description: 0, false or no leaves simulation runs out.
+          schema: { type: string }
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: >-
+            Runs. `total` honours every filter; `state_counts` honours only
+            `simulations`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  limit: { type: integer }
+                  offset: { type: integer }
+                  total: { type: integer }
+                  state_counts:
+                    type: object
+                    additionalProperties: { type: integer }
+                  runs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SyncRunSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /sync/runs/{run_id}:
+    get:
+      tags: [Sync Engine]
+      summary: One run in full - every stage with its summary, detail and log lines, its webhooks, transfer, related runs, alerts and available actions
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: The run
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  run:
+                    allOf:
+                      - $ref: '#/components/schemas/SyncRunSummary'
+                      - type: object
+                        properties:
+                          source_path: { type: string, nullable: true }
+                          dest_path: { type: string, nullable: true }
+                          operation_type: { type: string, nullable: true }
+                          ready_mode:
+                            type: string
+                            nullable: true
+                            description: "`ask` (asking Sonarr), `timer` (the fallback timer), or null before the ready check decides"
+                          checks_made: { type: integer }
+                          timer_due_at: { type: string, nullable: true }
+                          ready_deadline_at: { type: string, nullable: true }
+                          force_safety: { type: boolean }
+                          stage_detail:
+                            type: array
+                            description: Nine entries in stage order, each with its own `events`.
+                            items:
+                              type: object
+                              additionalProperties: true
+                          webhooks:
+                            type: array
+                            items:
+                              type: object
+                              additionalProperties: true
+                          transfer:
+                            type: object
+                            nullable: true
+                            additionalProperties: true
+                          related:
+                            type: array
+                            items:
+                              type: object
+                              additionalProperties: true
+                          alerts:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Alert'
+                          actions:
+                            type: array
+                            items:
+                              type: string
+                              enum: [go_now, cancel, sync_anyway, restart]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /sync/runs/{run_id}/events:
+    get:
+      tags: [Sync Engine]
+      summary: A run's log lines after a given event id, optionally for one stage
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - name: after
+          in: query
+          required: false
+          schema: { type: integer, default: 0 }
+        - name: stage
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [receive, identify, batch, ready, safety, queue, transfer, finish, tell]
+      responses:
+        '200':
+          description: Log lines, oldest first (at most 2,000 are kept per run)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        run_id: { type: string }
+                        stage: { type: string }
+                        level: { type: string, enum: [info, success, warning, error] }
+                        message: { type: string }
+                        data: { type: object, nullable: true, additionalProperties: true }
+                        created_at: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /sync/lookup:
+    get:
+      tags: [Sync Engine]
+      summary: The run behind a transfer or a webhook notification
+      parameters:
+        - name: transfer_id
+          in: query
+          required: false
+          description: Used when both are given.
+          schema: { type: string }
+        - name: notification_id
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: The run as a list row (`webhook_count` is null here)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  run_id: { type: string }
+                  run:
+                    $ref: '#/components/schemas/SyncRunSummary'
+        '400':
+          description: Neither transfer_id nor notification_id was given
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Nothing links to a run, e.g. a transfer or notification from before the sync engine
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /sync/runs/{run_id}/go-now:
+    post:
+      tags: [Sync Engine]
+      summary: Send a held or waiting run on now; it skips the rest of the ready check
+      description: >-
+        For a run past the ready check that has not finished, it changes nothing
+        and still answers 200, with a message saying the sync is already on its
+        way. A run that has already ended answers 409. A Sonarr, Radarr or
+        auto-scanner run sent on this way counts as a manual sync from then on.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Promoted, or already on its way
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncRunActionResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The run already ended (`This sync already ended.`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncRunActionResult'
+
+  /sync/runs/{run_id}/cancel:
+    post:
+      tags: [Sync Engine]
+      summary: Cancel a run that has not finished, and its transfer if it has one in the queue or copying
+      description: >-
+        A queued run whose transfer row has gone (deleted from the transfer
+        list) has no transfer to cancel and is closed directly.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncRunActionResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The run already ended, or its transfer could not be cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncRunActionResult'
+
+  /sync/runs/{run_id}/sync-anyway:
+    post:
+      tags: [Sync Engine]
+      summary: Go ahead with a run the safety check stopped; it is handed to the queue in this request
+      description: >-
+        A queue that refuses the transfer answers 409, with `state: failed` and
+        the reason in `message`.
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: Handed to the queue; `transfer_id` is set
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncRunActionResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The run is not refused, another sync for the same folder is already on its way, or the queue refused the transfer (`state` is `failed`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncRunActionResult'
+
+  # ==================== ALERTS (NOTIFICATIONS TAB) ====================
+
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: Alerts, newest first, with the open counts
+      parameters:
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [open, done, wrong, dismissed, all]
+            default: open
+        - name: kind
+          in: query
+          required: false
+          description: One kind, or several comma-separated.
+          schema: { type: string }
+        - $ref: '#/components/parameters/PageLimit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: >-
+            Alerts. `total` counts the requested state and `kind`; `open` and
+            `by_severity` always describe open alerts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  limit: { type: integer }
+                  offset: { type: integer }
+                  total: { type: integer }
+                  open: { type: integer }
+                  by_severity:
+                    type: object
+                    additionalProperties: { type: integer }
+                  alerts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Alert'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /alerts/summary:
+    get:
+      tags: [Alerts]
+      summary: How many alerts are open, in total and by severity - the badge on the tab
+      responses:
+        '200':
+          description: Open counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlertSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /alerts/{alert_id}/action:
+    post:
+      tags: [Alerts]
+      summary: Do what the alert's button says, then close the alert
+      description: >-
+        `dismiss` is accepted on any open alert; every other action must be one
+        the alert offers. If the action itself fails the alert stays open.
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [sync_now, retry, sync_anyway, run_now, mark_done, mark_wrong, dismiss]
+      responses:
+        '200':
+          description: Done; the alert is closed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  message: { type: string }
+                  alert:
+                    $ref: '#/components/schemas/Alert'
+        '400':
+          description: Missing or unknown action
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            The alert is already closed, the action is not one it offers, or
+            the action failed. The body carries `message` and the alert.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  message: { type: string }
+                  alert:
+                    $ref: '#/components/schemas/Alert'
+
+  # ==================== SCHEDULER ====================
+
+  /scheduler/jobs:
+    get:
+      tags: [Scheduler]
+      summary: Every background job with its switch, interval, last run, last result and next run
+      responses:
+        '200':
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SchedulerJob'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /scheduler/jobs/{name}/run:
+    post:
+      tags: [Scheduler]
+      summary: Run a job now, whatever its schedule; returns once it has started
+      parameters:
+        - $ref: '#/components/parameters/JobName'
+      responses:
+        '200':
+          description: Started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  message: { type: string }
+                  job:
+                    $ref: '#/components/schemas/SchedulerJob'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The job is already running; a job never overlaps itself
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  message: { type: string }
+                  job:
+                    $ref: '#/components/schemas/SchedulerJob'
+
+  # ==================== MEDIA LIBRARY ====================
+  #
+  # Errors here are `{"success": false, "error": "..."}`, not the `status`
+  # envelope. Every endpoint answers 404 for an unknown source and 503 when the
+  # title index is not available. Sonarr and Radarr are only ever read.
+
+  /library/{source}:
+    get:
+      tags: [Media Library]
+      summary: One row per title the service holds, with what this disk holds beside it
+      parameters:
+        - $ref: '#/components/parameters/LibrarySource'
+        - name: refresh
+          in: query
+          required: false
+          description: 1, true or yes pulls the service's whole catalogue into the index first.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Library view
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  source: { type: string }
+                  live:
+                    type: boolean
+                    description: False when the service could not be read and the index answered instead.
+                  total: { type: integer }
+                  counts:
+                    type: object
+                    additionalProperties: { type: integer }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  read_only: { type: boolean }
+                  test_mode: { type: boolean }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+        '500':
+          description: The view failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+
+  /library/{source}/history:
+    get:
+      tags: [Media Library]
+      summary: A page of the service's own history, with titles the index knows matched in
+      parameters:
+        - $ref: '#/components/parameters/LibrarySource'
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: page_size
+          in: query
+          required: false
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      responses:
+        '200':
+          description: History page; `live` false with a `message` when the service cannot be read
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties:
+                  success: { type: boolean }
+                  source: { type: string }
+                  live: { type: boolean }
+                  records:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+                  read_only: { type: boolean }
+        '400':
+          description: page or page_size is not a number
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+
+  /library/{source}/queue:
+    get:
+      tags: [Media Library]
+      summary: What is waiting on the service and why, rows needing attention first
+      parameters:
+        - $ref: '#/components/parameters/LibrarySource'
+      responses:
+        '200':
+          description: Queue view; `live` false with a `message` when the service cannot be read
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties:
+                  success: { type: boolean }
+                  source: { type: string }
+                  live: { type: boolean }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  counts:
+                    type: object
+                    additionalProperties: { type: integer }
+                  total: { type: integer }
+                  needing_attention: { type: integer }
+                  holding_a_sync: { type: integer }
+                  read_only: { type: boolean }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+
+  /library/{source}/sync:
+    post:
+      tags: [Media Library]
+      summary: Sync what this disk is missing of one title, as manual runs through the sync engine
+      description: >-
+        What to fetch is worked out on the server from the service as it is
+        now: for Sonarr, each season holding fewer files here than in Sonarr;
+        for Radarr, the movie when it is not here. `transfers_started` counts
+        the runs the engine accepted - no transfer exists yet when this
+        returns. This response used to carry a `decision` object instead of
+        `runs`.
+      parameters:
+        - $ref: '#/components/parameters/LibrarySource'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_id]
+              properties:
+                external_id:
+                  type: string
+                  description: TVDB id for Sonarr, TMDB id for Radarr.
+      responses:
+        '200':
+          description: At least one run accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  transfers_started: { type: integer }
+                  error: { type: string }
+                  runs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SyncRunActionResult'
+        '400':
+          description: external_id is required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+        '409':
+          description: >-
+            Nothing to start - the service did not answer, the title is not
+            recorded, the service holds no files for it, everything is already
+            here - or every run was refused (then `runs` is present too)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+        '500':
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+        '503':
+          description: Syncing from the library view is not available, or the index is not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+
+  /library/{source}/refresh:
+    post:
+      tags: [Media Library]
+      summary: Pull the service's catalogue into the index; writes only to this side's database
+      parameters:
+        - $ref: '#/components/parameters/LibrarySource'
+      responses:
+        '200':
+          description: Refreshed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  source: { type: string }
+                  titles_seen: { type: integer }
+                  read_only: { type: boolean }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+        '502':
+          description: The service did not answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'

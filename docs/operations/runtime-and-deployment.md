@@ -1,6 +1,6 @@
 # Runtime Stability Implementation
 
-Last updated: 2026-08-06
+Last updated: 2026-10-05
 Related issues: `#38`, `#39`
 Branch context: `feature/runtime-stability`
 
@@ -144,6 +144,12 @@ history behind the React socket settings:
 - `frontend/dist/` is generated and ignored by Git. A missing build is a deploy
   error; `/` returns `503 FRONTEND_BUILD_MISSING` rather than another UI.
 - The app is intentionally single-worker today; do not raise worker count without redesigning process-local Socket.IO/background coordination.
+  Since 2026-10-05 that background state includes the sync engine's loop and
+  its folder locks, and the scheduler: a second worker would ask Sonarr twice,
+  run every auto-scan twice, and let two processes open batches for the same
+  folder. Batches themselves are in the database, so a restart is safe; two
+  workers at once is not. See
+  [the sync engine](../features/sync-engine/README.md).
 - Same-origin is no longer a future path — the app is exposed on a public
   HTTPS hostname through a Cloudflare Tunnel pointed at port 5000. See
   [public-access.md](public-access.md) for the settings that have to be right

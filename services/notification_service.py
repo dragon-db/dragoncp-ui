@@ -131,12 +131,17 @@ class NotificationService:
 
     # -- announcements -------------------------------------------------------
 
-    def send_discord_notification(self, transfer_id: str, transfer_status: str):
+    def send_discord_notification(self, transfer_id: str, transfer_status: str,
+                                  sync_label: Optional[str] = None):
         """Announce a finished or failed transfer.
 
         The name is kept because four callers use it and it is not Discord's
         any more than it is anyone else's — where this ends up is a routing
         decision now, not a decision made here.
+
+        `sync_label` is what the sync engine knows about how this sync started
+        ("Automated Sync", "Auto-scanner", "Manual Sync"). Without it the label
+        is guessed from the webhook row, which is all older callers had.
         """
         try:
             transfer = self.transfer_model.get(transfer_id)
@@ -158,7 +163,7 @@ class NotificationService:
             poster_url, requested_by, is_auto_sync = self._webhook_context(
                 transfer_id, transfer.get('media_type', '')
             )
-            sync_type = 'Automated Sync' if is_auto_sync else 'Manual Sync'
+            sync_type = sync_label or ('Automated Sync' if is_auto_sync else 'Manual Sync')
 
             if transfer_status == 'failed':
                 fields = [Field('Folder Path', transfer.get('dest_path', 'Unknown'))]

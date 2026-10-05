@@ -38,6 +38,17 @@ ACTIONS = {
     'sweep.run': 'Checked a library for missed imports',
     'sweep.sync_started': 'Synced something a notification never arrived for',
     'sweep.sync_failed': 'Could not sync something found by a library check',
+    # the scheduled auto-scanner, which replaced the sweep (2.3.0)
+    'scanner.run': 'Ran the scheduled auto-scanner',
+    'scanner.sync_started': 'Started a sync the auto-scanner found',
+    # the sync engine — acting on a sync before or instead of its transfer
+    'sync.go_now': 'Told a waiting sync to go now',
+    'sync.cancel': 'Cancelled a sync',
+    'sync.sync_anyway': 'Went ahead despite a safety check',
+    # the Notifications tab
+    'alert.resolve': 'Acted on an alert',
+    # the scheduler
+    'scheduler.run_now': 'Ran a background job now',
     # backups
     'backup.capture': 'Kept files a sync was about to replace',
     'backup.restore': 'Restored a backup',

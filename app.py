@@ -55,6 +55,7 @@ from routes import (
     activity_bp, init_activity_routes,
     remote_daemon_bp, init_remote_daemon_routes,
     connectors_bp, init_connector_routes,
+    sync_engine_bp, init_sync_engine_routes,
     init_webhook_routes, init_debug_routes, init_simulation_routes
 )
 
@@ -330,10 +331,19 @@ connector_store = ConnectorStore(db_manager)
 connector_service = configure_connectors(connector_store)
 init_connector_routes(connector_service, connector_store)
 
+# Background work starts only now, with the connector layer up: the sync
+# engine's restart recovery and the completion watchers for transfers that
+# survived a restart can both announce what they find, and before this point
+# those announcements would go nowhere.
+transfer_coordinator.start_background()
+
+# The pipeline view, the Notifications tab and the scheduler's jobs.
+init_sync_engine_routes(transfer_coordinator)
+
 # The library and history views read through the same index the scheduler uses,
 # so what the page shows and what the gate decides can never drift apart.
 init_media_library_routes(transfer_coordinator.media_index,
-                          sweep=transfer_coordinator.autosync_sweep)
+                          scanner=transfer_coordinator.auto_scanner)
 
 # Register route blueprints
 app.register_blueprint(auth_bp, url_prefix='/api')
@@ -349,6 +359,7 @@ app.register_blueprint(activity_bp, url_prefix='/api')
 app.register_blueprint(remote_daemon_bp, url_prefix='/api')
 app.register_blueprint(media_library_bp, url_prefix='/api')
 app.register_blueprint(connectors_bp, url_prefix='/api')
+app.register_blueprint(sync_engine_bp, url_prefix='/api')
 
 logger.info('Backend logging file: %s', LOG_FILE_PATH)
 

@@ -13,9 +13,43 @@ Newest first.
 
 ## 2.3.0
 
-The release that made DragonCP extensible: outside services are now
+The release that made DragonCP extensible — outside services are now
 **connectors**, each with its own page under a new Integrations section in the
-sidebar.
+sidebar — and gave every sync one pipeline.
+
+### One pipeline for every sync
+
+- **Every sync now passes the same nine stages** — receive, identify, batch,
+  ready check, safety check, queue, transfer, finish, tell — whether a webhook,
+  the auto-scanner, a press of Sync, an Explore plan, a restart, a restore or a
+  simulation started it. Each stage records what it decided and why, including
+  why it was skipped, with its own log lines. The screens that show this are
+  the next piece of work; the record starts with this release.
+- **Episodes no longer sync before the season has finished downloading.** A
+  Sonarr webhook now waits ten seconds, then asks Sonarr whether anything else
+  for that season is still downloading, and asks again by Sonarr's own time
+  estimate. A download stuck in Sonarr does not hold the season up; a slow one
+  holds it for at most 30 minutes. When Sonarr cannot be asked, the old fixed
+  timer takes over.
+- **A burst of episode webhooks is one transfer, and one arriving mid-copy is
+  one more** — queued behind the copy, never a third.
+- **A restart no longer loses episodes silently.** A batch waiting to sync was
+  held only in memory, so a restart dropped it and nothing said so. Batches now
+  live in the database, and nothing restarts by itself: what a restart
+  interrupted becomes an alert, with Sync now, Mark as done, Mark as wrong and
+  Dismiss.
+- **Restart goes through the queue and the safety check** like every other
+  sync, instead of starting at once.
+- **Two seasons of one series may copy at the same time; the same season never,
+  and a whole-series copy waits for any season copy of that series.**
+- **A new scheduled auto-scanner** catches what a lost webhook would have
+  missed: on a schedule, it asks Sonarr and Radarr what they imported since the
+  last scan and syncs whatever no webhook delivered. One switch per service on its
+  integration page, off by default. It never fetches the whole backlog.
+- **Alerts.** Anything that needs a person — a sync the safety check stopped, a
+  failed transfer, a download stuck in Sonarr, a restart that interrupted a
+  sync — opens an alert with the actions that fit it. The Notifications tab
+  that lists them is the next piece of work.
 
 ### Integrations
 
@@ -25,8 +59,10 @@ sidebar.
 - **Discord now supports several webhooks**, each with a name you choose. One is
   the default.
 - **Every notification can be pointed at a specific webhook.** A new
-  Notifications tab lists all five announcements DragonCP makes — sync finished,
-  sync failed, rename finished, old backups deleted, automatic sync refused —
+  Notifications tab lists all ten announcements DragonCP makes — sync finished,
+  sync failed, rename finished, old backups deleted, automatic sync refused,
+  sync may have been skipped, synced without a stuck download, auto-scanner
+  found something, Sonarr or Radarr not answering, background job failing —
   each with a destination and an on/off switch. Anything left on "use default"
   goes where the default webhook points, so a notification added in a future
   version arrives instead of shipping silent.
@@ -35,14 +71,26 @@ sidebar.
   didn't I get told about that" previously meant reading the server console.
 - **Each webhook has its own Test button**, so a test proves *that* webhook
   rather than whichever one happened to be saved.
-- **Sonarr, Radarr and Jellyfin can be connected and tested.** Nothing reads
-  them yet; using them to decide when a sync should start comes next.
+- **Sonarr, Radarr and Jellyfin can be connected and tested.** Sonarr decides
+  when a season is ready to sync, and the auto-scanner reads Sonarr and Radarr;
+  Jellyfin is connected but nothing reads it yet.
 - **Your existing Discord setup is carried over automatically.** The webhook you
   had becomes a destination called "Default", nothing is re-routed, and messages
   keep going exactly where they went before.
 
 ### Fixed
 
+- **A dry run that could not run no longer counts as safe.** When rsync could
+  not reach the media server, or the folder was missing, the safety check saw
+  an empty list of changes and let the sync through. It now stops the sync and
+  shows rsync's own error.
+- **Deleting a waiting transfer no longer blocks its folder.** A queued or
+  paused transfer deleted from the list kept its place in the queue until the
+  next restart, so later syncs to the same folder waited behind nothing. It is
+  now cancelled first.
+- **A movie waiting for its folder says so.** A movie webhook whose transfer
+  moved from waiting for a slot to waiting for the folder kept saying it waited
+  for a slot.
 - **A rename notification no longer holds up Sonarr.** The Discord message was
   posted inside the HTTP request Sonarr made, so Sonarr waited up to ten seconds
   for Discord to answer. Messages are now delivered in the background.

@@ -205,25 +205,49 @@ class ExploreExecutor:
                 transfer_id, media_type, series, season_name,
                 source_root, dest_root, len(moved),
             )
+            engine = getattr(self.coordinator, 'sync_engine', None)
+            if engine is not None:
+                try:
+                    engine.record_finished_run(
+                        self._sync_request(record, unit, transfer_id, mode, files_from,
+                                           len(rels), len(moved)),
+                        transfer_id,
+                        f"Nothing to download: {len(moved)} file(s) moved to the backup "
+                        f"area.")
+                except Exception as error:  # noqa: BLE001 - the files are already safe
+                    print(f"⚠️  Could not record the Explore run in the pipeline: {error}")
             return True, 'removals only', {
                 'season_label': season_label, 'transfer_id': transfer_id, 'state': 'done',
             }
 
         # --- 3. hand it to the normal pipeline ------------------------------
-        started, state = self.coordinator.start_transfer(
-            transfer_id,
-            source_root,
-            dest_root,
-            operation_type=f"explore_{mode}",
-            media_type=media_type,
-            folder_name=series,
-            season_name=season_name,
-            extra_fields={
-                'explore_files_from': files_from,
-                'explore_mode': mode,
-                'explore_plan_id': record['plan_id'],
-            },
-        )
+        # Through the sync engine when there is one, so an approved plan shows
+        # up in the pipeline with every other sync. Synchronous: this caller
+        # has to know at once whether the queue took it, to roll the moves
+        # back if it did not.
+        engine = getattr(self.coordinator, 'sync_engine', None)
+        if engine is not None:
+            result = engine.submit(
+                self._sync_request(record, unit, transfer_id, mode, files_from,
+                                   len(rels), len(moved)),
+                wait=True)
+            started = result.ok and bool(result.queue_state)
+            state = result.queue_state or result.message
+        else:
+            started, state = self.coordinator.start_transfer(
+                transfer_id,
+                source_root,
+                dest_root,
+                operation_type=f"explore_{mode}",
+                media_type=media_type,
+                folder_name=series,
+                season_name=season_name,
+                extra_fields={
+                    'explore_files_from': files_from,
+                    'explore_mode': mode,
+                    'explore_plan_id': record['plan_id'],
+                },
+            )
 
         if not started:
             self._rollback(moved)
@@ -233,6 +257,33 @@ class ExploreExecutor:
         return True, state, {
             'season_label': season_label, 'transfer_id': transfer_id, 'state': state,
         }
+
+    def _sync_request(self, record: Dict, unit: Dict, transfer_id: str, mode: str,
+                      files_from: str, fetch_count: int, moved_count: int):
+        """This season of the plan, as a request to the sync engine."""
+        from services.sync_engine.engine import SyncRequest
+        verdict = 'judged safe' if record.get('safe', True) else 'reviewed'
+        return SyncRequest(
+            kind='explore',
+            media_type=record['media_type'],
+            source_path=unit['source_root'],
+            dest_path=unit['dest_root'],
+            folder_name=record['series'],
+            season_name=unit.get('season_name'),
+            title=record['series'],
+            operation_type=f"explore_{mode}",
+            transfer_id=transfer_id,
+            extra_fields={
+                'explore_files_from': files_from,
+                'explore_mode': mode,
+                'explore_plan_id': record['plan_id'],
+            },
+            options={'plan_id': record['plan_id'], 'mode': mode,
+                     'files_to_fetch': fetch_count, 'moved_to_backup': moved_count},
+            safety_summary=(f"The Explore plan was {verdict} before it was approved: "
+                            f"{fetch_count} file(s) to fetch, {moved_count} moved to the "
+                            f"backup area first."),
+        )
 
     def _record_removal_only_run(self, transfer_id: str, media_type: str, series: str,
                                  season_name: Optional[str], source_root: str,

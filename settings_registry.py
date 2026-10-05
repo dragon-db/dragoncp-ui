@@ -170,37 +170,22 @@ _DB_SETTINGS: List[Setting] = [
     Setting('AUTO_SYNC_ANIME', DB, 'automation', 'Auto-sync anime',
             'Start a transfer once a season’s episodes have settled.',
             kind='boolean', default='false'),
-    # SECONDS, not minutes — `AutoSyncScheduler.schedule_job` adds it straight
-    # to `time.time()`. The bounds are the ones the webhook settings route was
-    # already applying; they live here now so there is one clamp rather than a
-    # route that enforced 30-900 and a reader that enforced nothing.
-    Setting('SERIES_ANIME_SYNC_WAIT_TIME', DB, 'automation', 'Batch wait (seconds)',
-            'How long to wait for more episodes of a season before starting a transfer.',
+    # SECONDS, not minutes. Since 2.3.0 this is the sync engine's fallback
+    # timer: it decides when a season starts only when Sonarr cannot be asked
+    # (not connected, or not answering). Each later webhook adds the same again,
+    # never past 15 minutes from the first. When Sonarr answers, Sonarr's own
+    # "time left" decides instead.
+    Setting('SERIES_ANIME_SYNC_WAIT_TIME', DB, 'automation', 'Fallback wait (seconds)',
+            'Used only when Sonarr cannot be asked: how long to wait for more episodes '
+            'of a season before starting, plus this again for each later episode, at '
+            'most 15 minutes. When Sonarr answers, it decides instead.',
             kind='number', default='60', minimum=30, maximum=900),
 
-    # ---- asking instead of waiting ---------------------------------------
-    # Off by default, and that is not timidity: switching it on changes when
-    # every automatic sync starts, and the honest default for that is the
-    # behaviour the operator already has. The switch is also the rollback —
-    # read at the moment a job decides, so turning it off takes effect on the
-    # next sync with no restart.
-    Setting('AUTOSYNC_GATE_ENABLED', DB, 'automation', 'Wait for the download instead of the clock',
-            'Ask Sonarr whether a season is still downloading rather than waiting a '
-            'fixed time. Falls back to the fixed wait whenever Sonarr cannot answer.',
-            kind='boolean', default='false'),
-    Setting('AUTOSYNC_GATE_POLL_SECONDS', DB, 'automation', 'How often to ask (seconds)',
-            'The floor between questions for one season. A burst of episode '
-            'notifications is still one question, not one per episode.',
-            kind='number', default='30', minimum=10, maximum=300),
-    Setting('AUTOSYNC_GATE_SETTLE_SECONDS', DB, 'automation', 'Settle before asking (seconds)',
-            'A short pause before the first question, so episodes arriving together '
-            'are batched into one sync rather than racing each other.',
-            kind='number', default='10', minimum=0, maximum=120),
-    # The sweep's own settings moved onto the Sonarr and Radarr connectors in
-    # this release. Two services can want different schedules, and one can be
-    # trusted to act while the other is only watched — a single global pair
-    # could express neither, and a setting that cannot express the situation is
-    # a setting people work around.
+    # There is no switch for asking Sonarr. Whether its API is up decides
+    # (decided 2026-10-02): up, the engine asks and waits as long as Sonarr says
+    # is left; down, this timer decides. The scheduled auto-scanner's settings
+    # live on the Sonarr and Radarr connectors, because two services can want
+    # different schedules.
 
     # The five DISCORD_* settings that used to live here moved to the connector
     # layer in 2.3.0. They were never really settings: a webhook URL is one

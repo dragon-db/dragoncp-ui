@@ -252,6 +252,158 @@ class DatabaseManager:
         print(f"🧩 Built the title index: {made} titles, "
               f"{linked} transfers by identifier, {by_name} by folder name")
 
+    def _create_sync_engine_tables(self, conn):
+        """The sync engine's memory: every pass through the pipeline, stage by stage.
+
+        One `sync_run` is one pass — a batch of webhooks for a season, a manual
+        sync, an Explore plan, a restart. It is written as it changes, so a
+        restart can see what was in flight and say so instead of forgetting it.
+
+        `sync_run_stage` holds one row per stage of a run: where it got to and a
+        sentence saying why — including, always, why a stage was skipped.
+        `sync_run_event` is the log, every line tagged with the stage it belongs
+        to, which is what lets the interface show each stage's own output.
+        """
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS sync_run (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT UNIQUE NOT NULL,
+                kind TEXT NOT NULL,
+                source TEXT,
+                media_type TEXT,
+                unit_key TEXT,
+                mergeable INTEGER NOT NULL DEFAULT 1,
+                title TEXT,
+                season_number INTEGER,
+                season_name TEXT,
+                folder_name TEXT,
+                source_path TEXT,
+                dest_path TEXT,
+                operation_type TEXT DEFAULT 'folder',
+                state TEXT NOT NULL,
+                current_stage TEXT,
+                outcome TEXT,
+                outcome_message TEXT,
+                transfer_id TEXT,
+                parent_run_id TEXT,
+                parent_relation TEXT,
+                requested_by_kind TEXT,
+                requested_by_name TEXT,
+                requested_by_account_id INTEGER,
+                is_simulation INTEGER NOT NULL DEFAULT 0,
+                ready_mode TEXT,
+                next_check_at REAL,
+                timer_due_at REAL,
+                ready_deadline_at REAL,
+                checks_made INTEGER NOT NULL DEFAULT 0,
+                go_now INTEGER NOT NULL DEFAULT 0,
+                force_safety INTEGER NOT NULL DEFAULT 0,
+                options TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS sync_run_stage (
+                run_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT,
+                detail TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, stage)
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS sync_run_event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                level TEXT NOT NULL DEFAULT 'info',
+                message TEXT NOT NULL,
+                data TEXT,
+                created_at TEXT NOT NULL
+            )
+        ''')
+
+        # Which run a webhook rides on, and which run owns a transfer. A column
+        # rather than a join table: a webhook belongs to exactly one run at a
+        # time, and "webhooks that belong to no run" is the question the
+        # restart recovery asks.
+        self._ensure_column(conn, 'sonarr_webhook', 'sync_run_id', "TEXT")
+        self._ensure_column(conn, 'sonarr_webhook', 'sync_attached_at', "TEXT")
+        self._ensure_column(conn, 'radarr_webhook', 'sync_run_id', "TEXT")
+        self._ensure_column(conn, 'radarr_webhook', 'sync_attached_at', "TEXT")
+        self._ensure_column(conn, 'transfers', 'sync_run_id', "TEXT")
+        # A movie the safety check stopped, or a restart interrupted, carries
+        # the same "needs a person" flag a series webhook does.
+        self._ensure_column(conn, 'radarr_webhook', 'requires_manual_sync', "INTEGER DEFAULT 0")
+        self._ensure_column(conn, 'radarr_webhook', 'manual_sync_reason', "TEXT")
+
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_run_state ON sync_run(state)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_run_unit ON sync_run(unit_key, state)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_run_transfer ON sync_run(transfer_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_run_created ON sync_run(created_at DESC)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_run_due ON sync_run(state, next_check_at)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_event_run ON sync_run_event(run_id, id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sonarr_webhook_sync_run ON sonarr_webhook(sync_run_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_radarr_webhook_sync_run ON radarr_webhook(sync_run_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_transfers_sync_run ON transfers(sync_run_id)')
+
+        # ---- the Notifications tab -----------------------------------------
+        # Everything that needs a person. An alert is opened by the engine (a
+        # restart left work unfinished, a download is stuck, a sync was refused
+        # or failed) and closed by an admin acting on it. `dedupe_key` keeps one
+        # open alert per subject: a second occurrence bumps the first.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS alert (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_id TEXT UNIQUE NOT NULL,
+                kind TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT,
+                state TEXT NOT NULL DEFAULT 'open',
+                dedupe_key TEXT,
+                run_id TEXT,
+                transfer_id TEXT,
+                unit_key TEXT,
+                link TEXT,
+                actions TEXT NOT NULL DEFAULT '[]',
+                data TEXT NOT NULL DEFAULT '{}',
+                occurrences INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT,
+                resolved_action TEXT,
+                resolved_by_kind TEXT,
+                resolved_by_name TEXT,
+                resolved_by_account_id INTEGER
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_alert_state ON alert(state, created_at DESC)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_alert_dedupe ON alert(dedupe_key, state)')
+
+        # ---- the scheduler's memory -----------------------------------------
+        # One row per background job: when it last ran, whether it worked, and
+        # what it said. Kept so the interface can show a job's state after a
+        # restart, and so a job failing again and again is noticed.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS scheduled_job (
+                name TEXT PRIMARY KEY,
+                last_run_at TEXT,
+                last_finished_at TEXT,
+                last_ok INTEGER,
+                last_result TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+        ''')
+
     def init_database(self):
         """Initialize database and create tables"""
         with sqlite3.connect(self.db_path) as conn:
@@ -950,6 +1102,8 @@ class DatabaseManager:
                 'CREATE INDEX IF NOT EXISTS idx_connector_delivery_recent '
                 'ON connector_delivery(connector_id, id DESC)'
             )
+
+            self._create_sync_engine_tables(conn)
 
             self._migrate_discord_to_connector(conn)
             self._backfill_media_items(conn)

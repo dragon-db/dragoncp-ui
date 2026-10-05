@@ -59,8 +59,15 @@ class InFlight:
     stalled: int = 0
     #: Operator-facing, already plain English.
     reason: str = ''
+    #: How long the slowest download still holding the sync expects to take,
+    #: from the service's own "time left". None when it gave no estimate.
     eta_seconds: Optional[int] = None
     detail: Tuple[str, ...] = field(default_factory=tuple)
+    #: Downloads that will not finish on their own — stalled, failed, or
+    #: blocked from importing. Counted so the sync can say it went without
+    #: them; they never hold a season (decided 2026-10-02).
+    stuck: int = 0
+    stuck_detail: Tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def clear(self) -> bool:
@@ -72,6 +79,7 @@ class InFlight:
             'known': self.known, 'blocking': self.blocking, 'total': self.total,
             'stalled': self.stalled, 'reason': self.reason,
             'eta_seconds': self.eta_seconds, 'detail': list(self.detail),
+            'stuck': self.stuck, 'stuck_detail': list(self.stuck_detail),
         }
 
 
@@ -103,56 +111,65 @@ class ArrConnector(Connector):
             'Settings → General → Security → API Key in the service itself.',
             kind='password', secret=True, required=True,
         ),
-        # -- the safety net under the webhook ------------------------------
+        # -- the scheduled auto-scanner --------------------------------------
         # These live on the connector rather than in app settings because they
-        # describe this link: two services can be swept on different schedules,
-        # and one can be trusted to sync on its own while the other is watched
-        # first. A single global pair could express neither.
+        # describe this link: two services can be scanned on different
+        # schedules, and one can be switched on while the other is not.
         ConfigField(
-            'sweep_enabled', 'Check for missed imports',
-            'Periodically ask this service what it imported, and compare it with '
-            'what is on the disk here. This is what catches an import whose '
-            'notification never arrived.',
+            'auto_scanner_enabled', 'Scheduled auto-scanner',
+            'Every few minutes, ask this service what it imported — new episodes, '
+            'new titles, upgrades — and sync anything this disk does not have yet, '
+            'through the same pipeline and safety checks as a webhook. Also fills '
+            'in missing episodes of seasons this disk already keeps. This is what '
+            'catches a webhook that never arrived. Off by default.',
             kind='boolean',
         ),
         ConfigField(
-            'sweep_interval_minutes', 'How often to check (minutes)',
-            'Between 5 and 360. One request per check, so a short interval costs '
-            'the service almost nothing.',
+            'auto_scanner_interval_minutes', 'Scan every (minutes)',
+            'Between 5 and 360. Each scan is a few read-only requests to the service.',
             kind='number', placeholder='15',
-        ),
-        ConfigField(
-            'sweep_auto_sync', 'Sync what it finds automatically',
-            'Off (the default): findings are reported — a Discord warning, and a '
-            'Sync button on each affected title in the Library tab — and nothing '
-            'is fetched until you press it. That is the setting for a library '
-            'where some titles are deliberately not kept here. On: gaps are '
-            'synced without asking, through the same safety checks as any other '
-            'sync.',
-            kind='boolean',
         ),
     )
 
     # -- reading those back ------------------------------------------------
 
-    def sweep_enabled(self) -> bool:
-        return _truthy(self.setting('sweep_enabled'))
+    def auto_scanner_enabled(self) -> bool:
+        """Whether the scheduled auto-scanner runs for this service.
 
-    def sweep_auto_sync(self) -> bool:
-        """Whether a finding may act on its own.
-
-        Deliberately separate from `sweep_enabled`: watching and acting are
-        different amounts of trust, and an operator should be able to see what
-        the sweep *would* do for a while before letting it.
+        One switch: on means scan and sync, and off until someone turns it on
+        (decided 2026-10-02). The earlier missed-import check's two switches
+        never shipped in a release, so nothing is read from them: a scanner
+        that ran while its switch showed off would be worse than one that
+        waits to be turned on.
         """
-        return _truthy(self.setting('sweep_auto_sync'))
+        return _truthy(self.setting('auto_scanner_enabled'))
 
-    def sweep_interval_minutes(self) -> int:
+    def auto_scanner_interval_minutes(self) -> int:
+        raw = self.setting('auto_scanner_interval_minutes') or 15
         try:
-            value = int(str(self.setting('sweep_interval_minutes') or 15).strip())
+            value = int(str(raw).strip())
         except (TypeError, ValueError):
             return 15
         return max(5, min(360, value))
+
+    def season_folder(self, series_id: Any, season_number: int) -> Optional[str]:
+        """What this season's folder is actually called on the media server.
+
+        Read from a file the service holds for the season ("Season 01/…"), so a
+        library whose folders are named "Season 1" or "Specials" is copied from
+        the folder that exists rather than one rebuilt by convention. None when
+        the service holds no file for the season or cannot be asked.
+        """
+        ok, files = self._get('/api/v3/episodefile', {'seriesId': series_id}, timeout=20.0)
+        if not ok or not isinstance(files, list):
+            return None
+        for item in files:
+            if not isinstance(item, dict) or item.get('seasonNumber') != season_number:
+                continue
+            relative = str(item.get('relativePath') or '').replace('\\', '/')
+            if '/' in relative:
+                return relative.split('/', 1)[0]
+        return None
 
     #: Overridden per service only if the path ever diverges.
     status_path = '/api/v3/system/status'
@@ -338,60 +355,78 @@ class ArrConnector(Connector):
                     'why': (row.get('errorMessage')
                             or 'Downloading, but nothing is moving')}
 
+        # Stuck does not block (decided 2026-10-02). A download blocked from
+        # importing, or failed and waiting on a retry decision, will not finish
+        # on its own — holding the whole season for it means the season never
+        # syncs. The sync goes without it and says so; the episode arrives later
+        # through its own webhook or the auto-scanner.
         if state == 'importblocked':
-            return {'verdict': 'blocked', 'holds': True,
+            return {'verdict': 'blocked', 'holds': False,
                     'why': (_first_status_message(row)
                             or 'Import is blocked and needs a person')}
         if state == 'failedpending':
-            return {'verdict': 'failed', 'holds': True,
+            return {'verdict': 'failed', 'holds': False,
                     'why': 'Failed, waiting on a retry decision'}
 
         return {'verdict': state, 'holds': True, 'why': f'Still {state}'}
 
+    #: Verdicts that mean "this will not finish by itself".
+    STUCK_VERDICTS = frozenset({'stalled', 'blocked', 'failed'})
+
     def _assess(self, rows: List[Dict[str, Any]], label: str) -> InFlight:
         """Turn queue rows into a hold-or-go answer."""
         blocking, stalled, detail, etas = 0, 0, [], []
+        stuck, stuck_detail = 0, []
         for row in rows:
             title = row.get('title') or 'an item'
             verdict = self.classify_row(row)
 
             if verdict['verdict'] == 'stalled':
                 stalled += 1
+            if verdict['verdict'] in self.STUCK_VERDICTS:
+                stuck += 1
+                stuck_detail.append(f"{title}: {verdict['why']}")
             if not verdict['holds']:
-                if verdict['verdict'] not in ('imported',):
+                if verdict['verdict'] not in ('imported',) + tuple(self.STUCK_VERDICTS):
                     detail.append(f"{title}: {verdict['why']}")
                 continue
 
             blocking += 1
-            detail.append(f"{title}: {verdict['why']}")
-            eta = row.get('timeleft')
-            if eta:
-                etas.append(str(eta))
+            eta = _seconds_left(row)
+            if eta is not None:
+                etas.append(eta)
+            left = _describe_progress(row)
+            detail.append(f"{title}: {verdict['why']}{left}")
 
         if blocking:
             reason = f"{blocking} still arriving for {label}"
-            if stalled:
-                reason += f" ({stalled} stalled, not counted)"
-        elif stalled:
-            reason = f"nothing moving for {label} — {stalled} stalled"
+            if stuck:
+                reason += f" ({stuck} stuck, not waited for)"
+        elif stuck:
+            reason = f"nothing moving for {label} — {stuck} stuck"
         else:
             reason = f"nothing in flight for {label}"
 
         return InFlight(
             known=True, blocking=blocking, total=len(rows), stalled=stalled,
             reason=reason, detail=tuple(detail[:8]),
+            eta_seconds=max(etas) if etas else None,
+            stuck=stuck, stuck_detail=tuple(stuck_detail[:8]),
         )
 
     def imports_since(self, since_iso: str) -> Tuple[bool, List[Dict[str, Any]]]:
         """What this service says it imported since a moment.
 
-        The catch-up sweep's source. A webhook that never arrived leaves no
+        The auto-scanner's main source. A webhook that never arrived leaves no
         trace anywhere in this application, so the only way to notice is to ask
         the service what it did rather than to re-read our own record of being
-        told.
+        told. Event type 3 is "imported from the download folder" in both
+        Sonarr and Radarr — new files and upgrades alike. Sonarr is asked to
+        include each episode, which is what carries its season number.
         """
         ok, rows = self._get('/api/v3/history/since',
-                             {'date': since_iso, 'eventType': 3}, timeout=25.0)
+                             {'date': since_iso, 'eventType': 3,
+                              'includeEpisode': 'true'}, timeout=25.0)
         if not ok or not isinstance(rows, list):
             return False, []
         return True, [r for r in rows if isinstance(r, dict)]
@@ -444,6 +479,66 @@ class ArrConnector(Connector):
 def _truthy(value: Any) -> bool:
     """Connector settings are stored as text; booleans have to be read back."""
     return str(value or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _parse_timeleft(value: Any) -> Optional[int]:
+    """Seconds from the service's "time left": "00:12:34" or "1.02:03:04"."""
+    if value in (None, ''):
+        return None
+    text = str(value).strip()
+    days = 0
+    if '.' in text.split(':')[0]:
+        day_part, text = text.split('.', 1)
+        try:
+            days = int(day_part)
+        except ValueError:
+            return None
+    parts = text.split(':')
+    if len(parts) != 3:
+        return None
+    try:
+        hours, minutes = int(parts[0]), int(parts[1])
+        seconds = int(float(parts[2]))
+    except ValueError:
+        return None
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def _seconds_left(row: Dict[str, Any]) -> Optional[int]:
+    """How long one download expects to take, or None if it does not say.
+
+    "Time left" first, because it is the download client's own figure; the
+    estimated completion time second, because it is the same figure dated.
+    """
+    left = _parse_timeleft(row.get('timeleft'))
+    if left is not None:
+        return max(0, left)
+    eta = row.get('estimatedCompletionTime')
+    if eta:
+        from datetime import datetime, timezone
+        try:
+            moment = datetime.fromisoformat(str(eta).replace('Z', '+00:00'))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            return max(0, int((moment - datetime.now(timezone.utc)).total_seconds()))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _describe_progress(row: Dict[str, Any]) -> str:
+    """ " — 42%, about 3 min left" for one download, or nothing."""
+    size, left = row.get('size') or 0, row.get('sizeleft') or 0
+    bits = []
+    if size:
+        bits.append(f"{round(100 * (1 - left / size))}%")
+    seconds = _seconds_left(row)
+    if seconds is not None:
+        if seconds < 90:
+            bits.append(f"about {seconds} s left")
+        else:
+            bits.append(f"about {round(seconds / 60)} min left")
+    return f" — {', '.join(bits)}" if bits else ''
 
 
 def _first_status_message(row: Dict[str, Any]) -> str:

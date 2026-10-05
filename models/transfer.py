@@ -87,8 +87,9 @@ class Transfer:
                         queue_reason, rsync_process_id, parsed_title, parsed_season, start_time,
                         is_simulation, simulation_bwlimit,
                         explore_files_from, explore_mode, explore_plan_id,
-                        started_by_kind, started_by_name, started_by_account_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        started_by_kind, started_by_name, started_by_account_id,
+                        sync_run_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     transfer_data['transfer_id'],
                     transfer_data['media_type'],
@@ -117,7 +118,10 @@ class Transfer:
                     # A caller that already knows better can override.
                     starter.kind,
                     starter.name,
-                    starter.account_id
+                    starter.account_id,
+                    # The sync engine's run that owns this transfer, so its
+                    # pipeline can be found from the transfer and back.
+                    transfer_data.get('sync_run_id'),
                 ))
                 conn.commit()
                 print(f"✅ Transfer record created successfully for {transfer_data['transfer_id']}")
@@ -267,6 +271,33 @@ class Transfer:
                 )
             conn.commit()
         return deleted, skipped
+
+    def waiting_ids_matching(self, status_filter: str = None, statuses: List[str] = None,
+                             search: str = None) -> List[str]:
+        """Matching transfers that are queued, paused or about to start.
+
+        What a bulk delete has to cancel first: each still holds a place in the
+        queue and a sync waiting on it, and deleting the row alone would leave
+        both behind.
+        """
+        where, params = self._filter_sql(status_filter, statuses, search)
+        joiner = " AND" if where else " WHERE"
+        with self.db.get_connection() as conn:
+            return [row['transfer_id'] for row in conn.execute(
+                f"SELECT transfer_id FROM transfers{where}{joiner} "
+                f"status IN ('queued', 'paused', 'pending')", params).fetchall()]
+
+    def waiting_ids_among(self, transfer_ids: List[str]) -> List[str]:
+        """Which of these transfers are queued, paused or about to start."""
+        found: List[str] = []
+        with self.db.get_connection() as conn:
+            for start in range(0, len(transfer_ids), DELETE_BATCH):
+                batch = transfer_ids[start:start + DELETE_BATCH]
+                placeholders = ', '.join('?' for _ in batch)
+                found.extend(row['transfer_id'] for row in conn.execute(
+                    f"SELECT transfer_id FROM transfers WHERE transfer_id IN ({placeholders}) "
+                    f"AND status IN ('queued', 'paused', 'pending')", batch).fetchall())
+        return found
 
     def delete_matching(self, status_filter: str = None, statuses: List[str] = None,
                         search: str = None) -> tuple:

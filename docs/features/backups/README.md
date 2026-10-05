@@ -9,9 +9,9 @@ the same slot's history.
 That last part is why there is no separate "undo". Undoing a restore is
 restoring the version the restore itself created.
 
-Last updated: 2026-08-06
+Last updated: 2026-10-05
 Primary files: `services/backups/`, `models/backup_capture.py`, `routes/backups.py`,
-`services/transfer_coordinator.py`
+`services/transfer_coordinator.py`, `services/sync_engine/engine.py`
 
 ## Where it lives
 
@@ -25,6 +25,7 @@ Primary files: `services/backups/`, `models/backup_capture.py`, `routes/backups.
 | Keeping N versions per slot | `services/backups/retention.py` |
 | Adopting the old per-transfer folders | `services/backups/migrate.py` |
 | The facade routes and the coordinator use | `services/backups/service.py` |
+| Recording a restore in the sync pipeline | `services/backups/service.py` (`restore`, `_run_restore`), with `services/sync_engine/engine.py` (`begin_restore`, `on_transfer_finished`) |
 | Index reads and writes | `models/backup_capture.py` |
 | Table definitions and indexes | `models/database.py` |
 | HTTP endpoints | `routes/backups.py` |
@@ -208,6 +209,18 @@ safely written:
 
 The restore runs as a normal queued transfer with live progress and logs.
 
+Since 2.3.0 it is also recorded in the sync pipeline as a *Restore* sync, so it
+is listed with every other sync ([sync engine](../sync-engine/README.md)). The
+run is opened once the destination is reserved and closed when the restore
+finishes, and its stages say what a restore is: no batch and no ready check; the
+Safety stage records what the preview named ("… 2 file(s) put back, 1 replacing
+a file in the library."); the Queue stage records that the folder was free; the
+Transfer stage is the local copy from the backup area; and Tell records that
+restores are not announced. A restore the queue refuses is not recorded as a
+run — it never started. The record is bookkeeping and nothing more: if writing
+it fails, the restore carries on. No test exercises it yet — the backup tests run
+without the sync engine.
+
 A restore records **when** it happened and changes nothing else about the
 version it restored. The files are still in the backup tree, so the same
 version can be restored again, and it stays subject to retention like any
@@ -284,8 +297,9 @@ is the only surviving record of a file that no longer exists anywhere.
 It is then announced three ways, because an unattended deletion that has to be
 gone looking for is one nobody finds:
 
-- **Discord**, through the same webhook as sync and rename notifications, so it
-  reaches whoever is not looking at the app. Never allowed to raise — the
+- **Discord**, as the `backup.retention_deleted` announcement, routed like sync
+  and rename notifications (see [notifications](../notifications/README.md)), so
+  it reaches whoever is not looking at the app. Never allowed to raise — the
   versions are gone either way, and a webhook being down must not turn a
   completed sync into a failed one.
 - **A banner on the Backups page**, until dismissed. Acknowledgement is stored
@@ -387,9 +401,26 @@ at startup.
 
 - **A restore takes its turn in the queue.** It reserves its destination like
   any transfer, so it can no longer write into a folder a sync is writing to.
-  If the destination is busy or every slot is full it says so rather than
-  queueing silently — a restore is watched, and parking it invisibly is worse
-  than refusing.
+  Since 2.3.0 that includes a folder around or inside it: a restore into a
+  season folder is refused while a copy of the whole series is writing, and a
+  whole-series copy waits while a restore runs in one of its seasons. If the
+  destination is busy or every slot is full it says so rather than queueing
+  silently — a restore is watched, and parking it invisibly is worse than
+  refusing.
+
+- **Restores are not announced, and are retried only from this page.** The
+  run's Tell stage says so: the result is on this page, in Transfers and in the
+  activity trail. A failed restore does open an alert for the Notifications
+  tab, whose screen is not built yet: titled "Restore failed: …", ending "Run it
+  again from the Backups page.", and offering only **Dismiss**. **Retry** on a
+  failed restore's row in Transfers is refused too: the restart endpoint
+  answers "A restore is run again from the Backups page, where its preview
+  shows what it will replace.", though the page itself shows only "Could not
+  restart the transfer". Fixed 2026-10-05
+  — before, the alert was an ordinary *Failed* one: its **Retry** sent the
+  restore's transfer row through the pipeline's generic restart (a dry run
+  against the media server, then rsync) rather than the restore runner, and its
+  **Mark as done** rewrote the transfer as completed.
 
 - **A restore always rewrites the file.** The previous implementation compared
   by size only, so a same-size file at the destination was silently left alone
@@ -464,6 +495,10 @@ multi-episode file which has one per episode.
 
 The `backup` and `backup_file` tables from the previous implementation are no
 longer written to. Migration reads them for provenance.
+
+A restore also writes a `sync_run` row (kind `restore`, its capture id in
+`options`) with its stage rows, linked to the restore's transfer by
+`transfer_id` — see [sync engine](../sync-engine/README.md).
 
 ## API
 
@@ -576,6 +611,7 @@ inspector is a sheet.
 
 - [../explore/README.md](../explore/README.md) — the identity and inventory this reuses
 - [../queue/README.md](../queue/README.md) — what a restore joins
+- [../sync-engine/README.md](../sync-engine/README.md) — where a restore is recorded alongside every other sync
 - [../../plans/backup-restore-rework.md](../../plans/backup-restore-rework.md) — the design, and the measurements behind it
 - [../../reference/database-schema.md](../../reference/database-schema.md)
 - [../../reference/api.md](../../reference/api.md)

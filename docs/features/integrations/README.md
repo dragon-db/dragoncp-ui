@@ -2,15 +2,24 @@
 
 DragonCP can link to other applications. Each link is a **connector**: a named,
 configurable, testable connection to one outside service, with its own page
-under Integrations in the sidebar. Discord is the one that does something
-today — it posts a message when a sync finishes, when one fails, when a rename
-completes, when the retention rule deletes old backups, and when an automatic
-sync refuses to run. Sonarr, Radarr and Jellyfin can be connected and tested,
-but nothing reads them yet.
+under Integrations in the sidebar.
 
-Last updated: 2026-08-17
+- **Discord** posts DragonCP's announcements — a sync finished or failed, a
+  rename completed, the retention rule deleted old backups, and the alerts the
+  sync engine raises. What each one says is on
+  [the notifications page](../notifications/README.md).
+- **Sonarr** is asked, for every season a webhook opens a batch for, whether
+  anything for that season is still downloading. The answer decides when the
+  season syncs.
+- **Sonarr and Radarr** each have a **scheduled auto-scanner**, off by default,
+  that finds imports whose webhook never arrived and syncs them, and pages that
+  show the service's library, download queue and history against this disk.
+- **Jellyfin** can be connected and tested, but nothing reads it yet.
+
+Last updated: 2026-10-05
 Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors.py`,
-`frontend/src/components/pages/integrations.tsx`
+`services/auto_scanner.py`, `services/scheduler.py`, `services/media_index.py`,
+`routes/media_library.py`, `frontend/src/components/pages/integrations.tsx`
 
 ## Where it lives
 
@@ -23,11 +32,15 @@ Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors
 | Delivering without blocking the caller | `services/connectors/dispatch.py` |
 | The facade everything else uses | `services/connectors/service.py` |
 | Discord: embeds, colours, webhook validation | `services/connectors/adapters/discord.py` |
-| Sonarr and Radarr | `services/connectors/adapters/_arr.py`, `sonarr.py`, `radarr.py` |
+| Sonarr and Radarr: the read-only client, the "still downloading?" answer, the auto-scanner's settings | `services/connectors/adapters/_arr.py`, `sonarr.py`, `radarr.py` |
 | Jellyfin | `services/connectors/adapters/jellyfin.py` |
-| Storage | `models/connector.py`, tables `connector`, `connector_secret`, `connector_target`, `notification_route`, `connector_delivery` |
-| API | `routes/connectors.py` |
-| UI | `frontend/src/components/pages/integrations.tsx`, `frontend/src/components/integrations/`, `frontend/src/hooks/useConnectors.ts` |
+| Asking Sonarr whether a season is ready — the pipeline's Ready check | `services/sync_engine/engine.py`, through `services/media_index.py` (`in_flight_for_season`) |
+| The scheduled auto-scanner | `services/auto_scanner.py` |
+| The scheduler that runs it | `services/scheduler.py` |
+| Library, Queue and History tabs | `routes/media_library.py`, `services/media_index.py` |
+| Storage | `models/connector.py`, tables `connector`, `connector_secret`, `connector_target`, `notification_route`, `connector_delivery`; `media_item` (the title index); `scheduled_job` and `sweep_finding` (the auto-scanner) |
+| API | `routes/connectors.py`, `routes/media_library.py`, `routes/sync_engine.py` (scheduler jobs) |
+| UI | `frontend/src/components/pages/integrations.tsx`, `frontend/src/components/integrations/`, `frontend/src/hooks/useConnectors.ts`, `frontend/src/hooks/useMediaLibrary.ts` |
 
 ## What an operator sees
 
@@ -41,12 +54,42 @@ them:
   switch.
 - **Notifications** — every announcement the app can make, one per row, each
   with a destination dropdown and an on/off switch. A row set to "Use default"
-  goes wherever the default webhook points.
+  goes wherever the default webhook points. The sync engine added five rows in
+  2.3.0. The tab keeps this name for now: renaming it **Routing**, so it is not
+  confused with the alerts inbox the sync engine adds, is decided but not
+  built — and neither is the inbox's own screen.
 - **Activity** — the last hundred messages this connector handled, including
   the ones it held back and why.
 - **Appearance** — the app URL a message links back to, the icon shown beside
-  it, and the default thumbnail used for transfers started by hand. Set once
-  and rarely touched, which is why it is last.
+  it, and the default thumbnail. The thumbnail's description says it is for
+  transfers started by hand; in fact every message with no image of its own
+  uses it, alerts included. Set once and rarely touched, which is why it is
+  last.
+
+**Integrations → Sonarr / Radarr** each have four tabs:
+
+- **Library** — every title the service lists, against what is actually on this
+  disk, read from the filesystem rather than the transfer history: Synced,
+  Partial, Missing and Orphaned, with titles the service holds no files for
+  counted apart rather than judged. A Partial or Missing title has a **Sync**
+  button — **Sync missing (N)** on a partial series — which starts one manual
+  sync per missing or short season, or the film, through the normal pipeline.
+  **Refresh** re-reads the service's catalogue.
+- **Queue** — the service's download queue, each row with the verdict the
+  Ready check would give it and whether it is holding a sync back.
+- **History** — what the service did, 25 rows at a time, with a column saying
+  whether DragonCP knows the title: an import for a title DragonCP has never
+  heard of is what a lost webhook leaves behind.
+- **Connection** — the address, the API key, the **Scheduled auto-scanner**
+  switch and **Scan every (minutes)**, and a Test connection button.
+
+A connector that is switched off says so above its tabs, and the Library,
+Queue and History tabs ask for it to be turned on.
+
+**Integrations → Jellyfin** is drawn by the same layout as Sonarr and Radarr,
+because it declares the same capability, so it shows Library, Queue and History
+tabs too. The library endpoints know only Sonarr and Radarr and answer 404 for
+Jellyfin. Not verified: how those three tabs render that refusal.
 
 The settings tab is named by the adapter, not by the page. Discord calls its
 tab **Appearance** because nothing on it reaches Discord — a webhook URL
@@ -59,10 +102,6 @@ Discord has no such button. A connector declares `supports_check = False` when
 it has no endpoint to reach at that level, and the UI then offers nothing: a
 test that cannot fail is worse than no test, because it leaves a green badge on
 something nothing verified.
-
-**Integrations → Sonarr / Radarr / Jellyfin** each have one page: an address,
-an API key, and a Test connection button. The page says plainly that nothing
-reads them yet.
 
 ## How it works
 
@@ -90,7 +129,7 @@ blocks.
 
 The caller describes *what happened*. The adapter decides how its service shows
 it — which is why the colours, the 1024-character field cap and the timestamp
-format exist once in `adapters/discord.py` instead of in four call sites.
+format exist once in `adapters/discord.py` instead of in every call site.
 
 ### The catalogue
 
@@ -104,7 +143,15 @@ announcement that cannot be seen cannot be turned off.
 | `transfer.failed` | A transfer stopped without finishing |
 | `rename.finished` | A rename run finished — whole, partial or failed |
 | `backup.retention_deleted` | The retention rule deleted stored versions |
-| `autosync.blocked` | An automatic sync looked unsafe and stopped |
+| `autosync.blocked` | An automatic sync's safety check stopped it, waiting for a person — not one a person started, or released with Sync or Go now |
+| `sync.interrupted` | A restart may have left a sync undone, or lost the result of a copy |
+| `sync.stuck` | A season went ahead without a download stuck in Sonarr, or after waiting 30 minutes |
+| `scanner.found` | The auto-scanner started syncs, or cannot close a gap (a gap's alert, once dismissed, is not sent again for 24 hours) |
+| `integration.down` | Sonarr did not answer when a batch asked; sent once until it answers again, and not again for 24 hours once its alert is dismissed |
+| `scheduler.failing` | A background job failed three times in a row (once its alert is dismissed, not again for 24 hours) |
+
+The last five arrived with the sync engine in 2.3.0, and most of what they say
+comes from its alerts — see [notifications](../notifications/README.md).
 
 `connector.test` exists as a key but is deliberately outside the catalogue: a
 test send ignores routing by design, so offering a destination choice for it
@@ -114,7 +161,8 @@ would be offering a choice that does nothing.
 
 One rule decides everything: **a missing route means the default, not
 silence.** An announcement added in a later version is delivered the day it is
-written, without anyone remembering to configure it.
+written, without anyone remembering to configure it — which is what the five
+added in 2.3.0 do.
 
 Resolution order, in `routing.py`:
 
@@ -162,6 +210,141 @@ One retry, on 429 and 5xx only. `Retry-After` is honoured up to ten seconds —
 Discord can ask for several minutes on a hard rate limit, and blocking the
 shared worker that long would stall every notification behind it.
 
+### Asking Sonarr whether a season is ready
+
+Every Sonarr webhook goes into a batch for its season folder, and the batch's
+**Ready check** decides when it syncs. [The sync engine](../sync-engine/README.md)
+has the whole pipeline; this is the part that talks to Sonarr. There is no
+switch for it: whether Sonarr's API answers decides.
+
+1. **Can Sonarr be asked?** Not connected — the connector is off, or has no
+   address or API key — means the fixed fallback timer
+   (`SERIES_ANIME_SYNC_WAIT_TIME`, see [Settings](../settings/README.md))
+   decides, and nothing is raised. Connected but not answering its status
+   check means the same timer, plus an *Integration* alert announced once as
+   `integration.down`; the next batch that finds Sonarr answering closes it.
+   Dismissed while Sonarr is still down, it stays closed for 24 hours. A
+   series that carries no TVDB id cannot be asked about either, so it gets the
+   timer too.
+2. **Settle, then ask.** Ten seconds after the batch opens — so the rest of a
+   burst of webhooks can join — DragonCP asks Sonarr's download queue about the
+   series (`/api/v3/queue/details?seriesId=`) and keeps the rows for that
+   season. One question at a time per batch, however many webhooks join.
+3. **What holds the season.** A download still downloading, waiting to import,
+   or importing. What does not: a row already imported (the download client
+   keeps seeding after import), a row whose file is already in the library, a
+   state this version does not recognise. Downloads that will not finish by
+   themselves — stalled, blocked from importing, or failed and waiting on a
+   retry decision — are **stuck**: they never hold the season, they are listed
+   in the stage, and once the season goes ahead without them a *Stuck download*
+   alert says what was left behind.
+4. **When to ask again.** After the slowest blocking download's own "time left",
+   kept between 10 seconds and 5 minutes (30 seconds when Sonarr gives no
+   estimate).
+5. **At most 30 minutes.** Then the season syncs with what is there, and a
+   *Waited 30 minutes* alert lists what was still downloading. The rest arrives
+   through its own webhook or the auto-scanner.
+
+The Queue tab gives each row the same verdict because it calls the same
+classifier (`ArrConnector.classify_row`), so the screen and the decision cannot
+disagree.
+
+**Radarr is never asked.** A Radarr webhook means one finished film, so it
+syncs straight away — still through the safety check and the queue. A per-film
+version of the question exists (`MediaIndex.in_flight_for_movie`); nothing
+calls it.
+
+An unreleased build had a switch for all this — "Wait for the download instead
+of the clock", with poll and settle settings beside it. It was removed; see
+[Settings](../settings/README.md).
+
+### The scheduled auto-scanner
+
+A webhook is the only thing that starts an automatic sync, so a lost one is a
+silent failure. The auto-scanner asks the service instead, on a schedule. It
+replaced the "Check for missed imports" sweep that pre-release builds had.
+
+**The switch.** One per service, on its Connection tab: **Scheduled
+auto-scanner**, off by default, and **Scan every (minutes)**, 5 to 360,
+default 15. It runs only while the connector itself is on and configured. One
+switch means scan *and* sync: the sweep's separate "Sync what it finds
+automatically" is gone.
+
+**Each scan** (`services/auto_scanner.py`):
+
+1. Checks that the service answers. One that does not is a failed scan.
+2. Reads the service's library, refreshing the title index.
+3. Reads its import history since the last scan — the first scan looks back
+   24 hours — covering new episodes, new titles and upgrades. Each import that
+   nothing has synced since is a find.
+4. For Sonarr only, also finds seasons this disk keeps but holds fewer files of
+   than Sonarr has.
+5. Hands every find to the sync engine as an *Auto-scanner* sync, so batching,
+   Sonarr's ready check and the safety check all apply. A find whose folder
+   already has a sync on its way is left to that sync.
+
+It never fetches the backlog. A season this disk holds nothing of, or a title
+it has never held, is fetched only when the service imports something for it —
+plenty of libraries keep a subset here on purpose. Specials (season 0) are
+ignored. A folder the service reports outside the configured library roots is
+ignored too, and a season's folder name is read from the service's own files,
+so a library that names folders `Season 1` is copied from the folder that
+exists rather than one rebuilt by convention.
+
+**Limits.** At most 5 new syncs per scan per service; the rest wait for the next
+scan, and the history window does not move past them. A gap the scanner has
+started two syncs for and still finds is not tried a third time: an
+*Auto-scanner* alert offers **Sync now**, announced as `scanner.found`;
+dismissed or marked wrong, it stays closed for 24 hours rather than coming back
+at the next scan. An import that landed while its season was mid-copy is looked
+at again on the next scan, in case the copy missed it.
+
+**What it leaves behind.** A `scanner.run` entry in the activity trail for every
+scan that reached the service, with its summary, and a `scanner.sync_started`
+entry for each sync it started; a `scanner.found` message on Discord when it
+started anything; and the line `Auto-scanner · Sonarr · <summary>` in the
+backend log.
+
+**The scheduler.** Both scanners are jobs on DragonCP's general scheduler
+(`services/scheduler.py`), which arrived with them in 2.3.0. For each job:
+
+- its switch and interval are read every 5 seconds, so turning it on or off
+  needs no restart;
+- the first run comes no sooner than 60 seconds after start-up, and not before
+  one interval has passed since its previous run;
+- it never overlaps itself: a run that falls due while the previous one is
+  still going starts when that one finishes;
+- its last run and result are kept in `scheduled_job` and survive a restart;
+- three failures in a row open a *Scheduler* alert, announced as
+  `scheduler.failing`, with **Run now**; the next success closes it. Dismissed
+  or marked wrong while the job still fails, it stays closed for 24 hours.
+
+There is no screen for jobs yet: `GET /api/scheduler/jobs` lists them, and
+`POST /api/scheduler/jobs/<name>/run` runs one (`sonarr_auto_scanner`,
+`radarr_auto_scanner`).
+
+Worth knowing:
+
+- **Radarr's scanner reads history only.** The library comparison is Sonarr's
+  alone, though the switch's description — shared by both pages — mentions
+  missing episodes.
+- **A Library-tab Sync is not limited the same way.** A person named the title,
+  so every missing or short season is fetched, backlog or not, as manual syncs.
+- **Nothing carries over from the sweep.** Its fields never shipped in a
+  release and nothing reads them: a connector runs the scanner only when its
+  own **Scheduled auto-scanner** switch is on, at its own interval (15 minutes
+  unless set). A development database that still holds the sweep's fields runs
+  no scanner until the switch is turned on. Fixed 2026-10-05: a switch that had
+  never been saved used to fall back to the sweep's pair, so the Connection tab
+  could show it off while scans ran.
+
+### Read-only towards the services
+
+Every request the Sonarr and Radarr adapters make is a GET or HEAD; anything
+else is refused in the adapter, in test mode or not. The Library, Queue and
+History tabs only read. The one thing those pages do — Sync on a title — acts on
+this side, through the sync pipeline like every other sync.
+
 ## Storage and secrets
 
 Connectors are a **list**, not a fixed set of keys, which is why they sit
@@ -181,6 +364,14 @@ requests to its own network — already true of this app's threat model of one t
 three trusted administrators on a private network, and worth stating rather
 than discovering. Discord destinations are restricted to Discord hosts because
 a webhook URL has exactly one legitimate shape.
+
+The auto-scanner's switch and interval are connector settings for the same
+reason the connectors are: two services can want different schedules, and one
+can be on while the other is off. What the scanner remembers lives elsewhere —
+the last scan time per service in `app_settings`
+(`AUTO_SCANNER_LAST_SCAN_SONARR`, `AUTO_SCANNER_LAST_SCAN_RADARR`), each gap and
+how many syncs it has had in `sweep_finding`, and each job's last result in
+`scheduled_job`.
 
 ## The upgrade from 2.2.x
 
@@ -224,18 +415,47 @@ class ExampleConnector(Connector):
 
 The only frontend change a new connector might want is an icon, in
 `frontend/src/components/integrations/connector-icon.tsx`. Without one it gets
-a plug.
+a plug. A connector that declares `CAP_QUERY` also gets the Library, Queue and
+History tabs, which only Sonarr and Radarr can fill — see Jellyfin above.
 
 ## What is not here yet
 
-Sonarr and Radarr are connected but unused. Using them to decide *when* a sync
-should start — asking whether a season is still downloading instead of waiting
-out `SERIES_ANIME_SYNC_WAIT_TIME` — is TASK-020.
+- **Screens for the alerts and the pipeline.** The Notifications tab and the
+  pipeline view exist only as API (see [the sync engine](../sync-engine/README.md)).
+  Discord's routing tab keeps the name Notifications until it is renamed
+  Routing alongside them.
+- **Radarr is never asked whether a film is still downloading** — decided: a
+  Radarr webhook means a finished film. The check exists and is unused.
+- **Jellyfin** connects and tests; nothing reads it, and its page shows tabs
+  whose endpoints do not serve it.
+- **The scheduler has two jobs**, the auto-scanners. Nothing else DragonCP does
+  on a clock has been moved onto it.
+- **Not verified:** the Ready check has not yet been watched against a real
+  Sonarr download, nor a scan read against a live library — the live run in
+  TASK-020 is still open.
+
+## API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| — | `/api/connectors/…` | Connectors, destinations, routing and tests — see [the API reference](../../reference/api.md#connectors) |
+| GET | `/api/library/<source>` | The Library tab for `sonarr` or `radarr`; `refresh=1` re-reads the catalogue first |
+| GET | `/api/library/<source>/queue` | The Queue tab: rows, verdicts, and which hold a sync |
+| GET | `/api/library/<source>/history` | The History tab, a page at a time (`page`, `page_size`) |
+| POST | `/api/library/<source>/sync` | Sync one title's missing or short seasons, or the film: `{"external_id": "…"}` |
+| POST | `/api/library/<source>/refresh` | Re-read the service's catalogue into the title index |
+| GET | `/api/scheduler/jobs` | The auto-scanner jobs: switch, interval, last and next run, last result |
+| POST | `/api/scheduler/jobs/<name>/run` | Run a job now |
 
 ## Related
 
-- [Notifications](../notifications/README.md) — what each message contains
+- [Notifications](../notifications/README.md) — what each message contains,
+  and the alerts behind the newer ones
+- [Sync engine](../sync-engine/README.md) — the pipeline the Ready check and the
+  auto-scanner's finds go through
 - [Webhooks](../webhooks/README.md) — the inbound side, Radarr and Sonarr
   pushing to DragonCP
-- [Settings](../settings/README.md) — the app-level settings that stayed there
+- [Auto-sync](../auto-sync/README.md) — the automatic-sync switches
+- [Settings](../settings/README.md) — the app-level settings that stayed there,
+  including the fallback wait
 - [API reference](../../reference/api.md#connectors)

@@ -27,11 +27,12 @@ map; `INDEX.md` is the catalogue.
 | You are working on | Read first | Then |
 |---|---|---|
 | A specific feature (transfers, backups, renames, webhooks, auth, notifications, integrations, explore, queue, auto-sync, simulation) | `features/<area>/README.md` | The `Related` links at the bottom of that doc |
+| Why a sync did what it did — any webhook, transfer, restart, restore or scan, stage by stage — or the alerts, the scheduler and the auto-scanner | `features/sync-engine/README.md` | `features/queue/README.md` |
 | Anything touching rsync, progress, pause/resume | `features/transfers/README.md` | `features/queue/README.md` |
 | Why a transfer was fast or slow, or the transfer server on the media host | `features/fast-transfers/README.md` | `plans/fast-transport.md` |
 | Browsing the library, comparing it with the remote, or planning a sync | `features/explore/README.md` | `features/transfers/README.md` |
 | Why a transfer is stuck, queued, or not starting | `features/queue/README.md` | `features/transfers/README.md` |
-| Radarr/Sonarr webhook payloads and what they trigger | `features/webhooks/README.md` | `features/auto-sync/README.md` |
+| Radarr/Sonarr webhook payloads and what they trigger | `features/webhooks/README.md` | `features/sync-engine/README.md` |
 | Adding or changing an HTTP endpoint | `reference/api.md` | `reference/openapi.yaml`, then the owning feature doc |
 | Adding or changing a database column | `reference/database-schema.md` | The owning feature doc's `Data` section |
 | Adding or changing a Socket.IO event | `reference/realtime.md` | The owning feature doc's `API` section |
@@ -110,8 +111,8 @@ section only when it genuinely does not apply.
 ```
 
 `features/transfers/README.md` is the reference implementation of this shape.
-`features/queue/`, `features/auto-sync/` and `features/simulation/` predate it
-and do not match — bring them into line when you next touch them.
+`features/simulation/` predates it and does not match — bring it into line
+when you next touch it.
 
 Docs outside `features/` are free-form, but still lead with a paragraph saying
 what the doc is for.
@@ -140,9 +141,9 @@ move or delete a doc, fix `INDEX.md` in the same commit.
 - Do not guess. If you believe something is true but did not confirm it, write
   the claim and mark it **`Not verified:`** — an honest gap is useful, a
   confident wrong answer is not.
-- Document what actually happens, including bugs and gaps. "Deleting a queued
-  transfer leaks its reservation" belongs in `Behaviour worth knowing`; it does
-  not belong in `plans/` just because it is unwelcome.
+- Document what actually happens, including bugs and gaps. "A single-file
+  transfer lands in a folder named after the file" belongs in `Behaviour worth
+  knowing`; it does not belong in `plans/` just because it is unwelcome.
 - Aspirational behaviour goes in `plans/`, clearly labelled as unbuilt. Never
   describe planned behaviour in a feature doc's present tense.
 - Prefer describing what the operator sees over narrating code paths. Name files
