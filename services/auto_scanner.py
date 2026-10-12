@@ -37,6 +37,7 @@ from actor import AUTO_SCANNER, acting_as
 from models.media_item import SOURCE_RADARR, SOURCE_SONARR
 from models.sync_run import utc_now
 from services.sync_engine import stages as S
+from services.sync_engine.coverage import last_copies
 from services.sync_engine.units import unit_key
 
 log = logging.getLogger('dragoncp.auto_scanner')
@@ -366,22 +367,14 @@ class AutoScanner:
         return ''
 
     def _synced_since(self, dest_path: str, imported_at: datetime) -> bool:
-        """Whether a copy that started after the import has finished."""
+        """Whether a copy that started after the import has finished.
+
+        Started, not finished: a copy lists the folder when it starts, so one
+        that began before the import may have missed it however late it ended.
+        """
         key = unit_key(dest_path)
-        with self.db.get_connection() as conn:
-            row = conn.execute(
-                "SELECT run_id, started_at FROM sync_run WHERE unit_key = ? "
-                "AND state = 'completed' ORDER BY id DESC LIMIT 1", (key,)).fetchone()
-            if row and (_parse(row['started_at']) or datetime.min.replace(
-                    tzinfo=timezone.utc)) >= imported_at:
-                return True
-            # Transfers from before the engine: their times are local and
-            # naive, so the import time is brought into the same terms.
-            local = imported_at.astimezone().replace(tzinfo=None).isoformat()
-            legacy = conn.execute(
-                "SELECT 1 FROM transfers WHERE dest_path = ? AND status = 'completed' "
-                "AND COALESCE(end_time, '') >= ? LIMIT 1", (dest_path, local)).fetchone()
-        return legacy is not None
+        copied = last_copies(self.db, key).get(key)
+        return copied is not None and copied >= imported_at
 
     @staticmethod
     def _copy_may_miss(live: Dict[str, Any], find: Find) -> bool:

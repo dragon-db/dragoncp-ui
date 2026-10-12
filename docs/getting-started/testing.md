@@ -60,7 +60,7 @@ is also what lets three modules share a fixture: `test_auto_scanner.py`,
 `from tests.test_sync_engine import EngineTestCase`, which resolves without an
 `__init__.py` because, with the root on the path, Python treats `tests` as a
 namespace package. Run directly, each still works
-(`./venv/bin/python tests/test_auto_scanner.py` reports `Ran 15 tests`, `OK`).
+(`./venv/bin/python tests/test_auto_scanner.py` reports `Ran 20 tests`, `OK`).
 
 ### Why the tests hand the database a relative path
 
@@ -239,7 +239,7 @@ What the engine changed, and these tests now pin:
   because that copy could then not mark it synced ("being copied right now").
 - **An empty request starts nothing.**
 
-### `tests/test_sync_engine.py` - the sync engine (60 tests)
+### `tests/test_sync_engine.py` - the sync engine (66 tests)
 
 Drives `SyncEngine` with a real temporary database and fakes for everything
 that would touch the network or start rsync: Sonarr's connection check and its
@@ -311,12 +311,20 @@ build on. See [../features/sync-engine/README.md](../features/sync-engine/README
   - a restarted simulation is neither announced nor alerted;
   - a restart of an Explore plan's transfer skips the folder dry run;
   - a restore is not restarted from the transfer list ("Backups page").
-- **`RecoveryTests`** (4) - after a restart a waiting batch becomes
+- **`LateAnswerTests`** (2) - a cancel pressed while Sonarr is answering the
+  ready check, or while the dry run runs, holds: the sync stays `cancelled`, no
+  copy starts, its webhook stays cancelled, and the late answer does not mark
+  the stage passed (nor open a *Safety check* alert). Added 2026-10-12.
+- **`RecoveryTests`** (8) - after a restart a waiting batch becomes
   `interrupted`, its webhook is flagged for a manual sync, and one *After a
   restart* alert opens whose **Sync now** starts the copy; a held batch is left
   alone, with no alert; webhooks the old in-memory scheduler had taken
   (`auto_sync_scheduled_at` set, no run) raise one alert, once, and a row
-  nobody scheduled is not counted.
+  nobody scheduled is not counted. Added 2026-10-12: **Sync now** on the alert
+  for a sync with no webhooks (the auto-scanner's) syncs the same folder, and
+  the alert does not say "0 webhooks"; a single file is synced again as a single
+  file; an Explore list is synced again as the same list; and an Explore list
+  whose file is gone is refused, copying nothing.
   - **`test_a_copy_starting_again_after_a_restart_is_not_called_interrupted`**
     - *pins a specific regression.* A run whose transfer is still `pending`
     when recovery looks — about to start — goes back to `queued`, with its
@@ -365,7 +373,7 @@ what every background job gets without asking:
   recorded as failed with the error in its last result, and the healthy job
   beside it still runs.
 
-### `tests/test_auto_scanner.py` - the scheduled auto-scanner (15 tests)
+### `tests/test_auto_scanner.py` - the scheduled auto-scanner (20 tests)
 
 Builds on `EngineTestCase`, so every find goes through a real engine. The
 service (`FakeArr`: its connection check, switch, interval, import history and
@@ -379,6 +387,17 @@ the rules decided on 2026-10-02:
   import was never synced, and it carries the TVDB id the ready check asks about.
 - **`test_an_import_already_synced_since_is_left_alone`** - once a copy that
   started after the import has completed, the next scan finds nothing.
+- **`test_a_copy_that_began_before_the_import_does_not_cover_it`** - a sync's
+  copy that started before the import and finished after it is not "synced
+  since", even though its transfer row ended after the import. Added 2026-10-12
+  with the fix.
+- **`test_a_copy_from_before_the_engine_counts_from_its_start`** and
+  **`test_a_copy_from_before_the_engine_that_began_too_early_does_not`** - a
+  transfer with no sync counts from its start time, not its end time.
+- **`test_a_resumed_copy_counts_from_when_it_listed_the_folder_again`** - a copy
+  paused before the import and resumed after it covers the import.
+- **`test_a_single_file_copy_does_not_cover_the_season`** - one file copied
+  after the import does not count for the season.
 - **`test_a_season_already_on_its_way_is_not_duplicated`** - a season with a
   webhook batch open counts as already on its way and starts nothing.
 - **`test_an_import_after_the_copy_began_is_looked_at_again`** - an import that
@@ -507,7 +526,7 @@ first line of each module's own docstring, not a review of what it covers.
 | `test_dry_run_visibility.py` | 15 | "Saying what actually happened." |
 | `test_frontend_serving.py` | 8 | "The production Flask process serves the React SPA, not the retired client." |
 | `test_library_compare.py` | 27 | "One title, episode by episode — the comparison behind the Library detail view." Also `SizeMatchTests`, the list's size check |
-| `test_library_rules.py` | 49 | "The Library list's verdicts, the detail view behind each card, and the History and Queue rows — through the HTTP layer, against a fake Sonarr and Radarr." |
+| `test_library_rules.py` | 59 | "The Library list's verdicts, the detail view behind each card, and the History and Queue rows — through the HTTP layer, against a fake Sonarr and Radarr." |
 | `test_media_library_routes.py` | 27 | "The library and history HTTP layer." |
 | `test_remote_daemon.py` | 66 | "The transfer server on the remote host." |
 | `test_restore_safety.py` | 12 | "A restore must never leave a live library file welded to a stored backup." |

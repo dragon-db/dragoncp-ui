@@ -345,7 +345,9 @@ automatically" is gone.
 2. Reads the service's library, refreshing the title index.
 3. Reads its import history since the last scan — the first scan looks back
    24 hours — covering new episodes, new titles and upgrades. Each import that
-   nothing has synced since is a find.
+   nothing has synced since is a find: no finished copy of its folder started
+   after it (see [Sync engine](../sync-engine/README.md), "The scheduled
+   auto-scanner").
 4. For Sonarr only, also finds seasons this disk keeps but holds fewer files of
    than Sonarr has.
 5. Hands every find to the sync engine as an *Auto-scanner* sync, so batching,
@@ -470,9 +472,11 @@ judges each one from three reads made once for the whole page:
    per season. Added 2026-10-06, after the beta showed that case as In sync.
 2. Sonarr's imports of the last 14 days (`history/since`, the auto-scanner's own
    read, reused for a minute). An episode's latest import that is newer than the
-   last completed sync of that season's folder — a sync run counted from when its
-   copy started, or a pre-engine transfer from when it ended, the auto-scanner's
-   rule; simulated runs do not count — is "1 new episode on Sonarr, imported 2
+   last completed sync of that season's folder — counted from when the copy
+   started (its latest start, if it was paused and resumed), whether a sync run
+   or a transfer from before the engine; the auto-scanner's rule, in
+   `services/sync_engine/coverage.py`; single-file copies, restores and
+   simulated runs do not count — is "1 new episode on Sonarr, imported 2
    days ago", unless the very file is plainly here already: that episode, at the
    size Sonarr imported. Only the latest import counts, because an upgrade
    imports the same episode twice and the first file is gone.

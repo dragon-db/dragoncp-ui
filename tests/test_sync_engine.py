@@ -78,9 +78,13 @@ class FakeTransferService:
             'local_file_count': 0, 'incoming_files': ['a.mkv', 'b.mkv'], 'deleted_files': [],
         }
         self.calls = []
+        #: Run while rsync is "working": what a person does in the meantime.
+        self.during = None
 
     def perform_dry_run_rsync(self, source_path, dest_path):
         self.calls.append((source_path, dest_path))
+        if self.during:
+            self.during()
         return dict(self.result)
 
 
@@ -168,12 +172,16 @@ class FakeIndex:
         self.adapter = FakeAdapter()
         self.answers = []
         self.asked = 0
+        #: Run while Sonarr is "answering": what a person does in the meantime.
+        self.during = None
 
     def _adapter(self, source):
         return self.adapter
 
     def in_flight_for_season(self, tvdb_id, season_number):
         self.asked += 1
+        if self.during:
+            self.during()
         if self.answers:
             return self.answers.pop(0)
         return InFlight(known=True, reason='nothing in flight')
@@ -866,6 +874,40 @@ class FinishTests(EngineTestCase):
         self.assertEqual(described['transfer']['transfer_id'], transfer_id)
 
 
+class LateAnswerTests(EngineTestCase):
+    """Sonarr and the dry run take seconds; a cancel in that time must hold."""
+
+    def manual(self, season=2):
+        return SyncRequest(
+            kind=S.MANUAL, source='manual', media_type='tvshows',
+            source_path=f"{REMOTE_TV}/Example Show (2020)/Season {season:02d}",
+            dest_path=os.path.join(self.config.get('TVSHOW_DEST_PATH'), 'Example Show (2020)',
+                                   f'Season {season:02d}'),
+            folder_name='Example Show (2020)', season_name=f'Season {season:02d}',
+            title='Example Show')
+
+    def test_a_cancel_while_sonarr_is_asked_is_not_undone_by_its_answer(self):
+        run = self.sonarr(self.series_webhook('e1', 1))
+        self.index.during = lambda: self.engine.cancel_run(run.run_id)
+        self.clock.advance(SETTLE_SECONDS)
+        self.tick()
+        self.assertEqual(self.get_run(run.run_id)['state'], S.CANCELLED)
+        self.assertEqual(self.coordinator.started, [], 'no copy for a cancelled sync')
+        self.assertEqual(self.webhook('e1')['status'], 'cancelled')
+        self.assertNotEqual(self.stage(run.run_id, S.READY)['status'], S.PASSED)
+
+    def test_a_cancel_during_the_dry_run_is_not_undone_by_its_result(self):
+        # The dry run happens inside submit, before its run id is handed back,
+        # so the cancel looks the run up as the newest sync.
+        self.coordinator.transfer_service.during = lambda: self.engine.cancel_run(
+            self.store.list(limit=1)[0]['run_id'])
+        result = self.engine.submit(self.manual())
+        self.assertEqual(self.get_run(result.run_id)['state'], S.CANCELLED)
+        self.assertEqual(self.coordinator.started, [])
+        self.assertNotEqual(self.stage(result.run_id, S.SAFETY)['status'], S.PASSED)
+        self.assertEqual(self.open_alerts('sync_refused'), [])
+
+
 class RecoveryTests(EngineTestCase):
     def test_a_waiting_batch_becomes_an_alert_after_a_restart(self):
         from services.sync_engine.recovery import recover_after_restart
@@ -894,6 +936,99 @@ class RecoveryTests(EngineTestCase):
         self.assertEqual(self.open_alerts('restart_unfinished'), [])
         self.assertEqual(self.coordinator.transfer_model.get(transfer_id)['status'], 'queued',
                          'back in the queue, where it starts normally')
+
+    def interrupted_alert(self, request):
+        from services.sync_engine.recovery import recover_after_restart
+        self.coordinator.transfer_service.result['safe_to_sync'] = True
+        run = self.engine.submit(request)
+        # A restart caught it in the safety check: no transfer written yet.
+        self.store.update(run.run_id, state=S.CHECKING, current_stage=S.SAFETY)
+        transfer_id = self.get_run(run.run_id).get('transfer_id')
+        if transfer_id:
+            with self.db.get_connection() as conn:
+                conn.execute("DELETE FROM transfers WHERE transfer_id = ?", (transfer_id,))
+                conn.commit()
+        recover_after_restart(self.engine)
+        self.assertEqual(self.get_run(run.run_id)['state'], S.INTERRUPTED)
+        alerts = [a for a in self.open_alerts('restart_unfinished')
+                  if a['run_id'] == run.run_id]
+        self.assertEqual(len(alerts), 1)
+        return run, alerts[0]
+
+    def test_sync_now_works_for_a_sync_with_no_webhooks(self):
+        self.coordinator.queue_state = 'QUEUED_SLOT'
+        run, alert = self.interrupted_alert(SyncRequest(
+            kind=S.AUTO_SCANNER, source='sonarr', media_type='tvshows',
+            source_path=f"{REMOTE_TV}/Example Show (2020)/Season 03",
+            dest_path=os.path.join(self.config.get('TVSHOW_DEST_PATH'), 'Example Show (2020)',
+                                   'Season 03'),
+            folder_name='Example Show (2020)', season_name='Season 03', title='Example Show',
+            options={'tvdb_id': '900001'}))
+        self.assertNotIn('0 webhooks', alert['message'])
+        started_before = list(self.coordinator.started)
+        ok, message, _ = self.alerts.act(alert['alert_id'], 'sync_now')
+        self.assertTrue(ok, message)
+        new = [t for t in self.coordinator.started if t not in started_before]
+        self.assertEqual(len(new), 1, 'the same folder, synced again')
+        row = self.coordinator.transfer_model.get(new[0])
+        self.assertTrue(row['dest_path'].endswith('Example Show (2020)/Season 03'))
+        self.assertEqual(row['operation_type'], 'folder')
+
+    def test_sync_now_keeps_a_single_file_a_single_file(self):
+        self.coordinator.queue_state = 'QUEUED_SLOT'
+        dest = os.path.join(self.config.get('TVSHOW_DEST_PATH'), 'Example Show (2020)',
+                            'Season 01')
+        run, alert = self.interrupted_alert(SyncRequest(
+            kind=S.MANUAL, source='manual', media_type='tvshows',
+            source_path=f"{REMOTE_TV}/Example Show (2020)/Season 01/Example Show - S01E01.mkv",
+            dest_path=dest, folder_name='Example Show (2020)', season_name='Season 01',
+            title='Example Show', operation_type='file'))
+        before = list(self.coordinator.started)
+        ok, message, _ = self.alerts.act(alert['alert_id'], 'sync_now')
+        self.assertTrue(ok, message)
+        new = [t for t in self.coordinator.started if t not in before]
+        self.assertEqual(self.coordinator.transfer_model.get(new[0])['operation_type'], 'file')
+
+    def test_sync_now_keeps_an_explore_file_list_exact(self):
+        self.coordinator.queue_state = 'QUEUED_SLOT'
+        files_from = os.path.join(self.tmp.name, 'plan-files.txt')
+        with open(files_from, 'w', encoding='utf-8') as handle:
+            handle.write('Example Show - S04E01.mkv\n')
+        dest = os.path.join(self.config.get('TVSHOW_DEST_PATH'), 'Example Show (2020)',
+                            'Season 04')
+        run, alert = self.interrupted_alert(SyncRequest(
+            kind=S.EXPLORE, source='explore', media_type='tvshows',
+            source_path=f"{REMOTE_TV}/Example Show (2020)/Season 04", dest_path=dest,
+            folder_name='Example Show (2020)', season_name='Season 04', title='Example Show',
+            transfer_id='explore_first', safety_summary='Reviewed in Explore.',
+            extra_fields={'explore_files_from': files_from, 'explore_mode': 'download'}))
+        before = len(self.coordinator.started)
+        ok, message, _ = self.alerts.act(alert['alert_id'], 'sync_now')
+        self.assertTrue(ok, message)
+        self.assertEqual(len(self.coordinator.started), before + 1)
+        row = self.coordinator.transfer_model.get(self.coordinator.started[-1])
+        self.assertEqual(row['explore_files_from'], files_from,
+                         'the same file list, never a whole-folder sync')
+
+    def test_sync_now_refuses_when_an_explore_list_is_gone(self):
+        self.coordinator.queue_state = 'QUEUED_SLOT'
+        dest = os.path.join(self.config.get('TVSHOW_DEST_PATH'), 'Example Show (2020)',
+                            'Season 05')
+        missing = os.path.join(self.tmp.name, 'gone.txt')
+        with open(missing, 'w', encoding='utf-8') as handle:
+            handle.write('Example Show - S05E01.mkv\n')
+        run, alert = self.interrupted_alert(SyncRequest(
+            kind=S.EXPLORE, source='explore', media_type='tvshows',
+            source_path=f"{REMOTE_TV}/Example Show (2020)/Season 05", dest_path=dest,
+            folder_name='Example Show (2020)', season_name='Season 05', title='Example Show',
+            transfer_id='explore_gone', safety_summary='Reviewed in Explore.',
+            extra_fields={'explore_files_from': missing, 'explore_mode': 'download'}))
+        os.remove(missing)
+        before = list(self.coordinator.started)
+        ok, message, _ = self.alerts.act(alert['alert_id'], 'sync_now')
+        self.assertFalse(ok)
+        self.assertIn('Explore', message)
+        self.assertEqual(self.coordinator.started, before, 'nothing widened into a folder sync')
 
     def test_held_batches_survive_a_restart_untouched(self):
         from services.sync_engine.recovery import recover_after_restart

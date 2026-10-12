@@ -46,8 +46,9 @@ sidebar — and gave every sync one pipeline.
 - **A restart no longer loses episodes silently.** A batch waiting to sync was
   held only in memory, so a restart dropped it and nothing said so. Batches now
   live in the database, and nothing restarts by itself: what a restart
-  interrupted becomes an alert, with Sync now, Mark as done, Mark as wrong and
-  Dismiss.
+  interrupted becomes an alert, with Sync now (which repeats exactly that sync:
+  the same folder, single file or Explore list), Mark as done, Mark as wrong
+  and Dismiss.
 - **Restart goes through the queue and the safety check** like every other
   sync, instead of starting at once. Pressing Restart says so, and a refusal
   says why.
@@ -55,7 +56,8 @@ sidebar — and gave every sync one pipeline.
   and a whole-series copy waits for any season copy of that series.**
 - **A new scheduled auto-scanner** catches what a lost webhook would have
   missed: on a schedule, it asks Sonarr and Radarr what they imported since the
-  last scan and syncs whatever no webhook delivered. One switch per service on its
+  last scan and syncs whatever no webhook delivered. An import counts as synced
+  only once a copy that started after it has finished. One switch per service on its
   integration page, off by default, where a card shows when it next scans, what
   the last scan found, and a Scan now button. It never fetches the whole
   backlog.

@@ -44,6 +44,7 @@ from services.connectors.adapters._arr import (
 )
 from services.local_library import LocalLibrary, media_sizes_in, size_of_path
 from services.sync_engine import stages as S
+from services.sync_engine.coverage import last_copies
 from services.sync_engine.units import unit_key
 
 #: Media types that come from Sonarr. Anime is a separate library here but the
@@ -513,36 +514,15 @@ class MediaIndex:
     def _last_syncs(self) -> Dict[str, datetime]:
         """When each destination folder last had a completed sync, by unit key.
 
-        The auto-scanner's own rule (`_synced_since`), read for every folder at
-        once: a completed run counts from when its copy started, so an import
-        that landed after that may not be in it; a transfer from before the
-        sync engine counts from when it ended, its only recorded moment.
-        Simulated runs copy nothing and are left out.
+        The auto-scanner's own rule, read for every folder at once (see
+        `services/sync_engine/coverage.py`): a copy counts from when it
+        started, and single files, restores and simulations never count.
         """
-        latest: Dict[str, datetime] = {}
-
-        def keep(key: str, moment: Optional[datetime]) -> None:
-            if key and moment and (key not in latest or moment > latest[key]):
-                latest[key] = moment
-
         try:
-            with self.store.db.get_connection() as conn:
-                for row in conn.execute(
-                    "SELECT unit_key, MAX(started_at) AS at FROM sync_run "
-                    " WHERE state = 'completed' AND COALESCE(is_simulation, 0) = 0 "
-                    "   AND started_at IS NOT NULL AND COALESCE(unit_key, '') != '' "
-                    " GROUP BY unit_key"
-                ):
-                    keep(row['unit_key'], _parse_iso(row['at']))
-                for row in conn.execute(
-                    "SELECT dest_path, MAX(end_time) AS at FROM transfers "
-                    " WHERE status = 'completed' AND end_time IS NOT NULL "
-                    " GROUP BY dest_path"
-                ):
-                    keep(unit_key(row['dest_path'] or ''), _parse_local(row['at']))
+            return last_copies(self.store.db)
         except Exception as exc:  # noqa: BLE001 - a view must not fail on a join
             print(f"⚠️  Could not read when folders were last synced: {exc}")
-        return latest
+            return {}
 
     def _exact_for(self, source: str, external_id: Any) -> Optional[Dict[str, Any]]:
         """The detail view's answer for a title, while it is still fresh."""

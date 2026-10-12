@@ -27,11 +27,13 @@ Two rules carry most of the weight:
 """
 
 import logging
+import os
 import queue
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -80,6 +82,9 @@ SYNCABLE_STATUSES = ('pending', 'failed', 'cancelled', 'MANUAL_SYNC_REQUIRED',
                      'manual_sync_required', 'READY_FOR_TRANSFER')
 #: Webhook statuses that already have an outcome or a transfer in flight.
 SETTLED_STATUSES = ('completed',)
+
+#: Where a run sits while its ready check is still deciding.
+READY_CHECK_STATES = (S.WAITING_STATE, S.HELD)
 
 #: Explore's buttons, by the mode its run carries.
 EXPLORE_ACTIONS = {'sync': 'Sync', 'download': 'Download', 'replace': 'Replace'}
@@ -347,6 +352,27 @@ class SyncEngine:
                 lock = threading.RLock()
                 self._unit_locks[key] = lock
             return lock
+
+    def _run_lock(self, run: Dict[str, Any]) -> threading.RLock:
+        return self.unit_lock(run.get('unit_key') or make_unit_key(run.get('dest_path') or ''))
+
+    @contextmanager
+    def _still(self, run_id: str, *states: str):
+        """The run as it is now, under its folder's lock, or None if it moved on.
+
+        Asking Sonarr and the dry run each take seconds, and nothing is locked
+        while they do: someone can cancel the sync, or mark it done, in that
+        time. What a step decides from the answer is written inside this block,
+        and only while the run is still in `states`, so a late answer can never
+        undo a cancel and start a copy nobody wants.
+        """
+        run = self.store.get(run_id)
+        if not run:
+            yield None
+            return
+        with self._run_lock(run):
+            current = self.store.get(run_id)
+            yield current if current and current['state'] in states else None
 
     # -------------------------------------------------------------- helpers
 
@@ -885,8 +911,7 @@ class SyncEngine:
 
         if run.get('go_now'):
             who = run.get('requested_by_name') or 'an admin'
-            self._ready_passed(run_id, f"Started now: {who} pressed Go now.")
-            return True
+            return self._ready_passed(run_id, f"Started now: {who} pressed Go now.")
 
         # A kick is a request to look, not a reason to ask early. Without this,
         # every webhook joining a batch would put another question to Sonarr.
@@ -895,8 +920,11 @@ class SyncEngine:
             return False
 
         if self._ready_skipped(run, policy):
-            self._stage(run_id, S.READY, S.SKIPPED, self._ready_skip_note(run, policy))
-            self._set_state(run_id, S.CHECKING, S.SAFETY)
+            with self._still(run_id, *READY_CHECK_STATES) as current:
+                if current is None:
+                    return False
+                self._stage(run_id, S.READY, S.SKIPPED, self._ready_skip_note(run, policy))
+                self._set_state(run_id, S.CHECKING, S.SAFETY)
             return True
 
         if run.get('ready_mode') is None:
@@ -906,9 +934,8 @@ class SyncEngine:
             due = run.get('timer_due_at') or now
             if now >= due:
                 waited = now - self._opened_at(run)
-                self._ready_passed(
+                return self._ready_passed(
                     run_id, f"The fallback wait ended after {_duration(waited)}.")
-                return True
             self._update(run_id, next_check_at=due)
             return False
 
@@ -953,28 +980,34 @@ class SyncEngine:
                      'the fallback wait decides when this starts.', alert=False)
 
         first_ask = max(now, self._opened_at(run) + SETTLE_SECONDS)
-        self._update(run_id, ready_mode='ask', next_check_at=first_ask)
-        self._stage(run_id, S.READY, S.WAITING,
-                    f"Sonarr is reachable ({message}). Waiting until {_hhmmss(first_ask)} "
-                    f"so episodes arriving together can join, then asking Sonarr what is "
-                    f"still downloading.")
-        self._mark_webhooks_waiting(run_id, first_ask)
+        with self._still(run_id, *READY_CHECK_STATES) as current:
+            if current is None:
+                return False
+            self._update(run_id, ready_mode='ask', next_check_at=first_ask)
+            self._stage(run_id, S.READY, S.WAITING,
+                        f"Sonarr is reachable ({message}). Waiting until "
+                        f"{_hhmmss(first_ask)} so episodes arriving together can join, then "
+                        f"asking Sonarr what is still downloading.")
+            self._mark_webhooks_waiting(run_id, first_ask)
         return False
 
     def _use_timer(self, run: Dict[str, Any], reason: str, alert: bool) -> bool:
         run_id = run['run_id']
-        due = run.get('timer_due_at') or self.clock()
-        self._update(run_id, ready_mode='timer', next_check_at=due)
-        if self.clock() >= due:
-            self._event(run_id, S.READY, reason, 'warning' if alert else 'info')
-            self._ready_passed(run_id, 'The fallback wait had already run out.')
-            return True
-        wait = self._wait_seconds()
-        self._stage(run_id, S.READY, S.WAITING,
-                    f"{reason} Starts at {_hhmmss(due)} ({wait} s after the first webhook, "
-                    f"plus {wait} s for each later one, never more than 15 minutes).",
-                    level='warning' if alert else 'info')
-        self._mark_webhooks_waiting(run_id, due)
+        with self._still(run_id, *READY_CHECK_STATES) as current:
+            if current is None:
+                return False
+            # Re-read: webhooks that joined while Sonarr was asked moved it on.
+            due = current.get('timer_due_at') or self.clock()
+            self._update(run_id, ready_mode='timer', next_check_at=due)
+            if self.clock() >= due:
+                self._event(run_id, S.READY, reason, 'warning' if alert else 'info')
+                return self._ready_passed(run_id, 'The fallback wait had already run out.')
+            wait = self._wait_seconds()
+            self._stage(run_id, S.READY, S.WAITING,
+                        f"{reason} Starts at {_hhmmss(due)} ({wait} s after the first "
+                        f"webhook, plus {wait} s for each later one, never more than 15 "
+                        f"minutes).", level='warning' if alert else 'info')
+            self._mark_webhooks_waiting(run_id, due)
         return False
 
     def _ready_ask(self, run: Dict[str, Any], now: float) -> bool:
@@ -994,36 +1027,39 @@ class SyncEngine:
         self._update(run_id, checks_made=checks)
 
         if answer is None or not answer.known:
-            self._event(run_id, S.READY,
-                        f"Sonarr could not answer ({reason}). Finishing on the fallback "
-                        f"wait instead.", 'warning')
-            return self._use_timer(self.store.get(run_id), 'Sonarr stopped answering.',
-                                   alert=False)
+            with self._still(run_id, *READY_CHECK_STATES) as current:
+                if current is None:
+                    return False
+                self._event(run_id, S.READY,
+                            f"Sonarr could not answer ({reason}). Finishing on the fallback "
+                            f"wait instead.", 'warning')
+                return self._use_timer(current, 'Sonarr stopped answering.', alert=False)
 
         detail = answer.as_dict()
         if answer.blocking == 0:
-            if answer.stuck:
-                stuck = '; '.join(answer.stuck_detail) or f"{answer.stuck} stuck"
-                self._ready_passed(
-                    run_id,
-                    f"Nothing is still downloading. {answer.stuck} stuck in Sonarr — not "
-                    f"waited for: {stuck}.", detail=detail, level='warning')
-                if self.alerts is not None:
-                    self.alerts.stuck_download(self.store.get(run_id), answer)
-            else:
-                self._ready_passed(
+            if not answer.stuck:
+                return self._ready_passed(
                     run_id, f"Sonarr: nothing left to download for this season "
                             f"(asked {checks}×).", detail=detail)
+            stuck = '; '.join(answer.stuck_detail) or f"{answer.stuck} stuck"
+            if not self._ready_passed(
+                    run_id,
+                    f"Nothing is still downloading. {answer.stuck} stuck in Sonarr — not "
+                    f"waited for: {stuck}.", detail=detail, level='warning'):
+                return False
+            if self.alerts is not None:
+                self.alerts.stuck_download(self.store.get(run_id), answer)
             return True
 
         deadline = run.get('ready_deadline_at') or (now + READY_CAP_SECONDS)
         if now >= deadline:
             still = '; '.join(answer.detail) or f"{answer.blocking} downloading"
-            self._ready_passed(
-                run_id,
-                f"Waited 30 minutes — syncing what is there now. Still downloading: "
-                f"{still}. Those arrive later through their own webhook or the "
-                f"auto-scanner.", detail=detail, level='warning')
+            if not self._ready_passed(
+                    run_id,
+                    f"Waited 30 minutes — syncing what is there now. Still downloading: "
+                    f"{still}. Those arrive later through their own webhook or the "
+                    f"auto-scanner.", detail=detail, level='warning'):
+                return False
             if self.alerts is not None:
                 self.alerts.ready_timeout(self.store.get(run_id), answer)
             return True
@@ -1034,18 +1070,27 @@ class SyncEngine:
         downloading = '; '.join(answer.detail)
         eta = (f"about {_duration(answer.eta_seconds)} left"
                if answer.eta_seconds is not None else 'no estimate from Sonarr')
-        self._update(run_id, next_check_at=next_at)
-        self._stage(run_id, S.READY, S.WAITING,
-                    f"Sonarr: {answer.blocking} still downloading ({eta}). Asking again "
-                    f"at {_hhmmss(next_at)}.", detail={**detail, 'downloading': downloading})
-        self._mark_webhooks_waiting(run_id, next_at)
+        with self._still(run_id, *READY_CHECK_STATES) as current:
+            if current is None:
+                return False
+            self._update(run_id, next_check_at=next_at)
+            self._stage(run_id, S.READY, S.WAITING,
+                        f"Sonarr: {answer.blocking} still downloading ({eta}). Asking again "
+                        f"at {_hhmmss(next_at)}.",
+                        detail={**detail, 'downloading': downloading})
+            self._mark_webhooks_waiting(run_id, next_at)
         return False
 
     def _ready_passed(self, run_id: str, summary: str,
                       detail: Optional[Dict[str, Any]] = None,
-                      level: Optional[str] = None) -> None:
-        self._stage(run_id, S.READY, S.PASSED, summary, detail=detail, level=level)
-        self._set_state(run_id, S.CHECKING, S.SAFETY, next_check_at=None)
+                      level: Optional[str] = None) -> bool:
+        """On to the dry run. False when the run was cancelled or closed meanwhile."""
+        with self._still(run_id, *READY_CHECK_STATES) as current:
+            if current is None:
+                return False
+            self._stage(run_id, S.READY, S.PASSED, summary, detail=detail, level=level)
+            self._set_state(run_id, S.CHECKING, S.SAFETY, next_check_at=None)
+        return True
 
     def _mark_webhooks_waiting(self, run_id: str, when: float) -> None:
         self.store.update_webhooks(
@@ -1057,50 +1102,58 @@ class SyncEngine:
     def _safety_step(self, run: Dict[str, Any]) -> bool:
         """The dry run. True when the run may be handed to the queue."""
         run_id = run['run_id']
-        policy = S.policy(run['kind'])
-        mode = policy.mode(S.SAFETY)
-        options = run.get('options') or {}
+        with self._still(run_id, S.CHECKING) as run:
+            if run is None:
+                return False
+            policy = S.policy(run['kind'])
+            mode = policy.mode(S.SAFETY)
+            options = run.get('options') or {}
 
-        if mode == S.SKIP:
-            self._stage(run_id, S.SAFETY, S.SKIPPED, policy.note(S.SAFETY))
-            return self._queue_step(run_id)
-
-        if run.get('is_simulation'):
-            # A restarted rehearsal: the same sandbox files, which the media
-            # server has never seen, so a dry run against it could only fail.
-            self._stage(run_id, S.SAFETY, S.SKIPPED, S.policy(S.SIMULATION).note(S.SAFETY))
-            return self._queue_step(run_id)
-
-        if run['kind'] == S.RESTART and run.get('transfer_id') and self.coordinator is not None:
-            row = self.coordinator.transfer_model.get(run['transfer_id']) or {}
-            if row.get('explore_files_from'):
-                self._stage(run_id, S.SAFETY, S.SKIPPED,
-                            'Skipped: this retries a sync started from Explore. It copies '
-                            'the same files as before and deletes nothing, and Explore’s '
-                            'review checked them before the first try; a dry run of the '
-                            'whole folder would judge a different copy.')
+            if mode == S.SKIP:
+                self._stage(run_id, S.SAFETY, S.SKIPPED, policy.note(S.SAFETY))
                 return self._queue_step(run_id)
 
-        if run.get('operation_type') == 'file':
-            self._stage(run_id, S.SAFETY, S.SKIPPED,
-                        'Skipped: one file is copied, and rsync deletes nothing when it '
-                        'is given a single file, so there is nothing for a dry run to '
-                        'guard.')
-            return self._queue_step(run_id)
+            if run.get('is_simulation'):
+                # A restarted rehearsal: the same sandbox files, which the media
+                # server has never seen, so a dry run against it could only fail.
+                self._stage(run_id, S.SAFETY, S.SKIPPED,
+                            S.policy(S.SIMULATION).note(S.SAFETY))
+                return self._queue_step(run_id)
 
-        if run['kind'] in (S.EXPLORE, S.RESTORE):
-            summary = options.get('safety_summary') or policy.note(S.SAFETY)
-            self._stage(run_id, S.SAFETY, S.PASSED, summary)
-            return self._queue_step(run_id)
+            if run['kind'] == S.RESTART and run.get('transfer_id') and \
+                    self.coordinator is not None:
+                row = self.coordinator.transfer_model.get(run['transfer_id']) or {}
+                if row.get('explore_files_from'):
+                    self._stage(run_id, S.SAFETY, S.SKIPPED,
+                                'Skipped: this retries a sync started from Explore. It '
+                                'copies the same files as before and deletes nothing, and '
+                                'Explore’s review checked them before the first try; a dry '
+                                'run of the whole folder would judge a different copy.')
+                    return self._queue_step(run_id)
 
-        transfer_service = getattr(self.coordinator, 'transfer_service', None)
-        if transfer_service is None:
-            self._stage(run_id, S.SAFETY, S.SKIPPED,
-                        'No transfer service is available to run a dry run.')
-            return self._queue_step(run_id)
+            if run.get('operation_type') == 'file':
+                self._stage(run_id, S.SAFETY, S.SKIPPED,
+                            'Skipped: one file is copied, and rsync deletes nothing when it '
+                            'is given a single file, so there is nothing for a dry run to '
+                            'guard.')
+                return self._queue_step(run_id)
 
-        self._stage(run_id, S.SAFETY, S.RUNNING,
-                    'Dry run: asking rsync what this sync would change.')
+            if run['kind'] in (S.EXPLORE, S.RESTORE):
+                summary = options.get('safety_summary') or policy.note(S.SAFETY)
+                self._stage(run_id, S.SAFETY, S.PASSED, summary)
+                return self._queue_step(run_id)
+
+            transfer_service = getattr(self.coordinator, 'transfer_service', None)
+            if transfer_service is None:
+                self._stage(run_id, S.SAFETY, S.SKIPPED,
+                            'No transfer service is available to run a dry run.')
+                return self._queue_step(run_id)
+
+            self._stage(run_id, S.SAFETY, S.RUNNING,
+                        'Dry run: asking rsync what this sync would change.')
+
+        # The folder is not locked while rsync works this out; what it says is
+        # used below only if the sync is still waiting for it.
         try:
             result = transfer_service.perform_dry_run_rsync(
                 source_path=run['source_path'], dest_path=run['dest_path'])
@@ -1123,19 +1176,27 @@ class SyncEngine:
                   f"{detail['deleted_count']} to delete; the media server holds "
                   f"{detail['server_file_count']}, this disk {detail['local_file_count']}")
 
-        if result.get('safe_to_sync'):
-            self._stage(run_id, S.SAFETY, S.PASSED, f"Safe to sync: {counts}.", detail=detail)
-            return self._queue_step(run_id)
+        with self._still(run_id, S.CHECKING) as run:
+            if run is None:
+                self._event(run_id, S.SAFETY,
+                            f"The dry run answered after this sync had stopped, so its "
+                            f"answer was not used ({counts}).")
+                return False
 
-        reason = result.get('reason') or 'The dry run failed'
-        if run.get('force_safety'):
-            who = run.get('requested_by_name') or 'an admin'
-            self._stage(run_id, S.SAFETY, S.PASSED,
-                        f"The safety check failed ({reason}) — {who} chose to go ahead "
-                        f"anyway. {counts}.", detail=detail, level='warning')
-            return self._queue_step(run_id)
+            if result.get('safe_to_sync'):
+                self._stage(run_id, S.SAFETY, S.PASSED, f"Safe to sync: {counts}.",
+                            detail=detail)
+                return self._queue_step(run_id)
 
-        self._refuse(run, reason, detail)
+            reason = result.get('reason') or 'The dry run failed'
+            if run.get('force_safety'):
+                who = run.get('requested_by_name') or 'an admin'
+                self._stage(run_id, S.SAFETY, S.PASSED,
+                            f"The safety check failed ({reason}) — {who} chose to go ahead "
+                            f"anyway. {counts}.", detail=detail, level='warning')
+                return self._queue_step(run_id)
+
+            self._refuse(run, reason, detail)
         return False
 
     def _store_dry_run(self, run_id: str, result: Dict[str, Any]) -> None:
@@ -1186,10 +1247,11 @@ class SyncEngine:
                 self._fail_run(run_id, S.QUEUE, 'No transfer coordinator is available.')
             return False
 
-        key = run['unit_key'] or make_unit_key(run['dest_path'])
-        with self.unit_lock(key):
+        with self._run_lock(run):
             run = self.store.get(run_id)
-            if run['state'] in S.TERMINAL_STATES:
+            # Only a run the safety check has just passed is handed on. Anything
+            # else got here late: cancelled, closed, or already queued.
+            if run['state'] != S.CHECKING:
                 return False
             transfer_id = run.get('transfer_id') or self._transfer_id_for(run['kind'])
             options = run.get('options') or {}
@@ -1631,7 +1693,7 @@ class SyncEngine:
         run = self.store.get(run_id)
         if not run:
             return SubmitResult(False, run_id, 'failed', '', 'No such sync run')
-        with self.unit_lock(run['unit_key'] or ''):
+        with self._run_lock(run):
             run = self.store.get(run_id)
             if run['state'] in S.TERMINAL_STATES:
                 return SubmitResult(False, run_id, 'failed', run['state'],
@@ -1648,7 +1710,12 @@ class SyncEngine:
             return SubmitResult(False, run_id, 'failed', run['state'],
                                 'Only a sync the safety check stopped can be overridden.')
         key = run['unit_key'] or ''
-        with self.unit_lock(key):
+        with self._run_lock(run):
+            run = self.store.get(run_id)
+            if run['state'] != S.REFUSED_STATE:
+                # Pressed twice, or cancelled in between: the first press won.
+                return SubmitResult(False, run_id, 'failed', run['state'],
+                                    'This sync is no longer stopped by the safety check.')
             busy = self.store.find_live(key)
             if busy is not None and busy['run_id'] != run_id:
                 return SubmitResult(False, run_id, 'failed', run['state'],
@@ -1667,7 +1734,7 @@ class SyncEngine:
             self.store.update_webhooks(run_id, {'requires_manual_sync': 0},
                                        exclude_status=SETTLED_STATUSES)
             self._set_state(run_id, S.CHECKING, S.QUEUE)
-        self._queue_step(run_id)
+            self._queue_step(run_id)
         run = self.store.get(run_id)
         if run['state'] == S.FAILED_STATE:
             return SubmitResult(False, run_id, 'failed', run['state'],
@@ -1682,28 +1749,38 @@ class SyncEngine:
         run = self.store.get(run_id)
         if not run:
             return SubmitResult(False, run_id, 'failed', '', 'No such sync run')
-        if run['state'] in S.TERMINAL_STATES:
-            return SubmitResult(False, run_id, 'failed', run['state'], 'This sync already ended.')
-        has_transfer = bool(run.get('transfer_id')) and self.coordinator is not None and \
-            self.coordinator.transfer_model.get(run['transfer_id']) is not None
-        if run['state'] in (S.QUEUED, S.TRANSFERRING, S.PAUSED) and has_transfer:
-            ok = self.coordinator.cancel_transfer(run['transfer_id'])
-            if ok:
-                self.on_transfer_finished(run['transfer_id'], 'cancelled')
-            return SubmitResult(ok, run_id, 'cancelled' if ok else 'failed',
-                                (self.store.get(run_id) or {}).get('state', ''),
-                                'Cancelled.' if ok else 'Could not cancel the transfer.')
-        # Not handed to the queue yet, or its transfer row is gone: there is no
-        # copy to stop, so the run itself is closed.
-        with self.unit_lock(run['unit_key'] or ''):
-            stage = run.get('current_stage') or S.READY
-            self._stage(run_id, stage, S.FAILED, f"Cancelled by {actor.label}.", level='warning')
-            self._skip_rest(run_id, stage, f"Not reached: cancelled by {actor.label}.")
-            self.store.update_webhooks(run_id, {'status': 'cancelled'},
-                                       exclude_status=SETTLED_STATUSES)
-            self._set_state(run_id, S.CANCELLED, stage, outcome='cancelled',
-                            outcome_message=f"Cancelled by {actor.label}")
-        return SubmitResult(True, run_id, 'cancelled', S.CANCELLED, 'Cancelled.')
+        # Decided under the folder's lock, from the run as it is now: the queue
+        # takes the same lock to hand a run its transfer, so the two can never
+        # cross with a copy starting that this cancel did not see.
+        with self._run_lock(run):
+            run = self.store.get(run_id)
+            if run['state'] in S.TERMINAL_STATES:
+                return SubmitResult(False, run_id, 'failed', run['state'],
+                                    'This sync already ended.')
+            copying = (run['state'] in (S.QUEUED, S.TRANSFERRING, S.PAUSED)
+                       and bool(run.get('transfer_id')) and self.coordinator is not None
+                       and self.coordinator.transfer_model.get(run['transfer_id']) is not None)
+            if not copying:
+                # Not handed to the queue yet, or its transfer row is gone: there
+                # is no copy to stop, so the run itself is closed. A Sonarr answer
+                # or dry run still on its way finds it closed and is dropped.
+                stage = run.get('current_stage') or S.READY
+                self._stage(run_id, stage, S.FAILED, f"Cancelled by {actor.label}.",
+                            level='warning')
+                self._skip_rest(run_id, stage, f"Not reached: cancelled by {actor.label}.")
+                self.store.update_webhooks(run_id, {'status': 'cancelled'},
+                                           exclude_status=SETTLED_STATUSES)
+                self._set_state(run_id, S.CANCELLED, stage, outcome='cancelled',
+                                outcome_message=f"Cancelled by {actor.label}")
+                return SubmitResult(True, run_id, 'cancelled', S.CANCELLED, 'Cancelled.')
+        # Stopping a copy is the queue's job, done outside the folder's lock: the
+        # queue calls back into the engine, which takes that lock itself.
+        ok = self.coordinator.cancel_transfer(run['transfer_id'])
+        if ok:
+            self.on_transfer_finished(run['transfer_id'], 'cancelled')
+        return SubmitResult(ok, run_id, 'cancelled' if ok else 'failed',
+                            (self.store.get(run_id) or {}).get('state', ''),
+                            'Cancelled.' if ok else 'Could not cancel the transfer.')
 
     def mark_done(self, run_id: Optional[str], actor: Optional[Actor] = None,
                   notification_ids: Optional[Sequence[str]] = None) -> bool:
@@ -1814,6 +1891,78 @@ class SyncEngine:
         return SubmitResult(True, run['run_id'], 'opened', run['state'],
                             'Restart requested: the safety check runs first, then the queue.',
                             transfer_id=transfer_id)
+
+    def sync_again(self, run_id: str, actor: Optional[Actor] = None) -> SubmitResult:
+        """Sync now, on the alert for a sync a restart interrupted.
+
+        Rebuilt from the run's own record, so it copies what that run would
+        have: the same folder, the same single file, the same Explore list. An
+        exact list is never widened into a whole-folder sync; if the list is
+        gone, it says so and copies nothing.
+        """
+        actor = actor or current_actor()
+        run = self.store.get(run_id)
+        if not run:
+            return SubmitResult(False, run_id, 'failed', '', 'This sync no longer exists.')
+        if run['state'] not in S.TERMINAL_STATES:
+            return SubmitResult(False, run_id, 'failed', run['state'],
+                                'This sync is still on its way.')
+        if run['kind'] == S.RESTORE or run.get('operation_type') == 'restore':
+            return SubmitResult(False, run_id, 'failed', run['state'],
+                                'A restore is run again from the Backups page, where its '
+                                'preview shows what it will replace.')
+        if run.get('transfer_id') and self.coordinator is not None and \
+                self.coordinator.transfer_model.get(run['transfer_id']) is not None:
+            # Its transfer was written down: retry that, exactly as it was.
+            return self.restart_transfer(run['transfer_id'], actor)
+        if run.get('is_simulation'):
+            return SubmitResult(False, run_id, 'failed', run['state'],
+                                'A simulation is started again from Transfers → Simulate.')
+
+        options = run.get('options') or {}
+        extra = dict(options.get('extra_fields') or {})
+        files_from = extra.get('explore_files_from')
+        if files_from and not os.path.isfile(files_from):
+            return SubmitResult(False, run_id, 'failed', run['state'],
+                                'The list of files this Explore sync was given is gone, so '
+                                'it cannot be repeated exactly. Make the plan again in '
+                                'Explore.')
+
+        # Its webhooks come along, so the new sync marks them synced when it
+        # finishes. Ones synced since, or taken by another sync, stay where
+        # they are.
+        webhooks = []
+        for table in (SERIES_TABLE, MOVIE_TABLE):
+            for notification_id in self.store.webhook_ids(run_id, table):
+                row = self._webhook_row(table, notification_id) or {}
+                if row and row.get('status') not in SETTLED_STATUSES:
+                    webhooks.append((table, notification_id))
+
+        what = 'the same list of files' if files_from else (
+            'the same file' if run.get('operation_type') == 'file' else 'the same folder')
+        request = SyncRequest(
+            kind=S.EXPLORE if files_from else S.MANUAL,
+            source=run.get('source'), media_type=run.get('media_type') or '',
+            webhooks=webhooks, source_path=run['source_path'], dest_path=run['dest_path'],
+            folder_name=run.get('folder_name') or '', season_name=run.get('season_name'),
+            season_number=run.get('season_number'), title=run.get('title') or '',
+            operation_type=run.get('operation_type') or 'folder', actor=actor,
+            options={k: v for k, v in options.items()
+                     if k in ('tvdb_id', 'tmdb_id', 'series_id', 'plan_id', 'mode',
+                              'files_to_fetch', 'moved_to_backup')},
+            extra_fields=extra if files_from else {},
+            # The Explore list's transfer never started, so its id is free;
+            # keeping it keeps the plan's records pointing at this copy.
+            transfer_id=run.get('transfer_id') if files_from else None,
+            safety_summary=(options.get('safety_summary') or '') if files_from else '',
+            note=(f"{actor.label} pressed Sync now for run {run_id}, which a restart "
+                  f"interrupted. This copies {what} again."),
+            parent_run_id=run_id, parent_relation='retry')
+        result = self.submit(request)
+        if result.ok and result.run_id and result.run_id != run_id:
+            self._event(run_id, S.FINISH,
+                        f"{actor.label} pressed Sync now: run {result.run_id} does it again.")
+        return result
 
     # ---------------------------------------------- runs the engine only records
 

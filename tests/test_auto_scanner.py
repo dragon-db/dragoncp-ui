@@ -24,6 +24,7 @@ from services.auto_scanner import MAX_NEW_RUNS_PER_SCAN, AutoScanner
 from services.connectors.base import CheckResult
 from services.sync_engine import stages as S
 from services.sync_engine.engine import SETTLE_SECONDS
+from services.sync_engine.units import unit_key
 from tests.test_sync_engine import REMOTE_TV, EngineTestCase
 
 
@@ -130,6 +131,75 @@ class ScannerTests(EngineTestCase):
         result = self.scan()
         self.assertEqual(result['found'], 0)
         self.assertEqual(len(self.scanner_runs()), 1)
+
+    def finished_copy(self, started_hours_ago, ended_hours_ago=0, owned=True,
+                      operation_type='folder', resumed_hours_ago=None):
+        """A finished copy of season 1, written down the way the database keeps it."""
+        now = datetime.now(timezone.utc)
+        started = now - timedelta(hours=started_hours_ago)
+        ended = now - timedelta(hours=ended_hours_ago)
+        dest = os.path.join(self.config.get('TVSHOW_DEST_PATH'), 'Example Show (2020)',
+                            'Season 01')
+        source = f"{REMOTE_TV}/Example Show (2020)/Season 01"
+        transfer_id = f"copy_{started_hours_ago}_{operation_type}_{int(owned)}"
+        run_id = None
+        if owned:
+            run_id = f"run_{transfer_id}"
+            options = {}
+            if resumed_hours_ago is not None:
+                options['transfer_started_at'] = (
+                    now - timedelta(hours=resumed_hours_ago)).isoformat()
+            self.store.create({
+                'run_id': run_id, 'kind': S.MANUAL, 'source': 'manual',
+                'media_type': 'tvshows', 'unit_key': unit_key(dest), 'dest_path': dest,
+                'source_path': source, 'operation_type': operation_type,
+                'state': S.COMPLETED, 'current_stage': S.FINISH, 'transfer_id': transfer_id,
+                'started_at': started.isoformat(), 'finished_at': ended.isoformat(),
+                'options': options})
+        # The transfers table keeps local time with no zone.
+        local = lambda moment: moment.astimezone().replace(tzinfo=None).isoformat()  # noqa: E731
+        with self.db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO transfers (transfer_id, media_type, folder_name, season_name, "
+                "source_path, dest_path, operation_type, status, start_time, end_time, "
+                "sync_run_id) VALUES (?, 'tvshows', 'Example Show (2020)', 'Season 01', ?, ?, "
+                "?, 'completed', ?, ?, ?)",
+                (transfer_id, source, dest, operation_type, local(started), local(ended),
+                 run_id))
+            conn.commit()
+
+    def test_a_copy_that_began_before_the_import_does_not_cover_it(self):
+        """It listed the folder before the episode landed, though it ended after."""
+        self.library.items = [show()]
+        self.arr.records = [imported(hours_ago=2)]
+        self.finished_copy(started_hours_ago=3, ended_hours_ago=1)
+        result = self.scan()
+        self.assertEqual(result['found'], 1)
+        self.assertEqual(result['started'], 1)
+
+    def test_a_copy_from_before_the_engine_counts_from_its_start(self):
+        self.library.items = [show()]
+        self.arr.records = [imported(hours_ago=3)]
+        self.finished_copy(started_hours_ago=2, ended_hours_ago=1, owned=False)
+        self.assertEqual(self.scan()['found'], 0)
+
+    def test_a_copy_from_before_the_engine_that_began_too_early_does_not(self):
+        self.library.items = [show()]
+        self.arr.records = [imported(hours_ago=2)]
+        self.finished_copy(started_hours_ago=3, ended_hours_ago=1, owned=False)
+        self.assertEqual(self.scan()['found'], 1)
+
+    def test_a_resumed_copy_counts_from_when_it_listed_the_folder_again(self):
+        self.library.items = [show()]
+        self.arr.records = [imported(hours_ago=2)]
+        self.finished_copy(started_hours_ago=3, resumed_hours_ago=1)
+        self.assertEqual(self.scan()['found'], 0)
+
+    def test_a_single_file_copy_does_not_cover_the_season(self):
+        self.library.items = [show()]
+        self.arr.records = [imported(hours_ago=2)]
+        self.finished_copy(started_hours_ago=1, operation_type='file')
+        self.assertEqual(self.scan()['found'], 1)
 
     def test_a_season_already_on_its_way_is_not_duplicated(self):
         self.series_webhook('e1', 1)

@@ -150,9 +150,14 @@ def _interrupt(engine, run: Dict[str, Any]) -> None:
         label = run.get('title') or run.get('folder_name') or 'A sync'
         if run.get('season_name'):
             label = f"{label} — {run['season_name']}"
+        ids = engine.store.webhook_ids(run_id)
+        # A sync with no webhooks (the auto-scanner, Explore, a manual sync)
+        # is described by what it was doing; Sync now redoes it from its record.
+        what = '' if ids else (
+            f"{label} was {doing} when DragonCP stopped. Nothing restarts by itself: "
+            f"sync now to run the same sync again, or mark this done.")
         engine.alerts.restart_unfinished(
-            run.get('unit_key') or run_id, label, engine.store.webhook_ids(run_id),
-            run_id=run_id)
+            run.get('unit_key') or run_id, label, ids, run_id=run_id, what=what)
 
 
 def _legacy_webhooks(engine) -> int:

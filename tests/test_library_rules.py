@@ -215,26 +215,30 @@ class LibraryTestCase(unittest.TestCase):
 
     # -- the record of syncs ---------------------------------------------------
 
-    def completed_run(self, dest_path, started):
+    def completed_run(self, dest_path, started, operation_type='folder'):
         stamp = started.isoformat()
+        run_id = f"run_{abs(hash((dest_path, stamp)))}"
         with self.db.get_connection() as conn:
             conn.execute(
                 "INSERT INTO sync_run (run_id, kind, source, unit_key, dest_path, state, "
-                "created_at, updated_at, started_at, finished_at) "
-                "VALUES (?, 'sonarr_webhook', 'sonarr', ?, ?, 'completed', ?, ?, ?, ?)",
-                (f"run_{abs(hash((dest_path, stamp)))}", dest_path, dest_path,
-                 stamp, stamp, stamp, stamp))
+                "operation_type, created_at, updated_at, started_at, finished_at) "
+                "VALUES (?, 'sonarr_webhook', 'sonarr', ?, ?, 'completed', ?, ?, ?, ?, ?)",
+                (run_id, dest_path, dest_path, operation_type, stamp, stamp, stamp, stamp))
             conn.commit()
+        return run_id
 
-    def legacy_transfer(self, dest_path, ended):
+    def legacy_transfer(self, dest_path, ended, started=None, sync_run_id=None):
+        """A finished transfer row. Without `sync_run_id`, one from before the engine."""
         local = ended.astimezone().replace(tzinfo=None).isoformat()
+        began = (started or ended).astimezone().replace(tzinfo=None).isoformat()
         with self.db.get_connection() as conn:
             conn.execute(
                 "INSERT INTO transfers (transfer_id, media_type, folder_name, season_name, "
-                "source_path, dest_path, operation_type, status, start_time, end_time) "
-                "VALUES (?, 'tvshows', ?, 'Season 01', '/media/tv/x', ?, 'folder', "
-                "'completed', ?, ?)",
-                (f"t_{abs(hash(local))}", SHOW_FOLDER, dest_path, local, local))
+                "source_path, dest_path, operation_type, status, start_time, end_time, "
+                "sync_run_id) VALUES (?, 'tvshows', ?, 'Season 01', '/media/tv/x', ?, "
+                "'folder', 'completed', ?, ?, ?)",
+                (f"t_{abs(hash((local, began)))}", SHOW_FOLDER, dest_path, began, local,
+                 sync_run_id))
             conn.commit()
 
     # -- reading -----------------------------------------------------------------
@@ -394,6 +398,21 @@ class ListRuleTests(LibraryTestCase):
         self.arr.imports = [imported(1, 8, ago(days=2))]
         self.legacy_transfer(self.season_dir(), ago(days=1))
         self.assertEqual(self.item()['sync_state'], 'kept_here')
+
+    def test_a_copy_that_began_before_the_import_does_not_count(self):
+        """It listed the folder before E08 landed, though it finished after."""
+        self.real_case()
+        self.arr.imports = [imported(1, 8, ago(days=2))]
+        run_id = self.completed_run(self.season_dir(), ago(days=3))
+        self.legacy_transfer(self.season_dir(), ago(days=1), started=ago(days=3),
+                             sync_run_id=run_id)
+        self.assertEqual(self.item()['sync_state'], 'out_of_sync')
+
+    def test_a_single_file_copy_does_not_cover_the_season(self):
+        self.real_case()
+        self.arr.imports = [imported(1, 8, ago(days=2))]
+        self.completed_run(self.season_dir(), ago(days=1), operation_type='file')
+        self.assertEqual(self.item()['sync_state'], 'out_of_sync')
 
     def test_the_very_file_already_here_is_not_flagged(self):
         """Put here by hand, never synced: the same size says it is the same file."""

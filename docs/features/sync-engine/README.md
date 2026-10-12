@@ -363,6 +363,19 @@ Webhooks the old in-memory scheduler had taken and a restart dropped (from
 before this engine, up to 7 days back) are found once and raise one alert per
 folder.
 
+**Sync now on an *After a restart* alert redoes that sync from its own
+record**, so it copies what the interrupted sync would have: the same folder,
+the same single file, or the same Explore list of files, with its webhooks
+carried along so the new sync marks them synced. An exact list is never widened
+into a whole-folder copy: if an Explore list's file is gone, Sync now refuses
+("Make the plan again in Explore") and copies nothing. A sync whose transfer
+was already written down is retried as a Restart instead; a restore is redone
+from Backups, and a simulation from Transfers → Simulate. Each interrupted sync
+gets its own alert, so two for one folder each keep their own Sync now. A sync
+with no webhooks — the auto-scanner's, Explore's, a manual one — says what it
+was doing rather than "0 webhooks". Until 2026-10-12 (branch only) Sync now on
+such an alert failed with "This alert does not say what to sync".
+
 **The queue waits for recovery.** At start-up the queue rebuilds
 its state from the database without starting anything
 (`force_unregister_stale_transfers(promote=False)`, while the coordinator is
@@ -397,7 +410,16 @@ Each scan:
 1. checks the service answers (a scan that cannot reach it counts as failed);
 2. reads the service's **import history since the last scan** — new episodes,
    new titles, upgrades — and keeps each import nothing has synced since
-   (the first scan looks back 24 hours);
+   (the first scan looks back 24 hours). "Synced since" means a finished copy
+   of that folder that **started** after the import: rsync lists the folder
+   when a copy starts, so one that began earlier may have missed the episode
+   however late it ended. A copy that was paused and resumed counts from its
+   latest start. Single-file copies, restores and simulations never count; a
+   transfer from before the engine counts from its own start, and one the
+   engine ran only through its sync. The Library tabs read the same rule
+   (`services/sync_engine/coverage.py`). Until 2026-10-12 (branch only) a
+   copy that began before the import but ended after it counted, through its
+   transfer row's end time, and the import was never synced;
 3. for Sonarr, also finds **seasons this disk keeps but is short of** — fewer
    files here than in Sonarr;
 4. hands every find to the engine as an *Auto-scanner* sync, so batching, the
@@ -502,6 +524,14 @@ activity trail (`alert.resolve`).
   joined it and never started.
 - **The ready check asks Sonarr one question at a time per batch**, however
   many webhooks join while it waits.
+- **A cancel holds while Sonarr or the dry run is still answering.** Both take
+  seconds, and nothing is locked while they do. Their answer is written under
+  the folder's lock and only if the sync is still waiting for it, so a sync
+  cancelled (or marked done) in the meantime stays that way and no copy
+  starts; a dry run that answers late is logged as not used. Cancel itself
+  decides under the same lock, so it can never miss a copy the queue is
+  starting at that moment. Until 2026-10-12 (branch only) Sonarr's late answer
+  could undo a cancel and start the copy anyway.
 - **Test mode:** the transfer runs rsync with `--dry-run`; the Transfer stage
   says it was a rehearsal and nothing was written.
 - **Log lines per run are capped at 2,000**; the oldest go first.

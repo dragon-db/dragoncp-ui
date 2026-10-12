@@ -213,6 +213,11 @@ class AlertService:
             return False, 'The sync engine is not running'
 
         if action == 'sync_now':
+            if alert['kind'] == 'restart_unfinished' and alert.get('run_id'):
+                # The interrupted run's own record says exactly what it was
+                # copying, including a single file or an Explore list.
+                result = engine.sync_again(alert['run_id'], actor)
+                return result.ok, result.message
             ids = data.get('notification_ids') or []
             if ids:
                 result = engine.sync_notifications(ids, actor)
@@ -337,6 +342,11 @@ class AlertService:
 
     def restart_unfinished(self, unit_key: str, label: str, notification_ids: List[str],
                            run_id: Optional[str] = None, what: str = '') -> None:
+        """A restart stopped work in flight: one interrupted run, or stranded webhooks.
+
+        One alert per interrupted run, so each keeps its own Sync now: two runs
+        for one folder would otherwise share an alert that could only redo one.
+        """
         count = len(notification_ids)
         noun = 'webhook' if count == 1 else 'webhooks'
         message = (what or f"{count} {noun} for {label} were waiting to sync when "
@@ -344,11 +354,12 @@ class AlertService:
                            f"they still need copying, or mark this done.")
         self.raise_alert(
             'restart_unfinished', f"Some syncs might have been skipped: {label}",
-            message, WARNING, dedupe_key=f"restart:{unit_key}", run_id=run_id,
+            message, WARNING, dedupe_key=f"restart:{run_id or unit_key}", run_id=run_id,
             unit_key=unit_key,
             actions=('sync_now', 'mark_done', 'mark_wrong', 'dismiss'),
             data={'notification_ids': list(notification_ids)},
-            announce_event='sync.interrupted', fields=(('Waiting', f"{count} {noun}"),))
+            announce_event='sync.interrupted',
+            fields=(('Waiting', f"{count} {noun}"),) if count else ())
 
     def transfer_unknown(self, run: Dict[str, Any], transfer_id: str) -> None:
         label = _run_label(run)
