@@ -123,8 +123,8 @@ export function AlertCard({ alert, showRunLink = true }: { alert: Alert; showRun
 
           {showRunLink && alert.run_id && (
             <Link
-              to="/pipeline/$runId"
-              params={{ runId: alert.run_id }}
+              to="/transfers"
+              search={{ sync: alert.run_id }}
               className="inline-flex items-center gap-1 text-xs font-medium text-brand-hover hover:underline"
             >
               Open the sync

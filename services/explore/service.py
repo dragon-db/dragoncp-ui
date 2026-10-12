@@ -11,6 +11,7 @@ cached view that may be minutes stale.
 import os
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from env_flags import test_mode_enabled
 from security import (
     PathTraversalError, assert_path_within_bounds, validate_path_component,
     validate_relative_path,
@@ -549,10 +550,13 @@ class ExploreService:
         # knows a repair happened.
         kept: List[str] = []
         try:
+            # Test mode rehearses: the same checks and the same report, and no
+            # file in the library is moved, kept, replaced or removed.
             result = repair_mod.apply_repair(
                 local_root, plan, self.config.get_all_allowed_paths(),
                 decisions=decisions,
                 keep_a_copy=self._keep_a_copy(media_type, kept),
+                dry_run=test_mode_enabled(),
             )
         except PathTraversalError as error:
             raise ExploreError(str(error), 400) from error

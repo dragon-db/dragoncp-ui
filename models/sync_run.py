@@ -218,8 +218,16 @@ class SyncRunStore:
                 (run_id,)).fetchall()]
 
     def _filter(self, states=None, kinds=None, search=None,
-                include_simulation=True, unit_key=None):
+                include_simulation=True, unit_key=None, copied=None):
         conditions, params = [], []
+        if copied is not None:
+            # Whether the Transfer stage ever started. A run's transfer id is no
+            # guide: a retry carries the id of the copy it retries, so a retry
+            # the safety check stopped would read as one that copied.
+            started = ("EXISTS (SELECT 1 FROM sync_run_stage st WHERE st.run_id = "
+                       "sync_run.run_id AND st.stage = 'transfer' AND st.status "
+                       "NOT IN ('pending', 'skipped'))")
+            conditions.append(started if copied else f"NOT {started}")
         if states:
             conditions.append(f"state IN ({', '.join('?' for _ in states)})")
             params.extend(states)
@@ -243,8 +251,9 @@ class SyncRunStore:
 
     def list(self, states=None, kinds=None, search=None, limit: int = 50,
              offset: int = 0, include_simulation: bool = True,
-             unit_key: str = None) -> List[Dict[str, Any]]:
-        where, params = self._filter(states, kinds, search, include_simulation, unit_key)
+             unit_key: str = None, copied: Optional[bool] = None) -> List[Dict[str, Any]]:
+        where, params = self._filter(states, kinds, search, include_simulation, unit_key,
+                                     copied)
         with self.db.get_connection() as conn:
             rows = conn.execute(
                 f"SELECT * FROM sync_run{where} ORDER BY id DESC LIMIT ? OFFSET ?",
@@ -252,8 +261,10 @@ class SyncRunStore:
         return [self._row(r) for r in rows]
 
     def count(self, states=None, kinds=None, search=None,
-              include_simulation: bool = True, unit_key: str = None) -> int:
-        where, params = self._filter(states, kinds, search, include_simulation, unit_key)
+              include_simulation: bool = True, unit_key: str = None,
+              copied: Optional[bool] = None) -> int:
+        where, params = self._filter(states, kinds, search, include_simulation, unit_key,
+                                     copied)
         with self.db.get_connection() as conn:
             return conn.execute(f"SELECT COUNT(*) AS n FROM sync_run{where}",
                                 params).fetchone()['n']

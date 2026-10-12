@@ -1,7 +1,7 @@
 # Automated Tests
 
-Last updated: 2026-10-05
-Primary files: everything under `tests/` — thirty-six modules, 962 tests
+Last updated: 2026-10-06
+Primary files: everything under `tests/` — thirty-nine modules, 1053 tests
 
 ## Purpose
 
@@ -30,7 +30,7 @@ From the repository root:
 ./venv/bin/python -m pytest tests/ -q
 ```
 
-On 2026-10-05 this reports `962 passed, 15 subtests passed`, in about three
+On 2026-10-06 this reports `1053 passed, 20 subtests passed`, in about three
 and a half minutes.
 
 A single module:
@@ -49,7 +49,7 @@ without pytest:
 There is no `pytest.ini`, `pyproject.toml`, `setup.cfg` or `conftest.py` in the
 repository, and `tests/` has no `__init__.py`. Even so,
 `./venv/bin/python -m unittest discover -s tests` runs the whole suite: checked
-on 2026-10-05 with the project's Python 3.12.3, it reports `Ran 962 tests` and
+on 2026-10-06 with the project's Python 3.12.3, it reports `Ran 1053 tests` and
 `OK`. (An earlier revision of this page said it failed with
 `Start directory is not importable`; it no longer does.)
 
@@ -204,6 +204,17 @@ Pins that `TEST_MODE` is read in exactly one place and only accepts the values
 documented in [`../reference/test-mode.md`](../reference/test-mode.md), and that
 compacting a stored transfer log never discards a real log line.
 
+### `tests/test_test_mode_sync_paths.py` - test mode through every way a sync starts (7 tests)
+
+Builds the real `TransferCoordinator`, transfer service and queue with
+`TEST_MODE=1`, replaces `subprocess.Popen` and `subprocess.run` with recorders,
+and starts each kind of sync through the engine: a Sonarr webhook (released
+with Go now), a Radarr webhook, a press of Sync, an auto-scanner find, a
+restart (the re-queue path) and an Explore plan (the `--files-from` command
+shape). Every rsync launched must carry `--dry-run`, the safety check's command
+too, and no destination folder may appear. A simulation is asserted as the
+deliberate exception: it copies for real, between its own sandbox paths.
+
 ### `tests/test_webhook_group_sync.py` - "Sync all" on a webhook group (10 tests)
 
 Rewritten for 2.3.0 on top of `EngineTestCase` (below): the grouping moved out
@@ -228,7 +239,7 @@ What the engine changed, and these tests now pin:
   because that copy could then not mark it synced ("being copied right now").
 - **An empty request starts nothing.**
 
-### `tests/test_sync_engine.py` - the sync engine (56 tests)
+### `tests/test_sync_engine.py` - the sync engine (60 tests)
 
 Drives `SyncEngine` with a real temporary database and fakes for everything
 that would touch the network or start rsync: Sonarr's connection check and its
@@ -400,12 +411,13 @@ the rules decided on 2026-10-02:
 It replaces `tests/test_autosync_sweep.py`, which was deleted with the library
 sweep in 2.3.0.
 
-### `tests/test_sync_engine_routes.py` - the pipeline, Notifications and scheduler routes (20 tests)
+### `tests/test_sync_engine_routes.py` - the pipeline, Notifications and scheduler routes (21 tests)
 
 Mounts `routes/sync_engine.py` on a bare Flask app over `EngineTestCase`, with
 a real `SchedulerService` holding one fake `sonarr_auto_scanner` job. Sign-in is
 stood in for by patching the three token checks in `auth`, except in
-`SignedOutTests`.
+`SignedOutTests`. `test_runs_filter_by_whether_their_copy_started` pins the
+`copied` filter the Transfers page lists its waiting and stopped syncs with.
 
 - **`PipelineRouteTests`** (12) - `/api/sync/catalogue` serves the nine stages
   and the kinds the engine runs, with the state groups and alert actions;
@@ -460,7 +472,7 @@ Changed in 2.3.0:
   route's hand-off to the engine (`_submit_webhook('radarr_webhook'`) rather
   than the old auto-sync log line.
 
-### The Explore suite (8 modules, 156 tests)
+### The Explore suite (8 modules, 158 tests)
 
 | Module | Tests | Pins |
 |---|---|---|
@@ -471,7 +483,7 @@ Changed in 2.3.0:
 | `test_explore_routes.py` | 9 | The HTTP layer: real status codes, rate limiting, and that a plan id is the only thing the client may quote |
 | `test_explore_dryrun.py` | 24 | Reading rsync's itemised `--dry-run` output, and reconciling it with the plan — in particular that a file rsync reports as unchanged is still shown as replaced when the plan backs its local copy up first |
 | `test_explore_backups.py` | 11 | Scoping backups to a series and season, including the two traps taken from real production data: a series title the parser mangles, and season numbers stored zero-padded as text |
-| `test_explore_repair.py` | 27 | In its own words: "Repairing the files the old single-episode download stranded." |
+| `test_explore_repair.py` | 29 | In its own words: "Repairing the files the old single-episode download stranded." |
 
 The counts in this table were refreshed on 2026-10-05; the "Pins" column for
 the first seven was written earlier and was not re-read against the grown
@@ -494,8 +506,10 @@ first line of each module's own docstring, not a review of what it covers.
 | `test_connectors.py` | 85 | "The connector layer: one way to talk to an outside service." |
 | `test_dry_run_visibility.py` | 15 | "Saying what actually happened." |
 | `test_frontend_serving.py` | 8 | "The production Flask process serves the React SPA, not the retired client." |
+| `test_library_compare.py` | 27 | "One title, episode by episode — the comparison behind the Library detail view." Also `SizeMatchTests`, the list's size check |
+| `test_library_rules.py` | 49 | "The Library list's verdicts, the detail view behind each card, and the History and Queue rows — through the HTTP layer, against a fake Sonarr and Radarr." |
 | `test_media_library_routes.py` | 27 | "The library and history HTTP layer." |
-| `test_remote_daemon.py` | 65 | "The transfer server on the remote host." |
+| `test_remote_daemon.py` | 66 | "The transfer server on the remote host." |
 | `test_restore_safety.py` | 12 | "A restore must never leave a live library file welded to a stored backup." |
 | `test_settings_boundary.py` | 49 | "The settings boundary: two stores, and only two." |
 | `test_transfer_routing.py` | 13 | "Which route a transfer takes, and what that changes about the command." |

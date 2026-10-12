@@ -27,7 +27,6 @@ import {
   IconLayoutDashboard,
   IconTransfer,
   IconWebhook,
-  IconRoute,
   IconBell,
   IconCategory2,
   IconMovie,
@@ -53,12 +52,6 @@ const workspaceItems: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: IconLayoutDashboard },
   { to: "/transfers", label: "Transfers", icon: IconTransfer },
   { to: "/webhooks", label: "Webhooks", icon: IconWebhook },
-  {
-    to: "/pipeline",
-    label: "Pipeline",
-    icon: IconRoute,
-    match: (p) => p === "/pipeline" || p.startsWith("/pipeline/"),
-  },
   { to: "/notifications", label: "Notifications", icon: IconBell },
 ];
 

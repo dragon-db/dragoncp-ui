@@ -272,8 +272,11 @@ class ArrConnector(Connector):
         query = ''
         if params:
             from urllib.parse import urlencode
+
+            # A list becomes the parameter repeated, which is how both services
+            # read several values for one filter.
             query = '?' + urlencode({k: v for k, v in params.items()
-                                     if v not in (None, '')})
+                                     if v not in (None, '', [])}, doseq=True)
         result = transport.send(
             verb, f"{base}{path}{query}",
             headers={'X-Api-Key': self.api_key()}, timeout=timeout,
@@ -442,6 +445,17 @@ class ArrConnector(Connector):
     library_path = ''
     external_id_field = ''
 
+    #: What the history and queue screens ask to have folded into each row, so
+    #: a row can say "Example Show 1x08 Episode Title" rather than only the
+    #: release name. Each service names its own.
+    history_include: Dict[str, str] = {}
+    queue_include: Dict[str, str] = {}
+
+    #: The service's own numbers for the kinds of event the History tab filters
+    #: by. The two services number them differently past "failed", which is why
+    #: each adapter carries its own table.
+    history_event_types: Dict[str, int] = {}
+
     def history(self, page: int = 1, page_size: int = 50,
                 event_type: Optional[int] = None) -> Tuple[bool, Dict[str, Any]]:
         """A page of what the service has done.
@@ -456,6 +470,7 @@ class ArrConnector(Connector):
             'sortKey': 'date',
             'sortDirection': 'descending',
         }
+        params.update(self.history_include)
         if event_type is not None:
             params['eventType'] = event_type
         ok, payload = self._get('/api/v3/history', params, timeout=20.0)
@@ -469,11 +484,30 @@ class ArrConnector(Connector):
         The view wants the whole thing — including the rows the service cannot
         attribute to any title, which are invisible in its own interface until
         you go looking and are exactly the kind that sit there for weeks.
+
+        Only this read asks for the title and episode to be included. The
+        Ready check's own read (`queue_rows`) is left exactly as it was: it
+        needs nothing but the state of each row.
         """
-        ok, rows = self._get('/api/v3/queue/details', timeout=20.0)
+        ok, rows = self._get('/api/v3/queue/details', dict(self.queue_include) or None,
+                             timeout=20.0)
         if not ok or not isinstance(rows, list):
             return False, []
         return True, [r for r in rows if isinstance(r, dict)]
+
+    def item(self, service_item_id: Any) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """One title by the service's own id: a series, or a film with its file.
+
+        A refusal and an unknown id look the same from here — (False, None) —
+        so a caller holding a cached id falls back to finding the title by its
+        external id before deciding the service is down.
+        """
+        if service_item_id in (None, '') or not self.library_path:
+            return False, None
+        ok, row = self._get(f"{self.library_path}/{service_item_id}", timeout=15.0)
+        if not ok or not isinstance(row, dict):
+            return False, None
+        return True, row
 
 
 def _truthy(value: Any) -> bool:
@@ -502,6 +536,15 @@ def _parse_timeleft(value: Any) -> Optional[int]:
     except ValueError:
         return None
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def seconds_left(row: Dict[str, Any]) -> Optional[int]:
+    """How long one queue row expects to take, in seconds, or None.
+
+    The Queue tab's "12 min left". The same reading the Ready check uses to
+    decide when to ask again, so the two cannot disagree about it.
+    """
+    return _seconds_left(row)
 
 
 def _seconds_left(row: Dict[str, Any]) -> Optional[int]:
@@ -539,6 +582,11 @@ def _describe_progress(row: Dict[str, Any]) -> str:
         else:
             bits.append(f"about {round(seconds / 60)} min left")
     return f" — {', '.join(bits)}" if bits else ''
+
+
+def first_status_message(row: Dict[str, Any]) -> str:
+    """The service's own sentence about a queue row, when it left one."""
+    return _first_status_message(row)
 
 
 def _first_status_message(row: Dict[str, Any]) -> str:

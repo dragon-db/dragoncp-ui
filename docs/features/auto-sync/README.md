@@ -23,9 +23,9 @@ more for it on the way. Everything a sync does after that is the
 ### 1. The webhook is stored and handed to the engine
 
 Always, whatever the switch says. With the switch **off**, the batch is opened
-and **held**: the Pipeline page lists it as *Waiting for a person*, under
-*Needs a person*, and pressing Sync on any of its webhooks (or **Sync now** on
-the batch's own page) sends the whole batch. With the switch **on**, it carries
+and **held**: Transfers → Activity lists it under **Waiting to start** as
+*Waiting for a person*, and pressing Sync on any of its webhooks (or **Sync
+now** on its row or in its sync panel) sends the whole batch. With the switch **on**, it carries
 on to the ready check.
 
 ### 2. Movies go straight on

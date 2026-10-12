@@ -24,13 +24,17 @@ sidebar — and gave every sync one pipeline.
   the auto-scanner, a press of Sync, an Explore plan, a restart, a restore or a
   simulation started it. Each stage records what it decided and why, including
   why it was skipped, with its own log lines.
-- **A new Pipeline page shows every sync** — what started it, how far it got
-  and what it is doing right now — with filters for what is in progress, what
-  needs a person, what failed and what synced. Opening one shows each stage in
-  turn: what it decided, what it decided on (Sonarr's answers, the safety
-  check's counts, the copy's progress and rsync's own output) and its log, with
-  Go now, Sync anyway, Retry and Cancel where they apply. A transfer on the
-  Transfers page and an episode on the Webhooks page each link to their sync.
+- **Every sync can be read stage by stage on the Transfers page.** Opening a
+  transfer shows its sync as nine stage cards where the queued / started /
+  completed timeline used to be; picking a card shows what that stage decided
+  and why (Sonarr's answers, the safety check's counts) and its log, in plain
+  words — "pressed Download in Explore", "No webhook is linked to this sync".
+  Syncs that have not started copying are listed on the Activity tab under
+  **Waiting to start**, with Sync now or Go now on the row; syncs that ended
+  before copying — stopped by the safety check, cancelled, failed — are on the
+  History tab. Any sync opens in a side panel with Go now, Sync anyway, Retry
+  and Cancel where they apply, and an alert or an episode on the Webhooks page
+  leads straight to it.
 - **Episodes no longer sync before the season has finished downloading.** A
   Sonarr webhook now waits ten seconds, then asks Sonarr whether anything else
   for that season is still downloading, and asks again by Sonarr's own time
@@ -65,6 +69,15 @@ sidebar — and gave every sync one pipeline.
   the safety check stopped reads **Manual** on the Webhooks page instead of
   Pending.
 
+### Backups
+
+- **In test mode, the Backups page says its deletions are real.** Test mode
+  rehearses syncs, restores and repairs, but deleting a backup, the retention
+  clean-up and adopting old folders act on the real backup folder — which a
+  test instance set up beside production shares with it. A banner says so, and
+  each of those confirmations shows a red "This WILL delete real backups"
+  notice whose button stays off until its tick-box is ticked.
+
 ### Integrations
 
 - **New Integrations section** in the sidebar, with one page per connector.
@@ -88,12 +101,30 @@ sidebar — and gave every sync one pipeline.
 - **Sonarr, Radarr and Jellyfin can be connected and tested.** Sonarr decides
   when a season is ready to sync, and the auto-scanner reads Sonarr and Radarr;
   Jellyfin is connected but nothing reads it yet.
+- **The Sonarr and Radarr pages were rebuilt to be read at a glance.** The
+  Library tab shows small posters — three across on a phone — each with one
+  state (Out of sync first) and a line like "Sonarr 1 · here 7". A new episode
+  on Sonarr beside older ones here reads Out of sync: the first build of the
+  tab called that Synced, because every season held *some* file here. Clicking
+  a title opens it in a pop-up: one sentence on what is missing and a **Get
+  S01E08** button that copies just that file (through Explore, with a one-line
+  check of what will move), each season's episodes as not here, different,
+  here, only here or not downloaded, and a **History** tab listing what
+  Sonarr did to the title beside what DragonCP did about it, with what is still
+  not done marked. History reads like
+  Sonarr's own — series, 1x08, episode title, quality, custom formats — with
+  filters for imported, grabbed, deleted, failed and renamed; Queue says what
+  each download is doing in plain words. Every integration page now has the
+  same tab bar as Transfers and Webhooks, with counts.
 - **Your existing Discord setup is carried over automatically.** The webhook you
   had becomes a destination called "Default", nothing is re-routed, and messages
   keep going exactly where they went before.
 
 ### Fixed
 
+- **Test mode now covers Explore's Repair.** With test mode on, Repair reports
+  what it would move, delete or replace and leaves every file where it is;
+  before, it changed the library for real.
 - **A dry run that could not run no longer counts as safe.** When rsync could
   not reach the media server, or the folder was missing, the safety check saw
   an empty list of changes and let the sync through. It now stops the sync and

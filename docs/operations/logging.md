@@ -280,10 +280,10 @@ not to `dragoncp_backend.log`: one summary per stage in `sync_run_stage`, and th
 stage's own lines in `sync_run_event`, at most 2,000 per run with the oldest
 dropped first. That is where Sonarr's answers during the ready check, the
 fallback timer's deadline, the safety check's counts and the queue wait are.
-Read them on the sync's own page under **Pipeline** (`/pipeline/<run_id>`, every
-stage with its lines), or with `GET /api/sync/runs/<run_id>` or
-`GET /api/sync/runs/<run_id>/events?after=<id>`. A transfer's detail on Transfers
-and an episode's on Webhooks link to their sync.
+Read them on Transfers — in a transfer's detail under **Pipeline**, or in the
+sync panel (`/transfers?sync=<run_id>`), every stage with its lines — or with
+`GET /api/sync/runs/<run_id>` or `GET /api/sync/runs/<run_id>/events?after=<id>`.
+An episode's detail on Webhooks links to its sync.
 
 What the new pieces do write to the backend log is short, and mostly about
 themselves:

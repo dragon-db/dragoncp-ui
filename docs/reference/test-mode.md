@@ -1,6 +1,6 @@
 # Test mode
 
-Last updated: 2026-08-06
+Last updated: 2026-10-06
 
 What `TEST_MODE` guarantees, path by path. This is the lookup you check before
 trusting a test installation with a real media library — or before deciding
@@ -41,7 +41,20 @@ file, but a file value still reaches every reader.
 
 ## Every path that can write to a media library
 
-Audited 2026-07-31 by reading every `os.rename`, `os.remove`, `os.unlink`,
+**Every sync goes through one launch.** Since the sync engine (2026-10-05) a
+Sonarr or Radarr webhook, the auto-scanner, a press of Sync, a restart, a
+restore and an Explore plan are all runs of the same pipeline, and every one
+that copies reaches rsync through `TransferService.start_rsync_process` — by
+way of `TransferCoordinator.start_transfer`, `start_queued_transfer`,
+`requeue_transfer` (restarts) or `resume_transfer`. The sync engine itself, the
+auto-scanner, the scheduler and the alerts write only database rows; they
+create, move and delete no files and start no processes. The safety check's dry
+run is `--dry-run` in every mode. `tests/test_test_mode_sync_paths.py` builds
+the real coordinator with test mode on, starts each kind of sync through the
+engine, and fails if any rsync it launches lacks `--dry-run` or any destination
+folder appears — simulations excepted, below.
+
+Re-audited 2026-10-06; first audited 2026-07-31 by reading every `os.rename`, `os.remove`, `os.unlink`,
 `shutil.rmtree`, `shutil.move`, `os.makedirs` and `subprocess` call under
 `services/`, `routes/` and `config.py`. Nothing outside this table touches
 media.
@@ -58,6 +71,7 @@ media.
 | Restore destination directory creation | `services/backups/restore.py` (`RestoreRunner.run`) | Skipped |
 | Explore — moving superseded/removed local files into backup before a run | `services/explore/executor.py:87` | Skipped, printed as `TEST_MODE: would move to backup`. **This gate is load-bearing:** the rsync is dry, so moving the local copies anyway would strand them — old copy gone, new one never fetched |
 | Explore transfer rsync | `services/transfer_service.py:838` | `--dry-run` inserted into the same command the real run uses |
+| Explore **Repair** — moving stranded files back into place, deleting a redundant copy, replacing one | `services/explore/repair.py` (`apply_repair`) | Rehearsed since 2026-10-06: the same checks and the same report of what it would move, delete or replace, `dry_run: true` in the answer, and no file kept, moved, renamed or removed. Until then it ran for real in test mode — the one media-writing path the gate missed |
 | Config file write | `config.py:124` | Printed; in-memory config still updates |
 | React production build | `start.py:build_frontend` | Unchanged by test mode; writes production assets under `frontend/dist/` and may regenerate `frontend/src/routeTree.gen.ts`; neither location is a media path |
 
@@ -70,8 +84,15 @@ Two paths need no gate because they are never destructive:
 | Explore plan and dry-run file lists | `services/explore/executor.py` (`_work_dir`), `services/explore/service.py` (`_files_from`) | Writes only a list of filenames under `BACKUP_PATH/.explore-plans/`; never touches a media directory |
 | Disk and tooling probes — `df -h`, `which rsync`, `rsync --version` | `routes/debug.py:134`, `:135`, `:288` | Read-only commands |
 
-Nothing deletes anything on the remote server. The only remote access is
-paramiko for browsing (`ssh.py`) and rsync pulling *from* the remote.
+Nothing deletes media on the remote server. Remote access is paramiko for
+browsing (`ssh.py`), rsync pulling *from* the remote, and — since fast transfers
+— controlling the transfer server on the media host (`services/remote_daemon/`):
+install and uninstall are buttons a person presses, and after each dry run and
+each finished transfer an instance stops the server if it runs on demand.
+Since 2026-10-06 an instance with the fast route switched off never stops it.
+Before that, a test instance beside production stopped the shared server after
+every dry run, which would cut off production's copy if production used the
+route. Test mode itself does not gate the transfer server.
 
 ## Simulations
 
@@ -91,6 +112,22 @@ the failure scenario, and the cleanup that removes the whole tree
 So a simulation cannot reach a real media path even though it is not running
 dry. This is why simulations are safe to run against production — see
 [../features/simulation/README.md](../features/simulation/README.md).
+
+## A test instance beside production
+
+The development checkout on this machine reads the same library folders, the
+same `BACKUP_PATH` and the same remote host as production; only `TEST_MODE`
+differs. Test mode keeps the library safe — every copy is a dry run — and the
+backup area mostly safe, because a dry copy displaces nothing, so nothing is
+sorted and retention never runs on its own. What it does not cover there:
+
+- **The Backups page's delete, retention and adopt actions are real.** Deleting
+  a version, deleting unsorted files, applying retention by hand, or adopting
+  old folders on the test instance changes the backup folder production uses
+  too. With test mode on, the page says so in a banner, and each of those
+  confirmations carries a red "This WILL delete real backups" notice whose
+  button stays off until its tick-box is ticked.
+- **Restore is a rehearsal**, so it is safe to try.
 
 ## What test mode does not do
 

@@ -14,7 +14,7 @@ DragonCP is a Flask-based sync orchestrator for media libraries that:
 - Runs `rsync` from remote source paths to local destination paths.
 - Applies queue controls for folder conflicts (the same folder, or one inside the other) and concurrency limits.
 - Performs a dry-run safety check before every sync, except where a kind's own review already did it (Explore, restore), there is nothing on the media server to check (simulation, a restarted one included), or the copy cannot delete anything (a single-file sync, a retried Explore plan's file list). A dry run rsync could not finish fails the check.
-- Opens alerts for what needs a person — a refused or failed sync, work a restart interrupted — most of which are also announced on Discord. The web app's Notifications page lists them (`/api/alerts`), and its Pipeline page shows every sync stage by stage (`/api/sync/runs`).
+- Opens alerts for what needs a person — a refused or failed sync, work a restart interrupted — most of which are also announced on Discord. The web app's Notifications page lists them (`/api/alerts`), and its Transfers page shows every sync stage by stage (`/api/sync/runs`) — inside each transfer, and for syncs that never became one.
 - Persists transfer/webhook/sync/alert/backup state in SQLite.
 - Streams progress to clients over authenticated WebSocket.
 
@@ -80,7 +80,7 @@ Flow:
 3. Notification is persisted in `sonarr_webhook`.
 4. The title is indexed and the notification submitted to the engine as kind `sonarr_webhook` — always; held when the library's auto-sync switch is off.
 5. Batched by destination season folder: it joins an open batch, or the single follow-up batch behind a copy in progress, or opens one. Batches are `sync_run` rows, so a restart does not lose them.
-6. Ready check: Sonarr is asked whether anything for the season is still downloading — 10 s after the batch opens, then by Sonarr's own time-left estimate (10 s to 5 min apart), at most 30 minutes; stuck downloads do not hold the season. When Sonarr cannot be asked, the fixed timer decides (`SERIES_ANIME_SYNC_WAIT_TIME`, plus the same per later webhook, at most 15 minutes).
+6. Ready check: Sonarr is asked whether anything for the season is still downloading — 10 s after the batch opens, then by Sonarr's own time-left estimate (10 s to 5 min apart), at most 30 minutes; stuck downloads do not hold the season. When Sonarr cannot be asked, the fallback wait decides (`SERIES_ANIME_SYNC_WAIT_TIME`, plus the same per later webhook, at most 15 minutes).
 7. If the dry run passes, the batch becomes one transfer and every notification on it gets that transfer id.
 8. If the dry run fails — or could not finish — the sync is refused: notifications are flagged `requires_manual_sync`, and a *Safety check* alert offers Sync anyway, announced on Discord as `autosync.blocked` unless a person released the batch with Sync or Go now (`SyncEngine._refuse`, `AlertService.sync_refused`).
 

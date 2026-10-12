@@ -112,8 +112,8 @@ export function EpisodeDetailPanel({
           )}
           {notification.sync_run_id && (
             <Link
-              to="/pipeline/$runId"
-              params={{ runId: notification.sync_run_id }}
+              to="/transfers"
+              search={{ sync: notification.sync_run_id }}
               className="inline-flex items-center gap-1 text-xs font-medium text-brand-hover hover:underline"
             >
               <IconRoute className="size-3.5" />

@@ -259,6 +259,14 @@ version — so it never runs on a bare click.
 held back is reported rather than silently absorbed. A pin that a bulk sweep
 ignored would be worthless.
 
+**Test mode does not rehearse a delete.** Restore is a rehearsal under
+`TEST_MODE`; deleting, applying retention by hand and adopting old folders are
+not, and a test instance that mirrors production shares its backup folder. So
+with test mode on, the page carries a banner saying so, and each of those three
+confirmations shows a red "This WILL delete real backups" notice with a
+tick-box that must be ticked before its button works. See
+[../../reference/test-mode.md](../../reference/test-mode.md).
+
 Deleting removes the files and the index entry together, and prunes the folders
 it emptied. The library is never touched. There is deliberately no way to drop
 the index entry on its own: the index is derived from the tree, so a row

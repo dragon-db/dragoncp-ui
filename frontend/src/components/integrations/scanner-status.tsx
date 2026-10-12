@@ -135,8 +135,8 @@ export function ScannerStatus({
                 </span>
                 {decision.run_id && decision.action === "started" ? (
                   <Link
-                    to="/pipeline/$runId"
-                    params={{ runId: decision.run_id }}
+                    to="/transfers"
+                    search={{ sync: decision.run_id }}
                     className="text-[11px] font-medium text-brand-hover hover:underline"
                   >
                     {ACTION_LABEL[decision.action]} →

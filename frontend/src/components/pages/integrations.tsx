@@ -1,10 +1,13 @@
 import { toast } from "sonner";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { PageHeader } from "@/components/layout/page-header";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { PageTabsList } from "@/components/layout/page-tabs";
 import { HistoryPanel } from "@/components/integrations/history-panel";
 import { LibraryPanel } from "@/components/integrations/library-panel";
 import { QueuePanel } from "@/components/integrations/queue-panel";
+import { TitleDialog } from "@/components/integrations/title-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SectionCard } from "@/components/layout/section-card";
 import { ConnectorForm } from "@/components/integrations/connector-form";
@@ -14,7 +17,19 @@ import { DeliveryLog } from "@/components/integrations/delivery-log";
 import { RoutingPanel } from "@/components/integrations/routing-panel";
 import { TargetsPanel } from "@/components/integrations/targets-panel";
 import { useConnector, useSaveConnector } from "@/hooks/useConnectors";
-import { IconAdjustmentsHorizontal, IconHistory, IconInbox, IconRoute } from "@tabler/icons-react";
+import { useLibrary, useLibraryQueue } from "@/hooks/useMediaLibrary";
+import {
+  IconAdjustmentsHorizontal,
+  IconDownload,
+  IconHistory,
+  IconInbox,
+  IconLayoutGrid,
+  IconPlugConnected,
+  IconRoute,
+} from "@tabler/icons-react";
+
+const NOTIFY_TABS = ["targets", "routing", "activity", "settings"];
+const QUERY_TABS = ["library", "queue", "history", "settings"];
 
 /**
  * One connector, as its own small application.
@@ -29,6 +44,24 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
   const connectorQuery = useConnector(connectorId);
   const save = useSaveConnector(connectorId);
   const connector = connectorQuery.data;
+  const search = useSearch({ from: "/_authenticated/integrations/$connector" });
+  const navigate = useNavigate();
+  const go = (next: { tab?: string; title?: number }) =>
+    navigate({
+      to: "/integrations/$connector",
+      params: { connector: connectorId },
+      search: next,
+    });
+
+  const answers = Boolean(connector?.enabled) && Boolean(connector?.capabilities.includes("query"));
+
+  // The tab counts, from the same queries the panels make — the cache is shared,
+  // so the Library count costs nothing and the Queue count one light read. The
+  // queue is only asked for once the library has answered: a connector that
+  // answers questions but has no library here (Jellyfin, today) would otherwise
+  // be asked for a queue every thirty seconds and refuse every time.
+  const library = useLibrary(connectorId, answers);
+  const queue = useLibraryQueue(connectorId, answers && library.isSuccess);
 
   if (connectorQuery.isLoading) {
     return (
@@ -53,6 +86,13 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
   const canNotify = connector.capabilities.includes("notify");
   const canQuery = connector.capabilities.includes("query");
   const hasSettings = connector.config_fields.length > 0;
+  const tabs = canNotify ? NOTIFY_TABS : QUERY_TABS;
+  const tab = search.tab && tabs.includes(search.tab) ? search.tab : tabs[0];
+  // A title opens in a pop-up over the list; the address carries it, so the
+  // browser's Back closes it and a link can open one directly.
+  const title = canQuery && connector.enabled ? search.title : undefined;
+  const openTitle = (externalId: string) => go({ tab, title: Number(externalId) });
+  const closeTitle = () => go({ tab });
 
   const toggleEnabled = async (enabled: boolean) => {
     try {
@@ -100,7 +140,7 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
       */}
       {!connector.enabled && (
         <p className="text-xs text-muted-foreground">
-          Turned off — nothing is sent to or read from it.
+          Turned off: nothing is sent to it or read from it.
         </p>
       )}
 
@@ -112,36 +152,39 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
         the tab rather than this file assuming.
       */}
       {canNotify ? (
-        <Tabs defaultValue="targets" className="gap-5">
+        <Tabs value={tab} onValueChange={(next) => go({ tab: String(next) })}>
           {/*
-            Two columns on a phone, one row from `sm`. Four tabs do not fit
-            across 390px: the strip clipped "Activity" off the right edge with
-            nothing to say it was there. Wrapping keeps every tab labelled and
-            gives each one a thumb-sized target.
+            The app's one page-level switcher, as on Transfers and Webhooks: an
+            underlined row that scrolls rather than clips when a phone runs out
+            of room. The settings tab sits at the far end: something set once,
+            not another view of the connector.
+
+            "Routing", not "Notifications": DragonCP's own Notifications page
+            lists what needs a person; this tab decides which Discord webhook
+            each announcement goes to.
           */}
-          <TabsList className="grid h-auto w-full grid-cols-2 sm:inline-flex sm:h-8 sm:w-fit">
-            <TabsTrigger value="targets" className="h-8">
-              <IconInbox className="h-4 w-4" />
-              {titleCase(connector.target_noun ?? "destination")}s
-            </TabsTrigger>
-            {/* "Routing", not "Notifications": DragonCP's own Notifications
-                page lists what needs a person; this tab decides which Discord
-                webhook each announcement goes to. */}
-            <TabsTrigger value="routing" className="h-8">
-              <IconRoute className="h-4 w-4" />
-              Routing
-            </TabsTrigger>
-            <TabsTrigger value="activity" className="h-8">
-              <IconHistory className="h-4 w-4" />
-              Activity
-            </TabsTrigger>
-            {hasSettings && (
-              <TabsTrigger value="settings" className="h-8">
-                <IconAdjustmentsHorizontal className="h-4 w-4" />
-                {connector.settings_label}
-              </TabsTrigger>
-            )}
-          </TabsList>
+          <PageTabsList
+            items={[
+              {
+                value: "targets",
+                label: `${titleCase(connector.target_noun ?? "destination")}s`,
+                icon: IconInbox,
+                count: (connector.targets ?? []).length,
+              },
+              { value: "routing", label: "Routing", icon: IconRoute },
+              { value: "activity", label: "Activity", icon: IconHistory },
+              ...(hasSettings
+                ? [
+                    {
+                      value: "settings",
+                      label: connector.settings_label,
+                      icon: IconAdjustmentsHorizontal,
+                      atEnd: true,
+                    },
+                  ]
+                : []),
+            ]}
+          />
 
           <TabsContent value="targets" className="mt-4 space-y-4">
             <TargetsPanel connector={connector} />
@@ -165,27 +208,33 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
           the address and key are set once. So those lead, and the credentials
           sit last under the name the adapter gives them.
         */
-        <Tabs defaultValue="library" className="gap-5">
-          {/* Two columns on a phone, one row from `sm`: four labels do not fit
-              across 390px, and a clipped tab is a tab nobody finds. */}
-          <TabsList className="grid h-auto w-full grid-cols-2 sm:inline-flex sm:h-8 sm:w-fit">
-            <TabsTrigger value="library" className="h-8">
-              Library
-            </TabsTrigger>
-            <TabsTrigger value="queue" className="h-8">
-              Queue
-            </TabsTrigger>
-            <TabsTrigger value="history" className="h-8">
-              History
-            </TabsTrigger>
-            <TabsTrigger value="settings" className="h-8">
-              {connector.settings_label}
-            </TabsTrigger>
-          </TabsList>
+        <Tabs value={tab} onValueChange={(next) => go({ tab: String(next) })}>
+          <PageTabsList
+            items={[
+              {
+                value: "library",
+                label: "Library",
+                icon: IconLayoutGrid,
+                count: library.data?.total,
+              },
+              { value: "queue", label: "Queue", icon: IconDownload, count: queue.data?.total },
+              { value: "history", label: "History", icon: IconHistory },
+              {
+                value: "settings",
+                label: connector.settings_label,
+                icon: IconPlugConnected,
+                atEnd: true,
+              },
+            ]}
+          />
 
           <TabsContent value="library" className="mt-4 space-y-4">
             {connector.enabled ? (
-              <LibraryPanel source={connector.id} displayName={connector.display_name} />
+              <LibraryPanel
+                source={connector.id}
+                displayName={connector.display_name}
+                onOpenTitle={openTitle}
+              />
             ) : (
               <p className="rounded-xl border border-border/70 bg-card/50 px-4 py-8 text-center text-sm text-muted-foreground">
                 Turn {connector.display_name} on to read its library.
@@ -195,7 +244,11 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
 
           <TabsContent value="queue" className="mt-4 space-y-4">
             {connector.enabled ? (
-              <QueuePanel source={connector.id} displayName={connector.display_name} />
+              <QueuePanel
+                source={connector.id}
+                displayName={connector.display_name}
+                onOpenTitle={openTitle}
+              />
             ) : (
               <p className="rounded-xl border border-border/70 bg-card/50 px-4 py-8 text-center text-sm text-muted-foreground">
                 Turn {connector.display_name} on to read its queue.
@@ -205,7 +258,11 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
 
           <TabsContent value="history" className="mt-4 space-y-4">
             {connector.enabled ? (
-              <HistoryPanel source={connector.id} displayName={connector.display_name} />
+              <HistoryPanel
+                source={connector.id}
+                displayName={connector.display_name}
+                onOpenTitle={openTitle}
+              />
             ) : (
               <p className="rounded-xl border border-border/70 bg-card/50 px-4 py-8 text-center text-sm text-muted-foreground">
                 Turn {connector.display_name} on to read its history.
@@ -236,6 +293,15 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
         <SectionCard label="Nothing to configure" contentClassName="px-4 py-6">
           <p className="text-sm text-muted-foreground">This connector needs no settings.</p>
         </SectionCard>
+      )}
+
+      {canQuery && (
+        <TitleDialog
+          source={connector.id}
+          displayName={connector.display_name}
+          externalId={title ? String(title) : null}
+          onClose={closeTitle}
+        />
       )}
     </div>
   );

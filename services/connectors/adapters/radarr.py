@@ -10,7 +10,7 @@ movie, one file — so a movie sync can wait for the download to finish rather
 than starting on the notification.
 """
 
-from typing import Any
+from typing import Any, Dict, List, Tuple
 
 from services.connectors.adapters._arr import UNKNOWN, ArrConnector, InFlight
 from services.connectors.registry import register
@@ -34,8 +34,33 @@ class RadarrConnector(ArrConnector):
     library_path = '/api/v3/movie'
     external_id_field = 'tmdbId'
 
+    #: With this, a history or queue row carries the film's title and year
+    #: even when DragonCP has never heard of it.
+    history_include = {'includeMovie': 'true'}
+    queue_include = {'includeMovie': 'true'}
+
+    #: Radarr's `MovieHistoryEventType` — the same as Sonarr's up to "failed",
+    #: then numbered differently (5 and 7 are unused here).
+    history_event_types = {
+        'grabbed': 1,
+        'imported': 3,
+        'failed': 4,
+        'deleted': 6,
+        'renamed': 8,
+        'ignored': 9,
+    }
+
     def _row_id(self, row) -> Any:
         return row.get('movieId')
+
+    def title_history(self, movie_id: Any) -> Tuple[bool, List[Dict[str, Any]]]:
+        """Everything Radarr recorded for one film. One call, when someone opens it."""
+        if movie_id in (None, ''):
+            return False, []
+        ok, rows = self._get('/api/v3/history/movie', {'movieId': movie_id}, timeout=20.0)
+        if not ok or not isinstance(rows, list):
+            return False, []
+        return True, [r for r in rows if isinstance(r, dict)]
 
     def in_flight(self, movie_id: Any) -> InFlight:
         """Is anything still arriving for this film."""

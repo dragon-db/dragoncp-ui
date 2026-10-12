@@ -1449,8 +1449,9 @@ CREATE TABLE alert (
 - `run_id`, `transfer_id`, `unit_key` - what it is about. A bump replaces the
   message (and the data, when the new occurrence carries any) and can move
   `run_id` on to the newer run
-- `link` - where the interface sends you: `/pipeline/<run_id>` when the alert
-  names a run, `/integrations/<service>` for an integration that stopped
+- `link` - where the interface sends you: `/transfers?sync=<run_id>` (the sync
+  panel on Transfers; `/pipeline/<run_id>` before 2026-10-06, still redirected)
+  when the alert names a run, `/integrations/<service>` for an integration that stopped
   answering, otherwise NULL
 - `actions` - JSON list of what may be done: `sync_now`, `retry`,
   `sync_anyway`, `run_now`, `mark_done`, `mark_wrong`, `dismiss`. Dismiss is

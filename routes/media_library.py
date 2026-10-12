@@ -21,6 +21,7 @@ from flask import Blueprint, jsonify, request
 from auth import require_auth
 from env_flags import test_mode_enabled
 from models.media_item import SOURCES
+from services.media_index import HISTORY_FILTERS
 
 media_library_bp = Blueprint('media_library', __name__)
 logger = logging.getLogger('dragoncp.routes.media_library')
@@ -74,7 +75,12 @@ def api_library(source):
 @media_library_bp.route('/library/<source>/history')
 @require_auth
 def api_library_history(source):
-    """A page of the service's own history, with our titles matched in."""
+    """A page of the service's own history, with our titles matched in.
+
+    `event` narrows it to one kind — imported, grabbed, deleted, failed,
+    renamed or ignored — and the service does the narrowing, so the page
+    count stays true.
+    """
     problem = _guard(source)
     if problem:
         return problem
@@ -83,8 +89,14 @@ def api_library_history(source):
         page_size = max(1, min(200, int(request.args.get('page_size', 50))))
     except (TypeError, ValueError):
         return jsonify({'success': False, 'error': 'page and page_size must be numbers'}), 400
+    event = str(request.args.get('event', '') or '').strip().lower()
+    if event in ('', 'all'):
+        event = None
+    elif event not in HISTORY_FILTERS:
+        return jsonify({'success': False,
+                        'error': f"event must be one of: {', '.join(HISTORY_FILTERS)}"}), 400
     try:
-        view = _index.history_view(source, page=page, page_size=page_size)
+        view = _index.history_view(source, page=page, page_size=page_size, event=event)
     except Exception as exc:  # noqa: BLE001
         logger.exception('History view failed for %s', source)
         return jsonify({'success': False, 'error': str(exc)}), 500
@@ -107,6 +119,60 @@ def api_library_queue(source):
         return jsonify({'success': False, 'error': str(exc)}), 500
     view['success'] = True
     view['read_only'] = True
+    return jsonify(view)
+
+
+@media_library_bp.route('/library/<source>/<external_id>')
+@require_auth
+def api_library_title(source, external_id):
+    """One title, episode by episode: the detail view behind a Library card.
+
+    Registered after `/history` and `/queue`; the router prefers those fixed
+    names, so neither can be read as a title id. The answer also stands in for
+    the list's estimate of this title for the next ten minutes.
+    """
+    problem = _guard(source)
+    if problem:
+        return problem
+    external_id = str(external_id or '').strip()
+    if not external_id.isdigit():
+        return jsonify({'success': False,
+                        'error': 'A title is named by its TVDB or TMDB id'}), 400
+    try:
+        view = _index.title_detail(source, external_id)
+    except Exception as exc:  # noqa: BLE001 - a view must not 500 on one bad row
+        logger.exception('Title view failed for %s:%s', source, external_id)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+    if view.get('not_found'):
+        return jsonify({'success': False, 'error': view.get('message') or 'No such title'}), 404
+    view['success'] = True
+    view['test_mode'] = test_mode_enabled()
+    return jsonify(view)
+
+
+@media_library_bp.route('/library/<source>/<external_id>/history')
+@require_auth
+def api_library_title_history(source, external_id):
+    """One title's history: the service's events for it beside DragonCP's syncs of its folder.
+
+    Read-only on both sides. Newest first, at most 150 entries; `total` says how
+    many there were.
+    """
+    problem = _guard(source)
+    if problem:
+        return problem
+    external_id = str(external_id or '').strip()
+    if not external_id.isdigit():
+        return jsonify({'success': False,
+                        'error': 'A title is named by its TVDB or TMDB id'}), 400
+    try:
+        view = _index.title_history(source, external_id)
+    except Exception as exc:  # noqa: BLE001 - a view must not 500 on one bad row
+        logger.exception('Title history failed for %s:%s', source, external_id)
+        return jsonify({'success': False, 'error': str(exc)}), 500
+    if view.get('not_found'):
+        return jsonify({'success': False, 'error': view.get('message') or 'No such title'}), 404
+    view['success'] = True
     return jsonify(view)
 
 

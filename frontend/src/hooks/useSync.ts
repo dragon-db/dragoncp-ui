@@ -57,12 +57,30 @@ export interface RunListOptions {
   offset?: number;
   /** Include rehearsals. On by default, as on the server. */
   simulations?: boolean;
+  /**
+   * Whether the copy ever started. `false` is the syncs with no transfer row of
+   * their own — waiting to start, or stopped before copying — which is what
+   * the Transfers page lists beside its transfers.
+   */
+  copied?: boolean;
+  /** Off while nothing on screen shows the list. */
+  enabled?: boolean;
 }
 
 export function useSyncRuns(options: RunListOptions = {}) {
-  const { state = "all", kinds, search, limit = 50, offset = 0, simulations = true } = options;
+  const {
+    state = "all",
+    kinds,
+    search,
+    limit = 50,
+    offset = 0,
+    simulations = true,
+    copied,
+    enabled = true,
+  } = options;
   return useQuery({
-    queryKey: ["sync", "runs", { state, kinds, search, limit, offset, simulations }],
+    queryKey: ["sync", "runs", { state, kinds, search, limit, offset, simulations, copied }],
+    enabled,
     queryFn: async () => {
       const params = new URLSearchParams({
         state,
@@ -72,6 +90,7 @@ export function useSyncRuns(options: RunListOptions = {}) {
       });
       if (kinds?.length) params.set("kind", kinds.join(","));
       if (search) params.set("search", search);
+      if (copied !== undefined) params.set("copied", copied ? "1" : "0");
       const response = await api.get<RunList & { status: string }>(`/sync/runs?${params}`);
       return response.data;
     },

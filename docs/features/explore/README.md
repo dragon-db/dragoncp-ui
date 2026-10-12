@@ -120,9 +120,13 @@ plan hands every season to the sync engine as an *Explore* sync
 ([sync engine](../sync-engine/README.md)), and waits for the queue's answer
 (`submit(..., wait=True)`) because the moves made beforehand have to be rolled
 back if the transfer is refused. The run records what the review already
-checked instead of running a second dry run — "The Explore plan was judged safe
-before it was approved: 4 file(s) to fetch, 1 moved to the backup area first.",
-with "reviewed" in place of "judged safe" when the plan was overridden. It never
+checked instead of running a second dry run — "Explore’s review checked this
+before it started: 4 files to download, 1 local file moved to backups first.",
+or "Explore’s review flagged a problem, and an admin went ahead by typing its
+name: …" when the plan was overridden. Its first stage names the button that
+was pressed: "<who> pressed Download in Explore for <title>". Until 2026-10-06
+these read "The Explore plan was judged safe before it was approved" and
+"approved an Explore plan", which used a word the screen never shows. It never
 takes in webhooks, because a plan is an exact file list, and it skips the ready
 check. The queue still holds it behind anything writing to the same folder —
 and, since 2.3.0, behind a copy of the whole series that folder belongs to. Its

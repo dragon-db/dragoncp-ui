@@ -99,7 +99,7 @@ frontend/
 │   │   ├── pages/          # dashboard, transfers, webhooks, pipeline,
 │   │   │                   #   pipeline-run, notifications, explore, backups,
 │   │   │                   #   activity, integrations, settings
-│   │   ├── pipeline/       # pipeline-bits, stage-flow, stage-list, alert-card
+│   │   ├── pipeline/       # pipeline-bits, stage-flow, stage-detail, run-stages, sync-row, sync-sheet, alert-card
 │   │   ├── settings/       # generated settings, account and backend logs
 │   │   ├── transfers/      # transfer-bits, transfer-detail, transfer-logs,
 │   │   │                   #   simulation-panel, confirm-dialog
@@ -141,8 +141,8 @@ routes/
     ├── activity.tsx        → components/pages/activity.tsx
     ├── settings.tsx        → components/pages/settings.tsx
     ├── pipeline/
-    │   ├── index.tsx       → components/pages/pipeline.tsx
-    │   └── $runId.tsx      → components/pages/pipeline-run.tsx (one sync)
+    │   ├── index.tsx       # redirects to /transfers (the page was retired 2026-10-06)
+    │   └── $runId.tsx      # redirects to /transfers?sync=<run id>
     ├── integrations/
     │   ├── index.tsx       # redirects to /integrations/discord
     │   └── $connector.tsx  → components/pages/integrations.tsx
@@ -177,7 +177,7 @@ around the Axios client in `lib/api.ts`.
 | `useConfig.ts` | `useSettings`, `useUpdateSettings`, SSH/runtime/disk diagnostic hooks, `useWebSocketStatus`, `useBackendLogs`, `useDownloadBackendLogs` |
 | `useConnectors.ts` | `useConnectors`, `useConnector`, `useSaveConnector`, `useCheckConnector`, `useNotificationCatalogue`, `useSaveRoutes`, `useAddTarget`, `useUpdateTarget`, `useDeleteTarget`, `useTestTarget`, `useDeliveries` |
 | `useExplore.ts` | `useExploreTree`, `useExploreRefresh`, `useExploreSeason`, `useExploreHistory`, `useExploreRepairPlan`, `useExploreRepair`, `useExploreBackups`, `useExplorePlan`, `useExploreDryRun`, `useExploreExecute`, `useExploreLibraries` |
-| `useMediaLibrary.ts` | `useLibrary`, `useLibraryHistory`, `useLibraryQueue`, `useRefreshLibrary`, `useSyncLibraryItem` — the Sonarr and Radarr Library, Queue and History tabs |
+| `useMediaLibrary.ts` | `useLibrary`, `useLibraryTitle`, `useLibraryHistory`, `useRefreshLibrary`, `useLibraryQueue`, `useSyncLibraryItem` — the Sonarr and Radarr Library, Queue and History tabs, `useLibraryTitle` for the series pop-up behind a card (`/library/<source>/<external_id>`), and `useLibraryTitleHistory` for its History tab |
 | `use-media-query.ts` | `useMediaQuery` — follows any CSS media query, no network |
 | `use-mobile.ts` | `useIsMobile` — viewport breakpoint check, no network |
 | `useRemoteTransfer.ts` | `useRemoteTransferStatus`, `useRemoteTransferAction`, `useDetectAddress` — the fast-transfers panel |
@@ -322,9 +322,9 @@ store says the backend is unreachable, with a retry that refetches.
 
 | Component | What it is |
 |---|---|
-| `app-sidebar.tsx` | Four groups — Workspace (Dashboard, Transfers, Webhooks, Pipeline, Notifications), Library (Browse Media → Movies, TV Shows, Anime), Integrations (one entry per connector the server lists, hidden until that list arrives, with a dot on each one switched on), System (Backups, Activity, Settings) — plus the user footer with a log-out button. Notifications carries an amber count of open alerts (`useAlertSummary`, capped at "99+"); Pipeline stays highlighted on a sync's own page |
-| `app-navbar.tsx` | Breadcrumb from a prefix path table (`/pipeline/<run_id>` reads Workspace / Pipeline), the live metrics pill (realtime status, Active, Queued), the bell and settings links, and a version badge. The bell links to Notifications and shows a dot while any alert is open; until 2026-10-05 it linked to Webhooks and lit for pending webhooks |
-| `mobile-nav.tsx` | Bottom bar below `md`: Home, Transfers, Webhooks and a Menu button that opens the sidebar sheet, which is where Pipeline and Notifications are on a phone; counts come from active transfers and pending notifications |
+| `app-sidebar.tsx` | Four groups — Workspace (Dashboard, Transfers, Webhooks, Notifications), Library (Browse Media → Movies, TV Shows, Anime), Integrations (one entry per connector the server lists, hidden until that list arrives, with a dot on each one switched on), System (Backups, Activity, Settings) — plus the user footer with a log-out button. Notifications carries an amber count of open alerts (`useAlertSummary`, capped at "99+"). Workspace had a Pipeline entry from 2026-10-05 to 2026-10-06; syncs now live on Transfers |
+| `app-navbar.tsx` | Breadcrumb from a prefix path table, the live metrics pill (realtime status, Active, Queued), the bell and settings links, and a version badge. The bell links to Notifications and shows a dot while any alert is open; until 2026-10-05 it linked to Webhooks and lit for pending webhooks |
+| `mobile-nav.tsx` | Bottom bar below `md`: Home, Transfers, Webhooks and a Menu button that opens the sidebar sheet, which is where Notifications is on a phone; counts come from active transfers and pending notifications |
 | `realtime-status.tsx` | The connection popover — state, session minutes, active WebSocket count, and enable/extend/disable/reconnect |
 | `page-header.tsx` | Page title, optional description, optional action buttons |
 | `page-tabs.tsx` | `PageTabsList` — the in-page section switcher |
@@ -378,17 +378,24 @@ expand in place. There are no detail dialogs; opening a row is the only way in.
 
 | Tab | Shows |
 |---|---|
-| Activity | Running, queued and paused copies |
-| History | Finished runs — status filters (All, Completed, Failed, Stopped), search, paging and bulk delete |
+| Activity | **Waiting to start** — syncs not at the queue yet (held, waiting, checking), when there are any — then running, queued and paused copies |
+| History | Finished runs — status filters (All, Completed, Failed, Stopped), search, paging and bulk delete — then **Stopped before copying**: syncs that ended without a transfer, 10 to a page |
 | Simulate | Scenario launcher for the simulation tool |
+
+The page also owns the **sync panel**: `?sync=<run id>` (the route's
+`validateSearch`) opens `SyncSheet` over it, and closing it clears the
+parameter. Rows on both sync lists, a transfer's **Webhooks, alerts and related
+syncs**, an alert's **Open the sync**, an episode's **Open its sync** and the
+auto-scanner card all link there. See
+[syncs on the Transfers page](#syncs-on-the-transfers-page-and-notifications).
 
 Supporting components in `components/transfers/`:
 
 | File | Purpose |
 |---|---|
-| `transfer-bits.tsx` | `TransferStatusBadge`, `ProgressMeter`, `TransportBadge` (the **Fast** badge, drawn only for the fast route), `Chip`, `Fact`, `PathBlock` — the sync page's Transfer stage reuses several |
-| `transfer-detail.tsx` | `TransferDetailPanel` and its `TransferActions` interface; **Open its sync** beside *Started by* |
-| `transfer-logs.tsx` | `TransferLogConsole` — live rsync output; only lines that break rsync's repetitive rhythm are tinted. Also embedded in the sync page's Transfer stage |
+| `transfer-bits.tsx` | `TransferStatusBadge`, `ProgressMeter`, `TransportBadge` (the **Fast** badge, drawn only for the fast route), `Chip`, `Fact`, `PathBlock` — the stage list's Transfer stage reuses several |
+| `transfer-detail.tsx` | `TransferDetailPanel` and its `TransferActions` interface. Where a queued / started / completed `Timeline` used to be, **Pipeline** draws the transfer's sync with `RunStages` (Transfer stage facts off — the row already shows them) and any open alert as an `AlertCard`, fetched by `useSyncRun` only while the row is open |
+| `transfer-logs.tsx` | `TransferLogConsole` — live rsync output; only lines that break rsync's repetitive rhythm are tinted. Also embedded in the sync panel's Transfer stage |
 | `simulation-panel.tsx` | `SimulationPanel` scenario launcher and `SimulationBadge` |
 | `confirm-dialog.tsx` | State-driven `AlertDialog` for stop/delete/cleanup/bulk delete |
 
@@ -413,7 +420,7 @@ Worth knowing when changing this page:
   "Failed" showed nothing while failures existed further back.
 - **Who started it, the route and the sync come from the listing.** A row's
   "by …" fact, the detail's *Started by* badge, the **Fast** badge, the
-  detail's *Route* fact and **Open its sync** read `started_by_kind`,
+  detail's *Route* fact and its **Pipeline** read `started_by_kind`,
   `started_by_name`, `transport` and `sync_run_id` from `/transfers/all` and
   `/transfers/active`. Until 2026-10-05 neither listing returned them, so every
   transfer said "not recorded" and the fast route never showed.
@@ -494,16 +501,18 @@ notification and with **Open its sync** for any notification carrying a
 See [webhooks](../features/webhooks/README.md), [renames](../features/renames/README.md)
 and [auto-sync](../features/auto-sync/README.md).
 
-## Pipeline and Notifications Pages
+## Syncs on the Transfers Page, and Notifications
 
-Three pages over the sync engine's API, all through `hooks/useSync.ts`. What an
-operator sees on them is described in
-[the sync engine](../features/sync-engine/README.md#screens).
+The sync engine's screens, all through `hooks/useSync.ts`. Syncs have no page
+of their own: they are read on Transfers (see [Transfers Page](#transfers-page))
+— inside a transfer's row, in the two sync lists, and in the sync panel. What
+an operator sees is described in
+[the sync engine](../features/sync-engine/README.md#screens). A Pipeline page
+(`pages/pipeline.tsx`, `pages/pipeline-run.tsx`) existed from 2026-10-05 to
+2026-10-06; its routes now redirect.
 
 | Page | File | Route |
 |---|---|---|
-| Pipeline — every sync, filtered and paged | `pages/pipeline.tsx` | `/pipeline` |
-| One sync, stage by stage | `pages/pipeline-run.tsx` | `/pipeline/$runId` |
 | Notifications — open and closed alerts | `pages/notifications.tsx` | `/notifications` |
 
 Supporting components in `components/pipeline/`:
@@ -511,9 +520,12 @@ Supporting components in `components/pipeline/`:
 | File | Purpose |
 |---|---|
 | `pipeline-bits.tsx` | `StageNode` (a stage's round marker), `StageStatusBadge`, `StageStrip` (nine segments, each titled with its stage and outcome, the whole labelled for screen readers), `RunStateBadge`, `KindBadge`, `FactLine` |
-| `stage-flow.tsx` | `StageFlow` — the nine stage cards, `grid-cols-3` then `lg:grid-cols-9`; a card opens its stage in the list below and scrolls to it |
-| `stage-list.tsx` | `StageList` — an accordion of the nine stages, each with its kind's note, its facts (Identify, Ready check, Safety check and Transfer draw some) and its log lines (the last 200). The Transfer stage embeds `TransferLogConsole` from `components/transfers/transfer-logs.tsx`, fetched through `useTransferLogs` only while the stage is open and polled every 2 s while rsync runs |
-| `alert-card.tsx` | `AlertCard` — one alert with the buttons its `action_buttons` name, a confirm before `sync_anyway`, and **Open the sync** (left out on the sync's own page) |
+| `run-stages.tsx` | `RunStages` — `StageFlow` and, under it, the `StagePanel` of the one stage picked; used in a transfer's row and in the sync panel. Until someone picks, the stage that is failed, refused, waiting or running is open (none for a clean run); picking the open stage again closes it |
+| `stage-flow.tsx` | `StageFlow` — the nine stage cards, sized by a container query (`@container`: three across, five from `@lg`, nine from `@4xl`) because the same flow sits in a page-wide row and in a 42rem panel. Each card is a toggle (`aria-expanded`, `aria-controls` the panel); the picked one has a brand outline, the live one a tint and a pulsing dot, and from `@4xl` a rule joins each card to the next, green after a passed stage |
+| `stage-detail.tsx` | `StagePanel` — one stage: its sentence, time and duration, its kind's note, its facts (Receive the linked webhooks; Identify, Ready check, Safety check and Transfer draw theirs) and its log lines (the last 200). The Transfer stage embeds `TransferLogConsole` from `components/transfers/transfer-logs.tsx`, polled every 2 s while rsync runs; `showTransferFacts={false}` leaves that out inside a transfer's row. Its anchor is `stage-<run id>-<stage>` (`stageAnchor`), since several runs can be open at once. Replaced `stage-list.tsx`, an accordion of all nine, on 2026-10-07 |
+| `sync-row.tsx` | `SyncRow` — one run without a transfer row, for **Waiting to start** and **Stopped before copying**: title, kind, state, `StageStrip`, the sentence, facts, and **Sync now** / **Go now** for a held or waiting run |
+| `sync-sheet.tsx` | `SyncSheet` — the sync panel: header with the run's actions, the state callout, its alerts, `RunStages`, webhooks linked, its transfer and related runs (each opens in the panel) |
+| `alert-card.tsx` | `AlertCard` — one alert with the buttons its `action_buttons` name, a confirm before `sync_anyway`, and **Open the sync**, which opens the sync panel on Transfers (left out inside the panel) |
 
 `lib/pipeline.ts` holds the pipeline vocabulary that is not a component, so
 `pipeline-bits.tsx` exports components only, as fast refresh needs: the tone
@@ -531,18 +543,22 @@ Worth knowing when changing these pages:
 
 - **A row's sentence depends on the state.** A live run shows
   `current_summary` — what its current stage last wrote — and falls back to
-  `outcome_message`; a finished one shows `outcome_message` first. The sync
-  page's one-line callout does the same, without the fallback for a live run.
+  `outcome_message`; a finished one shows `outcome_message` first. The panel's
+  one-line callout does the same, without the fallback for a live run.
 - **The open stages follow the run until someone chooses.** Until a stage is
   opened or closed by hand, the open set is recomputed from the run: its current
-  stage plus every stage `running`, `waiting`, `failed` or `refused`. The route
-  is keyed on the run, so a related sync starts from its own set.
-- **The tiles and chips count from `state_counts`**, which honours the
-  Rehearsals switch only; each chip is a set of states summed in the browser.
+  stage while it is live, plus every stage `running`, `waiting`, `failed` or
+  `refused`. The panel's body is keyed on the run, so a related sync starts
+  from its own set.
+- **The two sync lists ask for `copied=0`.** Waiting to start is
+  `state=held,waiting,checking`, Stopped before copying
+  `state=failed,cancelled,refused,interrupted` (fetched only while History is
+  showing). A run's `transfer_id` cannot answer "did it copy": a retry carries
+  the id of the copy it retries.
 - **The Closed tab is one request** (`state=done,wrong,dismissed`).
-- **Retry on the sync page is the transfer restart** (`useRestartTransfer`);
-  on success the page refreshes the sync queries and opens the new retry's own
-  page. Go now, Sync anyway and Cancel go through `useSyncRunAction`.
+- **Retry in the panel is the transfer restart** (`useRestartTransfer`); on
+  success the panel refreshes the sync queries and switches to the new retry.
+  Go now, Sync anyway and Cancel go through `useSyncRunAction`.
 - **Only a 404 reads "No such sync".** Any other failed fetch reads "Could not
   load this sync" with the server's reason and a Try again button.
 
@@ -555,12 +571,54 @@ settings tab; one that answers queries (Sonarr, Radarr, Jellyfin) gets Library,
 Queue, History and its settings tab. **Routing** was named Notifications until
 2026-10-05; that name now belongs to the alerts page.
 
+The tabs are `PageTabsList`, the same underlined bar as Transfers and Webhooks
+(a segmented pill until 2026-10-07), with an icon each and the settings tab at
+the far end. Destinations count their webhooks; Library counts its titles and
+Queue its downloads, read through `useLibrary` and `useLibraryQueue` — the same
+queries the panels make, so the Library count costs nothing extra. The queue is
+only asked for once the library has answered, so a query connector with no
+library here (Jellyfin) is not polled for one.
+
+On the Library tab each card is `group/card`, and `TitlePoster` takes
+`interactive`: on hover or keyboard focus the picture eases in within its
+frame, dims, a brand ring draws round it and an "Episodes" (or "Details") veil
+fades in. The card itself does not move; until 2026-10-07 it lifted on hover,
+which made the grid jump as the pointer crossed it.
+
+The tab in view and an open title live in the address: the route's
+`validateSearch` reads `?tab=` and `?title=` (a TVDB or TMDB id, kept a number
+so the address has no quotes), and the tabs are controlled from it. A Library,
+Queue or History row calls the page's `onOpenTitle`, which sets `?title=`;
+`integrations/title-dialog.tsx` (`TitleDialog`, rendered once by the page)
+opens over the list and clears it on close, so the list keeps its filters,
+search, page and scroll. The dialog is the whole screen below `sm` and a
+`max-w-3xl` panel above, with its own 44px close button. Inside, two tabs:
+
+- **Episodes** reads `useLibraryTitle`, draws its header from the cached library
+  list while that loads, and offers **Get** and **Replace** through Explore's
+  own plan and execute hooks (`useExplorePlan`, `useExploreExecute`): one plan
+  per season with the episode codes, a one-line confirmation built from the
+  plan's counts, then the plan ids executed. A 409 "no browse session" from
+  the plan is answered by `useSSHAutoConnect` and one retry.
+- **History** reads `useLibraryTitleHistory` once the tab is opened. Each
+  entry's mark is worked out on screen (`marksFor`): an import from the
+  episode comparison already loaded (Not here yet, Different here, Here; only
+  an episode's newest import), a failed download of an episode that is here
+  anyway as Here anyway, and a failed or stopped sync that a newer finished
+  sync of the same season covers as Done later. Everything / Not done is a
+  local filter.
+
+`title-sheet.tsx`, the side panel it replaced, and the episode strip and legend
+in `library-bits.tsx` were removed on 2026-10-12. `PageTabsList` tabs are 44px
+tall below `sm` and never shrink in a flex column (in the dialog, a long
+History list squeezed the tab bar to 8px).
+
 On a query connector's settings tab, `integrations/scanner-status.tsx`
 (`ScannerStatus`) sits under the form. It looks for the scheduler job named
 `<connector>_auto_scanner` in `useSchedulerJobs()` and renders nothing when
 there is none — so Jellyfin has no card — otherwise the schedule, the last
-scan's summary, up to eight of that scan's decisions (a started sync links to
-`/pipeline/$runId`) and **Scan now** (`useRunJob`) while the job is enabled.
+scan's summary, up to eight of that scan's decisions (a started sync opens in
+the sync panel on Transfers) and **Scan now** (`useRunJob`) while the job is enabled.
 Behaviour: [integrations](../features/integrations/README.md).
 
 ## Dashboard
@@ -652,7 +710,7 @@ UI where a primitive exists.
 | `lib/dry-run.ts` | `parseDryRun` plus `DryRunReport` and friends, and its own `formatBytes` / `formatNumber` / `formatDuration` |
 | `lib/explore-types.ts`, `lib/explore-format.ts` | Explore's shapes and formatting (see [Explore Page](#explore-page)) |
 | `lib/media-filename.ts` | `parseFilename`, `containerOf`, `EPISODE_CODE` — reading a Sonarr/Radarr-shaped file name |
-| `lib/pipeline.ts` | Pipeline tones, stage-status and run-state maps, and time words (see [Pipeline and Notifications Pages](#pipeline-and-notifications-pages)) |
+| `lib/pipeline.ts` | Pipeline tones, stage-status and run-state maps, time words and `stageAnchor` (see [Syncs on the Transfers Page, and Notifications](#syncs-on-the-transfers-page-and-notifications)) |
 | `lib/query-client.ts` | The shared `queryClient` |
 | `lib/rename-diff.ts` | `diffFilenames`, `episodeTagOf`, `isSeparatorToken` |
 | `lib/sync-types.ts` | The sync engine's, alerts' and scheduler's response shapes |
@@ -692,7 +750,7 @@ import { IconTransfer } from '@tabler/icons-react';
 ```
 
 Navigation icons in use: `IconLayoutDashboard`, `IconTransfer`, `IconWebhook`,
-`IconRoute` (Pipeline, and every "Open its sync" link), `IconBell`
+`IconRoute` (every "Open its sync" link), `IconBell`
 (Notifications and the header bell), `IconCategory2` (Browse Media),
 `IconMovie`, `IconDeviceTv`, `IconBrandNetflix`, `IconArchive`, `IconHistory`,
 `IconSettings`, `IconHome`, `IconMenu2`, `IconLogout`, `IconChevronRight`.

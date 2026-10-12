@@ -73,6 +73,35 @@ so the webhook flow can still be exercised end to end.
 `tests/test_rename_service.py` covers both directions: the file must survive
 with test mode on, and must actually move with it off.
 
+### ~~Explore's Repair ignored test mode~~ — **fixed** 2026-10-06
+
+Found while re-auditing every path that writes to a media library after the
+sync engine. Explore's **Repair** — which lifts episodes the old single-file
+download stranded back into their season folder, and deletes or replaces a
+competing copy when a person chooses — moved, renamed and removed real files
+with test mode on; `services/explore/repair.py` never read the flag. It is on
+`main` too (since 2026-08-16). Repair now rehearses in test mode: the same checks
+and the same report, `dry_run: true` in the answer, the Explore toast says
+"Test mode — nothing was moved", and no file is kept, moved or removed
+(`tests/test_explore_repair.py`:
+`test_test_mode_rehearses_the_repair_and_moves_nothing`,
+`test_test_mode_keeps_both_copies_when_one_would_be_deleted`).
+
+### ~~An instance not using the fast route stopped the shared transfer server~~ — **fixed** 2026-10-06
+
+After every dry run and every finished transfer, an instance stopped the
+transfer server on the media host if it was set to run on demand — whether or
+not that instance used the fast route at all. The development checkout on this
+machine shares the media host with production, so every dry run on it (and
+since the sync engine every sync runs one) connected to the media host and
+stopped the server production may be copying through. Both instances have the
+fast route off today, so nothing was cut off. Now an instance with the fast
+route switched off never stops it (`RemoteDaemonService.release`;
+`tests/test_remote_daemon.py::test_an_instance_not_using_the_fast_route_never_stops_it`).
+The install button's own clean-up is unchanged. Which of two instances owns the
+server when both use it is still open — see
+[fast transfers deployment](fast-transfers-deployment.md).
+
 ### Every path that can write to a media library
 
 Audited 2026-07-29 while fixing the two defects above. The result is a contract
@@ -549,10 +578,10 @@ What remains:
     open. Discord's "Open DragonCP → Notifications to act on it." now points
     somewhere.
   - A sync the safety check stopped can be pushed through on screen: **Sync
-    anyway** on its alert, or on the sync's own page under **Pipeline**.
-  - A refusal is visible: the sync is on the Pipeline page as stopped, its
-    alert on Notifications, and its webhooks read **Manual** on the Webhooks
-    page instead of Pending.
+    anyway** on its alert, or in its sync panel on Transfers.
+  - A refusal is visible: the sync is listed on Transfers → History under
+    **Stopped before copying**, its alert on Notifications, and its webhooks
+    read **Manual** on the Webhooks page instead of Pending.
   - The fallback wait's meaning is on screen: the Automation tab labels it
     **Fallback wait (seconds)** with a sentence saying it applies only when
     Sonarr cannot be asked, and the auto-sync popover says "TV & anime start

@@ -1,6 +1,6 @@
 # Sync engine
 
-Last updated: 2026-10-05
+Last updated: 2026-10-06
 
 Every sync DragonCP performs — a Sonarr or Radarr webhook, the auto-scanner, a
 press of Sync, an Explore plan, a restart, a restore, a simulation — goes
@@ -11,7 +11,7 @@ A kind of sync may run a stage differently or skip it, but a skipped stage
 always says why in a sentence an admin can read, and no sync skips the queue.
 The record is kept in the database as it happens, so a restart forgets nothing
 and an admin can read back exactly what happened to any webhook or transfer —
-on the **Pipeline** page, one sync at a time, or through the [API](#api).
+on the **Transfers** page, one sync at a time, or through the [API](#api).
 
 ## Where it lives
 
@@ -29,70 +29,100 @@ on the **Pipeline** page, one sync at a time, or through the [API](#api).
 | Where the engine plugs into transfers (start, pause, resume, finish), and the start-up order | `services/transfer_coordinator.py` (`start_background`) |
 | Folder conflicts in the queue | `services/queue_manager.py` |
 | HTTP | `routes/sync_engine.py` |
-| The Pipeline, sync and Notifications pages | `frontend/src/components/pages/pipeline.tsx`, `pipeline-run.tsx`, `notifications.tsx`, `frontend/src/components/pipeline/`, `frontend/src/hooks/useSync.ts` |
+| Syncs on the Transfers page, the sync panel, and the Notifications page | `frontend/src/components/pages/transfers.tsx`, `frontend/src/components/transfers/transfer-detail.tsx`, `frontend/src/components/pipeline/` (`run-stages.tsx`, `sync-sheet.tsx`, `sync-row.tsx`), `frontend/src/components/pages/notifications.tsx`, `frontend/src/hooks/useSync.ts` |
 | The auto-scanner card on the Sonarr and Radarr pages | `frontend/src/components/integrations/scanner-status.tsx` |
 
 ## Screens
 
 Everything below is drawn by the React app; [the frontend
-reference](../../reference/frontend.md#pipeline-and-notifications-pages) has
-the components.
+reference](../../reference/frontend.md#syncs-on-the-transfers-page-and-notifications)
+has the components. There is no Pipeline page of its own: there was one until
+2026-10-06, and `/pipeline` and `/pipeline/<run_id>` now redirect to
+Transfers.
 
-**Pipeline** (sidebar → Workspace → Pipeline, `/pipeline`) lists every sync,
-newest first. Four tiles head it — In progress, Needs a person (held, stopped
-by the safety check, or interrupted by a restart), Failed, Synced — and filter
-chips narrow the list to one of those groups, or to Cancelled. A select picks
-one kind of sync, a search box matches the title, folder, season, destination,
-run id or transfer id, and a **Rehearsals** switch (on by default) shows or
-hides simulations. The tiles and chip counts follow the Rehearsals switch but
-not the kind or the search, because they come from the server's per-state
-tally. Each row shows the title, the kind, the state, a nine-segment strip — one
-segment per stage, coloured by how it ended — the stage the sync is on, one
-sentence, who asked, how long ago and how many webhooks rode on it. The sentence
-is what the current stage last said for a sync still moving ("Sonarr: 2 still
-downloading (…). Asking again at …"), and how it ended for one that has
-finished: the rsync error, the safety check's reason. A row opens the sync.
+**Transfers** (`/transfers`) is where a sync is read:
 
-**The sync's own page** (`/pipeline/<run_id>`) has:
+- **A transfer's detail** — open any row — shows its sync under **Pipeline**,
+  where a queued / started / completed timeline used to be: what started it,
+  then [the stages](#the-stages-wherever-they-are-drawn). The copy's progress,
+  facts and rsync output stay where they were in the row, so the Transfer stage
+  leaves them out here; the webhooks that asked are under Receive, and an alert
+  still waiting on a person shows above the stages with its buttons. A
+  transfer from before 2.3.0 says it ran before syncs recorded their stages.
+  Until 2026-10-07 the row also linked to the sync panel ("Webhooks, alerts and
+  related syncs"), which repeated what the row shows; it was taken out.
+- **Waiting to start**, on the Activity tab above the copies in flight, lists
+  the syncs that have not reached the queue: held for a person (automatic sync
+  off), waiting for the download, or in their safety check. Each row shows the
+  title, the kind, the state, a nine-segment strip — one segment per stage,
+  coloured by how it ended — the stage it is on, one sentence, who asked, how
+  long ago and how many webhooks are linked to it. A held or waiting one has
+  **Sync now** / **Go now** on the row. The card appears only while something
+  is waiting, and the Activity tab's count includes it.
+- **Stopped before copying**, on the History tab under the transfers, lists the
+  syncs that ended without a transfer — stopped by the safety check,
+  cancelled, failed, or cut off by a restart — 10 to a page, each row's
+  sentence saying how it ended.
+- **The sync panel** (`/transfers?sync=<run_id>`) opens from any of those rows,
+  and it is where an alert, an episode on the Webhooks page and the
+  auto-scanner card lead. It has:
+  - a header with the state, the kind and who asked, and the actions that fit:
+    **Sync now** on a held batch, **Go now** on one in its ready check, **Sync
+    anyway** (asks to confirm) on one the safety check stopped, **Retry** on a
+    failed or cancelled one with a transfer — the panel then follows the
+    retry — and **Cancel** (asks to confirm) on one that has not finished;
+  - one sentence on where it stands, in the state's colour — for a batch waiting
+    on Sonarr or the fallback wait, with the time of its next step;
+  - its alerts, with their buttons;
+  - the stages, with the Transfer stage's own progress and rsync output;
+  - the webhooks linked to it (**Manual** when one is waiting for a person), its
+    transfer, and related syncs — the one it follows or retries, and any
+    follow-up or retry of it, each opening in the panel.
 
-- a header with the state, the kind and who asked, and the actions that fit:
-  **Sync now** on a held batch, **Go now** on one in its ready check, **Sync
-  anyway** (asks to confirm) on one the safety check stopped, **Retry** on a
-  failed or cancelled one with a transfer, and **Cancel** (asks to confirm) on
-  one that has not finished;
-- one sentence on where it stands, in the state's colour — for a batch waiting
-  on Sonarr or the timer, with the time of its next step;
-- the nine stages as cards, three to a row on narrower screens and all nine in
-  a row from the `lg` breakpoint; the card for the stage a moving sync is on is
-  highlighted, and picking a card opens that stage below;
-- every stage, top to bottom: its sentence, when it ran and for how long, the
-  kind's note when this kind runs it differently or skips it, the facts it
-  decided on, and its own log lines. Identify shows both folders. Ready check
-  shows how it decided (asking Sonarr or the fixed timer), how many times it
-  asked, how many are still downloading, Sonarr's time left, when the timer
-  ends, when it gives up waiting, and the downloading and stuck lists. Safety
-  check shows what it would copy and delete and the files on each side, with the
-  file lists. Transfer shows progress, the route (fast or SSH), how much moved,
-  speed, time left, rsync's closing figures and the rsync output, refreshed every
-  2 seconds while it copies. The stage the sync is on, and any stage that is
-  working, waiting, failed or stopped, start open;
-- beside them, the sync's alerts with their buttons, the webhooks that rode on
-  it (**Manual** when one is waiting for a person), its transfer with a link to
-  Transfers, and related syncs — the one it follows or retries, and any
-  follow-up or retry of it.
+  An id the server does not know — a rehearsal since cleaned up, say — shows
+  "No such sync".
 
-An id the server does not know — a rehearsal since cleaned up, say — shows "No
-such sync".
+#### The stages, wherever they are drawn
+
+Nine cards — three across when narrow, then five, then all nine once each
+card can hold its label, sized by the space they are given rather than by the
+screen — each saying in a word how its stage ended, with the stage a moving
+sync is on marked live and, in the single row, a short rule joining each card
+to the next. Picking a card opens that one stage below; picking it again, or
+its close button, closes it. Nothing is open for a sync that went through
+cleanly; one working, waiting, stopped or failed opens that stage by itself
+until someone picks another. Until 2026-10-07 every stage was listed below the
+cards with its sentence and log, which made a finished transfer's row a page
+long.
+
+An open stage shows its sentence, when it ran and for how long, the kind's note
+when this kind runs it differently or skips it, the facts it decided on, and
+its own log lines. Receive lists the webhooks that asked. Identify shows both
+folders. Ready check shows how it decided (asking Sonarr or the fallback wait),
+how many times it asked, how many are still downloading, Sonarr's time left,
+when the fallback wait ends, when it gives up waiting, and the downloading and
+stuck lists. Safety check shows what it would copy and delete and the files on
+each side, with the file lists. Transfer shows progress, the route (fast or
+SSH), how much moved, speed, time left, rsync's closing figures and the rsync
+output, refreshed every 2 seconds while it copies.
+
+The sentences are written for whoever pressed the button, not for the code: an
+Explore sync says which button was pressed ("pressed Download in Explore") and
+what Explore's review checked ("1 file to download, nothing moved to
+backups"), and a sync with no webhook says "No webhook is linked to this
+sync". Until 2026-10-06 they said "approved an Explore plan" and "no webhooks
+rode on this sync".
 
 **Notifications** (sidebar → Workspace → Notifications, or the bell in the
 header, `/notifications`) lists the alerts: **Open** and **Closed** tabs, 25 to
 a page. Each alert shows its title, what happened, how many times it was raised
 while open, its buttons — **Sync anyway** asks to confirm — and **Open the
-sync**; a closed one says who closed it and how. The sidebar item carries the
+sync**, which opens the sync panel on Transfers; a closed one says who closed
+it and how. The sidebar item carries the
 open count, and the bell a dot, while anything is open.
 
-**From other pages:** a transfer's detail on Transfers and an episode's detail
-on Webhooks each have **Open its sync**. An episode a safety check stopped, or a
+**From other pages:** an episode's detail on Webhooks has **Open its sync**,
+which opens the sync panel on Transfers. An episode a safety check stopped, or a
 restart interrupted, shows **Manual** instead of Pending, and its detail says
 "Waiting for a person: <reason>". The Sonarr and Radarr Connection tabs under
 Integrations carry an **Auto-scanner** card — see
@@ -157,8 +187,8 @@ Only Sonarr syncs wait. Radarr webhooks, manual syncs, restarts, Explore,
 restores and simulations skip this stage, each with its reason.
 
 1. **Is Sonarr reachable?** The connector is asked. If it is not connected, does
-   not answer, or the series has no TVDB id to ask about, the **fixed timer**
-   decides (below), and an unreachable Sonarr opens an *Integration* alert that
+   not answer, or the series has no TVDB id to ask about, the **fallback
+   wait** decides (below), and an unreachable Sonarr opens an *Integration* alert that
    closes itself when Sonarr answers again.
 2. **Settle.** Wait 10 seconds after the batch opened, so the rest of a burst of
    webhooks can join.
@@ -173,7 +203,7 @@ restores and simulations skip this stage, each with its reason.
    what is there; the rest arrives through its own webhook or the auto-scanner.
    A *Waited 30 minutes* alert says what was still downloading.
 
-**The fixed timer** (when Sonarr cannot be asked): the *Fallback wait* setting
+**The fallback wait** (when Sonarr cannot be asked): the *Fallback wait* setting
 — 60 seconds unless changed — after the first webhook, plus the same again for
 each later webhook, never more than 15 minutes after the first. The stage's
 sentence quotes the configured wait. The timer's end is stored on the run and
@@ -452,9 +482,10 @@ activity trail (`alert.resolve`).
 ## Behaviour worth knowing
 
 - **Every webhook is visible as part of a run.** An episode's or a movie's
-  detail on the Webhooks page, and a transfer's detail on Transfers, link to
-  their sync (**Open its sync**), from the `sync_run_id` on the row; any other
-  client can ask `GET /api/sync/lookup?notification_id=…` or `?transfer_id=…`.
+  detail on the Webhooks page links to its sync (**Open its sync**), and a
+  transfer's detail on Transfers draws its sync's stages, both from the
+  `sync_run_id` on the row; any other client can ask
+  `GET /api/sync/lookup?notification_id=…` or `?transfer_id=…`.
 - **A batch belongs to a folder, not a series.** A whole-series sync and a
   season webhook for the same series are different batches; the queue keeps
   them from copying at the same time.
@@ -498,7 +529,7 @@ in [the schema reference](../../reference/database-schema.md).
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/sync/catalogue` | The stages, the kinds of sync and every skip reason |
-| GET | `/api/sync/runs` | Runs, newest first, with their stage strip and `current_summary` — the sentence the stage a run is on last wrote. Filters: `state` (a state, several comma separated, or `open`, `active`, `live`, `finished`, `all`), `kind`, `search`, `limit`, `offset`, `simulations` |
+| GET | `/api/sync/runs` | Runs, newest first, with their stage strip and `current_summary` — the sentence the stage a run is on last wrote. Filters: `state` (a state, several comma separated, or `open`, `active`, `live`, `finished`, `all`), `kind`, `search`, `limit`, `offset`, `simulations`, and `copied` — `0` for runs whose Transfer stage never started (what the Transfers page lists as waiting to start or stopped before copying), `1` for the rest |
 | GET | `/api/sync/runs/<run_id>` | One run: every stage with its summary, detail and log lines; its webhooks, transfer, related runs, alerts, and the actions available. Carries `current_summary` too |
 | GET | `/api/sync/runs/<run_id>/events` | Log lines after `after`, optionally for one `stage` |
 | GET | `/api/sync/lookup` | The run behind a `transfer_id` or a `notification_id` |
@@ -527,4 +558,4 @@ toast when the count rises. Pages poll either way; see
 - [Integrations](../integrations/README.md) — Sonarr, Radarr and Discord
 - [Notifications](../notifications/README.md) — what each Discord message says
 - [Auto-sync](../auto-sync/README.md) — the automatic-sync switches
-- [Frontend reference](../../reference/frontend.md#pipeline-and-notifications-pages) — the components behind the screens
+- [Frontend reference](../../reference/frontend.md#syncs-on-the-transfers-page-and-notifications) — the components behind the screens

@@ -262,7 +262,15 @@ class ExploreExecutor:
                       files_from: str, fetch_count: int, moved_count: int):
         """This season of the plan, as a request to the sync engine."""
         from services.sync_engine.engine import SyncRequest
-        verdict = 'judged safe' if record.get('safe', True) else 'reviewed'
+        # Read on the sync's page, by someone who pressed a button in Explore
+        # and never saw the word "plan": say what was checked, and what moves.
+        checked = ("Explore’s review checked this before it started"
+                   if record.get('safe', True) else
+                   "Explore’s review flagged a problem, and an admin went ahead by "
+                   "typing its name")
+        fetch = f"{fetch_count} file{'' if fetch_count == 1 else 's'} to download"
+        moved = (f"{moved_count} local file{'' if moved_count == 1 else 's'} moved to "
+                 f"backups first" if moved_count else 'nothing moved to backups')
         return SyncRequest(
             kind='explore',
             media_type=record['media_type'],
@@ -280,9 +288,7 @@ class ExploreExecutor:
             },
             options={'plan_id': record['plan_id'], 'mode': mode,
                      'files_to_fetch': fetch_count, 'moved_to_backup': moved_count},
-            safety_summary=(f"The Explore plan was {verdict} before it was approved: "
-                            f"{fetch_count} file(s) to fetch, {moved_count} moved to the "
-                            f"backup area first."),
+            safety_summary=f"{checked}: {fetch}, {moved}.",
         )
 
     def _record_removal_only_run(self, transfer_id: str, media_type: str, series: str,

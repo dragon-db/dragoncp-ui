@@ -149,10 +149,10 @@ cleanup -> deletes is_simulation transfers, notifications and sync runs,
 
 A simulation's own id (`sim_...`) names its folder. Each of its transfers also
 has a sync run (`run_...`), so a rehearsal can be read stage by stage like any
-other sync, on the Pipeline page, where it carries a Simulation kind badge and
-the **Rehearsals** switch shows or hides rehearsals. A restart of a simulated
-transfer is a Restart with a **Rehearsal** badge. Once cleanup deletes the runs,
-their pages read "No such sync".
+other sync — in its transfer's detail on Transfers, where it carries a
+Simulation kind badge. A restart of a simulated transfer is a Restart with a
+**Rehearsal** badge. Once cleanup deletes the runs, the sync panel reads "No
+such sync" for them.
 
 ## 6. Tests
 

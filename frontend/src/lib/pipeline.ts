@@ -116,3 +116,8 @@ export const RUN_STATE: Record<string, { tone: PipelineTone; icon: Icon }> = {
 export function runStateTone(state: string): PipelineTone {
   return RUN_STATE[state]?.tone ?? "muted";
 }
+
+/** The element id of one stage of one run, for scrolling to it. */
+export function stageAnchor(runId: string, stageId: string): string {
+  return `stage-${runId}-${stageId}`;
+}

@@ -1,13 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { PipelineRunPage } from "@/components/pages/pipeline-run";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
+// One sync used to have a page of its own; it now opens in a panel on the
+// Transfers page. Alerts stored before the move still carry this address.
 export const Route = createFileRoute("/_authenticated/pipeline/$runId")({
-  component: PipelineRunComponent,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: "/transfers", search: { sync: params.runId }, replace: true });
+  },
 });
-
-function PipelineRunComponent() {
-  const { runId } = Route.useParams();
-  // Keyed on the run, so opening a related sync starts from that sync's own
-  // stages rather than carrying over which ones were open.
-  return <PipelineRunPage key={runId} runId={runId} />;
-}

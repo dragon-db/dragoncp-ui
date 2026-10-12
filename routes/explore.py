@@ -180,11 +180,14 @@ def api_repair_apply(media_type, folder):
 
     result = explore_service.repair_apply(media_type, folder, season, decisions)
 
-    summary = f"Repaired {result['moved_count']} misplaced file(s)"
+    rehearsal = bool(result.get('dry_run'))
+    summary = (f"{'Rehearsed a repair in test mode: would move' if rehearsal else 'Repaired'} "
+               f"{result['moved_count']} misplaced file(s)")
     if result['deleted_count']:
-        summary += f", deleted {result['deleted_count']} redundant copy/copies"
+        summary += f", {'would delete' if rehearsal else 'deleted'} " \
+                   f"{result['deleted_count']} redundant copy/copies"
     if result['replaced_count']:
-        summary += f", replaced {result['replaced_count']}"
+        summary += f", {'would replace' if rehearsal else 'replaced'} {result['replaced_count']}"
     record('explore.repair', f"{summary} in {result['scope']}",
            target_type='explore_repair', target_id=f"{media_type}/{folder}")
     return jsonify({'status': 'success', **result})

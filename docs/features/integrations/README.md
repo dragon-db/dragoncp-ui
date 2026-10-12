@@ -16,9 +16,10 @@ under Integrations in the sidebar.
   show the service's library, download queue and history against this disk.
 - **Jellyfin** can be connected and tested, but nothing reads it yet.
 
-Last updated: 2026-10-05
+Last updated: 2026-10-06
 Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors.py`,
 `services/auto_scanner.py`, `services/scheduler.py`, `services/media_index.py`,
+`services/library_compare.py`, `services/local_library.py`,
 `routes/media_library.py`, `frontend/src/components/pages/integrations.tsx`
 
 ## Where it lives
@@ -37,10 +38,12 @@ Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors
 | Asking Sonarr whether a season is ready — the pipeline's Ready check | `services/sync_engine/engine.py`, through `services/media_index.py` (`in_flight_for_season`) |
 | The scheduled auto-scanner | `services/auto_scanner.py` |
 | The scheduler that runs it | `services/scheduler.py` |
-| Library, Queue and History tabs | `routes/media_library.py`, `services/media_index.py` |
+| Library, Queue and History tabs | `routes/media_library.py`, `services/media_index.py` (the list's verdicts, the detail view, the rows) |
+| One title compared episode by episode | `services/library_compare.py` |
+| What is on this disk, by title, season and episode | `services/local_library.py` |
 | Storage | `models/connector.py`, tables `connector`, `connector_secret`, `connector_target`, `notification_route`, `connector_delivery`; `media_item` (the title index); `scheduled_job` and `sweep_finding` (the auto-scanner) |
 | API | `routes/connectors.py`, `routes/media_library.py`, `routes/sync_engine.py` (scheduler jobs) |
-| UI | `frontend/src/components/pages/integrations.tsx`, `frontend/src/components/integrations/` (the auto-scanner card is `scanner-status.tsx`), `frontend/src/hooks/useConnectors.ts`, `frontend/src/hooks/useMediaLibrary.ts`, `frontend/src/hooks/useSync.ts` (`useSchedulerJobs`, `useRunJob`) |
+| UI | `frontend/src/components/pages/integrations.tsx`, `frontend/src/components/integrations/` (the auto-scanner card is `scanner-status.tsx`; the Library, Queue and History tabs are `library-panel.tsx`, `queue-panel.tsx`, `history-panel.tsx`, the series pop-up `title-dialog.tsx`, their shared pieces `library-bits.tsx` and words `library-vocab.ts`), `frontend/src/hooks/useConnectors.ts`, `frontend/src/hooks/useMediaLibrary.ts`, `frontend/src/hooks/useSync.ts` (`useSchedulerJobs`, `useRunJob`) |
 
 ## What an operator sees
 
@@ -68,18 +71,82 @@ them:
 
 **Integrations → Sonarr / Radarr** each have four tabs:
 
-- **Library** — every title the service lists, against what is actually on this
-  disk, read from the filesystem rather than the transfer history: Synced,
-  Partial, Missing and Orphaned, with titles the service holds no files for
-  counted apart rather than judged. A Partial or Missing title has a **Sync**
-  button — **Sync missing (N)** on a partial series — which starts one manual
-  sync per missing or short season, or the film, through the normal pipeline.
-  **Refresh** re-reads the service's catalogue.
-- **Queue** — the service's download queue, each row with the verdict the
-  Ready check would give it and whether it is holding a sync back.
-- **History** — what the service did, 25 rows at a time, with a column saying
-  whether DragonCP knows the title: an import for a title DragonCP has never
-  heard of is what a lost webhook leaves behind.
+- **Library** — every title the service lists, as a grid of small posters
+  against what is actually on this disk, read from the filesystem rather than
+  the transfer history. Each card carries one state — **Out of sync**, **In
+  sync**, **Not here**, **Unlisted** (the service no longer lists it; the files
+  here are kept), **No files yet** — and one quiet counts line, "Sonarr 1 ·
+  here 7". Filter chips with counts (Out of sync first), a search, a sort
+  (needs attention first, recently imported, title) and **Refresh**, which
+  re-reads the service's catalogue. Out-of-sync titles come first. How the
+  state is decided is in *The Library tab: in sync or not*, below.
+- **The series pop-up** — clicking a card (or a History or Queue row) opens
+  that title in a pop-up over the list: a wide panel on a computer, the whole
+  screen on a phone. Close, Escape or the browser's Back shuts it; the list
+  behind is untouched. The address carries it
+  (`?tab=library&title=<tvdb or tmdb id>`). It has two tabs, **Episodes** (a
+  film's is called **File**) and **History**. Episodes leads with one sentence
+  and one action:
+  - "S01E08 is on Sonarr but not here yet", the episode's title and Sonarr's
+    file under it, and **Get S01E08** (or **Get 3 episodes**). Get asks
+    Explore for a download plan of exactly those episodes, season by season,
+    and shows what it would do in one line, "Copy 1 file (1.6 GB) from the
+    media server into Season 01. Nothing here is replaced or removed.", with
+    **Copy now** and **Cancel**. Copy now runs the plan; it copies the files
+    and touches nothing else, so the episodes kept only here stay. When the
+    app has no browse session to the media server (a restart drops it), Get
+    connects with the saved credentials, as Settings' auto-connect does, and
+    asks again; only if that fails does it say so. A plan Explore's checks
+    stop, or one that finds nothing to copy, says why and offers **Open in
+    Explore** instead.
+  - A file that differs gets **Replace S01E05** the same way: Explore's
+    replace, which keeps the file here in Backups first.
+  - A title with nothing here at all gets **Copy the series** (or **Copy the
+    film**), the whole-folder sync, offered only where it removes nothing.
+  - Otherwise one quiet line: "Everything Sonarr has for this series is
+    here."
+
+  Below it, the seasons: one row each with "1 not here" (amber) and "7 of 8
+  here", opening to a row per episode with its number, title, air date, the
+  file facts that explain its state, and the state as an icon and a word
+  (**Not here**, **Different**, **Here**, **Only here**, **Not downloaded**;
+  each explains itself on hover). Only Not here and Different are coloured.
+  Seasons with something to fix open by themselves; a long one opens on just
+  those episodes, with **Show all**. Episodes still to air fold into one line,
+  "6 episodes still to air, the next on Oct 18", and Specials come last. A
+  film shows its file against the file here, as one row when they are the
+  same file.
+
+  **History** lists what happened to the title, newest first: Sonarr's or
+  Radarr's own events for it (imported, grabbed, deleted, a download that
+  failed) beside DragonCP's syncs of its folder (finished, failed, stopped by
+  the safety check, cancelled, cut off by a restart) and the transfers from
+  before the sync engine. Each says when, what, and in a word whether it got
+  done. An import is marked **Not here yet** while its episode is still
+  missing here, or **Here**; a failed download of an episode that is here
+  anyway reads **Here anyway**, and a failed or stopped sync that a later
+  sync of the same folder finished reads **Done later**. **Not done** narrows
+  the list to what is still undone. A burst of the same deletion reads as one
+  entry ("deleted its files for S01E01 to S01E07"), and a sync links to its
+  panel on Transfers. (`GET /api/library/<source>/<external_id>/history`.)
+
+  Until 2026-10-12 this was a side panel that said the same thing several
+  times (a summary, a legend, a strip of numbered cells, each season's
+  counts) and sent the reader to Explore with a paragraph explaining why the
+  season's Sync would not do. For a day it then opened as a page in place of
+  the list; the operator wanted a pop-up.
+- **Queue** — the service's download queue, stuck rows first, each as series ·
+  SxxEyy · episode title (a film: title and year), quality, a progress bar,
+  time left, the download client, and its state in plain words: Downloading,
+  Waiting to import, Importing, Imported (still seeding), **Stuck:** with the
+  service's own reason, **Failed**, **Stale** (the library already has the
+  file). A row says whether it is holding a sync back, and opens its title.
+- **History** — what the service did, a page at a time, read the way Sonarr's
+  own History reads: series, `1x08`, episode title, quality, custom formats and
+  their score, download client, release name, when. Chips filter by Imported,
+  Grabbed, Deleted, Failed or Renamed on the service's side. A row opens its
+  title. **Unknown here** marks an import for a title DragonCP has never heard
+  of, which is what a lost webhook leaves behind.
 - **Connection** — the address, the API key, the **Scheduled auto-scanner**
   switch and **Scan every (minutes)**, and a Test connection button. Below
   them, an **Auto-scanner** card shows what the switch is doing (see *The
@@ -348,6 +415,9 @@ Worth knowing:
   missing episodes.
 - **A Library-tab Sync is not limited the same way.** A person named the title,
   so every missing or short season is fetched, backlog or not, as manual syncs.
+  The series pop-up offers that button (**Copy the series**) only where nothing
+  is here yet; a title with something missing beside files kept here gets
+  **Get**, which fetches just the missing files through Explore.
 - **Nothing carries over from the sweep.** Its fields never shipped in a
   release and nothing reads them: a connector runs the scanner only when its
   own **Scheduled auto-scanner** switch is on, at its own interval (15 minutes
@@ -355,6 +425,68 @@ Worth knowing:
   no scanner until the switch is turned on. Fixed 2026-10-05: a switch that had
   never been saved used to fall back to the sweep's pair, so the Connection tab
   could show it off while scans ran.
+
+### The Library tab: in sync or not
+
+Until 2026-10-06 a series read **Synced** whenever every season Sonarr held
+files for had *some* file here. That answered the wrong question. Behind a media
+server that deletes what has been synced, Sonarr holds one file for a season —
+the newest episode, E08 — while this disk holds E01 to E07: "some file here" was
+true, the card said Synced with "1 file(s) there · 7 here", and E08 was not here.
+
+**One title, exactly.** The series pop-up compares episode by episode
+(`services/library_compare.py`): Sonarr's episodes and its files for the series
+against the season folders here, read fresh, with SxxEyy read from each name (a
+double-episode file covers both; un-renamed anime is matched through Sonarr's
+absolute numbers). Each episode gets one state:
+
+| State | Meaning |
+| --- | --- |
+| In sync | Sonarr has a file, and an episode file here is the same size |
+| Different file | both have it, sizes differ — an upgrade over there, or another release |
+| Missing here | Sonarr has a file and nothing is here: this needs syncing |
+| Only here | here, and Sonarr has no file — normal once the media server cleans up after a sync |
+| Not downloaded | neither has it, aired or not |
+
+A title is **out of sync exactly when an episode is Missing here or a Different
+file**. Specials are compared and shown, never counted. A film is the same
+comparison with one file: Radarr's file against the media file in its folder.
+
+**The list, cheaply.** The grid may not ask Sonarr about every title, so it
+judges each one from three reads made once for the whole page:
+
+1. Sonarr's count of episodes with a file, per season, against the distinct
+   episodes here (read from the names — Sonarr counts a double episode twice).
+   More there means something is missing: "Sonarr has 10 episode files for
+   season 1, 8 here", or "Season 3 is not here". As many or fewer there — one
+   to three episodes — is checked by size: Sonarr's combined size for the
+   season (`sizeOnDisk`) must be made of one to that many files in the season
+   folder here, since a copied file keeps its size to the byte. When none add
+   up, "Sonarr has a file for season 1 that is not here". This is what
+   catches one new episode on Sonarr beside seven older ones here even when a
+   sync of that folder is on record after the import — a test-mode dry run, or
+   a sync that left it out — which rule 2 alone reads as synced. Folder sizes
+   are cached by the folder's modification time, so a redraw costs one stat
+   per season. Added 2026-10-06, after the beta showed that case as In sync.
+2. Sonarr's imports of the last 14 days (`history/since`, the auto-scanner's own
+   read, reused for a minute). An episode's latest import that is newer than the
+   last completed sync of that season's folder — a sync run counted from when its
+   copy started, or a pre-engine transfer from when it ended, the auto-scanner's
+   rule; simulated runs do not count — is "1 new episode on Sonarr, imported 2
+   days ago", unless the very file is plainly here already: that episode, at the
+   size Sonarr imported. Only the latest import counts, because an upgrade
+   imports the same episode twice and the first file is gone.
+3. For a film, nothing extra at all: Radarr's catalogue carries each film's file
+   size, so the card compares file against file.
+
+Where this disk holds *more* than Sonarr and nothing new arrived, the title is
+**kept here**: shown as In sync, with "here 7" underlined and explained on
+hover. A title opened in the panel within the last ten minutes shows that exact
+answer instead, unless Sonarr has imported something for it since. Without the
+history (Sonarr would not send it) only rule 1 applies, and the toolbar says so.
+
+The auto-scanner reads the same list but none of this: it still decides from
+`files_here` and `episode_file_count`, which keep their meaning.
 
 ### Read-only towards the services
 
@@ -453,9 +585,11 @@ History tabs, which only Sonarr and Radarr can fill — see Jellyfin above.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | — | `/api/connectors/…` | Connectors, destinations, routing and tests — see [the API reference](../../reference/api.md#connectors) |
-| GET | `/api/library/<source>` | The Library tab for `sonarr` or `radarr`; `refresh=1` re-reads the catalogue first |
-| GET | `/api/library/<source>/queue` | The Queue tab: rows, verdicts, and which hold a sync |
-| GET | `/api/library/<source>/history` | The History tab, a page at a time (`page`, `page_size`) |
+| GET | `/api/library/<source>` | The Library tab for `sonarr` or `radarr`: each title's state and why; `refresh=1` re-reads the catalogue first |
+| GET | `/api/library/<source>/<external_id>` | The series pop-up: one title by its TVDB or TMDB id, episode by episode, with what to do about it |
+| GET | `/api/library/<source>/<external_id>/history` | The pop-up's History: the service's events for the title beside DragonCP's syncs of its folder, newest first |
+| GET | `/api/library/<source>/queue` | The Queue tab: rows, verdicts in plain words, and which hold a sync |
+| GET | `/api/library/<source>/history` | The History tab, a page at a time (`page`, `page_size`, `event`) |
 | POST | `/api/library/<source>/sync` | Sync one title's missing or short seasons, or the film: `{"external_id": "…"}` |
 | POST | `/api/library/<source>/refresh` | Re-read the service's catalogue into the title index |
 | GET | `/api/scheduler/jobs` | The auto-scanner jobs: switch, interval, last and next run, last result |

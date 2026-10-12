@@ -1,173 +1,284 @@
 import { useState } from "react";
-import { IconChevronLeft, IconChevronRight } from "@tabler/icons-react";
-import { Badge } from "@/components/ui/badge";
+import {
+  IconAlertTriangle,
+  IconHistory,
+  IconPlugConnectedX,
+  IconRefresh,
+} from "@tabler/icons-react";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useLibraryHistory } from "@/hooks/useMediaLibrary";
-import { cn } from "@/lib/utils";
+import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
+import { FilterChips, ListPagination } from "@/components/layout/list-controls";
+import { type HistoryRecord, useLibraryHistory } from "@/hooks/useMediaLibrary";
+import { Notice, ToneChip } from "@/components/integrations/library-bits";
+import {
+  HISTORY_EVENT,
+  HISTORY_FILTERS,
+  TONE_CHIP,
+  TONE_TEXT,
+  formatSize,
+  libraryError,
+  sinceText,
+  stampText,
+} from "@/components/integrations/library-vocab";
 
 /**
- * What the service itself has been doing.
+ * What the service itself has been doing, read straight from it a page at a
+ * time — the history of a busy library runs to tens of thousands of rows.
  *
- * Read straight from Sonarr or Radarr, one page at a time — the history of a
- * busy library runs to tens of thousands of rows, and unlike the queue there is
- * no filter that makes a single page enough.
- *
- * The column that earns its place is "known here". An import the service made
- * for a title DragonCP has never heard of is the shape a lost notification
- * leaves behind.
+ * Each row reads the way Sonarr's own History does: the series, "1x08", the
+ * episode's title, the quality and custom formats, when. A row opens its
+ * title's episode-by-episode panel. "Unknown here" marks an import for a title
+ * DragonCP has never heard of — the shape a lost webhook leaves behind.
  */
-
-const PAGE_SIZE = 25;
-
-/** Plain words for the service's own event names. */
-const EVENT_LABELS: Record<string, { label: string; className: string }> = {
-  downloadFolderImported: {
-    label: "Imported",
-    className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
-  },
-  grabbed: { label: "Grabbed", className: "border-sky-500/30 bg-sky-500/10 text-sky-300" },
-  episodeFileDeleted: {
-    label: "File deleted",
-    className: "border-rose-500/30 bg-rose-500/10 text-rose-300",
-  },
-  movieFileDeleted: {
-    label: "File deleted",
-    className: "border-rose-500/30 bg-rose-500/10 text-rose-300",
-  },
-  downloadFailed: {
-    label: "Download failed",
-    className: "border-rose-500/30 bg-rose-500/10 text-rose-300",
-  },
-  episodeFileRenamed: {
-    label: "Renamed",
-    className: "border-border bg-muted/40 text-muted-foreground",
-  },
-  movieFileRenamed: {
-    label: "Renamed",
-    className: "border-border bg-muted/40 text-muted-foreground",
-  },
-};
-
-function eventStyle(eventType: string) {
-  return (
-    EVENT_LABELS[eventType] ?? {
-      label: eventType || "Event",
-      className: "border-border bg-muted/40 text-muted-foreground",
-    }
+export function HistoryPanel({
+  source,
+  displayName,
+  onOpenTitle,
+}: {
+  source: string;
+  displayName: string;
+  /** Show a row's title in place of the list. */
+  onOpenTitle: (externalId: string) => void;
+}) {
+  const [event, setEvent] = useState("all");
+  const [offset, setOffset] = useState(0);
+  const [limit, setLimit] = useState(25);
+  const page = Math.floor(offset / limit) + 1;
+  const { data, isLoading, isFetching, isError, error, refetch } = useLibraryHistory(
+    source,
+    page,
+    limit,
+    event
   );
-}
-
-function when(iso: string) {
-  if (!iso) return "";
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-export function HistoryPanel({ source, displayName }: { source: string; displayName: string }) {
-  const [page, setPage] = useState(1);
-  const { data, isLoading, isFetching } = useLibraryHistory(source, page, PAGE_SIZE);
-
-  if (isLoading) {
-    return (
-      <div className="space-y-2">
-        {Array.from({ length: 8 }).map((_, i) => (
-          <Skeleton key={i} className="h-12 w-full rounded-lg" />
-        ))}
-      </div>
-    );
-  }
-
-  if (data && !data.live) {
-    return (
-      <div className="rounded-xl border border-amber-500/25 bg-amber-500/8 px-4 py-3 text-sm text-amber-200/90">
-        {data.message ?? `${displayName} did not answer.`}
-      </div>
-    );
-  }
 
   const records = data?.records ?? [];
   const total = data?.total ?? 0;
-  const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const label = HISTORY_FILTERS.find((entry) => entry.value === event)?.label ?? "All";
+
+  const chooseEvent = (value: string) => {
+    setEvent(value);
+    setOffset(0);
+  };
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>
-          {total.toLocaleString()} event{total === 1 ? "" : "s"} in {displayName}
-        </span>
-        <span className="ml-auto flex items-center gap-1.5">
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 px-2"
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page <= 1 || isFetching}
-          >
-            <IconChevronLeft className="h-3.5 w-3.5" />
+      <SectionCard
+        label={`${displayName} history`}
+        description={
+          data?.live
+            ? `${total.toLocaleString()} ${event === "all" ? "" : `${label.toLowerCase()} `}event${
+                total === 1 ? "" : "s"
+              }, newest first. A row opens its title.`
+            : undefined
+        }
+        actions={
+          <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isFetching}>
+            <IconRefresh className={cn("size-3.5", isFetching && "animate-spin")} />
+            Refresh
           </Button>
-          <span className="tabular-nums">
-            {page} / {lastPage}
-          </span>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-7 px-2"
-            onClick={() => setPage((p) => Math.min(lastPage, p + 1))}
-            disabled={page >= lastPage || isFetching}
-          >
-            <IconChevronRight className="h-3.5 w-3.5" />
-          </Button>
-        </span>
-      </div>
-
-      <ul className={cn("space-y-1.5 transition-opacity", isFetching && "opacity-60")}>
-        {records.map((record) => {
-          const style = eventStyle(record.event_type);
-          return (
-            <li
-              key={record.id}
-              className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border/70 bg-card/60 px-3 py-2"
+        }
+        toolbar={
+          <div className="flex w-full flex-wrap gap-1">
+            <FilterChips choices={HISTORY_FILTERS} value={event} onChange={chooseEvent} />
+          </div>
+        }
+      >
+        {isLoading ? (
+          <RowsSkeleton />
+        ) : isError ? (
+          <div className="p-3">
+            <Notice tone="crit" icon={IconAlertTriangle}>
+              {libraryError(error, "Could not load the history.")}
+            </Notice>
+          </div>
+        ) : data && !data.live ? (
+          <div className="p-3">
+            <Notice tone="warn" icon={IconPlugConnectedX}>
+              {data.message ?? `${displayName} did not answer.`}
+            </Notice>
+          </div>
+        ) : records.length === 0 ? (
+          <SectionEmpty
+            icon={IconHistory}
+            title={
+              event === "all" ? "Nothing in the history yet" : `No ${label.toLowerCase()} events`
+            }
+            hint={
+              event === "all"
+                ? `Grabs, imports and deletions show up here as ${displayName} makes them.`
+                : `${displayName} has recorded none of these.`
+            }
+            action={
+              event !== "all" ? (
+                <Button size="sm" variant="outline" onClick={() => chooseEvent("all")}>
+                  Show all
+                </Button>
+              ) : undefined
+            }
+          />
+        ) : (
+          <>
+            <ul
+              className={cn(
+                "divide-y divide-border/70 transition-opacity",
+                isFetching && "opacity-60"
+              )}
             >
-              <Badge variant="outline" className={cn("shrink-0 text-[11px]", style.className)}>
-                {style.label}
-              </Badge>
-              <span className="min-w-0 flex-1 truncate text-sm text-foreground">
-                {record.title ?? record.source_title ?? "—"}
+              {records.map((record) => (
+                <HistoryRow
+                  key={record.id}
+                  record={record}
+                  movie={source === "radarr"}
+                  onOpen={
+                    record.external_id ? () => onOpenTitle(String(record.external_id)) : undefined
+                  }
+                />
+              ))}
+            </ul>
+            <ListPagination
+              offset={offset}
+              limit={limit}
+              total={total}
+              count={records.length}
+              onOffsetChange={setOffset}
+              onLimitChange={(next) => {
+                setLimit(next);
+                setOffset(0);
+              }}
+              noun="events"
+            />
+          </>
+        )}
+      </SectionCard>
+    </div>
+  );
+}
+
+function HistoryRow({
+  record,
+  movie,
+  onOpen,
+}: {
+  record: HistoryRecord;
+  movie: boolean;
+  onOpen?: () => void;
+}) {
+  const info = HISTORY_EVENT[record.event] ?? HISTORY_EVENT.other;
+  const Glyph = info.icon;
+  const score = record.custom_format_score;
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onOpen}
+        disabled={!onOpen}
+        className="flex w-full items-start gap-3 px-3.5 py-2.5 text-left transition-colors outline-none hover:bg-elevated/50 focus-visible:bg-elevated/60 disabled:cursor-default disabled:hover:bg-transparent"
+      >
+        <span
+          className={cn(
+            "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full border",
+            TONE_CHIP[info.tone]
+          )}
+          aria-hidden
+        >
+          <Glyph className="size-3.5" />
+        </span>
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex items-start justify-between gap-3">
+            <p className="min-w-0 text-[13.5px] leading-snug break-words">
+              <span className="font-semibold text-foreground">
+                {record.title ?? record.source_title ?? "Unknown title"}
               </span>
-              {record.quality && (
-                <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                  {record.quality}
+              {movie && record.year ? (
+                <span className="text-muted-foreground"> ({record.year})</span>
+              ) : null}
+              {record.episode_label && (
+                <span className="ml-1.5 font-mono text-[12px] text-foreground-2">
+                  {record.episode_label}
                 </span>
               )}
-              {!record.known_here && (
-                <Badge
-                  variant="outline"
-                  className="shrink-0 border-amber-500/30 bg-amber-500/10 text-[11px] text-amber-300"
-                  title="DragonCP has no record of this title at all"
-                >
-                  Unknown here
-                </Badge>
+              {record.episode_title && (
+                <span className="ml-1.5 text-foreground-2">{record.episode_title}</span>
               )}
-              <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">
-                {when(record.date)}
+            </p>
+            <time
+              dateTime={record.date}
+              title={stampText(record.date)}
+              className="shrink-0 pt-0.5 font-mono text-[11px] whitespace-nowrap text-muted-foreground"
+            >
+              {sinceText(record.date)}
+            </time>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-muted-foreground">
+            <span
+              className={cn("text-[10px] font-bold tracking-wide uppercase", TONE_TEXT[info.tone])}
+            >
+              {record.event_label || info.label}
+            </span>
+            {record.quality && (
+              <span className="rounded-md border border-border bg-black/25 px-1.5 py-px font-mono text-[10.5px] text-foreground-2">
+                {record.quality}
               </span>
-            </li>
-          );
-        })}
-      </ul>
+            )}
+            {record.custom_formats.map((format) => (
+              <span
+                key={format}
+                className="rounded-md border border-border bg-black/25 px-1.5 py-px text-[10.5px] text-foreground-2"
+              >
+                {format}
+              </span>
+            ))}
+            {score != null && score !== 0 && (
+              <span className="font-mono text-[10.5px] tabular-nums" title="Custom format score">
+                {score > 0 ? `+${score}` : score}
+              </span>
+            )}
+            {record.size ? (
+              <span className="font-mono text-[10.5px] tabular-nums">
+                {formatSize(record.size)}
+              </span>
+            ) : null}
+            {record.download_client && <span>via {record.download_client}</span>}
+            {record.indexer && <span>from {record.indexer}</span>}
+            {!record.known_here && (
+              <ToneChip
+                tone="warn"
+                icon={IconAlertTriangle}
+                label="Unknown here"
+                size="sm"
+                title="DragonCP has no record of this title, which is what a lost webhook leaves behind"
+              />
+            )}
+          </div>
+          {record.reason && <p className="text-[12px] text-foreground-2">{record.reason}</p>}
+          {record.source_title && record.source_title !== record.title && (
+            <p
+              className="truncate font-mono text-[10.5px] text-foreground-3"
+              title={record.source_title}
+            >
+              {record.source_title}
+            </p>
+          )}
+        </div>
+      </button>
+    </li>
+  );
+}
 
-      {records.length === 0 && (
-        <p className="rounded-xl border border-border/70 bg-card/50 px-4 py-8 text-center text-sm text-muted-foreground">
-          Nothing on this page.
-        </p>
-      )}
+function RowsSkeleton() {
+  return (
+    <div className="divide-y divide-border/70">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i} className="flex gap-3 px-3.5 py-3">
+          <Skeleton className="size-7 shrink-0 rounded-full" />
+          <div className="flex-1 space-y-1.5">
+            <Skeleton className="h-3.5 w-3/5" />
+            <Skeleton className="h-3 w-2/5" />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

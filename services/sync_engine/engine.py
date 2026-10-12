@@ -81,6 +81,9 @@ SYNCABLE_STATUSES = ('pending', 'failed', 'cancelled', 'MANUAL_SYNC_REQUIRED',
 #: Webhook statuses that already have an outcome or a transfer in flight.
 SETTLED_STATUSES = ('completed',)
 
+#: Explore's buttons, by the mode its run carries.
+EXPLORE_ACTIONS = {'sync': 'Sync', 'download': 'Download', 'replace': 'Replace'}
+
 _TRANSFER_PREFIX = {
     S.SONARR_WEBHOOK: 'series_webhook',
     S.RADARR_WEBHOOK: 'webhook',
@@ -558,7 +561,10 @@ class SyncEngine:
         if request.kind == S.MANUAL:
             return f"{who} asked to sync {what}."
         if request.kind == S.EXPLORE:
-            return f"{who} approved an Explore plan for {what}."
+            # Named after the button that was pressed — Sync, Download or
+            # Replace — because that is what the admin remembers doing.
+            action = EXPLORE_ACTIONS.get((request.options or {}).get('mode'), 'Sync')
+            return f"{who} pressed {action} in Explore for {what}."
         if request.kind == S.RESTART:
             return f"{who} restarted the transfer for {what}."
         if request.kind == S.RESTORE:
@@ -800,7 +806,7 @@ class SyncEngine:
             self._update(run_id, timer_due_at=due)
             if open_run.get('ready_mode') == 'timer':
                 self._update(run_id, next_check_at=due)
-                message += f" The fixed timer now ends at {_hhmmss(due)}."
+                message += f" The fallback wait now ends at {_hhmmss(due)}."
             self.store.update_webhooks(run_id, {'status': 'pending'},
                                        exclude_status=SETTLED_STATUSES)
         self._event(run_id, S.BATCH, message)
@@ -879,7 +885,7 @@ class SyncEngine:
 
         if run.get('go_now'):
             who = run.get('requested_by_name') or 'an admin'
-            self._ready_passed(run_id, f"Started now — {who} did not want to wait.")
+            self._ready_passed(run_id, f"Started now: {who} pressed Go now.")
             return True
 
         # A kick is a request to look, not a reason to ask early. Without this,
@@ -901,7 +907,7 @@ class SyncEngine:
             if now >= due:
                 waited = now - self._opened_at(run)
                 self._ready_passed(
-                    run_id, f"The fixed timer finished after {_duration(waited)}.")
+                    run_id, f"The fallback wait ended after {_duration(waited)}.")
                 return True
             self._update(run_id, next_check_at=due)
             return False
@@ -923,8 +929,8 @@ class SyncEngine:
 
         if adapter is None:
             return self._use_timer(
-                run, 'Sonarr is not connected (Integrations → Sonarr), so the fixed '
-                     'timer decides when to start.', alert=False)
+                run, 'Sonarr is not connected (Integrations → Sonarr), so the fallback '
+                     'wait decides when this starts.', alert=False)
 
         try:
             check = adapter.check()
@@ -936,21 +942,22 @@ class SyncEngine:
             if self.alerts is not None:
                 self.alerts.integration_down('sonarr', message)
             return self._use_timer(
-                run, f"Sonarr did not answer ({message}), so the fixed timer decides "
-                     f"when to start.", alert=True)
+                run, f"Sonarr did not answer ({message}), so the fallback wait decides "
+                     f"when this starts.", alert=True)
 
         if self.alerts is not None:
             self.alerts.integration_up('sonarr')
         if not (run.get('options') or {}).get('tvdb_id'):
             return self._use_timer(
-                run, 'This series carries no TVDB id to ask Sonarr about, so the fixed '
-                     'timer decides when to start.', alert=False)
+                run, 'This series has no TVDB id, so Sonarr cannot be asked about it and '
+                     'the fallback wait decides when this starts.', alert=False)
 
         first_ask = max(now, self._opened_at(run) + SETTLE_SECONDS)
         self._update(run_id, ready_mode='ask', next_check_at=first_ask)
         self._stage(run_id, S.READY, S.WAITING,
                     f"Sonarr is reachable ({message}). Waiting until {_hhmmss(first_ask)} "
-                    f"so the rest of the burst can join, then asking.")
+                    f"so episodes arriving together can join, then asking Sonarr what is "
+                    f"still downloading.")
         self._mark_webhooks_waiting(run_id, first_ask)
         return False
 
@@ -960,7 +967,7 @@ class SyncEngine:
         self._update(run_id, ready_mode='timer', next_check_at=due)
         if self.clock() >= due:
             self._event(run_id, S.READY, reason, 'warning' if alert else 'info')
-            self._ready_passed(run_id, 'The fixed timer had already run out.')
+            self._ready_passed(run_id, 'The fallback wait had already run out.')
             return True
         wait = self._wait_seconds()
         self._stage(run_id, S.READY, S.WAITING,
@@ -988,8 +995,8 @@ class SyncEngine:
 
         if answer is None or not answer.known:
             self._event(run_id, S.READY,
-                        f"Sonarr could not answer ({reason}). Finishing the wait on the "
-                        f"fixed timer.", 'warning')
+                        f"Sonarr could not answer ({reason}). Finishing on the fallback "
+                        f"wait instead.", 'warning')
             return self._use_timer(self.store.get(run_id), 'Sonarr stopped answering.',
                                    alert=False)
 
@@ -1068,10 +1075,10 @@ class SyncEngine:
             row = self.coordinator.transfer_model.get(run['transfer_id']) or {}
             if row.get('explore_files_from'):
                 self._stage(run_id, S.SAFETY, S.SKIPPED,
-                            'Skipped: this retries an Explore plan. It copies the plan’s '
-                            'own file list and deletes nothing, and the plan was checked '
-                            'before it was approved; a folder dry run would judge a '
-                            'different copy.')
+                            'Skipped: this retries a sync started from Explore. It copies '
+                            'the same files as before and deletes nothing, and Explore’s '
+                            'review checked them before the first try; a dry run of the '
+                            'whole folder would judge a different copy.')
                 return self._queue_step(run_id)
 
         if run.get('operation_type') == 'file':
@@ -1433,7 +1440,8 @@ class SyncEngine:
             noun = 'webhook' if count == 1 else 'webhooks'
             self._stage(run_id, S.FINISH, S.PASSED,
                         f"Marked {count} {noun} synced." if count else
-                        'Nothing else to close: no webhooks rode on this sync.')
+                        'No webhook is linked to this sync, so there is nothing else '
+                        'to close.')
             self._set_state(run_id, S.COMPLETED, S.FINISH, outcome='completed',
                             outcome_message=progress or 'Synced')
         elif status == 'cancelled':
@@ -1934,9 +1942,11 @@ class SyncEngine:
         }
 
     def list_runs(self, states=None, kinds=None, search=None, limit: int = 50,
-                  offset: int = 0, include_simulation: bool = True) -> Dict[str, Any]:
+                  offset: int = 0, include_simulation: bool = True,
+                  copied: Optional[bool] = None) -> Dict[str, Any]:
         runs = self.store.list(states=states, kinds=kinds, search=search, limit=limit,
-                               offset=offset, include_simulation=include_simulation)
+                               offset=offset, include_simulation=include_simulation,
+                               copied=copied)
         ids = [r['run_id'] for r in runs]
         strips = self.store.stage_strips(ids)
         counts = self.store.webhook_counts(ids)
@@ -1946,7 +1956,7 @@ class SyncEngine:
                                     sentences.get(r['run_id']))
                      for r in runs],
             'total': self.store.count(states=states, kinds=kinds, search=search,
-                                      include_simulation=include_simulation),
+                                      include_simulation=include_simulation, copied=copied),
             'state_counts': self.store.state_counts(include_simulation=include_simulation),
         }
 

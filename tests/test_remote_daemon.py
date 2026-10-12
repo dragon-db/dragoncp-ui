@@ -494,7 +494,7 @@ class ServiceTests(unittest.TestCase):
         stop.assert_not_called()
 
     def test_it_stops_once_nothing_needs_it(self):
-        service = self.build()
+        service = self.build(settings={'FAST_TRANSPORT_ENABLED': 'true'})
         with patch.object(RemoteDaemonService, 'stop', return_value=(True, 'stopped')) as stop, \
                 patch.object(RemoteDaemonService, 'health',
                              return_value=probe.ProbeResult(probe.READY, 'Ready')):
@@ -667,11 +667,22 @@ class ThirdPassFindingsTests(unittest.TestCase):
         return holder
 
     def test_release_says_whether_it_actually_stopped(self):
-        service = self.build()
+        service = self.build(settings={'FAST_TRANSPORT_ENABLED': 'true'})
         with patch.object(RemoteDaemonService, 'stop', return_value=(False, 'refused')):
             self.assertFalse(service.release(lambda: False))
         with patch.object(RemoteDaemonService, 'stop', return_value=(True, 'stopped')):
             self.assertTrue(service.release(lambda: False))
+
+    def test_an_instance_not_using_the_fast_route_never_stops_it(self):
+        # A test instance beside production shares the media host. With the
+        # route off it never started the server, so it must not stop the one
+        # production may be copying through.
+        service = self.build(settings={'FAST_TRANSPORT_ENABLED': 'false'})
+        with patch.object(RemoteDaemonService, 'stop') as stop, \
+                patch.object(RemoteDaemonService, '_ssh') as ssh:
+            self.assertFalse(service.release(lambda: False))
+        stop.assert_not_called()
+        ssh.assert_not_called()
 
     def test_release_reports_false_when_it_was_told_to_stay_up(self):
         service = self.build(settings={'FAST_TRANSPORT_LIFECYCLE': 'always'})
@@ -696,7 +707,7 @@ class ThirdPassFindingsTests(unittest.TestCase):
                 patch.object(RemoteDaemonService, '_run', return_value=(0, '', '')), \
                 patch.object(RemoteDaemonService, '_probe_now',
                              return_value=probe.ProbeResult(probe.READY, 'Ready')), \
-                patch.object(RemoteDaemonService, 'release', return_value=False):
+                patch.object(RemoteDaemonService, '_release', return_value=False):
             ok, message = service.install()
 
         # NOT a success. Everything was written and the service runs, but the
@@ -719,7 +730,7 @@ class ThirdPassFindingsTests(unittest.TestCase):
                 patch.object(RemoteDaemonService, '_run', return_value=(0, '', '')), \
                 patch.object(RemoteDaemonService, '_probe_now',
                              return_value=probe.ProbeResult(probe.READY, 'Ready')), \
-                patch.object(RemoteDaemonService, 'release', return_value=True):
+                patch.object(RemoteDaemonService, '_release', return_value=True):
             ok, message = service.install()
 
         self.assertTrue(ok)

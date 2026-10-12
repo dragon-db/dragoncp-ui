@@ -69,7 +69,8 @@ def _run_label(run: Dict[str, Any]) -> str:
 
 
 def _run_link(run_id: Optional[str]) -> Optional[str]:
-    return f"/pipeline/{run_id}" if run_id else None
+    # A sync opens on the Transfers page, which shows its stages in a panel.
+    return f"/transfers?sync={run_id}" if run_id else None
 
 
 class AlertService:

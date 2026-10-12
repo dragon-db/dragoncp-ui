@@ -100,6 +100,23 @@ class PipelineRouteTests(RouteTestCase):
         self.assertEqual(
             self.client.get('/api/sync/runs?kind=manual,sonarr_webhook').get_json()['total'], 1)
 
+    def test_runs_filter_by_whether_their_copy_started(self):
+        # The Transfers page lists syncs that never became a copy beside its
+        # transfers; one that reached the copy already has a transfer row.
+        waiting = self.waiting_run()
+        copying = self.engine.submit(self._manual_request()).run_id
+        self.assertEqual(self.get_run(copying)['state'], S.TRANSFERRING)
+
+        def ids(query):
+            return [r['run_id'] for r in self.client.get(f'/api/sync/runs?{query}')
+                    .get_json()['runs']]
+
+        self.assertEqual(ids('copied=0'), [waiting])
+        self.assertEqual(ids('copied=1'), [copying])
+        self.assertEqual(sorted(ids('state=all')), sorted([waiting, copying]))
+        self.assertEqual(
+            self.client.get('/api/sync/runs?copied=0').get_json()['total'], 1)
+
     def test_one_run_shows_every_stage_with_its_own_log_lines(self):
         run_id = self.waiting_run()
         response = self.client.get(f'/api/sync/runs/{run_id}')

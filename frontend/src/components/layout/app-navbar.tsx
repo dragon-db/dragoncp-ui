@@ -18,7 +18,6 @@ const CRUMBS: Array<[string, Crumb]> = [
   ["/dashboard", { section: "Workspace", label: "Dashboard" }],
   ["/transfers", { section: "Workspace", label: "Transfers" }],
   ["/webhooks", { section: "Workspace", label: "Webhooks" }],
-  ["/pipeline", { section: "Workspace", label: "Pipeline" }],
   ["/notifications", { section: "Workspace", label: "Notifications" }],
   ["/media/movies", { section: "Library", label: "Movies" }],
   ["/media/tvshows", { section: "Library", label: "TV Shows" }],

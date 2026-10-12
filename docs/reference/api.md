@@ -806,7 +806,7 @@ first, then the queue. The transfer keeps its id, and rsync picks up its
 partial files. The safety check's dry run is skipped, with the reason on the
 run, when the transfer is a simulation's, a single file, or an Explore plan's
 (which copies its own file list and deletes nothing). A restore is refused.
-When the transfer belonged to an earlier run, the webhooks that rode on it move
+When the transfer belonged to an earlier run, the webhooks linked to it move
 to the new run, which names it as its parent (`parent_relation: "retry"`).
 
 If a sync for the same folder is already open and has not started copying, the
@@ -1103,7 +1103,7 @@ Special behavior:
 - For import flow, creates the series notification and submits it to the sync
   engine as a `sonarr_webhook` run. With auto-sync on, the run waits in the
   ready check — asking Sonarr whether anything for the season is still
-  downloading, or on the fixed timer when Sonarr cannot answer — before the
+  downloading, or on the fallback wait when Sonarr cannot answer — before the
   safety check and the queue.
 
 Output JSON:
@@ -1185,7 +1185,8 @@ notification stored before the sync engine existed — and `sync_attached_at`,
 when it joined that run. They carry `requires_manual_sync` and
 `manual_sync_reason` too (movie rows since 2026-10-05); the web app shows a
 `pending` notification with the flag raised as Manual, and links a
-notification's detail to `/pipeline/<sync_run_id>` when it has one. Rename
+notification's detail to its sync (`/transfers?sync=<sync_run_id>`) when it
+has one. Rename
 notifications live in a separate table and do not have these columns.
 
 Implementation notes:
@@ -2946,7 +2947,7 @@ Output JSON (abridged):
 {
   "status": "success",
   "stages": [
-    {"id": "receive", "label": "Receive", "tagline": "Write down what asked",
+    {"id": "receive", "label": "Receive", "tagline": "Who or what asked",
      "description": "Records the request and who or what made it — a webhook, the auto-scanner or a person — before anything else happens."}
   ],
   "kinds": [
@@ -3004,6 +3005,7 @@ Query parameters, all optional and combined with AND:
 | `kind` | one kind, or several separated by commas |
 | `search` (or `q`) | matches title, folder, season, destination path, run id or transfer id, case-insensitively and anywhere in the value |
 | `simulations` | `0`, `false` or `no` leaves simulation runs out; absent or anything else includes them |
+| `copied` | `0` (or `false`, `no`): only runs whose Transfer stage never started — waiting to start, or ended before copying, which the Transfers page lists beside its transfers. `1` (or `true`, `yes`): only runs whose copy started. Absent: both. Decided from the Transfer stage, not `transfer_id`, which a retry inherits from the copy it retries |
 | `limit` / `offset` | paging; `limit` defaults to `50` and is clamped to 1–200 |
 
 Output JSON:
@@ -3079,7 +3081,7 @@ Output JSON:
 - `requested_by.kind` — `admin`, `automated` or `system`, as in the activity
   trail.
 - `next_check_at` — when the ready check next looks again (asks Sonarr, or the
-  fixed timer runs out); `null` outside the ready check.
+  fallback wait runs out); `null` outside the ready check.
 - Timestamps are UTC ISO 8601.
 
 ### GET `/sync/runs/{run_id}`
@@ -3114,7 +3116,7 @@ Output JSON (abridged — list-row fields left out, one of the nine stages shown
       {
         "id": "batch",
         "label": "Batch",
-        "tagline": "Join one or open one",
+        "tagline": "Group requests for one folder",
         "description": "Looks for a batch already open for the same folder. ...",
         "mode": "run",
         "policy_note": "",
@@ -3163,11 +3165,11 @@ Output JSON (abridged — list-row fields left out, one of the nine stages shown
   (`follow_up`, `retry`).
 - `alerts` — up to 20 alerts raised about this run, in any state, newest first,
   in the `/alerts` shape.
-- `ready_mode` — `ask` (asking Sonarr), `timer` (the fixed timer, used when
+- `ready_mode` — `ask` (asking Sonarr), `timer` (the fallback wait, used when
   Sonarr is not connected, does not answer, or the series has no TVDB id), or
   `null` before the ready check has decided. `checks_made` counts the
   questions put to Sonarr.
-- `timer_due_at` — when the fixed timer runs out: the configured wait
+- `timer_due_at` — when the fallback wait runs out: the configured wait
   (`series_anime_sync_wait_time` in `/webhook/settings`, 30–900 seconds) after
   the first webhook, extended by the same again for each later one, never past
   15 minutes from the first.
@@ -3337,7 +3339,7 @@ Output JSON:
       "run_id": "run_3f2a9c1d0b7e",
       "transfer_id": null,
       "unit_key": "/media/tv/Example Show (2020)/Season 01",
-      "link": "/pipeline/run_3f2a9c1d0b7e",
+      "link": "/transfers?sync=run_3f2a9c1d0b7e",
       "actions": ["sync_anyway", "dismiss"],
       "action_buttons": [
         {"id": "sync_anyway", "label": "Sync anyway"},
@@ -3370,8 +3372,10 @@ Output JSON:
   one from opening, or being announced; after that, a condition still there
   opens one again.
 - `unit_key` — the destination folder the alert is about, when it is about one.
-- `link` — where the web app shows the subject: `/pipeline/<run_id>` for a run,
-  `/integrations/<source>` for an integration; `null` when there is neither.
+- `link` — where the web app shows the subject: `/transfers?sync=<run_id>` (the
+  sync panel on Transfers) for a run, `/integrations/<source>` for an
+  integration; `null` when there is neither. Alerts opened before 2026-10-06
+  carry `/pipeline/<run_id>`, which the web app redirects to the same place.
 - `actions` — what this alert offers; `action_buttons` adds each button's
   label.
 - `resolved_*` — who closed it, when and how. `resolved_action` is `auto` when
@@ -3531,11 +3535,16 @@ Responses here use `success` (`true`/`false`) and `error` rather than the
 refuse any verb but GET and HEAD.
 
 Implementation: `routes/media_library.py`, `services/media_index.py`,
+`services/library_compare.py`, `services/local_library.py`,
 `services/auto_scanner.py` (`sync_one`).
 
 ### GET `/library/{source}`
 What it does: one row per title the service holds, with what this disk holds
-beside it.
+beside it and a verdict, worked out from one catalogue read, the service's
+imports of the last 14 days and the disk — never a call per title. A title
+opened with the endpoint below in the last ten minutes carries that exact answer
+instead. The rules are in
+[integrations](../features/integrations/README.md#the-library-tab-in-sync-or-not).
 
 Auth: required.
 
@@ -3543,36 +3552,185 @@ Query: `refresh=1` (or `true`, `yes`) pulls the service's whole catalogue into
 the index first.
 
 Output JSON: `source`, `live` (false when the service could not be read and the
-index answered instead), `total`, `counts` (titles per `sync_state`) and
-`items`, plus `success: true`, `read_only: true` and `test_mode`.
+index answered instead), `history_checked` (false when the import history could
+not be read, so only the counts were compared), `total`, `counts` (titles per
+`sync_state`) and `items`, plus `success: true`, `read_only: true` and
+`test_mode`.
+
+Each item keeps the fields the auto-scanner reads (`present_locally`,
+`service_has_files`, `seasons[]` with `season_number`, `episode_file_count`,
+`files_here`, `counts_towards_state`; `service_item_id`, `service_path`,
+`local_folder`, `media_type`, `external_id`, `title`) and adds:
+
+- `sync_state` — `out_of_sync`, `in_sync`, `kept_here` (in sync, with more kept
+  here than the service still holds), `never` (nothing here), `no_files` (the
+  service holds no files), `orphan` (the service no longer lists it) or
+  `unknown`. Until 2026-10-06 the words were `synced`, `partial`, `never`,
+  `no_files`, `orphan` and `unknown`.
+- `state_reason` — one sentence; `state_exact` — whether it came from a
+  file-by-file comparison.
+- `attention` — why it is out of sync, each `{kind, season_number, count, …}`:
+  `new_import` and `new_file` (with `episodes` and `imported_at`), `short` and
+  `season_not_here` (with `theirs` and `ours`), `missing`, `different`.
+- `kept_here_count`, `last_import_at`, `service_files_counted` and
+  `episodes_here` (the counts line; Specials left out), and for a film
+  `service_file_size`, `local_file_size` and `quality`.
+- per season, `episodes_here` (distinct episodes read from the file names) and
+  `folder_here`.
+
+### GET `/library/{source}/{external_id}`
+What it does: one title compared episode by episode — the panel a Library card,
+a History row or a Queue row opens. Read-only towards the service: the series,
+its episodes and its files (or the film), and a fresh read of the one folder
+here.
+
+Auth: required. `external_id` is the TVDB id (Sonarr) or TMDB id (Radarr).
+
+Output JSON:
+```json
+{
+  "success": true, "source": "sonarr", "external_id": "900001",
+  "live": true, "found": true, "read_only": true,
+  "title": {"title": "Example Show", "year": 2021, "poster": "https://…",
+            "status": "continuing", "network": "Example Network", "monitored": true,
+            "local_folder": "Example Show (2021)", "media_type": "tvshows", "…": "…"},
+  "state": "out_of_sync",
+  "summary": "1 episode on Sonarr is not here yet: S01E08 “Episode Eight”.",
+  "counts": {"missing_here": 1, "different": 0, "in_sync": 0, "only_here": 7, "not_downloaded": 0},
+  "seasons": [{
+    "season_number": 1, "specials": false, "counts_towards_state": true,
+    "folder_here": "Season 01", "service_folder": "Season 01", "explore_season": "Season 01",
+    "counts": {"missing_here": 1, "only_here": 7, "…": 0},
+    "state": "out_of_sync", "service_file_count": 1, "files_here": 7, "episodes_here": 7,
+    "local_only_files": 7, "last_synced_at": "2026-10-01T10:00:00+00:00",
+    "unidentified_here": [],
+    "episodes": [{
+      "code": "S01E08", "season_number": 1, "episode_number": 8, "title": "Episode Eight",
+      "air_date": "2026-10-04", "monitored": true, "state": "missing_here",
+      "service_file": {"name": "Example Show (2021) - S01E08 - Episode Eight [WEBDL-1080p].mkv",
+                       "size": 1503238553, "quality": "WEBDL-1080p",
+                       "custom_formats": ["WEB Tier 01"], "custom_format_score": 1700, "…": "…"},
+      "local_file": null, "local_duplicates": 0
+    }]
+  }],
+  "movie": null,
+  "attention": [{"kind": "missing", "season_number": 1, "count": 1, "episodes": ["S01E08"]}],
+  "kept_here_count": 7,
+  "last_synced_at": "2026-10-01T10:00:00+00:00",
+  "actions": {
+    "sync": {"offered": false, "seasons": [],
+             "reason": "Season 1 also holds 7 files kept only here. Syncing the whole season folder would remove them, so the safety check would stop it. Fetch only what is missing in Explore."},
+    "explore": {"media_type": "tvshows", "series": "Example Show (2021)", "season": "Season 01"}
+  },
+  "computed_at": "2026-10-06T12:00:00+00:00"
+}
+```
+
+- Episode `state` is `in_sync` (same file, by size), `different` (both have
+  it, sizes differ), `missing_here` (needs syncing), `only_here` (normal after
+  the media server's cleanup) or `not_downloaded`. `state` for the title uses
+  the list's words; it is `out_of_sync` exactly when an episode outside
+  Specials is `missing_here` or `different`.
+- A film has `seasons: []` and `movie: {state, service_file, local_file,
+  other_files_here}`.
+- `actions.sync.offered` is true only where the title's Sync
+  (`POST /library/{source}/sync`) would copy season folders holding nothing kept
+  only here; otherwise `reason` says why not. `actions.explore` names the
+  Explore library, folder and season (`/media/<media_type>?series=…&season=…`)
+  where only the missing files can be fetched.
+
+### GET `/library/{source}/{external_id}/history`
+What it does: one title's history, newest first: the service's own events for
+it beside DragonCP's syncs of its folder here. The History tab of the series
+pop-up reads it. Read-only on both sides: one call to the service
+(`/api/v3/history/series` or `/api/v3/history/movie`), plus Sonarr's episode
+list when its history names episodes by id only.
+
+Auth: required. `external_id` is the TVDB id (Sonarr) or TMDB id (Radarr): `400`
+when it is not a number, `404` when nothing knows it.
+
+Output JSON:
+```json
+{
+  "success": true, "source": "sonarr", "external_id": "900001",
+  "live": true, "read_only": true, "total": 3,
+  "entries": [
+    {"at": "2026-10-05T01:23:00+00:00", "side": "dragoncp", "kind": "sync",
+     "title": "Sync of Season 01 was stopped by the safety check",
+     "detail": "Sonarr webhook · Would delete 7 media files but only receive 1",
+     "status": "not_done", "episodes": [], "run_id": "run_3f2a9c1d0b7e",
+     "state": "refused", "season": "Season 01"},
+    {"at": "2026-10-04T06:53:00+00:00", "side": "service", "kind": "imported",
+     "title": "Sonarr imported S01E08", "detail": "Episode Eight · WEBDL-1080p · 1.6 GB",
+     "status": "info", "episodes": ["S01E08"], "quality": "WEBDL-1080p",
+     "custom_formats": ["WEB Tier 01"], "service_id": 1},
+    {"at": "2026-10-02T04:39:00+00:00", "side": "service", "kind": "deleted",
+     "title": "Sonarr deleted its files for S01E01 to S01E07", "detail": "Deleted by hand",
+     "status": "info", "episodes": ["S01E01", "…", "S01E07"]}
+  ]
+}
+```
+
+- `status` is `done`, `not_done` (stopped by the safety check, cancelled, cut
+  off by a restart), `failed`, `in_progress` or `info`. An import's status is
+  left `info`: whether its episode is here now is the episode comparison's to
+  say, and the pop-up marks it from `GET /library/{source}/{external_id}`.
+- DragonCP's side is every sync run whose destination is the title's folder or
+  inside it (rehearsals left out), and the transfers from before the sync
+  engine that no run covers ("Before sync records").
+- A burst of the same deletion or rename within ten minutes is one entry
+  naming every episode.
+- With the service down, `live` is false and only DragonCP's side is listed.
+- At most 150 entries; `total` counts them all.
+
+Error behavior:
+- `400` when `external_id` is not a number.
+- `404` `{"success": false, "error": "Sonarr does not list this title"}` when
+  neither the service nor the index knows it.
+- `200` with `live: false` and `message` when the service is not connected or
+  does not answer.
 
 ### GET `/library/{source}/history`
-What it does: a page of the service's own history, with titles the index knows
-matched in.
+What it does: a page of the service's own history, each row with its title and
+episode folded in by the service (`includeSeries`/`includeEpisode`, or
+`includeMovie`), and titles the index knows matched in.
 
 Auth: required.
 
 Query params: `page` (default `1`), `page_size` (default `50`, clamped to
-1–200); `400` when either is not a number.
+1–200), `event` (`imported`, `grabbed`, `deleted`, `failed`, `renamed`,
+`ignored`, or `all`; the service filters, so `total` is the filtered count).
+`400` when `page` or `page_size` is not a number or `event` is not one of those.
 
-Output JSON: `source`, `live`, `records`, `page`, `page_size`, `total`, plus
-`success` and `read_only`. Each record carries `event_type`, `date`,
-`source_title` and `quality`, and `title`, `external_id` and `known_here` from
-the index. When the service is not connected or does not answer, `live` is
-false, `records` is empty and `message` says which.
+Output JSON: `source`, `live`, `records`, `page`, `page_size`, `total`, `event`,
+plus `success` and `read_only`. Each record carries `event_type` (the
+service's own name), `event` and `event_label`, `date`, `source_title` (the
+release), `quality`, `custom_formats` (names) and `custom_format_score`,
+`title` and `year`, `season_number`, `episode_number`, `episode_code`
+(`S01E08`), `episode_label` (`1x08`), `episode_title`, `download_client`,
+`indexer`, `release_group`, `size`, `reason` (why it was deleted, why it
+failed, what it was renamed from), `external_id` (set even for a title the
+index does not know) and `known_here`. When the service is not connected or
+does not answer, `live` is false, `records` is empty and `message` says which.
 
 ### GET `/library/{source}/queue`
 What it does: what is waiting on the service, and why each row is waiting. Rows
-that need attention come first.
+that need attention come first. The service folds each row's title and episode
+in; the Ready check's own queue read is unchanged.
 
 Auth: required.
 
 Output JSON: `source`, `live`, `rows`, `counts` (rows per `verdict`), `total`,
 `needing_attention` and `holding_a_sync`, plus `success` and `read_only`. Each
 row carries `verdict`, `why`, `holds_sync` and `needs_attention` beside the
-service's own progress, size and download-client fields. When the service is
-not connected or does not answer, `live` is false, `rows` is empty and
-`message` says which.
+service's own progress, size and download-client fields, and `title`, `year`,
+`episode_code`, `episode_title`, `quality`, `custom_formats`, `seconds_left`,
+`external_id`, and its state in plain words: `status_label` (Downloading,
+Waiting to import, Importing, Imported, Stuck, Failed, Stale, Paused, Queued,
+Delayed, Unrecognised), `status_detail` (the reason, often the service's own
+sentence), `status_text` ("Stuck: …") and `tone` (`brand`, `warn`, `crit`,
+`ok`, `muted`). When the service is not connected or does not answer, `live` is
+false, `rows` is empty and `message` says which.
 
 ### POST `/library/{source}/sync`
 What it does: syncs what this disk is missing of one title, because someone
@@ -3652,13 +3810,13 @@ This document covers these `/api/*` routes from the backend Python route decorat
 - 2 server log endpoints
 - 11 explore endpoints (including `repair`)
 - 13 sync engine, alert and scheduler endpoints
-- 5 media library endpoints
+- 6 media library endpoints
 
-Total covered: 143 method+path API endpoints.
+Total covered: 144 method+path API endpoints.
 
 Not covered here: the 8 `/remote-transfer/*` endpoints in
 `routes/remote_daemon.py`, which `../features/fast-transfers/README.md` lists.
-With them the backend serves 151.
+With them the backend serves 152.
 
 Counts verified against the `@*_bp.route`/`@app.route` decorators in `routes/`
 and `app.py`, counting one per method+path. `GET /` and

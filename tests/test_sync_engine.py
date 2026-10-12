@@ -408,7 +408,7 @@ class ReadyCheckTests(EngineTestCase):
         run = self.get_run(run_id)
         self.assertEqual(run['ready_mode'], 'timer')
         self.assertEqual(len(self.open_alerts('integration_down')), 1)
-        self.assertIn('fixed timer', self.stage(run_id, S.READY)['summary'])
+        self.assertIn('fallback wait', self.stage(run_id, S.READY)['summary'])
 
     def test_every_webhook_pushes_the_timer_back(self):
         """The regression: the extension used to be read once and ignored."""
@@ -488,7 +488,7 @@ class KindTests(EngineTestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(result['run_ids'], [waiting.run_id], 'no second transfer')
         self.assertEqual(self.get_run(waiting.run_id)['state'], S.TRANSFERRING)
-        self.assertIn('did not want to wait', self.stage(waiting.run_id, S.READY)['summary'])
+        self.assertIn('pressed Go now', self.stage(waiting.run_id, S.READY)['summary'])
 
     def test_automatic_sync_off_holds_the_batch_for_a_person(self):
         held = self.sonarr(self.series_webhook('e1', 1), hold=True)
@@ -552,6 +552,23 @@ class KindTests(EngineTestCase):
         row = self.coordinator.transfer_model.get('explore_abc')
         self.assertEqual(row['explore_files_from'], '/tmp/files.txt')
         self.assertEqual(row['sync_run_id'], result.run_id)
+
+    def test_an_explore_sync_is_described_by_the_button_that_was_pressed(self):
+        # The sync's page is read by someone who pressed Download in Explore and
+        # never saw the word "plan"; the first line says what they did.
+        dest = os.path.join(self.config.get('TVSHOW_DEST_PATH'), 'Example Show (2020)',
+                            'Season 02')
+        result = self.engine.submit(SyncRequest(
+            kind=S.EXPLORE, media_type='tvshows',
+            source_path=f"{REMOTE_TV}/Example Show (2020)/Season 02", dest_path=dest,
+            folder_name='Example Show (2020)', season_name='Season 02',
+            transfer_id='explore_def', options={'mode': 'download'},
+            extra_fields={'explore_files_from': '/tmp/files.txt',
+                          'explore_mode': 'download'}),
+            wait=True)
+        receive = self.stage(result.run_id, S.RECEIVE)['summary']
+        self.assertIn('pressed Download in Explore', receive)
+        self.assertNotIn('plan', receive)
 
 
 class SafetyTests(EngineTestCase):

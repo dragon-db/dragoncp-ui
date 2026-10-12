@@ -3,8 +3,8 @@
 The sync engine, the Notifications tab and the scheduler, over HTTP.
 
 Everything an admin needs to see how a sync went — every run, its nine stages,
-what each stage did and why, the log lines under each stage, the webhooks that
-rode on it and the transfer it became — and the few things an admin can do to
+what each stage did and why, the log lines under each stage, the webhooks
+linked to it and the transfer it became — and the few things an admin can do to
 a run that has not finished: go now, cancel, go ahead despite the safety check.
 
 The pipeline the interface draws comes from `/sync/catalogue`, which is the
@@ -78,6 +78,9 @@ def api_sync_runs():
 
     `state` takes a state, or a group: open, active, live, finished, all.
     `kind` takes one kind or several, comma separated.
+    `copied` is 1 for runs whose copy started and 0 for runs that ended, or
+    are waiting, before it — the Transfers page lists the second kind beside
+    its transfers, since those never get a transfer row of their own.
     """
     engine = _engine()
     if engine is None:
@@ -92,9 +95,13 @@ def api_sync_runs():
     kinds = [k for k in (request.args.get('kind') or '').split(',') if k] or None
     search = (request.args.get('search') or request.args.get('q') or '').strip() or None
     include_simulation = request.args.get('simulations', '1') not in ('0', 'false', 'no')
+    copied_arg = (request.args.get('copied') or '').strip().lower()
+    copied = (True if copied_arg in ('1', 'true', 'yes') else
+              False if copied_arg in ('0', 'false', 'no') else None)
     try:
         listing = engine.list_runs(states=states, kinds=kinds, search=search, limit=limit,
-                                   offset=offset, include_simulation=include_simulation)
+                                   offset=offset, include_simulation=include_simulation,
+                                   copied=copied)
     except Exception as error:  # noqa: BLE001
         log.exception('Could not list sync runs')
         return jsonify({'status': 'error', 'message': str(error)}), 500

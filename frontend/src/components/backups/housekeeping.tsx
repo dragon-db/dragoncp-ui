@@ -29,6 +29,7 @@ import {
   useSaveRetention,
 } from "@/hooks/useBackups";
 import type { DiskUsage, MigrationReport, RetentionRule } from "@/lib/backup-types";
+import { RealDataWarning } from "@/components/backups/real-data-warning";
 
 /**
  * Disk pressure, the retention rule, and the one-off migration.
@@ -72,13 +73,19 @@ export function RetentionDialog({
   open,
   onOpenChange,
   rule,
+  testMode,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   rule: RetentionRule;
+  /** Test mode is on: removing versions is still real, and the dialog must say so. */
+  testMode: boolean;
 }) {
   const [keep, setKeep] = useState(String(rule.keep));
   const [grace, setGrace] = useState(String(rule.grace_hours));
+  // Ticked against one previewed set, in one sitting. Editing the rule or
+  // closing the dialog clears it, the same way either clears the preview.
+  const [acknowledged, setAcknowledged] = useState(false);
   const preview = useRetentionPreview();
   const apply = useRetentionApply();
   const save = useSaveRetention();
@@ -107,11 +114,19 @@ export function RetentionDialog({
   function editRule(setter: (next: string) => void, next: string) {
     setter(next);
     setPreviewedFor(null);
+    setAcknowledged(false);
     preview.reset();
   }
 
+  function changeOpen(next: boolean) {
+    if (!next) setAcknowledged(false);
+    onOpenChange(next);
+  }
+
+  const removable = previewIsCurrent && Boolean(preview.data?.candidate_count);
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>Retention</DialogTitle>
@@ -192,6 +207,15 @@ export function RetentionDialog({
           </p>
         )}
 
+        {testMode && removable && (
+          <RealDataWarning
+            consequence="delete real backups"
+            acknowledgement="I understand these versions are deleted for real"
+            acknowledged={acknowledged}
+            onAcknowledge={setAcknowledged}
+          />
+        )}
+
         <DialogFooter className="gap-2 sm:justify-between">
           <Button
             variant="secondary"
@@ -218,14 +242,14 @@ export function RetentionDialog({
             </Button>
             <Button
               variant="destructive"
-              disabled={apply.isPending || !previewIsCurrent || !preview.data?.candidate_count}
+              disabled={apply.isPending || !removable || (testMode && !acknowledged)}
               onClick={() =>
                 apply.mutate(values, {
                   onSuccess: (result) => {
                     toast.success(result.message);
                     preview.reset();
                     setPreviewedFor(null);
-                    onOpenChange(false);
+                    changeOpen(false);
                   },
                   onError: () => toast.error("Could not apply retention"),
                 })
@@ -245,19 +269,29 @@ export function MigrationDialog({
   open,
   onOpenChange,
   legacyFolders,
+  testMode,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   legacyFolders: number;
+  /** Test mode is on: the move is still real, and the dialog must say so. */
+  testMode: boolean;
 }) {
   const [report, setReport] = useState<MigrationReport | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   const plan = useMigrationPlan();
   const apply = useMigrationApply();
 
   const blocked = report?.blocked ?? null;
+  const movable = Boolean(report) && !blocked && !report?.applied;
+
+  function changeOpen(next: boolean) {
+    if (!next) setAcknowledged(false);
+    onOpenChange(next);
+  }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Adopt the old backup folders</DialogTitle>
@@ -343,6 +377,16 @@ export function MigrationDialog({
           )}
         </div>
 
+        {testMode && movable && (
+          <RealDataWarning
+            consequence="move real folders on the backup disk"
+            detail="Syncs, restores and repairs are only rehearsed here; this is not. The folders move on the real backup disk, and when production uses the same folder, it sees them moved too."
+            acknowledgement="I understand these folders are moved for real"
+            acknowledged={acknowledged}
+            onAcknowledge={setAcknowledged}
+          />
+        )}
+
         <DialogFooter className="gap-2">
           <Button
             variant="outline"
@@ -357,7 +401,7 @@ export function MigrationDialog({
             {plan.isPending ? "Reading…" : "Preview"}
           </Button>
           <Button
-            disabled={!report || Boolean(blocked) || apply.isPending || report.applied}
+            disabled={!movable || apply.isPending || (testMode && !acknowledged)}
             onClick={() =>
               apply.mutate(undefined, {
                 onSuccess: (result) => {

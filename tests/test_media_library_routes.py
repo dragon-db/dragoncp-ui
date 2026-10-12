@@ -171,7 +171,7 @@ class MediaLibraryRouteTests(unittest.TestCase):
     def test_no_endpoint_hands_back_the_api_key(self):
         with patch('services.connectors.transport.requests.request', side_effect=_answer):
             for path in ('/api/library/sonarr', '/api/library/sonarr/history',
-                         '/api/library/sonarr/queue'):
+                         '/api/library/sonarr/queue', '/api/library/sonarr/900001'):
                 body = self.client.get(path).get_data(as_text=True)
                 self.assertNotIn(SECRET_KEY, body, path)
 
@@ -185,7 +185,9 @@ class MediaLibraryRouteTests(unittest.TestCase):
         with patch('services.connectors.transport.requests.request', side_effect=record):
             self.client.get('/api/library/sonarr')
             self.client.get('/api/library/sonarr/history')
+            self.client.get('/api/library/sonarr/history?event=imported')
             self.client.get('/api/library/sonarr/queue')
+            self.client.get('/api/library/sonarr/900001')
             self.client.post('/api/library/sonarr/refresh')
 
         self.assertTrue(seen, 'the routes should have reached the service')
@@ -264,11 +266,11 @@ class MediaLibraryRouteTests(unittest.TestCase):
         with patch('services.connectors.transport.requests.request', side_effect=_answer):
             payload = self.client.get('/api/library/sonarr').get_json()
         item = payload['items'][0]
-        self.assertEqual(item['sync_state'], 'synced')
+        self.assertEqual(item['sync_state'], 'in_sync')
         self.assertTrue(item['present_locally'])
         self.assertEqual(item['transfers'], 0, 'no transfer was ever recorded')
 
-    def test_a_season_the_service_has_and_we_do_not_reads_as_partial(self):
+    def test_a_season_the_service_has_and_we_do_not_reads_as_out_of_sync(self):
         library = os.path.join(self.tmpdir, 'tv2')
         season = os.path.join(library, 'Example Show (2021)', 'Season 01')
         os.makedirs(season, exist_ok=True)
@@ -281,10 +283,12 @@ class MediaLibraryRouteTests(unittest.TestCase):
         with patch('services.connectors.transport.requests.request', side_effect=_answer):
             payload = self.client.get('/api/library/sonarr').get_json()
         item = payload['items'][0]
-        self.assertEqual(item['sync_state'], 'partial')
+        self.assertEqual(item['sync_state'], 'out_of_sync')
+        self.assertEqual(item['attention'][0]['kind'], 'season_not_here')
+        self.assertEqual(item['attention'][0]['season_number'], 2)
         outstanding = [s['season_number'] for s in item['seasons']
                        if s['counts_towards_state'] and not s['synced_here']]
-        self.assertEqual(outstanding, [2])
+        self.assertEqual(outstanding, [2], 'the scanner reads these fields; unchanged')
 
     def test_the_poster_is_carried_through(self):
         with patch('services.connectors.transport.requests.request', side_effect=_answer):

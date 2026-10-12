@@ -1,6 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { PipelinePage } from "@/components/pages/pipeline";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
+// The Pipeline page became part of Transfers on 2026-10-06. Kept so a bookmark
+// or an older Discord message still lands somewhere useful.
 export const Route = createFileRoute("/_authenticated/pipeline/")({
-  component: PipelinePage,
+  beforeLoad: () => {
+    throw redirect({ to: "/transfers", replace: true });
+  },
 });

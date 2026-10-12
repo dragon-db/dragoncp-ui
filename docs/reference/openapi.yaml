@@ -4234,6 +4234,13 @@ paths:
           required: false
           description: 0, false or no leaves simulation runs out.
           schema: { type: string }
+        - name: copied
+          in: query
+          required: false
+          description: >-
+            0 (false, no) keeps only runs whose Transfer stage never started; 1
+            (true, yes) only runs whose copy started. Absent keeps both.
+          schema: { type: string }
         - $ref: '#/components/parameters/PageLimit'
         - $ref: '#/components/parameters/Offset'
       responses:
@@ -4677,7 +4684,14 @@ paths:
   /library/{source}:
     get:
       tags: [Media Library]
-      summary: One row per title the service holds, with what this disk holds beside it
+      summary: One row per title the service holds, with what this disk holds beside it and a verdict
+      description: >-
+        Each title's `sync_state` is worked out from one catalogue read, the
+        service's imports of the last 14 days and the disk, with no call per
+        title; a title opened through `/library/{source}/{external_id}` in the
+        last ten minutes carries that exact answer instead (`state_exact`).
+        Until 2026-10-06 the states were synced, partial, never, no_files,
+        orphan and unknown.
       parameters:
         - $ref: '#/components/parameters/LibrarySource'
         - name: refresh
@@ -4698,15 +4712,43 @@ paths:
                   live:
                     type: boolean
                     description: False when the service could not be read and the index answered instead.
+                  history_checked:
+                    type: boolean
+                    description: False when the import history could not be read; only the counts were compared.
                   total: { type: integer }
                   counts:
                     type: object
+                    description: Titles per sync_state.
                     additionalProperties: { type: integer }
                   items:
                     type: array
                     items:
                       type: object
                       additionalProperties: true
+                      properties:
+                        external_id: { type: string }
+                        title: { type: string, nullable: true }
+                        sync_state:
+                          type: string
+                          enum: [out_of_sync, in_sync, kept_here, never, no_files, orphan, unknown]
+                        state_reason: { type: string }
+                        state_exact: { type: boolean }
+                        attention:
+                          type: array
+                          description: Why it is out of sync.
+                          items:
+                            type: object
+                            additionalProperties: true
+                            properties:
+                              kind:
+                                type: string
+                                enum: [new_import, new_file, short, season_not_here, missing, different]
+                              season_number: { type: integer, nullable: true }
+                              count: { type: integer }
+                        kept_here_count: { type: integer }
+                        last_import_at: { type: string, nullable: true }
+                        service_files_counted: { type: integer }
+                        episodes_here: { type: integer }
                   read_only: { type: boolean }
                   test_mode: { type: boolean }
         '401':
@@ -4727,7 +4769,7 @@ paths:
   /library/{source}/history:
     get:
       tags: [Media Library]
-      summary: A page of the service's own history, with titles the index knows matched in
+      summary: A page of the service's own history, each row with its title and episode, titles the index knows matched in
       parameters:
         - $ref: '#/components/parameters/LibrarySource'
         - name: page
@@ -4738,6 +4780,14 @@ paths:
           in: query
           required: false
           schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: event
+          in: query
+          required: false
+          description: One kind of event, filtered by the service so `total` is the filtered count.
+          schema:
+            type: string
+            enum: [all, imported, grabbed, deleted, failed, renamed, ignored]
+            default: all
       responses:
         '200':
           description: History page; `live` false with a `message` when the service cannot be read
@@ -4750,17 +4800,40 @@ paths:
                   success: { type: boolean }
                   source: { type: string }
                   live: { type: boolean }
+                  event: { type: string }
                   records:
                     type: array
                     items:
                       type: object
                       additionalProperties: true
+                      properties:
+                        event_type: { type: string, description: The service's own event name. }
+                        event:
+                          type: string
+                          enum: [imported, grabbed, deleted, failed, renamed, ignored, other]
+                        event_label: { type: string }
+                        date: { type: string }
+                        title: { type: string, nullable: true }
+                        year: { type: integer, nullable: true }
+                        episode_code: { type: string, nullable: true, example: S01E08 }
+                        episode_label: { type: string, nullable: true, example: 1x08 }
+                        episode_title: { type: string, nullable: true }
+                        quality: { type: string, nullable: true }
+                        custom_formats:
+                          type: array
+                          items: { type: string }
+                        custom_format_score: { type: integer, nullable: true }
+                        source_title: { type: string, nullable: true }
+                        download_client: { type: string, nullable: true }
+                        reason: { type: string, nullable: true }
+                        external_id: { type: string, nullable: true }
+                        known_here: { type: boolean }
                   page: { type: integer }
                   page_size: { type: integer }
                   total: { type: integer }
                   read_only: { type: boolean }
         '400':
-          description: page or page_size is not a number
+          description: page or page_size is not a number, or event is not a known kind
           content:
             application/json:
               schema:
@@ -4797,6 +4870,24 @@ paths:
                     items:
                       type: object
                       additionalProperties: true
+                      properties:
+                        title: { type: string }
+                        year: { type: integer, nullable: true }
+                        episode_code: { type: string, nullable: true }
+                        episode_title: { type: string, nullable: true }
+                        quality: { type: string, nullable: true }
+                        verdict: { type: string }
+                        holds_sync: { type: boolean }
+                        status_label: { type: string, example: Stuck }
+                        status_detail: { type: string }
+                        status_text: { type: string, example: 'Stuck: The download is stalled with no connections' }
+                        tone:
+                          type: string
+                          enum: [brand, warn, crit, ok, muted]
+                        progress: { type: number }
+                        seconds_left: { type: integer, nullable: true }
+                        download_client: { type: string, nullable: true }
+                        external_id: { type: string, nullable: true }
                   counts:
                     type: object
                     additionalProperties: { type: integer }
@@ -4808,6 +4899,190 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: Unknown source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+
+  /library/{source}/{external_id}:
+    get:
+      tags: [Media Library]
+      summary: One title compared episode by episode, with what to do about it
+      description: >-
+        Episode states are in_sync, different, missing_here, only_here and
+        not_downloaded; the title is out_of_sync exactly when an episode
+        outside Specials is missing_here or different. A film carries `movie`
+        instead of `seasons`. `actions.sync.offered` is true only where the
+        title's Sync would copy season folders holding nothing kept only here;
+        `actions.explore` names where Explore fetches only the missing files.
+      parameters:
+        - $ref: '#/components/parameters/LibrarySource'
+        - name: external_id
+          in: path
+          required: true
+          description: TVDB id for Sonarr, TMDB id for Radarr.
+          schema: { type: string, pattern: '^[0-9]+$' }
+      responses:
+        '200':
+          description: >-
+            The comparison; `live` false with a `message` when the service is
+            not connected or does not answer
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties:
+                  success: { type: boolean }
+                  live: { type: boolean }
+                  found: { type: boolean }
+                  message: { type: string }
+                  title:
+                    type: object
+                    additionalProperties: true
+                  state:
+                    type: string
+                    enum: [out_of_sync, in_sync, kept_here, never, no_files, orphan, unknown]
+                  summary: { type: string }
+                  counts:
+                    type: object
+                    additionalProperties: { type: integer }
+                  seasons:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                      properties:
+                        season_number: { type: integer }
+                        counts_towards_state: { type: boolean }
+                        folder_here: { type: string, nullable: true }
+                        service_folder: { type: string, nullable: true }
+                        explore_season: { type: string }
+                        last_synced_at: { type: string, nullable: true }
+                        episodes:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: true
+                            properties:
+                              code: { type: string, example: S01E08 }
+                              title: { type: string, nullable: true }
+                              air_date: { type: string, nullable: true }
+                              state:
+                                type: string
+                                enum: [in_sync, different, missing_here, only_here, not_downloaded]
+                              service_file:
+                                type: object
+                                nullable: true
+                                additionalProperties: true
+                              local_file:
+                                type: object
+                                nullable: true
+                                additionalProperties: true
+                  movie:
+                    type: object
+                    nullable: true
+                    additionalProperties: true
+                  attention:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  actions:
+                    type: object
+                    properties:
+                      sync:
+                        type: object
+                        properties:
+                          offered: { type: boolean }
+                          seasons:
+                            type: array
+                            items: { type: integer }
+                          reason: { type: string }
+                      explore:
+                        type: object
+                        nullable: true
+                        properties:
+                          media_type: { type: string, enum: [tvshows, anime, movies] }
+                          series: { type: string, nullable: true }
+                          season: { type: string, nullable: true }
+                  computed_at: { type: string }
+        '400':
+          description: external_id is not a number
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown source, or a title neither the service nor the index knows
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+
+  /library/{source}/{external_id}/history:
+    get:
+      tags: [Media Library]
+      summary: One title's history, the service's events beside DragonCP's syncs
+      description: >-
+        Newest first, at most 150 entries. Each entry has `side` (service or
+        dragoncp), `kind`, a sentence in `title`, a `detail` line and a
+        `status`: done, not_done, failed, in_progress or info. An import's
+        status is info; the episode comparison says whether it is here now.
+        A burst of the same deletion or rename is one entry. Read-only.
+      parameters:
+        - $ref: '#/components/parameters/LibrarySource'
+        - name: external_id
+          in: path
+          required: true
+          description: TVDB id for Sonarr, TMDB id for Radarr.
+          schema: { type: string, pattern: '^[0-9]+$' }
+      responses:
+        '200':
+          description: >-
+            The history; `live` false with a `message` when the service did
+            not answer, in which case only DragonCP's side is listed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                properties:
+                  success: { type: boolean }
+                  live: { type: boolean }
+                  message: { type: string }
+                  total: { type: integer }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                      properties:
+                        at: { type: string, nullable: true }
+                        side: { type: string, enum: [service, dragoncp] }
+                        kind: { type: string }
+                        title: { type: string }
+                        detail: { type: string }
+                        status:
+                          type: string
+                          enum: [done, not_done, failed, in_progress, info]
+                        episodes:
+                          type: array
+                          items: { type: string }
+                        run_id: { type: string, nullable: true }
+                        season: { type: string, nullable: true }
+        '400':
+          description: The id is not a number
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LibraryError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown source, or a title neither the service nor the index knows
           content:
             application/json:
               schema:

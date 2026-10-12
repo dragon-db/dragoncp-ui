@@ -286,6 +286,8 @@ export interface ExploreRepairPlan {
 
 export interface ExploreRepairResult {
   scope: string;
+  /** True in test mode: the report says what would happen; nothing moved. */
+  dry_run?: boolean;
   moved: Array<{ relative_path: string; destination: string; size: number }>;
   deleted: Array<{ relative_path: string; kept_instead: string; size: number }>;
   replaced: Array<{ relative_path: string; replaced_by: string; size: number }>;

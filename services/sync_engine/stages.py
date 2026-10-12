@@ -45,20 +45,20 @@ class Stage:
 
 
 STAGES: Tuple[Stage, ...] = (
-    Stage(RECEIVE, 'Receive', 'Write down what asked',
+    Stage(RECEIVE, 'Receive', 'Who or what asked',
           'Records the request and who or what made it — a webhook, the '
           'auto-scanner or a person — before anything else happens.'),
     Stage(IDENTIFY, 'Identify', 'What, and which folders',
           'Works out what is being synced (a season, a whole series or a movie) '
           'and the source and destination folders. A path outside the library '
           'folders is refused.'),
-    Stage(BATCH, 'Batch', 'Join one or open one',
+    Stage(BATCH, 'Batch', 'Group requests for one folder',
           'Looks for a batch already open for the same folder. Waiting or queued: '
           'join it. Copying: join the one follow-up behind it. None: open one.'),
     Stage(READY, 'Ready check', 'Still downloading?',
           'Asks Sonarr whether anything for the season is still downloading, '
           'and waits as long as Sonarr says it needs — at most 30 minutes. When '
-          'Sonarr cannot answer, the fixed timer decides instead.'),
+          'Sonarr cannot answer, the fallback wait decides instead.'),
     Stage(SAFETY, 'Safety check', 'Dry run first',
           'A dry run before anything is written. The sync stops when it would '
           'delete more files than it brings in, or when the media server holds '
@@ -69,7 +69,7 @@ STAGES: Tuple[Stage, ...] = (
     Stage(TRANSFER, 'Transfer', 'Copy the files',
           'rsync copies the folder. Files it replaces go to the backup area '
           'first.'),
-    Stage(FINISH, 'Finish', 'Close the batch',
+    Stage(FINISH, 'Finish', 'Close out its webhooks',
           'Marks every webhook in the batch synced, or failed with the reason, '
           'and releases a follow-up waiting behind it.'),
     Stage(TELL, 'Tell', 'Discord + Notifications',
@@ -228,16 +228,17 @@ KINDS: Dict[str, KindPolicy] = {
     ),
     EXPLORE: KindPolicy(
         EXPLORE, 'Explore',
-        'An admin approved an Explore plan: sync, download or replace.',
+        'An admin pressed Sync, Download or Replace in Explore and confirmed its '
+        'review.',
         stages={
-            IDENTIFY: (DIFFERENT, 'What moves is the exact file plan that was '
-                                  'reviewed, not a whole folder.'),
-            BATCH: (SKIP, 'An Explore plan is an exact file list, so it never takes '
-                          'in webhooks. The queue still holds it behind anything '
-                          'writing to the same folder.'),
-            READY: (SKIP, 'Skipped: the plan was made from what is on both sides now.'),
-            SAFETY: (DIFFERENT, 'Explore’s own review and dry run already checked '
-                                'this plan before it was approved.'),
+            IDENTIFY: (DIFFERENT, 'Copies exactly the files listed in Explore’s review, '
+                                  'not the whole folder.'),
+            BATCH: (SKIP, 'Skipped: it copies a fixed list of files, so webhooks never '
+                          'join it. The queue still holds it behind anything writing '
+                          'to the same folder.'),
+            READY: (SKIP, 'Skipped: Explore compared both sides just before it started.'),
+            SAFETY: (DIFFERENT, 'Explore’s review checked these exact files before it '
+                                'started.'),
         },
         mergeable=False,
     ),
