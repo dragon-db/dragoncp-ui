@@ -874,6 +874,119 @@ class FinishTests(EngineTestCase):
         self.assertEqual(described['transfer']['transfer_id'], transfer_id)
 
 
+class ExactCopyTests(EngineTestCase):
+    """A single file or an Explore list copies exactly that, never a folder batch."""
+
+    def season_dest(self, season=1):
+        return os.path.join(self.config.get('TVSHOW_DEST_PATH'), 'Example Show (2020)',
+                            f'Season {season:02d}')
+
+    def single_file(self):
+        return SyncRequest(
+            kind=S.MANUAL, source='manual', media_type='tvshows',
+            source_path=f"{REMOTE_TV}/Example Show (2020)/Season 01/Example Show - S01E05.mkv",
+            dest_path=self.season_dest(), folder_name='Example Show (2020)',
+            season_name='Season 01', title='Example Show', operation_type='file')
+
+    def failed_explore_copy(self):
+        files_from = os.path.join(self.tmp.name, 'plan-files.txt')
+        with open(files_from, 'w', encoding='utf-8') as handle:
+            handle.write('Example Show - S01E02.mkv\n')
+        result = self.engine.submit(SyncRequest(
+            kind=S.EXPLORE, source='explore', media_type='tvshows',
+            source_path=f"{REMOTE_TV}/Example Show (2020)/Season 01",
+            dest_path=self.season_dest(), folder_name='Example Show (2020)',
+            season_name='Season 01', title='Example Show', operation_type='explore_download',
+            transfer_id='explore_plan', safety_summary='Reviewed in Explore.',
+            extra_fields={'explore_files_from': files_from, 'explore_mode': 'download'}),
+            wait=True)
+        self.coordinator.finish('explore_plan', 'failed', 'rsync exited with code 23')
+        self.assertEqual(self.get_run(result.run_id)['state'], S.FAILED_STATE)
+        return files_from
+
+    def test_retrying_an_explore_copy_never_joins_a_waiting_batch(self):
+        files_from = self.failed_explore_copy()
+        batch = self.sonarr(self.series_webhook('e1', 1))
+        retry = self.engine.restart_transfer('explore_plan')
+        self.assertTrue(retry.ok, retry.message)
+        self.assertNotEqual(retry.run_id, batch.run_id, 'a sync of its own')
+        self.assertFalse(self.get_run(batch.run_id).get('go_now'), 'the batch was not told to go')
+        self.assertIn('explore_plan', self.coordinator.requeued, 'the same transfer, queued again')
+        self.assertEqual(self.coordinator.transfer_model.get('explore_plan')['explore_files_from'],
+                         files_from, 'with the same list of files')
+        # A webhook arriving now joins the batch, never the exact copy.
+        self.sonarr(self.series_webhook('e2', 2))
+        self.assertEqual(self.webhook('e2')['sync_run_id'], batch.run_id)
+
+    def test_retrying_an_explore_copy_twice_starts_one_copy(self):
+        self.failed_explore_copy()
+        # The second press lands while the first is still before the queue.
+        self.engine.inline = False
+        first = self.engine.restart_transfer('explore_plan')
+        second = self.engine.restart_transfer('explore_plan')
+        self.engine.inline = True
+        self.assertTrue(second.ok, second.message)
+        self.assertEqual(second.run_id, first.run_id, 'the second press goes with the first')
+        restarts = [r for r in self.store.list(limit=20) if r['kind'] == S.RESTART]
+        self.assertEqual(len(restarts), 1)
+
+    def test_a_single_file_sync_never_joins_a_folder_batch(self):
+        batch = self.sonarr(self.series_webhook('e1', 1))
+        single = self.engine.submit(self.single_file())
+        self.assertTrue(single.ok, single.message)
+        self.assertNotEqual(single.run_id, batch.run_id)
+        self.assertFalse(self.get_run(batch.run_id).get('go_now'))
+        transfer = self.coordinator.transfer_model.get(self.get_run(single.run_id)['transfer_id'])
+        self.assertEqual(transfer['operation_type'], 'file')
+
+    def test_a_webhook_never_joins_a_single_file_sync(self):
+        self.coordinator.queue_state = 'QUEUED_SLOT'
+        single = self.engine.submit(self.single_file())
+        self.assertEqual(self.get_run(single.run_id)['state'], S.QUEUED)
+        batch = self.sonarr(self.series_webhook('e1', 1))
+        self.assertNotEqual(batch.run_id, single.run_id)
+        self.assertEqual(self.webhook('e1')['sync_run_id'], batch.run_id)
+
+
+class StrandedRunTests(EngineTestCase):
+    """A sync whose transfer ended without the sync being told: Retry gets past it."""
+
+    def season_sync(self):
+        return self.engine.submit(SyncRequest(
+            kind=S.MANUAL, source='manual', media_type='tvshows',
+            source_path=f"{REMOTE_TV}/Example Show (2020)/Season 01",
+            dest_path=os.path.join(self.config.get('TVSHOW_DEST_PATH'), 'Example Show (2020)',
+                                   'Season 01'),
+            folder_name='Example Show (2020)', season_name='Season 01', title='Example Show'))
+
+    def strand(self, queue_state):
+        self.coordinator.queue_state = queue_state
+        result = self.season_sync()
+        transfer_id = self.get_run(result.run_id)['transfer_id']
+        # The transfer failed, and nothing told its sync.
+        self.coordinator.transfer_model.update(transfer_id, {
+            'status': 'failed', 'progress': 'rsync process failed to start, return code: 255'})
+        return result.run_id, transfer_id
+
+    def test_retry_of_a_sync_left_copying(self):
+        run_id, transfer_id = self.strand('running')
+        self.assertEqual(self.get_run(run_id)['state'], S.TRANSFERRING)
+        retry = self.engine.restart_transfer(transfer_id)
+        self.assertTrue(retry.ok, retry.message)
+        self.assertEqual(retry.action, 'opened')
+        self.assertNotEqual(retry.run_id, run_id)
+        self.assertEqual(self.get_run(run_id)['state'], S.FAILED_STATE)
+
+    def test_retry_of_a_sync_left_queued(self):
+        run_id, transfer_id = self.strand('QUEUED_SLOT')
+        self.assertEqual(self.get_run(run_id)['state'], S.QUEUED)
+        retry = self.engine.restart_transfer(transfer_id)
+        self.assertTrue(retry.ok, retry.message)
+        self.assertEqual(retry.action, 'opened')
+        self.assertIn(transfer_id, self.coordinator.requeued)
+        self.assertEqual(self.get_run(run_id)['state'], S.FAILED_STATE)
+
+
 class LateAnswerTests(EngineTestCase):
     """Sonarr and the dry run take seconds; a cancel in that time must hold."""
 

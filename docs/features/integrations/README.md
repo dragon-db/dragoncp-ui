@@ -348,8 +348,10 @@ automatically" is gone.
    nothing has synced since is a find: no finished copy of its folder started
    after it (see [Sync engine](../sync-engine/README.md), "The scheduled
    auto-scanner").
-4. For Sonarr only, also finds seasons this disk keeps but holds fewer files of
-   than Sonarr has.
+4. For Sonarr only, also finds seasons this disk keeps but holds fewer
+   episodes of than Sonarr has files for, counted as episodes on both sides (a
+   double-episode file is two). A season is copied from its real folder on
+   the media server into the folder this disk already keeps it in.
 5. Hands every find to the sync engine as an *Auto-scanner* sync, so batching,
    Sonarr's ready check and the safety check all apply. A find whose folder
    already has a sync on its way is left to that sync.

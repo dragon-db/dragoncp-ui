@@ -60,7 +60,7 @@ is also what lets three modules share a fixture: `test_auto_scanner.py`,
 `from tests.test_sync_engine import EngineTestCase`, which resolves without an
 `__init__.py` because, with the root on the path, Python treats `tests` as a
 namespace package. Run directly, each still works
-(`./venv/bin/python tests/test_auto_scanner.py` reports `Ran 20 tests`, `OK`).
+(`./venv/bin/python tests/test_auto_scanner.py` reports `Ran 23 tests`, `OK`).
 
 ### Why the tests hand the database a relative path
 
@@ -215,6 +215,19 @@ shape). Every rsync launched must carry `--dry-run`, the safety check's command
 too, and no destination folder may appear. A simulation is asserted as the
 deliberate exception: it copies for real, between its own sandbox paths.
 
+### `tests/test_queued_start_failures.py` - a queued transfer that cannot start (5 tests)
+
+Builds on `RealCoordinatorTestCase` from `test_test_mode_sync_paths.py`: the
+real coordinator, transfer service and queue. A season sync waits in the queue,
+then the queue lets it through (`start_queued_transfer`) and the start fails:
+with no backup folder, the sync ends failed at its Queue stage; with rsync
+refusing to start, at its Transfer stage; either way with one *Failed* alert
+offering Retry, and Retry then copies it. A transfer queued before the sync
+engine existed has no sync, so its episode is marked failed instead of left
+reading syncing. A resume that cannot start rsync leaves the transfer and its
+sync paused. Added 2026-10-13 with the fix: before it, the sync stayed Queued
+or Copying for good.
+
 ### `tests/test_webhook_group_sync.py` - "Sync all" on a webhook group (10 tests)
 
 Rewritten for 2.3.0 on top of `EngineTestCase` (below): the grouping moved out
@@ -239,7 +252,7 @@ What the engine changed, and these tests now pin:
   because that copy could then not mark it synced ("being copied right now").
 - **An empty request starts nothing.**
 
-### `tests/test_sync_engine.py` - the sync engine (66 tests)
+### `tests/test_sync_engine.py` - the sync engine (72 tests)
 
 Drives `SyncEngine` with a real temporary database and fakes for everything
 that would touch the network or start rsync: Sonarr's connection check and its
@@ -311,6 +324,17 @@ build on. See [../features/sync-engine/README.md](../features/sync-engine/README
   - a restarted simulation is neither announced nor alerted;
   - a restart of an Explore plan's transfer skips the folder dry run;
   - a restore is not restarted from the transfer list ("Backups page").
+- **`ExactCopyTests`** (4) - a copy of named files stands alone: a Retry of a
+  failed Explore copy, while a webhook batch waits for the folder, opens its
+  own sync, leaves the batch alone, re-queues the same transfer with the same
+  file list, and a webhook arriving after it still joins the batch; Retry
+  pressed twice on it starts one copy; a single-file sync never joins a
+  waiting folder batch, and a webhook never joins a waiting single-file sync.
+  Added 2026-10-13.
+- **`StrandedRunTests`** (2) - a sync left at Copying, or at Queued, by a
+  transfer that failed without telling it is closed as failed when Retry is
+  pressed, and the Retry opens a new sync instead of being refused or doing
+  nothing. Added 2026-10-13.
 - **`LateAnswerTests`** (2) - a cancel pressed while Sonarr is answering the
   ready check, or while the dry run runs, holds: the sync stays `cancelled`, no
   copy starts, its webhook stays cancelled, and the late answer does not mark
@@ -373,7 +397,7 @@ what every background job gets without asking:
   recorded as failed with the error in its last result, and the healthy job
   beside it still runs.
 
-### `tests/test_auto_scanner.py` - the scheduled auto-scanner (20 tests)
+### `tests/test_auto_scanner.py` - the scheduled auto-scanner (23 tests)
 
 Builds on `EngineTestCase`, so every find goes through a real engine. The
 service (`FakeArr`: its connection check, switch, interval, import history and
@@ -406,6 +430,13 @@ the rules decided on 2026-10-02:
 - **`test_a_short_season_this_disk_keeps_is_filled_in`** - 8 files here against
   10 at the service starts a sync whose Receive stage says files are missing
   here.
+- **`test_a_double_episode_file_is_not_a_gap`** - 9 files holding 10 episodes
+  (one double-episode file) against Sonarr's 10 is not a gap. Added 2026-10-13.
+- **`test_a_short_season_is_copied_between_its_real_folders`** - a short
+  season kept in `Season 1`, on the server and here, is copied between those
+  folders, not rebuilt `Season 01` ones.
+- **`test_a_season_folder_here_keeps_its_own_name`** - Sonarr's `Season 01`
+  is copied into this disk's own `Season 1`, not a second folder beside it.
 - **`test_the_backlog_is_not_a_gap`** - a season this disk holds nothing of, and
   a title it never held, start nothing.
 - **`test_a_new_title_is_fetched_once_it_is_imported`** - a title this disk

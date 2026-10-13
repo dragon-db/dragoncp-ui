@@ -139,6 +139,10 @@ sidebar — and gave every sync one pipeline.
   failure nobody saw.** When DragonCP restarts during a copy and cannot tell how
   rsync ended, the transfer now says "Result unknown" and an alert asks you to
   check the folder, with Retry and Mark as done.
+- **A queued transfer that cannot start now says so.** When the queue started a
+  waiting transfer and it failed at once (no backup folder, or rsync refusing
+  to start), its episodes stayed "syncing" and nothing was announced. Its sync
+  now ends failed, with "Sync failed" on Discord and an alert offering Retry.
 - **Deleting a waiting transfer no longer blocks its folder.** A queued or
   paused transfer deleted from the list kept its place in the queue until the
   next restart, so later syncs to the same folder waited behind nothing. It is

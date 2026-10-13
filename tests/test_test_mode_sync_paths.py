@@ -84,7 +84,10 @@ class FakeProcess:
     kill = terminate
 
 
-class SyncPathsInTestMode(unittest.TestCase):
+class RealCoordinatorTestCase(unittest.TestCase):
+    """The real coordinator, transfer service and queue, TEST_MODE on, with the
+    rsync commands captured instead of run. Holds no tests itself."""
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -149,6 +152,10 @@ class SyncPathsInTestMode(unittest.TestCase):
 
     def run_state(self, run_id):
         return self.engine.store.get(run_id)['state']
+
+
+
+class SyncPathsInTestMode(RealCoordinatorTestCase):
 
     # -- every kind --------------------------------------------------------
 

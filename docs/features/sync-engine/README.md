@@ -167,6 +167,14 @@ write the same folder are the same piece of work.
   **follow-up batch** behind the copy, which runs straight after it. Never a
   third: later requests join the follow-up.
 - **Nothing for this folder:** a new batch opens.
+- **A single file, or an Explore list of files, stands alone.** A copy of named
+  files never joins a batch and no webhook joins it, whatever kind of sync it
+  is: joined to a batch it would be widened into a whole-folder copy, with
+  deletions nobody approved; joined by a webhook, it would mark that episode
+  synced without ever looking for it. The queue holds it behind anything
+  writing to the same folder. Until 2026-10-13 (branch only) a single-file
+  sync, or a Retry of one or of an Explore list, joined a batch waiting for
+  the folder and lost what it was meant to copy.
 
 Joining and the queued→copying switch happen under one lock per folder, so a
 webhook cannot slip between "the batch is open" and "the copy started". As a
@@ -328,7 +336,11 @@ What the differences are:
   per-run skips above) and the queue like any other sync; if a batch for the
   folder is already waiting, the restart joins it rather than copying twice —
   and a batch still held or in its ready check is released by it, and counts
-  as a manual sync from then on. rsync picks up its partial files.
+  as a manual sync from then on. A transfer of one file or an Explore list is
+  the exception: its retry stands alone (see Batch). Retry pressed twice before
+  the first reaches the queue goes with the first. A sync still showing Queued
+  or Copying for a transfer that has already ended is closed first, as its
+  transfer ended, so Retry gets past it. rsync picks up its partial files.
 - **Explore, restore and simulation** stand alone: they never take in
   webhooks, because each is an exact plan. The queue still holds them behind
   anything writing to the same folder — except a **restore, which refuses
@@ -421,10 +433,16 @@ Each scan:
    copy that began before the import but ended after it counted, through its
    transfer row's end time, and the import was never synced;
 3. for Sonarr, also finds **seasons this disk keeps but is short of** — fewer
-   files here than in Sonarr;
+   episodes here than Sonarr has files for, counted as episodes on both
+   sides, so one double-episode file is two (until 2026-10-13, branch only, it
+   counted files here and called such a season short);
 4. hands every find to the engine as an *Auto-scanner* sync, so batching, the
    ready check and the safety check all apply. A find whose folder already has
-   a sync on its way is left to it.
+   a sync on its way is left to it. A season is copied from its real folder on
+   the media server (asked of Sonarr) into the folder this disk already keeps
+   it in, so a library with `Season 1` folders is neither read from a rebuilt
+   `Season 01` nor given a second folder beside its own. Until 2026-10-13
+   (branch only) a short season was copied between rebuilt `Season 01` names.
 
 It deliberately does **not** fetch the service's whole backlog: a season this
 disk holds nothing of, or a title it never held, is fetched only when the
@@ -524,6 +542,15 @@ activity trail (`alert.resolve`).
   joined it and never started.
 - **The ready check asks Sonarr one question at a time per batch**, however
   many webhooks join while it waits.
+- **A transfer the queue cannot start fails its sync.** The queue starts a
+  waiting transfer by itself once a slot or its folder frees up. When that
+  start fails (no backup folder to put displaced files in, or rsync refusing
+  to start) the transfer is marked failed, and its sync ends failed: at the
+  Queue stage when it never left the queue, at Transfer when rsync refused.
+  Discord says "Sync failed" and a *Failed* alert offers Retry. A resume that
+  cannot start rsync puts the transfer back to paused, and its sync with it.
+  Until 2026-10-13 (branch only) the sync stayed Queued or Copying for good,
+  with no alert, and Retry either did nothing or said the folder was busy.
 - **A cancel holds while Sonarr or the dry run is still answering.** Both take
   seconds, and nothing is locked while they do. Their answer is written under
   the folder's lock and only if the sync is still waiting for it, so a sync

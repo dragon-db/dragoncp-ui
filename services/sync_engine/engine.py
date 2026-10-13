@@ -109,6 +109,26 @@ def _started_by_a_person(run: Dict[str, Any]) -> bool:
     return run['kind'] not in _AUTOMATIC_KINDS or bool(run.get('go_now'))
 
 
+def _named_files_only(operation_type: Optional[str],
+                      extra: Optional[Dict[str, Any]] = None) -> bool:
+    """A copy of exactly what was named (one file, or an Explore list), not the folder.
+
+    Such a copy stands alone: it never joins a batch, and no webhook joins it.
+    Joined to a batch it would be widened into a whole-folder mirror, with
+    deletions nobody approved; joined by a webhook, it would mark that episode
+    synced without ever looking for it. Where both want the same folder, the
+    queue keeps them apart.
+    """
+    return (operation_type == 'file'
+            or str(operation_type or '').startswith('explore_')
+            or bool((extra or {}).get('explore_files_from')))
+
+
+def _request_stands_alone(request: 'SyncRequest', policy: S.KindPolicy) -> bool:
+    return not policy.mergeable or _named_files_only(
+        request.operation_type, request.extra_fields or request.options.get('extra_fields'))
+
+
 _SYNC_LABEL = {
     S.SONARR_WEBHOOK: 'Automated Sync',
     S.RADARR_WEBHOOK: 'Automated Sync',
@@ -614,8 +634,9 @@ class SyncEngine:
     def _batch(self, request: SyncRequest, unit: Unit, policy: S.KindPolicy) -> SubmitResult:
         """Join a batch, open a follow-up, or open a new one. Caller holds the lock."""
         key = unit.unit_key
+        joins = not _request_stands_alone(request, policy)
 
-        if policy.mergeable:
+        if joins:
             open_run = self.store.find_open(key)
             if open_run is not None and self._transfer_vanished(open_run):
                 self._close_orphan(open_run)
@@ -623,7 +644,7 @@ class SyncEngine:
             if open_run is not None:
                 return self._join(open_run, request, unit)
 
-        active = self.store.find_active(key) if policy.mergeable else None
+        active = self.store.find_active(key) if joins else None
         if active is not None and request.kind == S.AUTO_SCANNER:
             # Already copying: whatever the scanner found arrives with it, and
             # if anything is still missing afterwards the next scan sees it.
@@ -689,7 +710,7 @@ class SyncEngine:
             'source': request.source,
             'media_type': unit.media_type,
             'unit_key': unit.unit_key,
-            'mergeable': 1 if policy.mergeable else 0,
+            'mergeable': 0 if _request_stands_alone(request, policy) else 1,
             'title': unit.title,
             'season_number': unit.season_number,
             'season_name': unit.season_name,
@@ -727,6 +748,12 @@ class SyncEngine:
         if not policy.mergeable:
             self._stage(run_id, S.BATCH, S.SKIPPED, policy.note(S.BATCH) or
                         'This kind of sync always stands alone.')
+        elif _request_stands_alone(request, policy):
+            what = 'one file' if request.operation_type == 'file' else 'a fixed list of files'
+            self._stage(run_id, S.BATCH, S.SKIPPED,
+                        f"Stands alone: it copies {what} and nothing else, so it never joins "
+                        f"a batch and no webhook joins it. The queue still holds it behind "
+                        f"anything writing to the same folder.")
         elif parent is not None:
             self._stage(
                 run_id, S.BATCH, S.PASSED,
@@ -1289,7 +1316,11 @@ class SyncEngine:
             if not started:
                 transfer = self.coordinator.transfer_model.get(transfer_id) or {}
                 why = transfer.get('progress') or f"The queue refused it ({queue_state})"
-                self._fail_run(run_id, S.QUEUE, f"Could not start: {why}")
+                # rsync may already have been asked, and refused: then the run
+                # reads as copying, and the copy is what failed.
+                copying = (self.store.get(run_id) or {}).get('state') == S.TRANSFERRING
+                self._fail_run(run_id, S.TRANSFER if copying else S.QUEUE,
+                               f"Could not start: {why}")
                 if self.alerts is not None:
                     self.alerts.transfer_failed(self.store.get(run_id), why)
                 return False
@@ -1411,13 +1442,14 @@ class SyncEngine:
             run['run_id'], {'status': 'QUEUED_PATH' if reason == 'path' else 'QUEUED_SLOT'},
             exclude_status=SETTLED_STATUSES)
 
-    def on_transfer_paused(self, transfer_id: str) -> None:
+    def on_transfer_paused(self, transfer_id: str, message: Optional[str] = None) -> None:
         run = self.store.by_transfer(transfer_id)
         if not run or run['state'] in S.TERMINAL_STATES:
             return
         who = current_actor().label
         self._stage(run['run_id'], S.TRANSFER, S.WAITING,
-                    f"Paused by {who}. Partial files are kept; resuming continues from them.")
+                    message or f"Paused by {who}. Partial files are kept; resuming "
+                               f"continues from them.")
         self._set_state(run['run_id'], S.PAUSED, S.TRANSFER)
 
     def on_transfer_resumed(self, transfer_id: str, queue_state: str) -> None:
@@ -1451,6 +1483,8 @@ class SyncEngine:
         run_id = run['run_id']
         transfer = (self.coordinator.transfer_model.get(transfer_id)
                     if self.coordinator is not None else None) or {}
+        # Still queued: the queue let it through and it could not start.
+        never_started = run['state'] == S.QUEUED
         self._set_state(run_id, S.FINISHING, S.FINISH)
 
         stats = {}
@@ -1482,6 +1516,11 @@ class SyncEngine:
         elif status == 'cancelled':
             self._stage(run_id, S.TRANSFER, S.FAILED,
                         progress or 'Cancelled.', level='warning')
+        elif never_started:
+            self._stage(run_id, S.QUEUE, S.FAILED,
+                        f"Could not start: {progress or 'no reason given'}")
+            self.store.set_stage(run_id, S.TRANSFER, S.SKIPPED,
+                                 'Not reached: the transfer could not start.')
         else:
             self._stage(run_id, S.TRANSFER, S.FAILED,
                         f"rsync stopped without finishing: {progress or 'no reason given'}.")
@@ -1834,14 +1873,28 @@ class SyncEngine:
                                 f"restarted (this one is {transfer['status']}).")
         previous = self.store.by_transfer(transfer_id)
         key = make_unit_key(transfer['dest_path'])
+        exact = _named_files_only(transfer.get('operation_type'), transfer)
 
         with self.unit_lock(key):
+            if previous is not None and previous['state'] in (S.QUEUED, *S.ACTIVE_STATES):
+                # Handed to the queue, yet its transfer has ended: the sync was
+                # never told. A start that failed could leave it at Queued or
+                # Copying for good. Closed now as its transfer ended, so it
+                # neither blocks the folder nor swallows this Retry.
+                self.on_transfer_finished(transfer_id, transfer['status'])
+                previous = self.store.get(previous['run_id'])
+            if previous is not None and previous['state'] not in S.TERMINAL_STATES:
+                # A Retry already on its way, still before the queue: pressed
+                # twice, the second press goes with the first.
+                return self._promote(previous, actor)
             live = self.store.find_live(key)
             if live is not None and live['state'] in S.ACTIVE_STATES:
                 return SubmitResult(False, live['run_id'], 'failed', live['state'],
                                     'This folder is being copied right now. Retry once that '
                                     'copy has finished.')
-            open_run = self.store.find_open(key)
+            # A copy of named files is retried on its own, never folded into
+            # the folder's batch; the queue keeps the two apart.
+            open_run = None if exact else self.store.find_open(key)
             if open_run is not None:
                 # Already waiting — possibly the restart pressed a moment ago,
                 # still in its safety check. Join it rather than open a second.
@@ -1881,7 +1934,9 @@ class SyncEngine:
                 return SubmitResult(False, None, 'failed', '', str(error))
             run = self._open_run(request, unit, S.policy(S.RESTART))
             if previous:
-                for table in (SERIES_TABLE, MOVIE_TABLE):
+                # Webhooks go with a whole-folder copy only: one of named
+                # files never looked for their episodes.
+                for table in (() if exact else (SERIES_TABLE, MOVIE_TABLE)):
                     ids = self.store.webhook_ids(previous['run_id'], table)
                     if ids:
                         self.store.move_webhooks(table, ids, run['run_id'])
@@ -1930,9 +1985,10 @@ class SyncEngine:
 
         # Its webhooks come along, so the new sync marks them synced when it
         # finishes. Ones synced since, or taken by another sync, stay where
-        # they are.
+        # they are, and a copy of named files takes none.
         webhooks = []
-        for table in (SERIES_TABLE, MOVIE_TABLE):
+        exact = _named_files_only(run.get('operation_type'), extra)
+        for table in (() if exact else (SERIES_TABLE, MOVIE_TABLE)):
             for notification_id in self.store.webhook_ids(run_id, table):
                 row = self._webhook_row(table, notification_id) or {}
                 if row and row.get('status') not in SETTLED_STATUSES:

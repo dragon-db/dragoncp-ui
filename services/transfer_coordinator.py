@@ -575,6 +575,10 @@ class TransferCoordinator:
                 'paused_at': datetime.now().isoformat()
             })
             self.queue_manager.unregister_transfer(transfer_id, transfer['dest_path'])
+            # Its sync was told the copy was starting; it is paused again.
+            self._hook('on_transfer_paused', transfer_id,
+                       'Resuming could not start rsync. The partial files are kept; '
+                       'resume again to continue.')
             return False, 'Failed to resume transfer'
 
         import threading
@@ -764,8 +768,10 @@ class TransferCoordinator:
             self.transfer_model.update(transfer_id, {
                 'status': 'failed',
                 'progress': 'BACKUP_PATH is not configured; refusing to start',
+                'end_time': datetime.now().isoformat(),
             })
             self.queue_manager.unregister_transfer(transfer_id, transfer.get('dest_path'))
+            self._start_failed(transfer_id)
             return False
 
         # Start the transfer
@@ -792,8 +798,36 @@ class TransferCoordinator:
             self.queue_manager.unregister_transfer(transfer_id)
             # Same as the first start path: no rsync, no watcher, so release here.
             self._release_fast_route()
+            self._start_failed(transfer_id)
 
         return success
+
+    def _start_failed(self, transfer_id: str) -> None:
+        """A transfer the queue let through could not start: tell its sync.
+
+        Started from the queue, nobody is waiting on the answer, and with no
+        rsync there is no completion watcher either. Without this the sync sat
+        at Queued or Copying for good, with no alert and a Retry that could
+        not get past it.
+        """
+        row = self.transfer_model.get(transfer_id) or {}
+        if row.get('status') != 'failed':
+            self.transfer_model.update(transfer_id, {
+                'status': 'failed',
+                'progress': row.get('progress') or 'The transfer could not start',
+                'end_time': datetime.now().isoformat(),
+            })
+        if row.get('sync_run_id') and getattr(self, 'sync_engine', None):
+            self._hook('on_transfer_finished', transfer_id, 'failed')
+            return
+        # Queued before the sync engine existed: closed the way the completion
+        # watcher closes such a transfer, so its episodes stop reading syncing.
+        try:
+            self.webhook_service.update_webhook_transfer_status(
+                transfer_id, 'failed', self.transfer_model)
+            self.notification_service.send_discord_notification(transfer_id, 'failed')
+        except Exception as error:  # noqa: BLE001 - bookkeeping must not break the queue
+            print(f"⚠️  Could not close {transfer_id} after it failed to start: {error}")
     
     def get_queue_status(self) -> Dict:
         """Get current queue status"""

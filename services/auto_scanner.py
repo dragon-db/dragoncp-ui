@@ -74,6 +74,14 @@ def _parse(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _season_folder_here(item: Dict[str, Any], season: int) -> Optional[str]:
+    """The folder this disk keeps a season in, as the library view found it."""
+    for entry in item.get('seasons') or []:
+        if entry.get('season_number') == season:
+            return entry.get('folder_here') or None
+    return None
+
+
 @dataclass
 class Find:
     """One thing the scanner thinks needs syncing, and why."""
@@ -194,7 +202,7 @@ class AutoScanner:
         imported, history_ok = self._from_history(source, adapter, view, since)
         for find in imported:
             self._merge(finds, find)
-        for find in self._from_library(source, view):
+        for find in self._from_library(source, view, adapter):
             self._merge(finds, find)
 
         decisions = self._act(source, list(finds.values()))
@@ -288,8 +296,8 @@ class AutoScanner:
             out.append(find)
         return out, True
 
-    def _from_library(self, source: str, view: Dict[str, Any]) -> List[Find]:
-        """Seasons this disk keeps that hold fewer files than the service has."""
+    def _from_library(self, source: str, view: Dict[str, Any], adapter) -> List[Find]:
+        """Seasons this disk keeps that hold fewer episodes than the service has."""
         if source != SOURCE_SONARR:
             return []
         out: List[Find] = []
@@ -299,18 +307,20 @@ class AutoScanner:
             for season in item.get('seasons') or []:
                 if not season.get('counts_towards_state'):
                     continue
+                # Episodes on both sides: Sonarr counts every episode a file
+                # holds, so one double-episode file is two of its episodes.
                 theirs = season.get('episode_file_count') or 0
-                ours = season.get('files_here') or 0
+                ours = season.get('episodes_here', season.get('files_here')) or 0
                 if ours == 0 or ours >= theirs:
                     # A season this disk does not keep at all is not a gap: it
                     # is fetched when the service imports something for it.
                     continue
-                find = self._find_for(source, item, season['season_number'], None)
+                find = self._find_for(source, item, season['season_number'], adapter)
                 if find is None:
                     continue
-                find.reasons.append(f"{source.title()} has {theirs} episode file(s) for "
+                find.reasons.append(f"{source.title()} has files for {theirs} episode(s) of "
                                     f"season {season['season_number']}; this disk has {ours}.")
-                find.finding = f"found {theirs - ours} episode file(s) missing here"
+                find.finding = f"found {theirs - ours} episode(s) missing here"
                 out.append(find)
         return out
 
@@ -341,7 +351,9 @@ class AutoScanner:
                     folder_name = None
             season_name = folder_name or f"Season {int(season):02d}"
             source_path = f"{source_path}/{season_name}"
-            dest_path = f"{dest_path}/{season_name}"
+            # Into the folder this disk already keeps the season in, whatever
+            # it is called: a rebuilt name would start a second one beside it.
+            dest_path = f"{dest_path}/{_season_folder_here(item, season) or season_name}"
         return Find(source=source, external_id=str(item.get('external_id') or ''),
                     title=item.get('title') or local_folder, media_type=media_type,
                     source_path=source_path, dest_path=dest_path, folder=local_folder,

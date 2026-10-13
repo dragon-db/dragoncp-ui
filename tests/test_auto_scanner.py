@@ -240,6 +240,35 @@ class ScannerTests(EngineTestCase):
         run = self.scanner_runs()[0]
         self.assertIn('missing here', self.store.stages(run['run_id'])[S.RECEIVE]['summary'])
 
+    def test_a_double_episode_file_is_not_a_gap(self):
+        """One S01E01E02 file is two of Sonarr's episodes, and both are here."""
+        self.library.items = [show(seasons=[
+            {'season_number': 1, 'episode_file_count': 10, 'files_here': 9,
+             'episodes_here': 10, 'counts_towards_state': True}])]
+        self.assertEqual(self.scan()['found'], 0)
+
+    def test_a_short_season_is_copied_between_its_real_folders(self):
+        self.arr.folders[(219, 1)] = 'Season 1'
+        self.library.items = [show(seasons=[
+            {'season_number': 1, 'episode_file_count': 10, 'files_here': 8,
+             'episodes_here': 8, 'folder_here': 'Season 1', 'counts_towards_state': True}])]
+        self.assertEqual(self.scan()['started'], 1)
+        run = self.scanner_runs()[0]
+        self.assertTrue(run['source_path'].endswith('/Example Show (2020)/Season 1'))
+        self.assertTrue(run['dest_path'].endswith('/Example Show (2020)/Season 1'))
+
+    def test_a_season_folder_here_keeps_its_own_name(self):
+        """Sonarr's folder is "Season 01", this disk's is "Season 1": no second folder."""
+        self.arr.folders[(219, 1)] = 'Season 01'
+        self.library.items = [show(seasons=[
+            {'season_number': 1, 'episode_file_count': 10, 'files_here': 10,
+             'episodes_here': 10, 'folder_here': 'Season 1', 'counts_towards_state': True}])]
+        self.arr.records = [imported()]
+        self.scan()
+        run = self.scanner_runs()[0]
+        self.assertTrue(run['source_path'].endswith('/Example Show (2020)/Season 01'))
+        self.assertTrue(run['dest_path'].endswith('/Example Show (2020)/Season 1'))
+
     def test_the_backlog_is_not_a_gap(self):
         """A season this disk does not keep, or a title it never held, is left alone."""
         self.library.items = [
