@@ -770,8 +770,9 @@ class TransferCoordinator:
                 'progress': 'BACKUP_PATH is not configured; refusing to start',
                 'end_time': datetime.now().isoformat(),
             })
-            self.queue_manager.unregister_transfer(transfer_id, transfer.get('dest_path'))
+            # The sync is told before the folder is handed to the next transfer.
             self._start_failed(transfer_id)
+            self.queue_manager.unregister_transfer(transfer_id, transfer.get('dest_path'))
             return False
 
         # Start the transfer
@@ -794,11 +795,12 @@ class TransferCoordinator:
                 daemon=True
             ).start()
         else:
+            # The sync is told before the folder is handed to the next transfer.
+            self._start_failed(transfer_id)
             # If failed to start, unregister from queue manager
             self.queue_manager.unregister_transfer(transfer_id)
             # Same as the first start path: no rsync, no watcher, so release here.
             self._release_fast_route()
-            self._start_failed(transfer_id)
 
         return success
 

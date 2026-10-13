@@ -215,14 +215,15 @@ shape). Every rsync launched must carry `--dry-run`, the safety check's command
 too, and no destination folder may appear. A simulation is asserted as the
 deliberate exception: it copies for real, between its own sandbox paths.
 
-### `tests/test_queued_start_failures.py` - a queued transfer that cannot start (5 tests)
+### `tests/test_queued_start_failures.py` - a queued transfer that cannot start (6 tests)
 
 Builds on `RealCoordinatorTestCase` from `test_test_mode_sync_paths.py`: the
 real coordinator, transfer service and queue. A season sync waits in the queue,
 then the queue lets it through (`start_queued_transfer`) and the start fails:
 with no backup folder, the sync ends failed at its Queue stage; with rsync
 refusing to start, at its Transfer stage; either way with one *Failed* alert
-offering Retry, and Retry then copies it. A transfer queued before the sync
+offering Retry, and Retry then copies it. The sync has ended before the queue
+frees the folder for the next transfer. A transfer queued before the sync
 engine existed has no sync, so its episode is marked failed instead of left
 reading syncing. A resume that cannot start rsync leaves the transfer and its
 sync paused. Added 2026-10-13 with the fix: before it, the sync stayed Queued

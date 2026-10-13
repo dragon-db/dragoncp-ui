@@ -75,6 +75,21 @@ class QueuedStartFailureTests(RealCoordinatorTestCase):
         self.assert_failed_with_alert(run_id, transfer_id)
         self.assertEqual(self.engine.store.stages(run_id)[S.TRANSFER]['status'], S.FAILED)
 
+    def test_the_sync_is_told_before_its_folder_is_freed(self):
+        """Freeing the folder can start the next transfer; this sync has ended by then."""
+        run_id, transfer_id = self.waiting_sync()
+        seen = []
+        free = self.coordinator.queue_manager.unregister_transfer
+
+        def unregister(*args, **kwargs):
+            seen.append(self.run_state(run_id))
+            return free(*args, **kwargs)
+
+        with patch.object(self.coordinator.queue_manager, 'unregister_transfer', unregister), \
+                patch.object(self.coordinator, '_staging_dir', return_value=None):
+            self.coordinator.start_queued_transfer(transfer_id)
+        self.assertEqual(seen[:1], [S.FAILED_STATE])
+
     def test_retry_after_a_failed_start_queues_it_again(self):
         run_id, transfer_id = self.waiting_sync()
         with patch.object(self.coordinator, '_staging_dir', return_value=None):
