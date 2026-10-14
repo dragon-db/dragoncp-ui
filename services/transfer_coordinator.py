@@ -115,6 +115,7 @@ class TransferCoordinator:
             self.scheduler.register(job)
         self.alerts.scheduler = self.scheduler
         self.queue_manager.set_coordinator(self)
+        self.transfer_service.on_route_fallback = self._on_route_fallback
 
         print(f"✅ TransferCoordinator initialized")
 
@@ -375,6 +376,13 @@ class TransferCoordinator:
             # the transfer.
             print(f"⚠️  Could not check for active transfers: {error}")
             return True
+
+    def _on_route_fallback(self, transfer_id: str, return_code: int, reason: str) -> None:
+        """A copy failed on the fast route and is running again over SSH."""
+        transfer = self.transfer_model.get(transfer_id) or {}
+        self.alerts.fast_route_failed(transfer, return_code, reason)
+        # The Transfer stage still says "over the fast transfer server".
+        self._hook('on_transfer_started', transfer_id)
 
     def _release_fast_route(self) -> None:
         """Let the transfer server stop if it is meant to run only on demand."""

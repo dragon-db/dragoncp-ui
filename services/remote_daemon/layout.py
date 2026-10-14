@@ -190,3 +190,25 @@ def daemon_source(host: str, module: str, relative: str = '',
     if trailing_slash and not path.endswith('/'):
         path += '/'
     return path
+
+
+def split_daemon_source(source: str) -> Tuple[str, str]:
+    """
+    Undo `daemon_source`: (the library root address, the path inside it).
+
+    `user@host::tvshows/Example Show/Season 01/` gives
+    (`user@host::tvshows/`, `Example Show/Season 01`). The root keeps its
+    trailing slash so it means "the contents of the library", which is what a
+    file list is read against.
+
+    Exists for one reason. Since the May 2026 rsync security fix
+    (CVE-2026-29518), a server running without chroot fails every file of a
+    `--files-from` pull whose source is a folder INSIDE the library — each one
+    is reported as vanished and nothing is copied. A pull from the library root
+    works, so Explore asks from there. See `docs/features/fast-transfers`.
+    """
+    head, sep, rest = source.partition('::')
+    if not sep:
+        raise ValueError('Not a transfer server address')
+    module, _, relative = rest.partition('/')
+    return f"{head}::{module}/", relative.strip('/')

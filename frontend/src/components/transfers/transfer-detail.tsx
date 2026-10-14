@@ -205,7 +205,9 @@ export function TransferDetailPanel({
               ? "transfer server"
               : transfer.transport === "ssh"
                 ? "SSH"
-                : undefined
+                : transfer.transport === "ssh_fallback"
+                  ? "SSH (fast route failed)"
+                  : undefined
           }
           mono
         />

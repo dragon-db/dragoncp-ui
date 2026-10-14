@@ -981,7 +981,7 @@ Each transfer object contains:
 | `log_count` | Number of stored log lines (the lines themselves are not included) |
 | `is_simulation` | True for rows created by the simulation tool |
 | `started_by_kind`, `started_by_name`, `started_by_account_id` | Who started it, as in the activity trail: `admin`, `automated` or `system`, the name as it read then, and the account id when a signed-in person started it. Null on rows from before attribution was recorded |
-| `transport` | The route rsync took to the media host: `daemon` (the fast transfer server) or `ssh`. Written when rsync starts; null before that, for a simulation (which never leaves this machine), and on rows from before the column existed |
+| `transport` | The route rsync took to the media host: `daemon` (the fast transfer server), `ssh`, or `ssh_fallback` (failed on the fast transfer server, then ran again over SSH). Written when rsync starts; null before that, for a simulation (which never leaves this machine), and on rows from before the column existed |
 | `sync_run_id` | The sync run the transfer belongs to (section 13); null on transfers from before the sync engine |
 | `progress_percent`, `bytes_transferred`, `total_bytes`, `speed_bps`, `eta_seconds` | Parsed rsync progress; see `database-schema.md` |
 

@@ -282,10 +282,8 @@ function TransferFacts({
         <Fact
           label="Route"
           value={
-            transfer.transport === "daemon" ? (
-              <TransportBadge transport="daemon" />
-            ) : transfer.transport === "ssh" ? (
-              "SSH"
+            transfer.transport ? (
+              <TransportBadge transport={transfer.transport} />
             ) : run.is_simulation ? (
               "Local (rehearsal)"
             ) : undefined

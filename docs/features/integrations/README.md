@@ -218,6 +218,7 @@ announcement that cannot be seen cannot be turned off.
 | `scanner.found` | The auto-scanner started syncs, or cannot close a gap (a gap's alert, once dismissed, is not sent again for 24 hours) |
 | `integration.down` | Sonarr did not answer when a batch asked; sent once until it answers again, and not again for 24 hours once its alert is dismissed |
 | `scheduler.failing` | A background job failed three times in a row (once its alert is dismissed, not again for 24 hours) |
+| `fast_route.failed` | A copy failed on the fast transfer server and ran again over SSH; sent once while its alert is open, and not again for 24 hours once it is dismissed |
 
 The last five arrived with the sync engine in 2.3.0, and most of what they say
 comes from its alerts — see [notifications](../notifications/README.md).

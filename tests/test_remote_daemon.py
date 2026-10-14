@@ -127,6 +127,23 @@ class SourceMappingTests(unittest.TestCase):
         self.assertEqual(layout.daemon_source('remote.example', 'movies', '', True),
                          'dragoncp@remote.example::movies/')
 
+    def test_an_address_splits_back_into_the_library_root_and_the_folder(self):
+        address = layout.daemon_source(
+            'remote.example', 'tvshows', 'Alpha - Bravo, Charlie of the Delta/Season 01', True)
+        self.assertEqual(
+            layout.split_daemon_source(address),
+            ('dragoncp@remote.example::tvshows/', 'Alpha - Bravo, Charlie of the Delta/Season 01'))
+
+    def test_the_library_root_splits_into_itself_and_nothing(self):
+        for address in ('dragoncp@remote.example::movies',
+                        'dragoncp@remote.example::movies/'):
+            self.assertEqual(layout.split_daemon_source(address),
+                             ('dragoncp@remote.example::movies/', ''))
+
+    def test_an_ssh_address_is_not_split(self):
+        with self.assertRaises(ValueError):
+            layout.split_daemon_source('someone@remote.example:/srv/media/movies/')
+
 
 # ---------------------------------------------------------------------------
 # The generated configuration

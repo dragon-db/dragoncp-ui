@@ -7,6 +7,7 @@ import {
   IconCircleX,
   IconArrowsTransferDown,
   IconRocket,
+  IconKey,
 } from "@tabler/icons-react";
 import type { ReactNode } from "react";
 
@@ -125,13 +126,38 @@ export function ProgressMeter({
 }
 
 /**
- * Which route a transfer took to the media host.
+ * Which route a transfer took to the media host, on every row that lists one.
  *
- * Only shown for the fast route. A transfer over SSH is the normal case and
- * badging every one of them would be noise — but a transfer that ran three
- * times faster is worth being able to see, and its absence is what tells you a
- * transfer fell back.
+ * All three routes are badged. A fast-route-only badge left the commonest case
+ * unlabelled, and "no badge" could mean SSH, not started yet, or a run from
+ * before routes were recorded — the operator asked to see the route at a
+ * glance (2026-10-14). Nothing is shown until rsync starts, because the route
+ * is chosen at that moment, and nothing for old runs that never recorded one.
  */
+const ROUTE_BADGES: Record<
+  string,
+  { label: string; title: string; icon: typeof IconRocket; className: string }
+> = {
+  daemon: {
+    label: "Fast",
+    title: "Copied over the fast transfer server",
+    icon: IconRocket,
+    className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+  },
+  ssh: {
+    label: "SSH",
+    title: "Copied over SSH",
+    icon: IconKey,
+    className: "border-sky-500/40 bg-sky-500/10 text-sky-300",
+  },
+  ssh_fallback: {
+    label: "SSH fallback",
+    title: "The fast transfer server failed, so this copy ran again over SSH",
+    icon: IconAlertTriangle,
+    className: "border-amber-500/40 bg-amber-500/10 text-amber-400",
+  },
+};
+
 export function TransportBadge({
   transport,
   className,
@@ -139,17 +165,20 @@ export function TransportBadge({
   transport?: string | null;
   className?: string;
 }) {
-  if (transport !== "daemon") return null;
+  const route = transport ? ROUTE_BADGES[transport] : undefined;
+  if (!route) return null;
+  const Icon = route.icon;
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-[5px] border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-300 uppercase",
+        "inline-flex shrink-0 items-center gap-1 rounded-[5px] border px-1.5 py-0.5 text-[10px] font-semibold tracking-wide whitespace-nowrap uppercase",
+        route.className,
         className
       )}
-      title="Pulled over the fast transfer server rather than SSH"
+      title={route.title}
     >
-      <IconRocket className="size-[11px]" />
-      Fast
+      <Icon className="size-[11px]" />
+      {route.label}
     </span>
   );
 }
