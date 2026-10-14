@@ -74,7 +74,8 @@ class AlertStore:
 
     def bump(self, alert_id: str, message: Optional[str] = None,
              data: Optional[Dict[str, Any]] = None,
-             run_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+             run_id: Optional[str] = None,
+             link: Optional[str] = None) -> Optional[Dict[str, Any]]:
         sets = ["occurrences = occurrences + 1", "updated_at = ?"]
         params: List[Any] = [utc_now_iso()]
         if message is not None:
@@ -86,6 +87,9 @@ class AlertStore:
         if run_id is not None:
             sets.append("run_id = ?")
             params.append(run_id)
+        if link is not None:
+            sets.append("link = ?")
+            params.append(link)
         with self.db.get_connection() as conn:
             conn.execute(f"UPDATE alert SET {', '.join(sets)} WHERE alert_id = ?",
                          (*params, alert_id))

@@ -13,6 +13,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -51,6 +53,13 @@ class FakeModel:
 
 def sh(script):
     return ['sh', '-c', script]
+
+
+# A stand-in rsync that is one process, as rsync is to whoever signals it:
+# `sh -c "sleep 30; ..."` would leave `sleep` holding the output open after
+# `sh` was stopped, and the monitor would wait it out.
+SLOW_COPY = [sys.executable, '-c',
+             'import time; time.sleep(30); print("should not finish")']
 
 
 def start(script):
@@ -120,8 +129,7 @@ class MonitorFallbackTests(unittest.TestCase):
         def take(transfer_id):
             looked.append(transfer_id)
             if len(looked) == 1:
-                self.model.row['status'] = 'cancelled'
-                self.service._mark_intentional_stop(transfer_id, 'cancelled')
+                self.assertTrue(self.service.cancel_transfer(transfer_id))
                 return None
             return real_take(transfer_id)
         self.service._take_intentional_stop = take
@@ -132,25 +140,97 @@ class MonitorFallbackTests(unittest.TestCase):
         self.assertNotIn('should not run', self.model.row['logs'])
         self.assertEqual(self.told, [])
 
-    def test_a_cancel_that_lands_during_the_switch_stops_the_ssh_copy(self):
+    def test_a_cancel_during_the_switch_stops_the_ssh_copy(self):
+        # The cancel arrives while the SSH rsync is being started. It waits for
+        # the switch, then finds and stops the new rsync rather than the old,
+        # finished one.
+        cancels = []
         real_update = self.model.update
 
         def update(transfer_id, fields):
             real_update(transfer_id, fields)
             if fields.get('transport') == SSH_FALLBACK:
-                # The cancel arrives just as the SSH rsync starts.
-                self.service._mark_intentional_stop('t1', 'cancelled')
+                worker = threading.Thread(
+                    target=lambda: cancels.append(self.service.cancel_transfer('t1')))
+                worker.start()
+                cancels.append(worker)
         self.model.update = update
 
-        status = self.monitor('exit 12', 'sleep 30; echo should not finish')
+        self.service._set_ssh_fallback('t1', SLOW_COPY)
+        status = self.service._monitor_transfer('t1', start('exit 12'))
+        cancels[0].join(timeout=10)
         self.assertEqual(status, 'cancelled')
+        self.assertEqual(cancels[1:], [True])
         self.assertNotIn('should not finish', self.model.row['logs'])
+
+    def test_a_stop_pending_after_the_switch_gets_no_fallback_notice(self):
+        # A stop already pending once the SSH rsync is published stops it, and
+        # the stopped copy opens no "fast route failed" alert.
+        real_update = self.model.update
+
+        def update(transfer_id, fields):
+            real_update(transfer_id, fields)
+            if fields.get('transport') == SSH_FALLBACK:
+                self.service._mark_intentional_stop('t1', 'paused')
+        self.model.update = update
+
+        self.service._set_ssh_fallback('t1', SLOW_COPY)
+        status = self.service._monitor_transfer('t1', start('exit 12'))
+        self.assertEqual(status, 'paused')
+        self.assertNotIn('should not finish', self.model.row['logs'])
+        self.assertEqual(self.told, [])
+
+    def test_a_quick_ssh_success_is_recorded_as_a_success(self):
+        real_popen = subprocess.Popen
+
+        def already_finished(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            process.wait()
+            return process
+
+        first = start('exit 24')
+        self.service._set_ssh_fallback('t1', sh('echo copied over ssh; exit 0'))
+        with patch('services.transfer_service.subprocess.Popen', side_effect=already_finished):
+            status = self.service._monitor_transfer('t1', first)
+        self.assertEqual(status, 'completed')
+        self.assertEqual(self.model.row['transport'], SSH_FALLBACK)
+        self.assertIn('copied over ssh', self.model.row['logs'])
 
     def test_a_successful_fast_copy_leaves_no_fallback_behind(self):
         status = self.monitor('exit 0', 'echo should not run; exit 0')
         self.assertEqual(status, 'completed')
         self.assertIsNone(self.service._take_ssh_fallback('t1'))
         self.assertNotIn('transport', self.model.row)
+
+
+class StopWaitsForTheSwitchTests(unittest.TestCase):
+    """A cancel or pause reads the rsync to stop only once a switch is done."""
+
+    def setUp(self):
+        self.model = FakeModel()
+        self.model.row['rsync_process_id'] = 999999  # the old rsync, long gone
+        self.service = TransferService(FakeConfig(), MagicMock(), self.model, None, None)
+
+    def check(self, stop):
+        replacement = start('sleep 30')
+        self.addCleanup(replacement.kill)
+        result = []
+        with self.service._process_lock:
+            worker = threading.Thread(target=lambda: result.append(stop()))
+            worker.start()
+            time.sleep(0.2)
+            self.assertTrue(worker.is_alive(), 'the stop did not wait for the switch')
+            # The switch publishes the SSH rsync before letting go.
+            self.model.update('t1', {'rsync_process_id': replacement.pid})
+        worker.join(timeout=10)
+        self.assertIsNotNone(replacement.wait(timeout=10), 'the SSH rsync kept running')
+        return result[0]
+
+    def test_a_cancel_stops_the_rsync_the_switch_started(self):
+        self.assertTrue(self.check(lambda: self.service.cancel_transfer('t1')))
+
+    def test_a_pause_stops_the_rsync_the_switch_started(self):
+        self.assertTrue(self.check(lambda: self.service.pause_transfer('t1'))[0])
 
 
 class RouteFailedTests(unittest.TestCase):
@@ -207,6 +287,25 @@ class StartRegistersTheFallbackTests(unittest.TestCase):
         self.assertEqual(
             [a for a in command[:-2] if a not in route_bits],
             [a for a in fallback[:-2] if a not in route_bits and not a.startswith('ssh ')])
+
+    def test_an_rsync_that_exits_at_once_is_still_watched(self):
+        # A fast-route rsync that has already failed by the time it is checked
+        # must reach the monitor, which is what runs the SSH fallback.
+        service = self.service_with(TransferRoute(
+            DAEMON, 'dragoncp@remote.example::tvshows/Example Show/Season 01/', ['--port=52314']))
+        process = MagicMock()
+        process.poll.return_value = 24
+        process.pid = 4242
+        with patch('services.transfer_service.subprocess.Popen', return_value=process), \
+                patch('services.transfer_service.threading.Thread') as thread, \
+                patch('services.transfer_service.test_mode_enabled', return_value=False):
+            started = service.start_rsync_process(
+                't1', '/srv/media/tvshows/Example Show/Season 01',
+                os.path.join(self.tmp.name, 'Example Show', 'Season 01'), 'folder',
+                os.path.join(self.tmp.name, 'staging', 't1'))
+        self.assertTrue(started)
+        self.assertEqual(thread.call_args[1]['target'], service._monitor_transfer)
+        self.assertIsNotNone(service._take_ssh_fallback('t1'))
 
     def test_a_copy_that_starts_on_ssh_has_nothing_to_fall_back_to(self):
         service = self.service_with(TransferRoute(
@@ -293,6 +392,19 @@ class AlertTests(unittest.TestCase):
             alerts.fast_route_failed({'transfer_id': 't2'}, 10, '')
             store.bump.assert_called_once()
             announce.assert_called_once()
+
+
+    def test_a_bump_from_another_sync_moves_the_link_to_it(self):
+        store = MagicMock()
+        store.find_open.return_value = {'alert_id': 'a1', 'run_id': 'run1'}
+        alerts = AlertService(store)
+        alerts.fast_route_failed({'transfer_id': 't2', 'sync_run_id': 'run2'}, 24, '')
+        self.assertEqual(store.bump.call_args[1]['link'], '/transfers?sync=run2')
+        # The same sync, or a copy with none, leaves the link as it is.
+        alerts.fast_route_failed({'transfer_id': 't3', 'sync_run_id': 'run1'}, 24, '')
+        self.assertIsNone(store.bump.call_args[1]['link'])
+        alerts.fast_route_failed({'transfer_id': 't4'}, 24, '')
+        self.assertIsNone(store.bump.call_args[1]['link'])
 
 
 if __name__ == '__main__':

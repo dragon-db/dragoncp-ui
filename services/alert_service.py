@@ -105,8 +105,13 @@ class AlertService:
                     self.store.closed_by_a_person_since(dedupe_key, QUIET_AFTER_DISMISS):
                 return None
             if existing is not None:
+                # A bump that moves the alert to another sync moves its link
+                # with it, chosen the way the first one was. Otherwise the
+                # link stays as it is.
+                moved = run_id is not None and run_id != existing.get('run_id')
                 alert = self.store.bump(existing['alert_id'], message=message,
-                                        data=data, run_id=run_id)
+                                        data=data, run_id=run_id,
+                                        link=(link or _run_link(run_id)) if moved else None)
                 self._emit()
                 return alert
             alert = self.store.create(kind, severity, title, message, dedupe_key=dedupe_key,

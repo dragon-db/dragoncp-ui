@@ -146,19 +146,27 @@ If you press Install here, production takes ownership of the remote server and
 development's password stops matching. That is the decision from the top of this
 document.
 
-### 5. Turn it on, and watch one transfer
+### 5. Turn it on, and watch a normal copy and an Explore copy
 
 Switch **"Use it for transfers"** on.
 
-Then start one transfer by hand — a single season or a film, not a whole
-library. Watch for:
+Then start **both** of these by hand, and do not finish until both have:
+
+1. **A normal copy** — a single season or a film, not a whole library.
+2. **An Explore copy** — pick a few episodes in Explore and copy them. Explore
+   asks the fast route for its files differently from a normal copy, and it is
+   the one that broke in August 2026, so a working normal copy says nothing
+   about it.
+
+For each, watch for:
 
 - a green **Fast** badge on the transfer,
 - a speed around **30 MB/s** rather than 10,
-- the file arriving, and the transfer finishing as `completed`.
+- the files arriving, and the transfer finishing as `completed`.
 
-If the badge is absent, the transfer went over SSH. That is the fallback
-working, not a failure. The panel says why.
+A blue **SSH** badge means the copy went over SSH from the start; an amber
+**SSH fallback** badge means the fast route failed during it. Either way the
+copy still works — the panel and the **Fast transfers** alert say why.
 
 ### 6. Leave it for a day before trusting it
 

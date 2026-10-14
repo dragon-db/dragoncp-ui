@@ -203,6 +203,13 @@ class TransferService:
         # most once and an SSH failure is final.
         self._ssh_fallbacks = {}
 
+        # Held while a cancel or pause finds a transfer's rsync and signals it,
+        # and while a fallback swaps that rsync for the SSH one. Without it a
+        # stop can read the old, finished rsync, signal nothing, and report
+        # success while the new one keeps writing into a folder the queue has
+        # already handed to the next transfer.
+        self._process_lock = threading.RLock()
+
         # Told when a transfer falls back, so the coordinator can open an alert
         # and the sync engine can say how the copy is now running. Never
         # required: (transfer_id, rsync exit code, rsync's own reason).
@@ -908,17 +915,9 @@ class TransferService:
                 env=os.environ.copy()
             )
             
-            # Check if process started successfully
-            if process.poll() is not None:
-                print(f"❌ rsync process failed to start, return code: {process.poll()}")
-                self._set_ssh_fallback(transfer_id, None)
-                self.transfer_model.update(transfer_id, {
-                    'status': 'failed',
-                    'progress': f'rsync process failed to start, return code: {process.poll()}',
-                    'end_time': datetime.now().isoformat()
-                })
-                return False
-            
+            # An rsync that has already exited is not treated as failing to
+            # start: the monitor reads its exit code like any other, so a fast
+            # route failure still falls back and a quick success is a success.
             print(f"✅ rsync process started successfully (PID: {process.pid})")
             
             # Store process
@@ -1152,15 +1151,8 @@ class TransferService:
                 env=os.environ.copy(),
             )
 
-            if process.poll() is not None:
-                self._set_ssh_fallback(transfer_id, None)
-                self.transfer_model.update(transfer_id, {
-                    'status': 'failed',
-                    'progress': f'rsync failed to start (code {process.poll()})',
-                    'end_time': datetime.now().isoformat(),
-                })
-                return False
-
+            # Already exited or not, the monitor reads the outcome — see
+            # start_rsync_process.
             self.transfers[transfer_id] = process
             self.transfer_model.update(transfer_id, {
                 'status': 'running',
@@ -1200,60 +1192,61 @@ class TransferService:
         already copied are skipped and a half-copied one carries on. Returns the
         new rsync, or None to let the failure stand.
         """
-        row = self.transfer_model.get(transfer_id) or {}
-        if row.get('status') != 'running':
-            # Cancelled or paused while rsync was exiting.
-            return None
+        # Under the stop lock: a cancel or pause either lands first and is seen
+        # here, or waits and then finds the SSH rsync this publishes.
+        with self._process_lock:
+            row = self.transfer_model.get(transfer_id) or {}
+            if row.get('status') != 'running' or self._has_intentional_stop(transfer_id):
+                # Cancelled or paused while rsync was exiting.
+                return None
 
-        reason = _rsync_reason(tail)
-        line = (f"⚠️ The transfer server failed (rsync exit {return_code}"
-                f"{': ' + reason if reason else ''}). Running this again over SSH — "
-                f"files already copied are kept.")
-        print(f"⚠️  Transfer {transfer_id}: {line}")
-        try:
-            self.transfer_model.add_log(transfer_id, line)
-        except Exception as error:  # noqa: BLE001 - the retry matters more than the note
-            print(f"⚠️  Could not log the fallback for {transfer_id}: {error}")
+            reason = _rsync_reason(tail)
+            line = (f"⚠️ The transfer server failed (rsync exit {return_code}"
+                    f"{': ' + reason if reason else ''}). Running this again over SSH — "
+                    f"files already copied are kept.")
+            print(f"⚠️  Transfer {transfer_id}: {line}")
+            try:
+                self.transfer_model.add_log(transfer_id, line)
+            except Exception as error:  # noqa: BLE001 - the retry matters more than the note
+                print(f"⚠️  Could not log the fallback for {transfer_id}: {error}")
 
-        print(f"🔄 Starting rsync over SSH: {' '.join(command)}")
-        try:
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                bufsize=1,
-                env=os.environ.copy(),
-            )
-        except OSError as error:
-            print(f"❌ Could not start rsync over SSH for {transfer_id}: {error}")
-            return None
-        if process.poll() is not None:
-            print(f"❌ rsync over SSH exited at once for {transfer_id}: {process.poll()}")
-            return None
+            print(f"🔄 Starting rsync over SSH: {' '.join(command)}")
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                    bufsize=1,
+                    env=os.environ.copy(),
+                )
+            except OSError as error:
+                print(f"❌ Could not start rsync over SSH for {transfer_id}: {error}")
+                return None
+            # Not checked for having exited already: one that has is watched
+            # like any other, so a quick success is recorded as one.
 
-        self.transfers[transfer_id] = process
-        self.transfer_model.update(transfer_id, {
-            'transport': SSH_FALLBACK,
-            'rsync_process_id': process.pid,
-            'progress': 'Running again over SSH after the transfer server failed',
-            'progress_percent': 0,
-            'bytes_transferred': 0,
-            'total_bytes': None,
-            'speed_bps': 0,
-            'eta_seconds': None,
-        })
+            self.transfers[transfer_id] = process
+            self.transfer_model.update(transfer_id, {
+                'transport': SSH_FALLBACK,
+                'rsync_process_id': process.pid,
+                'progress': 'Running again over SSH after the transfer server failed',
+                'progress_percent': 0,
+                'bytes_transferred': 0,
+                'total_bytes': None,
+                'speed_bps': 0,
+                'eta_seconds': None,
+            })
 
-        # A cancel or pause that arrived after the check above looked for the
-        # old rsync, found it gone, and stopped nothing. Stop this one for it;
-        # the monitor then records what was asked for.
-        if self._has_intentional_stop(transfer_id):
+        # A stop that arrives from here signals this rsync itself. One already
+        # pending is honoured, and a stopped transfer gets no fallback notice.
+        stopping = self._has_intentional_stop(transfer_id)
+        if stopping:
             try:
                 process.terminate()
             except Exception:  # noqa: BLE001
                 pass
-
-        if callable(self.on_route_fallback):
+        elif callable(self.on_route_fallback):
             try:
                 self.on_route_fallback(transfer_id, return_code, reason)
             except Exception as error:  # noqa: BLE001 - bookkeeping, not the transfer
@@ -1519,29 +1512,33 @@ class TransferService:
             # transfer or one whose process already exited. There is nothing to
             # signal, but the row still has to be cancellable - otherwise it is
             # stuck as 'running' forever.
-            pid = transfer.get('rsync_process_id')
-            has_process = bool(pid) and self._is_process_running(pid)
+            # Under the stop lock, and the rsync read again inside it: a fast
+            # route fallback may have just replaced it with an SSH one.
+            with self._process_lock:
+                current = self.transfer_model.get(transfer_id) or transfer
+                pid = current.get('rsync_process_id')
+                has_process = bool(pid) and self._is_process_running(pid)
 
-            # Recorded before the process check, not inside it. `has_process` is
-            # a point-in-time answer: rsync can have exited while its monitor is
-            # still parked in process.wait(), about to write a terminal status.
-            # Without an intent waiting for it, that monitor overwrites this
-            # cancellation with 'completed' or 'failed'. A leftover intent costs
-            # nothing - the monitor pops it, and start_rsync_process clears it
-            # before the next run.
-            self._mark_intentional_stop(transfer_id, 'cancelled')
+                # Recorded before the process check, not inside it. `has_process` is
+                # a point-in-time answer: rsync can have exited while its monitor is
+                # still parked in process.wait(), about to write a terminal status.
+                # Without an intent waiting for it, that monitor overwrites this
+                # cancellation with 'completed' or 'failed'. A leftover intent costs
+                # nothing - the monitor pops it, and start_rsync_process clears it
+                # before the next run.
+                self._mark_intentional_stop(transfer_id, 'cancelled')
 
-            if has_process:
-                try:
-                    import psutil
+                if has_process:
+                    try:
+                        import psutil
 
-                    psutil.Process(pid).terminate()
-                except Exception as e:
-                    print(f"❌ Error cancelling transfer {transfer_id}: {e}")
-                    self._clear_intentional_stop(transfer_id)
-                    return False
-            else:
-                print(f"🛑 Transfer {transfer_id} has no live rsync process to signal")
+                        psutil.Process(pid).terminate()
+                    except Exception as e:
+                        print(f"❌ Error cancelling transfer {transfer_id}: {e}")
+                        self._clear_intentional_stop(transfer_id)
+                        return False
+                else:
+                    print(f"🛑 Transfer {transfer_id} has no live rsync process to signal")
 
             self.transfer_model.update(transfer_id, {
                 'status': 'cancelled',
@@ -1579,40 +1576,44 @@ class TransferService:
         # A running row without a live rsync process is either a simulated
         # transfer or one whose process already exited; there is nothing to
         # signal, so pausing is purely a state change.
-        pid = transfer.get('rsync_process_id')
-        has_process = bool(pid) and self._is_process_running(pid)
+        # Under the stop lock, and the rsync read again inside it: a fast route
+        # fallback may have just replaced it with an SSH one.
+        with self._process_lock:
+            current = self.transfer_model.get(transfer_id) or transfer
+            pid = current.get('rsync_process_id')
+            has_process = bool(pid) and self._is_process_running(pid)
 
-        # Mark intent first so the monitor thread does not race us to 'failed'
-        self._mark_intentional_stop(transfer_id, 'paused')
-        self.transfer_model.update(transfer_id, {
-            'status': 'paused',
-            'progress': 'Transfer paused - partial files kept, resume to continue',
-            'paused_at': datetime.now().isoformat(),
-            'speed_bps': 0,
-            'eta_seconds': None
-        })
+            # Mark intent first so the monitor thread does not race us to 'failed'
+            self._mark_intentional_stop(transfer_id, 'paused')
+            self.transfer_model.update(transfer_id, {
+                'status': 'paused',
+                'progress': 'Transfer paused - partial files kept, resume to continue',
+                'paused_at': datetime.now().isoformat(),
+                'speed_bps': 0,
+                'eta_seconds': None
+            })
 
-        if has_process:
-            try:
-                import psutil
-                psutil.Process(pid).terminate()
-            except Exception as e:
-                # Signalling failed, so the process is still running - put the
-                # row back rather than stranding it in a state it is not in
-                print(f"❌ Error pausing transfer {transfer_id}: {e}")
-                self._clear_intentional_stop(transfer_id)
-                self.transfer_model.update(transfer_id, {
-                    'status': 'running',
-                    'progress': f'Pause failed: {e}',
-                    'paused_at': None
-                })
-                return False, f'Failed to pause transfer: {e}'
-        else:
-            # The intent is deliberately left in place. rsync may have exited
-            # with its monitor still to run; that monitor pops the intent and
-            # keeps the row 'paused' instead of finalising it as complete or
-            # failed. start_rsync_process clears it before the next run.
-            print(f"⏸️  Transfer {transfer_id} has no live rsync process to signal")
+            if has_process:
+                try:
+                    import psutil
+                    psutil.Process(pid).terminate()
+                except Exception as e:
+                    # Signalling failed, so the process is still running - put the
+                    # row back rather than stranding it in a state it is not in
+                    print(f"❌ Error pausing transfer {transfer_id}: {e}")
+                    self._clear_intentional_stop(transfer_id)
+                    self.transfer_model.update(transfer_id, {
+                        'status': 'running',
+                        'progress': f'Pause failed: {e}',
+                        'paused_at': None
+                    })
+                    return False, f'Failed to pause transfer: {e}'
+            else:
+                # The intent is deliberately left in place. rsync may have exited
+                # with its monitor still to run; that monitor pops the intent and
+                # keeps the row 'paused' instead of finalising it as complete or
+                # failed. start_rsync_process clears it before the next run.
+                print(f"⏸️  Transfer {transfer_id} has no live rsync process to signal")
 
         if transfer_id in self.transfers:
             del self.transfers[transfer_id]
