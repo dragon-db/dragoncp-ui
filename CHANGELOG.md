@@ -11,6 +11,48 @@ Newest first.
 
 ---
 
+## 2.3.1
+
+Fast transfers work again, and can no longer fail a copy on their own.
+
+### Fast transfers
+
+- **Explore copies work over the fast route again.** Since the remote server
+  moved to Debian 13 (2026-08-20), its rsync fails every file of an Explore
+  copy over the fast route — "file has vanished", nothing copied — while the dry
+  run before it passes. The cause is an rsync security fix (CVE-2026-29518)
+  that changes how a server without chroot opens files. Explore now asks the
+  fast route for its files from the top of the library; files land where they
+  always did. Normal transfers were never affected. No rsync version needs
+  changing on either machine.
+- **A copy that fails on the fast route finishes over SSH by itself.** Same
+  transfer, same backup and partial folders, so files already copied are kept
+  and a half-copied one carries on. Not retried after a pause, a cancel or a
+  shutdown. The safety check and Explore's dry run do the same, so a broken
+  fast route can slow syncing down but cannot stop it.
+- **A fallback is never silent.** It opens one **Fast transfers** alert,
+  announced once on Discord; later fallbacks add to that alert instead of
+  sending more messages. The transfer's log says why in rsync's own words.
+
+### Transfers
+
+- **Every transfer row shows its route** — on the dashboard's Active Transfers
+  and on the Transfers page's Activity and History: green **Fast**, blue
+  **SSH**, amber **SSH fallback**. Before, only the fast route was marked, so an
+  unmarked row could mean SSH, not started, or an old run. Nothing is shown
+  while a copy is queued (the route is chosen when it starts) or for runs from
+  before routes were recorded.
+
+### Upgrading
+
+- The fast-transfer server was removed from the remote server on 2026-08-22.
+  After deploying: Settings → Connections → Fast transfers → **Install**, then
+  switch **Use it for transfers** on. See
+  [`docs/operations/fast-transfers-deployment.md`](docs/operations/fast-transfers-deployment.md).
+- No database migration.
+
+---
+
 ## 2.3.0
 
 The release that made DragonCP extensible — outside services are now
