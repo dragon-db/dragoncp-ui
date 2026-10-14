@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple
 from env_flags import test_mode_enabled
+from services.remote_daemon.layout import split_daemon_source
 
 
 # How a transfer reaches the remote host. Stored on the transfer so history,
@@ -22,6 +23,20 @@ from env_flags import test_mode_enabled
 # and without this they look identical afterwards.
 DAEMON = 'daemon'
 SSH = 'ssh'
+# Started on the transfer server, failed there, and was run again over SSH. Kept
+# apart from SSH so a broken fast route shows up in the history instead of
+# looking like a transfer that never had a faster option.
+SSH_FALLBACK = 'ssh_fallback'
+
+# rsync exit codes that mean it was stopped from outside — a signal, the
+# service shutting down — rather than that the route failed. Running the copy
+# again over SSH would be acting against whoever stopped it.
+_STOPPED_FROM_OUTSIDE = (19, 20)
+
+
+def route_failed(return_code: int) -> bool:
+    """Whether a run on the fast route ended in a way SSH might not."""
+    return return_code > 0 and return_code not in _STOPPED_FROM_OUTSIDE
 
 
 @dataclass
@@ -86,6 +101,21 @@ _PROGRESS_LINE_RE = re.compile(
 _TOTAL_SIZE_RE = re.compile(
     r'total size is\s+([\d,]+(?:\.\d+)?)\s*([KMGTPkmgtp]?)', re.IGNORECASE
 )
+
+
+def _rsync_reason(lines: List[str]) -> str:
+    """
+    The line in rsync's output that names why it failed, or ''.
+
+    Prefers a cause ("file has vanished: …", "@ERROR: …") over rsync's closing
+    "rsync error: … (code N)", which only restates the exit code.
+    """
+    causes = [line for line in lines
+              if line.startswith(('@ERROR', 'rsync:', 'file has vanished'))
+              or 'connection unexpectedly closed' in line]
+    closing = [line for line in lines if line.startswith(('rsync error:', 'rsync warning:'))]
+    found = (causes or closing or [''])[-1].strip()
+    return found[:300]
 
 
 def _to_bytes(number: str, unit: str) -> int:
@@ -168,6 +198,23 @@ class TransferService:
         self._intentional_stops = {}
         self._stops_lock = threading.Lock()
 
+        # The SSH command to run if a transfer on the fast route fails:
+        # {transfer_id: rsync command}. Taken once, so a transfer falls back at
+        # most once and an SSH failure is final.
+        self._ssh_fallbacks = {}
+
+        # Held while a cancel or pause finds a transfer's rsync and signals it,
+        # and while a fallback swaps that rsync for the SSH one. Without it a
+        # stop can read the old, finished rsync, signal nothing, and report
+        # success while the new one keeps writing into a folder the queue has
+        # already handed to the next transfer.
+        self._process_lock = threading.RLock()
+
+        # Told when a transfer falls back, so the coordinator can open an alert
+        # and the sync engine can say how the copy is now running. Never
+        # required: (transfer_id, rsync exit code, rsync's own reason).
+        self.on_route_fallback = None
+
         # Locked-in total size per transfer, so the derived total does not
         # jitter as the reported percentage ticks up.
         self._total_estimates = {}
@@ -183,6 +230,21 @@ class TransferService:
     def _clear_intentional_stop(self, transfer_id: str):
         with self._stops_lock:
             self._intentional_stops.pop(transfer_id, None)
+
+    def _has_intentional_stop(self, transfer_id: str) -> bool:
+        with self._stops_lock:
+            return transfer_id in self._intentional_stops
+
+    def _set_ssh_fallback(self, transfer_id: str, command: Optional[List[str]]):
+        with self._stops_lock:
+            if command:
+                self._ssh_fallbacks[transfer_id] = command
+            else:
+                self._ssh_fallbacks.pop(transfer_id, None)
+
+    def _take_ssh_fallback(self, transfer_id: str) -> Optional[List[str]]:
+        with self._stops_lock:
+            return self._ssh_fallbacks.pop(transfer_id, None)
 
     def _emit_logs(self, transfer_id: str, tail: List[str], log_count: int, status: str):
         """
@@ -319,6 +381,10 @@ class TransferService:
                 print(f"🚀 Using the transfer server for {source_path}")
                 return TransferRoute(DAEMON, source, args)
 
+        return self._ssh_route(source_path, trailing_slash)
+
+    def _ssh_route(self, source_path: str, trailing_slash: bool = True) -> 'TransferRoute':
+        """The SSH route, asked for directly: the fallback when the fast one fails."""
         return TransferRoute(SSH, self._ssh_source(source_path, trailing_slash),
                              self._ssh_args())
 
@@ -394,6 +460,37 @@ class TransferService:
             ssh_key_path = os.path.join(os.path.dirname(script_dir), ssh_key_path)
         return ssh_key_path if os.path.exists(ssh_key_path) else ""
 
+    def _dry_run_with_fallback(self, label: str, build, route: 'TransferRoute',
+                               source_path: str, ok_codes: Tuple[int, ...], **run_kwargs):
+        """
+        Run a dry run, and run it once more over SSH if the fast route could
+        not finish it.
+
+        `build(route)` returns the command for a route. A safety check that
+        fails because the transfer server is down or broken would otherwise
+        refuse the sync outright — worse than the slow route it exists to beat.
+        A timeout on SSH still raises, exactly as before.
+        """
+        command = build(route)
+        print(f"{label}: {' '.join(command)}")
+        try:
+            result = subprocess.run(command, **run_kwargs)
+        except subprocess.TimeoutExpired:
+            if not route.is_daemon:
+                raise
+            result = None
+
+        if route.is_daemon and (result is None or (
+                result.returncode not in ok_codes and route_failed(result.returncode))):
+            why = 'it did not answer in time' if result is None \
+                else f"rsync exit {result.returncode}"
+            print(f"⚠️  The dry run failed on the transfer server ({why}); "
+                  f"running it again over SSH")
+            command = build(self._ssh_route(source_path, trailing_slash=True))
+            print(f"{label} (SSH): {' '.join(command)}")
+            result = subprocess.run(command, **run_kwargs)
+        return result
+
     def perform_dry_run_rsync(self, source_path: str, dest_path: str) -> Dict:
         """
         Perform rsync dry-run to validate sync safety
@@ -429,37 +526,35 @@ class TransferService:
             # itemised output lines up with what the transfer would do.
             route = self.resolve_route(source_path, trailing_slash=True)
 
-            # Build dry-run rsync command
-            # Note: Using -avv (double verbose) to get ALL files in itemize-changes output,
-            # including unchanged files (.f notation), not just transferred files (>f notation)
-            rsync_cmd = [
-                "rsync", "-avv",
-                "--dry-run",
-                "--stats",
-                "--itemize-changes",
-                "--delete",
-                "--exclude", ".*",
-                "--exclude", "*.tmp",
-                "--exclude", "*.log",
-                "--size-only",
-                "--no-perms",
-                "--no-owner",
-                "--no-group",
-            ]
-            rsync_cmd.extend(route.args)
-            rsync_cmd.extend([route.source, f"{dest_path}/"])
-            
-            print(f"🔄 Executing dry-run: {' '.join(rsync_cmd)}")
-            
-            # Execute dry-run
-            result = subprocess.run(
-                rsync_cmd,
+            def build(chosen: 'TransferRoute') -> List[str]:
+                # Note: Using -avv (double verbose) to get ALL files in itemize-changes output,
+                # including unchanged files (.f notation), not just transferred files (>f notation)
+                return [
+                    "rsync", "-avv",
+                    "--dry-run",
+                    "--stats",
+                    "--itemize-changes",
+                    "--delete",
+                    "--exclude", ".*",
+                    "--exclude", "*.tmp",
+                    "--exclude", "*.log",
+                    "--size-only",
+                    "--no-perms",
+                    "--no-owner",
+                    "--no-group",
+                    *chosen.args,
+                    chosen.source, f"{dest_path}/",
+                ]
+
+            # 24 is files vanishing mid-scan, which the verdict below accepts.
+            result = self._dry_run_with_fallback(
+                '🔄 Executing dry-run', build, route, source_path, ok_codes=(0, 24),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 universal_newlines=True,
                 timeout=300  # 5 minute timeout
             )
-            
+
             # Parse output with destination path for local file counting
             validation_result = self._parse_dry_run_output(result.stdout, result.stderr, dest_path)
             validation_result['rsync_exit_code'] = result.returncode
@@ -784,6 +879,7 @@ class TransferService:
                 print("🧪 TEST_MODE enabled - rsync will run in dry-run mode (no actual file transfers)")
 
             route = None
+            ssh_fallback = None
             if is_simulation:
                 # Hold the copy to a realistic speed so progress, ETA and the
                 # queue behave the way they do against a remote server, rather
@@ -797,11 +893,15 @@ class TransferService:
                 # A 'file' transfer names one file and must not have one, or
                 # rsync is asked for the contents of something that is not a
                 # directory. Both routes obey the same rule.
-                route = self.resolve_route(
-                    source_path, trailing_slash=(operation_type != "file"))
+                trailing_slash = operation_type != "file"
+                route = self.resolve_route(source_path, trailing_slash=trailing_slash)
+                if route.is_daemon:
+                    ssh = self._ssh_route(source_path, trailing_slash)
+                    ssh_fallback = rsync_cmd + ssh.args + [ssh.source, f"{dest_path}/"]
                 rsync_cmd.extend(route.args)
                 rsync_cmd.extend([route.source, f"{dest_path}/"])
 
+            self._set_ssh_fallback(transfer_id, ssh_fallback)
             self._record_route(transfer_id, route)
             print(f"🔄 Starting rsync: {' '.join(rsync_cmd)}")
             
@@ -815,16 +915,9 @@ class TransferService:
                 env=os.environ.copy()
             )
             
-            # Check if process started successfully
-            if process.poll() is not None:
-                print(f"❌ rsync process failed to start, return code: {process.poll()}")
-                self.transfer_model.update(transfer_id, {
-                    'status': 'failed',
-                    'progress': f'rsync process failed to start, return code: {process.poll()}',
-                    'end_time': datetime.now().isoformat()
-                })
-                return False
-            
+            # An rsync that has already exited is not treated as failing to
+            # start: the monitor reads its exit code like any other, so a fast
+            # route failure still falls back and a quick success is a success.
             print(f"✅ rsync process started successfully (PID: {process.pid})")
             
             # Store process
@@ -854,6 +947,7 @@ class TransferService:
             print(f"❌ Transfer start failed: {e}")
             import traceback
             traceback.print_exc()
+            self._set_ssh_fallback(transfer_id, None)
             self.transfer_model.update(transfer_id, {
                 'status': 'failed',
                 'progress': f'Transfer start failed: {e}',
@@ -872,9 +966,21 @@ class TransferService:
         rehearsing is worse than no rehearsal — and that now includes the route:
         the caller resolves it once and passes it to both, so a plan cannot be
         rehearsed over one and carried out over the other.
+
+        On the fast route the list is read from the library ROOT, with each line
+        marked where the plan's folder starts (`folder/./name`). The transfer
+        server fails every file of a list read from inside the library — see
+        `layout.split_daemon_source`. The `/./` marker keeps what lands, and
+        what a dry run prints, exactly what it is on SSH.
         """
         if route is None:
             route = self.resolve_route(source_path, trailing_slash=True)
+
+        source = route.source
+        if route.is_daemon:
+            source, within = split_daemon_source(route.source)
+            if within:
+                files_from = self._list_from_library_root(files_from, within)
 
         rsync_cmd = [
             "rsync", "-av",
@@ -900,8 +1006,29 @@ class TransferService:
 
         rsync_cmd.extend(route.args)
         # With --files-from the source is the ROOT the list is relative to.
-        rsync_cmd.extend([route.source, f"{dest_path}/"])
+        rsync_cmd.extend([source, f"{dest_path}/"])
         return rsync_cmd
+
+    @staticmethod
+    def _list_from_library_root(files_from: str, within: str) -> str:
+        """
+        Write the fast-route copy of an Explore file list and return its path.
+
+        `Season 01/Example Show - S01E01.mkv` read against
+        `Example Show/` becomes `Example Show/./Season 01/Example Show - S01E01.mkv`
+        read against the library root. rsync drops everything before `/./`
+        when it names the file at the destination, so both lists put the file
+        in the same place. Written beside the original, fresh on every build,
+        so a dry run and the real run each read their own.
+        """
+        stem, extension = os.path.splitext(files_from)
+        path = f"{stem}.fast-route{extension or '.txt'}"
+        with open(files_from, 'r', encoding='utf-8') as source:
+            names = [line.rstrip('\n') for line in source if line.strip()]
+        with open(path, 'w', encoding='utf-8') as handle:
+            for name in names:
+                handle.write(f"{within}/./{name}\n")
+        return path
 
     def run_explore_dry_run(self, source_path: str, dest_path: str,
                             files_from: str, mode: str,
@@ -926,20 +1053,23 @@ class TransferService:
         # be a path rsync will accept.
         backup_dir = os.path.join(self.config.get('BACKUP_PATH') or '/tmp', '.explore-dryrun')
 
-        cmd = self.build_explore_rsync_command(
-            source_path, dest_path, backup_dir, files_from, mode,
-        )
-        # Drop the progress flags — they fight with a per-file report — and put
-        # --dry-run first so it is impossible to miss when reading a log.
-        cmd = [arg for arg in cmd if arg not in ("--progress", "--info=progress2")]
-        cmd.insert(1, "--dry-run")
-        cmd.insert(2, "--out-format=%i|%l|%n")
+        def build(route: 'TransferRoute') -> List[str]:
+            cmd = self.build_explore_rsync_command(
+                source_path, dest_path, backup_dir, files_from, mode, route,
+            )
+            # Drop the progress flags — they fight with a per-file report — and
+            # put --dry-run first so it is impossible to miss when reading a log.
+            cmd = [arg for arg in cmd if arg not in ("--progress", "--info=progress2")]
+            cmd.insert(1, "--dry-run")
+            cmd.insert(2, "--out-format=%i|%l|%n")
+            return cmd
 
-        print(f"🧪 Explore dry run ({mode}): {' '.join(cmd)}")
         started = time.time()
         try:
-            result = subprocess.run(
-                cmd,
+            result = self._dry_run_with_fallback(
+                f"🧪 Explore dry run ({mode})", build,
+                self.resolve_route(source_path, trailing_slash=True),
+                source_path, ok_codes=(0,),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
@@ -995,11 +1125,20 @@ class TransferService:
             rsync_cmd = self.build_explore_rsync_command(
                 source_path, dest_path, backup_dir, files_from, mode, route,
             )
+            ssh_fallback = None
+            if route.is_daemon:
+                ssh_fallback = self.build_explore_rsync_command(
+                    source_path, dest_path, backup_dir, files_from, mode,
+                    self._ssh_route(source_path, trailing_slash=True),
+                )
             self._record_route(transfer_id, route)
 
             if test_mode_enabled():
                 rsync_cmd.insert(1, "--dry-run")
+                if ssh_fallback:
+                    ssh_fallback.insert(1, "--dry-run")
                 print("🧪 TEST_MODE enabled - Explore rsync runs as a dry-run")
+            self._set_ssh_fallback(transfer_id, ssh_fallback)
 
             print(f"🔄 Starting Explore rsync ({mode}): {' '.join(rsync_cmd)}")
 
@@ -1012,14 +1151,8 @@ class TransferService:
                 env=os.environ.copy(),
             )
 
-            if process.poll() is not None:
-                self.transfer_model.update(transfer_id, {
-                    'status': 'failed',
-                    'progress': f'rsync failed to start (code {process.poll()})',
-                    'end_time': datetime.now().isoformat(),
-                })
-                return False
-
+            # Already exited or not, the monitor reads the outcome — see
+            # start_rsync_process.
             self.transfers[transfer_id] = process
             self.transfer_model.update(transfer_id, {
                 'status': 'running',
@@ -1042,12 +1175,83 @@ class TransferService:
             print(f"❌ Explore transfer start failed: {e}")
             import traceback
             traceback.print_exc()
+            self._set_ssh_fallback(transfer_id, None)
             self.transfer_model.update(transfer_id, {
                 'status': 'failed',
                 'progress': f'Transfer start failed: {e}',
                 'end_time': datetime.now().isoformat(),
             })
             return False
+
+    def _fall_back_to_ssh(self, transfer_id: str, command: List[str], return_code: int,
+                          tail: List[str]) -> Optional[subprocess.Popen]:
+        """
+        Start a transfer that failed on the fast route again, over SSH.
+
+        Same transfer, same flags, same backup and partial folders, so files
+        already copied are skipped and a half-copied one carries on. Returns the
+        new rsync, or None to let the failure stand.
+        """
+        # Under the stop lock: a cancel or pause either lands first and is seen
+        # here, or waits and then finds the SSH rsync this publishes.
+        with self._process_lock:
+            row = self.transfer_model.get(transfer_id) or {}
+            if row.get('status') != 'running' or self._has_intentional_stop(transfer_id):
+                # Cancelled or paused while rsync was exiting.
+                return None
+
+            reason = _rsync_reason(tail)
+            line = (f"⚠️ The transfer server failed (rsync exit {return_code}"
+                    f"{': ' + reason if reason else ''}). Running this again over SSH — "
+                    f"files already copied are kept.")
+            print(f"⚠️  Transfer {transfer_id}: {line}")
+            try:
+                self.transfer_model.add_log(transfer_id, line)
+            except Exception as error:  # noqa: BLE001 - the retry matters more than the note
+                print(f"⚠️  Could not log the fallback for {transfer_id}: {error}")
+
+            print(f"🔄 Starting rsync over SSH: {' '.join(command)}")
+            try:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                    bufsize=1,
+                    env=os.environ.copy(),
+                )
+            except OSError as error:
+                print(f"❌ Could not start rsync over SSH for {transfer_id}: {error}")
+                return None
+            # Not checked for having exited already: one that has is watched
+            # like any other, so a quick success is recorded as one.
+
+            self.transfers[transfer_id] = process
+            self.transfer_model.update(transfer_id, {
+                'transport': SSH_FALLBACK,
+                'rsync_process_id': process.pid,
+                'progress': 'Running again over SSH after the transfer server failed',
+                'progress_percent': 0,
+                'bytes_transferred': 0,
+                'total_bytes': None,
+                'speed_bps': 0,
+                'eta_seconds': None,
+            })
+
+        # A stop that arrives from here signals this rsync itself. One already
+        # pending is honoured, and a stopped transfer gets no fallback notice.
+        stopping = self._has_intentional_stop(transfer_id)
+        if stopping:
+            try:
+                process.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+        elif callable(self.on_route_fallback):
+            try:
+                self.on_route_fallback(transfer_id, return_code, reason)
+            except Exception as error:  # noqa: BLE001 - bookkeeping, not the transfer
+                print(f"⚠️  Fallback notice failed for {transfer_id}: {error}")
+        return process
 
     def _monitor_transfer(self, transfer_id: str, process):
         """Monitor transfer progress with database updates"""
@@ -1165,6 +1369,19 @@ class TransferService:
             # exit is expected there. cancel_transfer/pause_transfer already
             # wrote the correct row; do not overwrite it with 'failed'.
             intentional_stop = self._take_intentional_stop(transfer_id)
+
+            # Failed on the fast route: run the same transfer once more over
+            # SSH before calling it failed. The new rsync is watched by a fresh
+            # pass of this method, which finds no fallback left to take.
+            ssh_fallback = self._take_ssh_fallback(transfer_id)
+            if ssh_fallback and not intentional_stop and route_failed(return_code):
+                retry = self._fall_back_to_ssh(transfer_id, ssh_fallback, return_code, tail)
+                if retry is not None:
+                    self._total_estimates.pop(transfer_id, None)
+                    return self._monitor_transfer(transfer_id, retry)
+                # A cancel or pause can land while that was deciding, and it
+                # found no rsync to stop. Honour it rather than writing 'failed'.
+                intentional_stop = self._take_intentional_stop(transfer_id)
 
             if intentional_stop == 'paused':
                 status = 'paused'
@@ -1295,29 +1512,33 @@ class TransferService:
             # transfer or one whose process already exited. There is nothing to
             # signal, but the row still has to be cancellable - otherwise it is
             # stuck as 'running' forever.
-            pid = transfer.get('rsync_process_id')
-            has_process = bool(pid) and self._is_process_running(pid)
+            # Under the stop lock, and the rsync read again inside it: a fast
+            # route fallback may have just replaced it with an SSH one.
+            with self._process_lock:
+                current = self.transfer_model.get(transfer_id) or transfer
+                pid = current.get('rsync_process_id')
+                has_process = bool(pid) and self._is_process_running(pid)
 
-            # Recorded before the process check, not inside it. `has_process` is
-            # a point-in-time answer: rsync can have exited while its monitor is
-            # still parked in process.wait(), about to write a terminal status.
-            # Without an intent waiting for it, that monitor overwrites this
-            # cancellation with 'completed' or 'failed'. A leftover intent costs
-            # nothing - the monitor pops it, and start_rsync_process clears it
-            # before the next run.
-            self._mark_intentional_stop(transfer_id, 'cancelled')
+                # Recorded before the process check, not inside it. `has_process` is
+                # a point-in-time answer: rsync can have exited while its monitor is
+                # still parked in process.wait(), about to write a terminal status.
+                # Without an intent waiting for it, that monitor overwrites this
+                # cancellation with 'completed' or 'failed'. A leftover intent costs
+                # nothing - the monitor pops it, and start_rsync_process clears it
+                # before the next run.
+                self._mark_intentional_stop(transfer_id, 'cancelled')
 
-            if has_process:
-                try:
-                    import psutil
+                if has_process:
+                    try:
+                        import psutil
 
-                    psutil.Process(pid).terminate()
-                except Exception as e:
-                    print(f"❌ Error cancelling transfer {transfer_id}: {e}")
-                    self._clear_intentional_stop(transfer_id)
-                    return False
-            else:
-                print(f"🛑 Transfer {transfer_id} has no live rsync process to signal")
+                        psutil.Process(pid).terminate()
+                    except Exception as e:
+                        print(f"❌ Error cancelling transfer {transfer_id}: {e}")
+                        self._clear_intentional_stop(transfer_id)
+                        return False
+                else:
+                    print(f"🛑 Transfer {transfer_id} has no live rsync process to signal")
 
             self.transfer_model.update(transfer_id, {
                 'status': 'cancelled',
@@ -1355,40 +1576,44 @@ class TransferService:
         # A running row without a live rsync process is either a simulated
         # transfer or one whose process already exited; there is nothing to
         # signal, so pausing is purely a state change.
-        pid = transfer.get('rsync_process_id')
-        has_process = bool(pid) and self._is_process_running(pid)
+        # Under the stop lock, and the rsync read again inside it: a fast route
+        # fallback may have just replaced it with an SSH one.
+        with self._process_lock:
+            current = self.transfer_model.get(transfer_id) or transfer
+            pid = current.get('rsync_process_id')
+            has_process = bool(pid) and self._is_process_running(pid)
 
-        # Mark intent first so the monitor thread does not race us to 'failed'
-        self._mark_intentional_stop(transfer_id, 'paused')
-        self.transfer_model.update(transfer_id, {
-            'status': 'paused',
-            'progress': 'Transfer paused - partial files kept, resume to continue',
-            'paused_at': datetime.now().isoformat(),
-            'speed_bps': 0,
-            'eta_seconds': None
-        })
+            # Mark intent first so the monitor thread does not race us to 'failed'
+            self._mark_intentional_stop(transfer_id, 'paused')
+            self.transfer_model.update(transfer_id, {
+                'status': 'paused',
+                'progress': 'Transfer paused - partial files kept, resume to continue',
+                'paused_at': datetime.now().isoformat(),
+                'speed_bps': 0,
+                'eta_seconds': None
+            })
 
-        if has_process:
-            try:
-                import psutil
-                psutil.Process(pid).terminate()
-            except Exception as e:
-                # Signalling failed, so the process is still running - put the
-                # row back rather than stranding it in a state it is not in
-                print(f"❌ Error pausing transfer {transfer_id}: {e}")
-                self._clear_intentional_stop(transfer_id)
-                self.transfer_model.update(transfer_id, {
-                    'status': 'running',
-                    'progress': f'Pause failed: {e}',
-                    'paused_at': None
-                })
-                return False, f'Failed to pause transfer: {e}'
-        else:
-            # The intent is deliberately left in place. rsync may have exited
-            # with its monitor still to run; that monitor pops the intent and
-            # keeps the row 'paused' instead of finalising it as complete or
-            # failed. start_rsync_process clears it before the next run.
-            print(f"⏸️  Transfer {transfer_id} has no live rsync process to signal")
+            if has_process:
+                try:
+                    import psutil
+                    psutil.Process(pid).terminate()
+                except Exception as e:
+                    # Signalling failed, so the process is still running - put the
+                    # row back rather than stranding it in a state it is not in
+                    print(f"❌ Error pausing transfer {transfer_id}: {e}")
+                    self._clear_intentional_stop(transfer_id)
+                    self.transfer_model.update(transfer_id, {
+                        'status': 'running',
+                        'progress': f'Pause failed: {e}',
+                        'paused_at': None
+                    })
+                    return False, f'Failed to pause transfer: {e}'
+            else:
+                # The intent is deliberately left in place. rsync may have exited
+                # with its monitor still to run; that monitor pops the intent and
+                # keeps the row 'paused' instead of finalising it as complete or
+                # failed. start_rsync_process clears it before the next run.
+                print(f"⏸️  Transfer {transfer_id} has no live rsync process to signal")
 
         if transfer_id in self.transfers:
             del self.transfers[transfer_id]

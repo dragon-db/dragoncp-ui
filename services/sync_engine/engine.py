@@ -1418,6 +1418,8 @@ class SyncEngine:
                 if run.get('is_simulation') else 'over the configured route'
         elif transport == 'daemon':
             how = 'over the fast transfer server'
+        elif transport == 'ssh_fallback':
+            how = 'over SSH, after the fast transfer server failed'
         else:
             how = 'over SSH'
         pid = transfer.get('rsync_process_id')

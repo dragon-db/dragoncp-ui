@@ -50,7 +50,8 @@ up on startup without a migration script:
   rsync is given `--files-from` and never `--delete`. Stored on the row so a
   queued, promoted, resumed or restarted run rebuilds the same command.
 - `transfers.transport` - which route reached the media host: `daemon` for the
-  fast transfer server, `ssh` for the original route, `NULL` for a run that
+  fast transfer server, `ssh` for the original route, `ssh_fallback` for a copy
+  that failed on the fast transfer server and ran again over SSH, `NULL` for a run that
   predates the choice or never left this machine. Written when rsync starts,
   because the answer depends on what was true at that moment and cannot be
   reconstructed; without it a transfer that fell back to the slow route and one

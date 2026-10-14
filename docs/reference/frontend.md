@@ -393,7 +393,7 @@ Supporting components in `components/transfers/`:
 
 | File | Purpose |
 |---|---|
-| `transfer-bits.tsx` | `TransferStatusBadge`, `ProgressMeter`, `TransportBadge` (the **Fast** badge, drawn only for the fast route), `Chip`, `Fact`, `PathBlock` — the stage list's Transfer stage reuses several |
+| `transfer-bits.tsx` | `TransferStatusBadge`, `ProgressMeter`, `TransportBadge` (the route badge — **Fast**, **SSH** or **SSH fallback**; nothing while queued or for runs before routes were recorded; also on the dashboard's Active Transfers rows), `Chip`, `Fact`, `PathBlock` — the stage list's Transfer stage reuses several |
 | `transfer-detail.tsx` | `TransferDetailPanel` and its `TransferActions` interface. Where a queued / started / completed `Timeline` used to be, **Pipeline** draws the transfer's sync with `RunStages` (Transfer stage facts off — the row already shows them) and any open alert as an `AlertCard`, fetched by `useSyncRun` only while the row is open |
 | `transfer-logs.tsx` | `TransferLogConsole` — live rsync output; only lines that break rsync's repetitive rhythm are tinted. Also embedded in the sync panel's Transfer stage |
 | `simulation-panel.tsx` | `SimulationPanel` scenario launcher and `SimulationBadge` |
@@ -419,7 +419,7 @@ Worth knowing when changing this page:
   the browser could only ever find what the fetched slice contained, which is why
   "Failed" showed nothing while failures existed further back.
 - **Who started it, the route and the sync come from the listing.** A row's
-  "by …" fact, the detail's *Started by* badge, the **Fast** badge, the
+  "by …" fact, the detail's *Started by* badge, the route badge, the
   detail's *Route* fact and its **Pipeline** read `started_by_kind`,
   `started_by_name`, `transport` and `sync_run_id` from `/transfers/all` and
   `/transfers/active`. Until 2026-10-05 neither listing returned them, so every

@@ -97,7 +97,7 @@ For a failed transfer only, `extract_rsync_errors()` scans the log forward and k
 
 ### Alerts - what needs a person
 
-An alert is opened by the sync engine, by its start-up recovery, by the auto-scanner or by the scheduler, and stays open until an admin acts on it. There is one open alert per subject: the same thing happening again while it is open bumps its count rather than opening a second. The three that watch a condition rather than report an event - *Auto-scanner*, *Integration* and *Scheduler* - also stay closed for 24 hours once a person dismisses them or marks them wrong. Each alert is announced through the connector layer once, when it opens - except *Failed*, whose Discord message was the Tell stage's "Sync failed".
+An alert is opened by the sync engine, by its start-up recovery, by the auto-scanner, by the scheduler or by a copy that falls back from the fast route, and stays open until an admin acts on it. There is one open alert per subject: the same thing happening again while it is open bumps its count rather than opening a second. The four that watch a condition rather than report an event - *Auto-scanner*, *Integration*, *Scheduler* and *Fast transfers* - also stay closed for 24 hours once a person dismisses them or marks them wrong. Each alert is announced through the connector layer once, when it opens - except *Failed*, whose Discord message was the Tell stage's "Sync failed".
 
 | Alert | Opens when | Discord event | Actions |
 | --- | --- | --- | --- |
@@ -110,6 +110,7 @@ An alert is opened by the sync engine, by its start-up recovery, by the auto-sca
 | Auto-scanner | The scanner has started two syncs for a gap and still finds it | `scanner.found` | Sync now · Dismiss |
 | Integration | Sonarr did not answer when a batch asked; closes itself when a later batch finds it answering | `integration.down` | Dismiss |
 | Scheduler | A background job failed three times in a row; closes itself on the job's next success | `scheduler.failing` | Run now · Dismiss |
+| Fast transfers | A copy failed on the fast transfer server and ran again over SSH. One alert for the route: every later fallback bumps it | `fast_route.failed` | Dismiss |
 
 Every alert reads the same on Discord: the alert's title, its sentence as the description, whatever labelled fields that kind carries (the reason and the counts, what is stuck, how many webhooks were waiting), and a last field, **What to do**, reading "Open DragonCP → Notifications to act on it." - the Notifications page in the sidebar. The author line is "DragonCP Notifications"; warnings are orange (`15105570`, the colour of a partial rename).
 

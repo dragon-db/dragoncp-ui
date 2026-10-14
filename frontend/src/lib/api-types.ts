@@ -77,8 +77,10 @@ export interface Transfer {
    * Recorded when the transfer starts, because it depends on what was true at
    * that moment. Without it a transfer that fell back to the slow route and one
    * that never had a faster option look identical afterwards.
+   * `ssh_fallback`: started on the transfer server, failed there, and ran
+   * again over SSH.
    */
-  transport?: "daemon" | "ssh" | null;
+  transport?: "daemon" | "ssh" | "ssh_fallback" | null;
   /** The sync this transfer belongs to — every transfer since 2.3.0 has one. */
   sync_run_id?: string | null;
   log_count: number;

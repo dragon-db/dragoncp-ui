@@ -433,6 +433,19 @@ event — after a restart, result unknown, stuck download, waited 30 minutes,
 safety check, failed — are not affected
 (`tests/test_scheduler.py::SchedulerTests::test_a_dismissed_failing_job_stays_quiet_for_a_day`).
 
+### ~~Explore copies over the fast route copied nothing after the remote server's upgrade~~ — **fixed** 2026-10-14
+
+From 2026-08-20 the remote server's rsync carried the CVE-2026-29518 hardening,
+which fails every file of a `--files-from` pull from a folder inside a library
+on a no-chroot server ("file has vanished", exit 24). Explore is the only user of
+`--files-from`; its dry run passed and its copy failed. The fast route was then
+removed and switched off on 2026-08-22, and every transfer ran over SSH at about
+a third of the speed. Explore now reads its list from the library root on the
+fast route, and any copy that fails on the fast route runs again over SSH once —
+see [fast transfers §12](../features/fast-transfers/README.md#12-what-broke-in-august-2026)
+(`tests/test_fast_route_fallback.py`,
+`tests/test_transfer_routing.py::ExploreAgainstARealServerTests`).
+
 ## Configuration that silently does nothing
 
 **Three of the entries that were here are fixed.** `AUTO_SYNC_SERIES` and

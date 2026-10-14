@@ -1,6 +1,6 @@
 # Deploying fast transfers to production
 
-Last updated: 2026-08-16
+Last updated: 2026-10-14
 
 Getting the fast transfer route onto the production instance without breaking
 the transfers that already work.
@@ -36,9 +36,32 @@ Copying the secret is enough to make both work, because a password is only
 generated when the file is missing — with the same file, either instance
 installs the same password.
 
-## What production looks like today
+## Bringing it back after the October 2026 fix
 
-Confirmed on 2026-08-16, so you are not guessing:
+The fast route has been off in production since 2026-08-22, when the remote
+server's rsync upgrade broke Explore copies over it and the server was removed
+([fast transfers §12](../features/fast-transfers/README.md#12-what-broke-in-august-2026)).
+Production already has the `transport` column and both environment keys, so
+step 2 below is done. What is left:
+
+1. Deploy the fix (step 1 and 3 below).
+2. Settings → Connections → Fast transfers → **Install**. Nothing is installed
+   on the remote server, so this is a fresh install and pushes production's
+   password.
+3. Switch **"Use it for transfers"** on.
+4. Watch one normal copy **and one Explore copy** (step 5). Both should show
+   the green **Fast** badge. A blue **SSH** badge means the fast route was not
+   available when the copy started; an amber **SSH fallback** badge means it
+   failed mid-copy and the copy finished over SSH — the **Fast transfers**
+   alert says why.
+
+Tested from development on 2026-10-14 against the remote server before
+removing it again: both Explore list shapes copied over the fast route, a
+forced failure finished over SSH by itself, and the dry runs matched.
+
+## What production looked like on 2026-08-16
+
+Kept for the first-time steps below:
 
 - Runs from `/home/<user>/dragoncp-ui` on `main`, as
   `dragoncp-ui.service` under gunicorn.
@@ -123,19 +146,27 @@ If you press Install here, production takes ownership of the remote server and
 development's password stops matching. That is the decision from the top of this
 document.
 
-### 5. Turn it on, and watch one transfer
+### 5. Turn it on, and watch a normal copy and an Explore copy
 
 Switch **"Use it for transfers"** on.
 
-Then start one transfer by hand — a single season or a film, not a whole
-library. Watch for:
+Then start **both** of these by hand, and do not finish until both have:
+
+1. **A normal copy** — a single season or a film, not a whole library.
+2. **An Explore copy** — pick a few episodes in Explore and copy them. Explore
+   asks the fast route for its files differently from a normal copy, and it is
+   the one that broke in August 2026, so a working normal copy says nothing
+   about it.
+
+For each, watch for:
 
 - a green **Fast** badge on the transfer,
 - a speed around **30 MB/s** rather than 10,
-- the file arriving, and the transfer finishing as `completed`.
+- the files arriving, and the transfer finishing as `completed`.
 
-If the badge is absent, the transfer went over SSH. That is the fallback
-working, not a failure. The panel says why.
+A blue **SSH** badge means the copy went over SSH from the start; an amber
+**SSH fallback** badge means the fast route failed during it. Either way the
+copy still works — the panel and the **Fast transfers** alert say why.
 
 ### 6. Leave it for a day before trusting it
 
@@ -164,7 +195,8 @@ with no restart and no deployment.
 | --- | --- | --- |
 | Panel: "not accepting our password" | The other instance installed last and set a different password | Copy one `dragoncp_rsyncd.secret` to the other checkout, then **Install** |
 | Panel: "comes from a different address than the one it allows" | Your fixed address changed | Update `RSYNC_DAEMON_ALLOWED_IP`, restart, **Install**. Or switch to password-only and **Install** |
-| Transfers run but never show the Fast badge | The route is off, or the server is not answering | The panel's summary line says which |
+| Transfers show a blue **SSH** badge instead of **Fast** | The route is off, or the server is not answering | The panel's summary line says which |
+| Transfers show an amber **SSH fallback** badge | The fast route failed during the copy; it finished over SSH | The **Fast transfers** alert and the transfer's log say why |
 | Panel: "settings are older than the ones here" | A setting was changed but not applied | Press **Install** |
 | Install reports the port is still open | The server would not stop after installing | Press **Stop**. It is set to run only during transfers |
 

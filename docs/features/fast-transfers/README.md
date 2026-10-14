@@ -62,6 +62,15 @@ parser and the dry-run reconciliation do not know which route ran.
 `tests/test_transfer_routing.py` compares the two commands flag by flag, so a
 future edit that adds something to one route and not the other fails the build.
 
+**One exception, since October 2026: an Explore file list.** On the fast route
+the list is read from the library root, and each line is marked where the
+plan's folder starts — `Example Show/./Season 01/<file>` against
+`dragoncp@host::tvshows/` rather than `Season 01/<file>` against
+`dragoncp@host::tvshows/Example Show/`. rsync names a file by what follows the
+`/./`, so it lands in the same place and a dry run prints the same name. The
+approved list is untouched; the fast-route copy is written beside it as
+`<list>.fast-route.txt`. Why: [§12](#12-what-broke-in-august-2026).
+
 ## 3. Choosing a route
 
 Decided in `TransferService.resolve_route()`, which every launch path goes
@@ -91,6 +100,26 @@ between "slower tonight" and "the library stopped updating".
 
 A simulation never asks at all: it copies fixture files on this machine and
 never touches the media host.
+
+### When the fast route fails during a copy
+
+Choosing the route only covers a server that is down **before** a copy starts.
+A copy that then fails on it — the server dies, the connection drops, or the
+server refuses the files as in [§12](#12-what-broke-in-august-2026) — runs
+again **once, over SSH, as the same transfer**: same flags, same backup folder,
+same partial folder, so files already copied are skipped and a half-copied one
+carries on. It is not retried when rsync was stopped on purpose — pause,
+cancel, or a signal (exit 19 or 20). A failure over SSH is final.
+
+The two dry runs (the safety check and Explore's rehearsal) do the same: one
+that fails or times out on the fast route is asked again over SSH, so a broken
+fast route can slow the library down but cannot block a sync.
+
+A fallback is never silent. The copy's route is recorded as `ssh_fallback`
+("SSH (fast route failed)" on the transfer), its log says why in rsync's own
+words, the sync's Transfer stage is re-stated, and one **Fast transfers** alert
+opens — announced once as `fast_route.failed`, then bumped by every later
+fallback instead of messaging again.
 
 ## 4. What is on the media host
 
@@ -216,17 +245,22 @@ One column, on `transfers`:
 
 | Column | Values | Meaning |
 | --- | --- | --- |
-| `transport` | `daemon`, `ssh`, `NULL` | Which route ran. `NULL` for runs predating the choice, and for simulations, which never leave this machine. |
+| `transport` | `daemon`, `ssh`, `ssh_fallback`, `NULL` | Which route ran. `ssh_fallback`: started on the fast route, failed, finished over SSH. `NULL` for runs predating the choice, and for simulations, which never leave this machine. |
 
 Written when rsync starts, because the answer depends on what was true at that
 moment — whether the server was up and would accept us — and cannot be
 reconstructed afterwards. Without it, a transfer that fell back to the slow route
 and one that never had a faster option look identical: both simply slow.
 
-Shown as a **Fast** badge on the transfers list (only for the fast route — badging
-every SSH transfer would be noise, and the badge's absence is what tells you a
-transfer fell back) and named in full on the transfer detail, which is where
-someone asks why a transfer took as long as it did.
+Shown as a route badge on every row that lists a transfer — the dashboard's
+Active Transfers, and the Transfers page's Activity and History: green **Fast**,
+blue **SSH**, amber **SSH fallback**. Until 2026-10-14 only the fast route was
+badged, so "no badge" could mean SSH, not started yet, or a run from before
+routes were recorded; the operator asked to see the route at a glance. A queued
+copy still has none — the route is chosen when rsync starts — and neither does a
+run from before August 2026. Named in full on the transfer detail, which is where
+someone asks why a transfer took as long as it did. On a phone the dashboard
+shows the badge under the title, on the path line, so the title keeps its room.
 
 ## 9. Settings
 
@@ -283,14 +317,48 @@ answer for.
 - **No encryption on the fast route.** The practical exposure is a read-only
   media library behind an address restriction. If encryption becomes a
   requirement, `../../plans/fast-transport.md` §4.4 is the next step.
-- **No live failover.** A server that dies part-way through fails that transfer;
-  the retry re-checks and normally picks SSH. Because both routes are the same
-  rsync writing into the same partial directory, the retry resumes rather than
-  starting over.
+- **One fallback per copy.** A copy that fails on the fast route runs again
+  over SSH once ([§3](#when-the-fast-route-fails-during-a-copy)). A failure
+  over SSH is final, as it always was.
+- **The remote server's rsync is not ours to choose.** Its provider upgrades
+  it. Anything that changes server behaviour again lands on the fallback first;
+  the alert is what tells you.
 - **The backup area is on a different disk from the media**, so every displaced
   file is copied between disks rather than renamed. Pre-existing and unrelated to
   the route, but it costs minutes on a large film. See
   `../../plans/fast-transport.md` §7.9.
+
+## 12. What broke in August 2026
+
+On 2026-08-20 the remote server moved from Debian 11 to Debian 13, and its rsync
+from 3.2.3 to `3.4.1+ds1-5+deb13u4`. That build carries the May 2026 fix for
+CVE-2026-29518: a server running with `use chroot = no` — which ours must, the
+account has no root — now opens files from the library root instead of trusting
+`chdir()`.
+
+It broke one shape of request. A `--files-from` pull whose source is a folder
+**inside** the library (`::tvshows/Example Show/`) reports every file as
+`file has vanished` and copies nothing (exit 24). A pull of a whole folder, and
+a `--files-from` pull from the library root, are unaffected. Only Explore uses
+`--files-from`, so only Explore copies failed — normal transfers kept running at
+full speed. A dry run never opens a file, so Explore's rehearsal passed and only
+the real copy failed.
+
+Reproduced on this machine against Debian's own builds: `deb13u2` (before the
+fix) works; `deb13u4`, upstream 3.5.0 and 3.5.1 all fail, with a matching client
+too — so it is a server bug, not a version mismatch. No rsync version needs
+changing anywhere; §2's exception works on both kinds of server.
+
+To run the tests against a hardened server, extract an rsync binary from the
+`.deb` (`dpkg-deb -x`) and point `DRAGONCP_TEST_RSYNC_SERVER` at it:
+
+```bash
+DRAGONCP_TEST_RSYNC_SERVER=/path/to/usr/bin/rsync \
+  venv/bin/python -m pytest tests/test_transfer_routing.py -k RealServer
+```
+
+That run also checks the old command still fails there, so the test keeps
+describing a real problem.
 
 ## Related
 

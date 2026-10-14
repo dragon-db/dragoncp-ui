@@ -14,8 +14,12 @@ because the alternative is a library that silently stops updating.
 """
 
 import os
+import shutil
+import socket
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -143,12 +147,43 @@ class CommandShapeTests(unittest.TestCase):
             ['--port=52314', '--password-file', '/tmp/pw']))
 
         def flags(command):
-            # Everything except the route's own contribution and the addresses.
+            # Everything except the route's own contribution, the addresses and
+            # the list file — the fast route reads its own copy of the list.
             drop = {'-e', 'ssh -o StrictHostKeyChecking=accept-new', '--port=52314',
                     '--password-file', '/tmp/pw'}
-            return [a for a in command if a not in drop and '::' not in a and ':/srv' not in a]
+            return [a for a in command if a not in drop and '::' not in a
+                    and ':/srv' not in a and not a.startswith(self.tmp.name)]
 
         self.assertEqual(flags(ssh), flags(daemon))
+
+    def test_the_fast_route_reads_the_list_from_the_library_root(self):
+        # The transfer server fails every file of a list read from a folder
+        # inside the library (rsync's 2026 no-chroot hardening), so the fast
+        # route asks from the root and marks where the folder starts.
+        command = self.explore_command(TransferRoute(
+            DAEMON, 'dragoncp@remote.example::tvshows/Example Show/', ['--port=52314']))
+        self.assertEqual(command[-2], 'dragoncp@remote.example::tvshows/')
+        listed = command[command.index('--files-from') + 1]
+        self.assertNotEqual(listed, self.files_from)
+        with open(listed) as handle:
+            self.assertEqual(handle.read(),
+                             'Example Show/./Season 01/Example Show - S01E01.mkv\n')
+        # The approved list itself is left exactly as the plan wrote it.
+        with open(self.files_from) as handle:
+            self.assertEqual(handle.read(), 'Season 01/Example Show - S01E01.mkv\n')
+
+    def test_a_list_already_at_the_library_root_is_used_as_written(self):
+        command = build_service().build_explore_rsync_command(
+            '/srv/media/movies', '/local/movies', '/backups/staging',
+            self.files_from, 'sync',
+            TransferRoute(DAEMON, 'dragoncp@remote.example::movies/', ['--port=52314']))
+        self.assertEqual(command[command.index('--files-from') + 1], self.files_from)
+
+    def test_the_ssh_route_reads_the_list_as_written(self):
+        command = self.explore_command(TransferRoute(
+            SSH, 'someone@remote.example:/srv/media/tvshows/Example Show/', ['-e', 'ssh']))
+        self.assertEqual(command[command.index('--files-from') + 1], self.files_from)
+        self.assertEqual(command[-2], 'someone@remote.example:/srv/media/tvshows/Example Show/')
 
     def test_the_safety_flags_survive_on_the_fast_route(self):
         command = self.explore_command(TransferRoute(
@@ -179,6 +214,155 @@ class CommandShapeTests(unittest.TestCase):
                 self.files_from, 'sync', route)
             self.assertEqual(command[-2], route.source)
             self.assertEqual(command[-1], '/local/movies/')
+
+
+class ExploreAgainstARealServerTests(unittest.TestCase):
+    """
+    An Explore list pulled through a real rsync server, compared with the same
+    list pulled from a plain path the way SSH reads it.
+
+    The server is this machine's rsync unless DRAGONCP_TEST_RSYNC_SERVER names
+    another binary. Point it at the remote server's own build (an rsync with
+    the 2026 no-chroot hardening, e.g. Debian 13's) to prove the fix against
+    the server that broke — that run also checks the old command still fails
+    there, so the test keeps describing a real problem.
+    """
+
+    SHOW = 'Example Show'
+    NAMES = ('Season 01/Example Show - S01E01.mkv', 'Season 01/Example Show - S01E02.mkv')
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = os.environ.get('DRAGONCP_TEST_RSYNC_SERVER') or shutil.which('rsync')
+        if not cls.server or shutil.which('rsync') is None:
+            raise unittest.SkipTest('rsync is not installed')
+
+    def setUp(self):
+        patcher = patch.object(
+            TransferService, '_build_ssh_host_key_options',
+            return_value=['-o', 'StrictHostKeyChecking=accept-new'])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.library = os.path.join(self.tmp, 'library')
+        for name in self.NAMES:
+            path = os.path.join(self.library, self.SHOW, name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'wb') as handle:
+                handle.write(os.urandom(4096))
+        self.files_from = os.path.join(self.tmp, 'files.txt')
+        with open(self.files_from, 'w') as handle:
+            handle.write(''.join(f"{name}\n" for name in self.NAMES))
+        self.port = self._start_server()
+        self.password = os.path.join(self.tmp, 'client-password')
+        with open(self.password, 'w') as handle:
+            handle.write('correct-horse\n')
+        os.chmod(self.password, 0o600)
+
+    def _start_server(self):
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        secrets_file = os.path.join(self.tmp, 'secrets')
+        with open(secrets_file, 'w') as handle:
+            handle.write('dragoncp:correct-horse\n')
+        os.chmod(secrets_file, 0o600)
+        conf = os.path.join(self.tmp, 'rsyncd.conf')
+        # The shape the installer generates: no chroot, read only, unlisted.
+        with open(conf, 'w') as handle:
+            handle.write(
+                f"pid file = {self.tmp}/pid\nlock file = {self.tmp}/lock\n"
+                f"log file = {self.tmp}/log\nuse chroot = no\nreverse lookup = no\n\n"
+                f"[tvshows]\n    path = {self.library}\n    read only = yes\n"
+                f"    list = no\n    auth users = dragoncp\n"
+                f"    secrets file = {secrets_file}\n")
+        proc = subprocess.Popen(
+            [self.server, '--daemon', '--no-detach', f'--config={conf}', f'--port={port}'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        def stop():
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        self.addCleanup(stop)
+        for _ in range(50):
+            probe = socket.socket()
+            probe.settimeout(0.2)
+            try:
+                probe.connect(('127.0.0.1', port))
+                break
+            except OSError:
+                time.sleep(0.1)
+            finally:
+                probe.close()
+        else:
+            self.skipTest('the test rsync server would not start')
+        return port
+
+    def _daemon_route(self):
+        return TransferRoute(
+            DAEMON, f'dragoncp@127.0.0.1::tvshows/{self.SHOW}/',
+            [f'--port={self.port}', '--password-file', self.password])
+
+    def _path_route(self):
+        # What SSH reads, without SSH: the same folder as a plain path.
+        return TransferRoute(SSH, os.path.join(self.library, self.SHOW) + '/', [])
+
+    def _run(self, route, dry_run=False):
+        dest = os.path.join(self.tmp, f"dest-{route.kind}-{int(dry_run)}")
+        os.makedirs(dest)
+        command = build_service().build_explore_rsync_command(
+            os.path.join(self.library, self.SHOW), dest,
+            os.path.join(self.tmp, f"backup-{route.kind}"), self.files_from, 'sync', route)
+        if dry_run:
+            # The same transformation run_explore_dry_run applies.
+            command = [a for a in command if a not in ('--progress', '--info=progress2')]
+            command[1:1] = ['--dry-run', '--out-format=%i|%l|%n']
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                universal_newlines=True, timeout=60)
+        return result, dest
+
+    @staticmethod
+    def _landed(dest):
+        return sorted(os.path.relpath(os.path.join(root, name), dest)
+                      for root, _, names in os.walk(dest) for name in names)
+
+    def test_the_fast_route_lands_the_files_where_ssh_does(self):
+        fast, fast_dest = self._run(self._daemon_route())
+        self.assertEqual(fast.returncode, 0, fast.stdout)
+        plain, plain_dest = self._run(self._path_route())
+        self.assertEqual(plain.returncode, 0, plain.stdout)
+        self.assertEqual(self._landed(fast_dest), sorted(self.NAMES))
+        self.assertEqual(self._landed(fast_dest), self._landed(plain_dest))
+
+    def test_the_fast_route_dry_run_names_files_the_way_ssh_does(self):
+        # Explore's report is built from these lines; a different name for the
+        # same file would read as a different file.
+        def itemised(output):
+            return sorted(line for line in output.splitlines() if '|' in line)
+        fast, _ = self._run(self._daemon_route(), dry_run=True)
+        plain, _ = self._run(self._path_route(), dry_run=True)
+        self.assertEqual(fast.returncode, 0, fast.stdout)
+        self.assertEqual(itemised(fast.stdout), itemised(plain.stdout))
+        self.assertTrue(itemised(fast.stdout))
+
+    def test_on_a_hardened_server_the_old_command_still_fails(self):
+        if not os.environ.get('DRAGONCP_TEST_RSYNC_SERVER'):
+            self.skipTest('needs DRAGONCP_TEST_RSYNC_SERVER pointing at a hardened rsync')
+        route = self._daemon_route()
+        dest = os.path.join(self.tmp, 'dest-old')
+        os.makedirs(dest)
+        old = ['rsync', '-av', '--files-from', self.files_from, *route.args,
+               route.source, f"{dest}/"]
+        result = subprocess.run(old, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                universal_newlines=True, timeout=60)
+        self.assertEqual(result.returncode, 24, result.stdout)
+        self.assertIn('file has vanished', result.stdout)
+        self.assertEqual(self._landed(dest), [])
 
 
 class RouteRecordingTests(unittest.TestCase):

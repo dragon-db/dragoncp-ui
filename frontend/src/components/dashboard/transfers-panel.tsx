@@ -12,6 +12,7 @@ import {
 import { useTransferPosters } from "@/hooks/useTransferPosters";
 import { WebhookPoster } from "@/components/webhooks/webhook-bits";
 import { ConfirmDialog } from "@/components/transfers/confirm-dialog";
+import { TransportBadge } from "@/components/transfers/transfer-bits";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -83,6 +84,12 @@ function TransferRow({
           {transfer.season_name && (
             <span className="truncate text-xs text-muted-foreground">{transfer.season_name}</span>
           )}
+          {/* Beside the title where there is room; on phones it moves to the
+              path line below, which is cut short there anyway. */}
+          <TransportBadge
+            transport={transfer.transport}
+            className="hidden self-center sm:inline-flex"
+          />
           {paused && (
             <Badge variant="outline" className="shrink-0 border-amber-500/40 text-amber-400">
               Paused
@@ -101,6 +108,7 @@ function TransferRow({
           />
         </div>
         <div className="flex items-center gap-1.5 truncate font-mono text-[10px] text-muted-foreground">
+          <TransportBadge transport={transfer.transport} className="font-sans sm:hidden" />
           <span className="truncate">{transfer.source_path}</span>
           <IconArrowNarrowRight className="size-3 shrink-0" />
           <span className="truncate">{transfer.dest_path}</span>

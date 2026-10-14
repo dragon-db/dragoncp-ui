@@ -58,6 +58,7 @@ KINDS = {
     'scanner_gap': 'Auto-scanner',
     'integration_down': 'Integration',
     'job_failing': 'Scheduler',
+    'fast_route_failed': 'Fast transfers',
 }
 
 
@@ -104,8 +105,13 @@ class AlertService:
                     self.store.closed_by_a_person_since(dedupe_key, QUIET_AFTER_DISMISS):
                 return None
             if existing is not None:
+                # A bump that moves the alert to another sync moves its link
+                # with it, chosen the way the first one was. Otherwise the
+                # link stays as it is.
+                moved = run_id is not None and run_id != existing.get('run_id')
                 alert = self.store.bump(existing['alert_id'], message=message,
-                                        data=data, run_id=run_id)
+                                        data=data, run_id=run_id,
+                                        link=(link or _run_link(run_id)) if moved else None)
                 self._emit()
                 return alert
             alert = self.store.create(kind, severity, title, message, dedupe_key=dedupe_key,
@@ -339,6 +345,31 @@ class AlertService:
             data={'transfer_id': run.get('transfer_id')},
             # The failure itself was announced by the pipeline's Tell stage.
             announce_event=None)
+
+    def fast_route_failed(self, transfer: Dict[str, Any], return_code: int,
+                          reason: str = '') -> None:
+        """A copy failed on the fast transfer server and is running again over SSH.
+
+        One alert for the route, not one per copy: when the server breaks, every
+        copy falls back, and each one bumps this alert instead of sending
+        another message. Dismissed, it stays quiet for a day.
+        """
+        label = transfer.get('parsed_title') or transfer.get('folder_name') or 'A copy'
+        if transfer.get('season_name'):
+            label = f"{label} — {transfer['season_name']}"
+        said = f" rsync said: {reason}" if reason else ''
+        self.raise_alert(
+            'fast_route_failed', 'Fast transfers failed — copies are using SSH',
+            f"{label} failed on the fast transfer server (rsync exit {return_code}) "
+            f"and is running again over SSH, at the slower speed.{said} Check "
+            f"Settings → Connections → Fast transfers.",
+            WARNING, dedupe_key='fast_route_failed', run_id=transfer.get('sync_run_id'),
+            transfer_id=transfer.get('transfer_id'),
+            link=None if transfer.get('sync_run_id') else '/settings',
+            actions=('dismiss',), data={'exit_code': return_code, 'reason': reason},
+            announce_event='fast_route.failed',
+            fields=(('Copy', label), ('rsync said', reason)),
+            quiet_after_dismiss=True)
 
     def restart_unfinished(self, unit_key: str, label: str, notification_ids: List[str],
                            run_id: Optional[str] = None, what: str = '') -> None:

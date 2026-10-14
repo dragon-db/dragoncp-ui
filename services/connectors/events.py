@@ -162,6 +162,12 @@ CATALOGUE: Tuple[EventType, ...] = (
         'A scheduled background job failed several times in a row.',
         WARNING,
     ),
+    EventType(
+        'fast_route.failed', 'Fast transfers failed',
+        'A copy failed on the fast transfer server and ran again over SSH. Sent '
+        'once while the alert stays open.',
+        WARNING,
+    ),
 )
 
 #: What the routing table shows and what a caller may announce.
