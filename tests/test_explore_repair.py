@@ -12,6 +12,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import unittest.mock
 from pathlib import Path
 
@@ -466,6 +467,37 @@ class RepairTests(unittest.TestCase):
             service.repair_apply('tvshows', self.SERIES)
         self.assertTrue(self.exists(rel))
         self.assertTrue(self.exists(f"{self.SERIES}/Season 01/{name}/notes.txt"))
+
+    def test_test_mode_rehearses_the_repair_and_moves_nothing(self):
+        name = 'Show - S01E01 - Title.mkv'
+        rel = self.stranded('Season 01', name, size=7 * MB)
+
+        with patch.dict(os.environ, {'TEST_MODE': '1'}):
+            result = self.repair_service().repair_apply('tvshows', self.SERIES)
+
+        self.assertTrue(result['dry_run'])
+        self.assertEqual(result['moved_count'], 1, 'the report says what it would do')
+        self.assertTrue(self.exists(rel), 'the stranded file is exactly where it was')
+        # Its wrapper — the folder named after the file — is still a folder.
+        self.assertTrue(os.path.isdir(os.path.join(self.local_root, f"{self.SERIES}/Season 01/{name}")))
+        self.assertEqual(result['directories_removed'], 0)
+
+    def test_test_mode_keeps_both_copies_when_one_would_be_deleted(self):
+        name = 'Show - S01E02 - Title.mkv'
+        stranded = self.stranded('Season 01', name)
+        existing = self.placed('Season 01', 'Show - S01E02 - Title.REPACK.mkv')
+        plan = self.repair_service().repair_plan('tvshows', self.SERIES)
+        rival = plan['actions'][0]['rival']['relative_path']
+
+        with patch.dict(os.environ, {'TEST_MODE': '1'}):
+            result = self.repair_service().repair_apply(
+                'tvshows', self.SERIES,
+                decisions={stranded: {'choice': 'keep_existing', 'rival': rival}})
+
+        self.assertEqual(result['deleted_count'], 1)
+        self.assertTrue(self.exists(stranded))
+        self.assertTrue(self.exists(existing))
+        self.assertEqual(self.backup_filenames(), [], 'nothing was kept, because nothing went')
 
     def test_apply_repairs_every_stranded_file_in_one_run(self):
         for index in range(1, 4):

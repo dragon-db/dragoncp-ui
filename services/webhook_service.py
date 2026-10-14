@@ -258,362 +258,45 @@ class WebhookService:
             traceback.print_exc()
             raise
     
-    def trigger_webhook_sync(self, notification_id: str) -> Tuple[bool, str]:
-        """Trigger sync for a webhook notification (movies)"""
-        try:
-            # Get notification details
-            notification = self.webhook_model.get(notification_id)
-            if not notification:
-                return False, "Notification not found"
-            
-            if notification['status'] == 'syncing':
-                return False, "Sync already in progress"
-            
-            if notification['status'] == 'completed':
-                return False, "Already synced"
-            
-            # Update notification status to syncing
-            self.webhook_model.update(notification_id, {
-                'status': 'syncing',
-                'completed_at': datetime.now().isoformat()
-            })
-            
-            # Generate transfer ID
-            transfer_id = f"webhook_{notification_id}_{int(datetime.now().timestamp())}"
-            
-            # Use folder_path as source_path (contains actual folder name from remote server)
-            source_path = notification['folder_path']
-            if not source_path:
-                self.webhook_model.update(notification_id, {
-                    'status': 'failed',
-                    'error_message': 'Missing folder_path in notification'
-                })
-                return False, "Missing folder_path in notification"
-            
-            # Use PathService to construct destination path consistently
-            # This ensures folder names match the remote server (already sanitized by Radarr)
-            try:
-                dest_path = self.path_service.get_destination_path(source_path, 'movies')
-            except ValueError as e:
-                self.webhook_model.update(notification_id, {
-                    'status': 'failed',
-                    'error_message': str(e)
-                })
-                return False, str(e)
-            
-            # Extract folder name for transfer record (from actual path, not title)
-            import os
-            folder_name = os.path.basename(source_path.rstrip('/'))
-            
-            # Store transfer ID in notification
-            self.webhook_model.update(notification_id, {'transfer_id': transfer_id})
-            
-            # Start the transfer using transfer coordinator
-            # Returns (success, queue_type)
-            success, queue_type = self.transfer_coordinator.start_transfer(
-                transfer_id=transfer_id,
-                source_path=source_path,
-                dest_path=dest_path,
-                operation_type="folder",
-                media_type="movies",
-                folder_name=folder_name,
-                season_name=None
-            )
-            
-            if success:
-                print(f"✅ Webhook sync started for {notification['title']} (Transfer ID: {transfer_id})")
-                return True, f"Sync started for {notification['title']}"
-            else:
-                # Update notification status back to pending on failure
-                self.webhook_model.update(notification_id, {
-                    'status': 'failed',
-                    'error_message': 'Failed to start transfer'
-                })
-                return False, "Failed to start transfer"
-                
-        except Exception as e:
-            print(f"❌ Error triggering webhook sync: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # Update notification status to failed
-            self.webhook_model.update(notification_id, {
-                'status': 'failed',
-                'error_message': str(e)
-            })
-            return False, f"Sync failed: {str(e)}"
-    
-    # Statuses a manual sync is allowed to act on.
-    SYNCABLE_STATUSES = ('pending', 'failed', 'MANUAL_SYNC_REQUIRED', 'manual_sync_required')
+    # ---- starting a sync --------------------------------------------------
+    #
+    # Every way a webhook gets synced goes through the sync engine now: the
+    # automatic path from the receivers, and these manual ones. They used to
+    # start transfers directly — no batch, no safety check for movies, and a
+    # race with the waiting automatic batch that marked its webhooks failed
+    # while the manual copy ran. The names stay because callers use them.
 
-    # Statuses whose notification is already tied to a transfer that has not
-    # finished. Relinking one of these would repoint it at the new run and
-    # leave the in-flight transfer with nothing tracking its outcome.
-    IN_FLIGHT_STATUSES = ('syncing', 'QUEUED_SLOT', 'QUEUED_PATH',
-                          'queued_slot', 'queued_path', 'paused')
+    def _engine(self):
+        return getattr(self.transfer_coordinator, 'sync_engine', None)
+
+    def trigger_webhook_sync(self, notification_id: str) -> Tuple[bool, str]:
+        """Sync one movie notification, through the pipeline."""
+        result = self._engine().sync_notifications([notification_id])
+        return bool(result.get('ok')), result.get('message') or ''
 
     def sync_notification_group(self, notification_ids: List[str]) -> Tuple[bool, str, List[str]]:
         """
         Sync a group of series/anime notifications as ONE transfer per season.
 
         Sonarr sends one webhook per episode, so a six-episode grab produces six
-        notifications for the same season. A series transfer is scoped to the
-        SEASON FOLDER, not to an episode — one run brings the whole season — so
-        syncing them individually produced six transfers against one destination.
-        The queue serialised them on the path conflict and five did nothing.
+        notifications for the same season. The engine groups them by the folder
+        they would be copied into — re-derived on the server, never taken from
+        the caller — so the client cannot decide which folder gets synced.
 
-        The grouping is re-derived here from (media_type, series slug, season)
-        rather than trusting the caller's list: the client groups for display,
-        but it must not be able to decide which folder gets synced. Ids that
-        disagree are split into their own transfers, never merged.
-
-        Returns (success, message, transfer_ids).
+        Returns (success, message, run_ids). Transfers are created once each
+        batch passes its safety check, so the ids returned are the runs to
+        follow.
         """
         if not notification_ids:
             return False, "No notifications given", []
-
-        groups: Dict[Tuple, List[Dict]] = {}
-        missing: List[str] = []
-
-        for notification_id in notification_ids:
-            notification = self.series_webhook_model.get(notification_id)
-            if not notification:
-                missing.append(notification_id)
-                continue
-            key = (
-                notification.get('media_type'),
-                notification.get('series_title_slug') or notification.get('series_title'),
-                notification.get('season_number'),
-            )
-            groups.setdefault(key, []).append(notification)
-
-        if not groups:
-            return False, "None of those notifications exist", []
-
-        transfer_ids: List[str] = []
-        messages: List[str] = []
-        started = 0
-
-        # Groups that produced no transfer, reported even when others succeed —
-        # a partial failure that only shows up as a success message is worse
-        # than no message at all.
-        problems: List[str] = []
-        episodes = 0
-
-        for key, notifications in groups.items():
-            label = f"{key[1]} S{key[2]}"
-            actionable = [n for n in notifications
-                          if (n.get('status') or '') in self.SYNCABLE_STATUSES]
-            if not actionable:
-                problems.append(f"{label}: nothing to sync")
-                continue
-
-            primary = actionable[0]['notification_id']
-            # Every id in the group rides on the one transfer, so each episode's
-            # notification tracks the run that fetched it — except any already
-            # attached to a transfer still in flight, which keeps its own.
-            group_ids = [n['notification_id'] for n in notifications
-                         if (n.get('status') or '') not in self.IN_FLIGHT_STATUSES]
-
-            success, message = self.trigger_series_webhook_sync(primary, group_ids)
-            messages.append(message)
-            if success:
-                started += 1
-                episodes += len(actionable)
-                transfer = self.series_webhook_model.get(primary)
-                if transfer and transfer.get('transfer_id'):
-                    transfer_ids.append(transfer['transfer_id'])
-            else:
-                problems.append(f"{label}: {message}")
-
-        if not started:
-            return False, "; ".join(messages + problems) or "Nothing to sync", []
-
-        seasons = "season" if started == 1 else "seasons"
-        summary = f"Started {started} {seasons} sync for {episodes} episode(s)"
-        if problems:
-            summary += " — " + "; ".join(problems)
-        if missing:
-            summary += f" — {len(missing)} notification(s) no longer exist"
-        return True, summary, transfer_ids
+        result = self._engine().sync_notifications(notification_ids)
+        return bool(result.get('ok')), result.get('message') or '', list(result.get('run_ids') or [])
 
     def trigger_series_webhook_sync(self, notification_id: str, batched_notification_ids: List[str] = None) -> Tuple[bool, str]:
-        """
-        Trigger sync for a series/anime webhook notification
-        
-        CRITICAL: Webhook status synchronization with transfer status
-        ==============================================================
-        This method ensures webhook notification status ALWAYS matches the actual
-        transfer status, preventing premature completion marking.
-        
-        TEST SCENARIO (Multiple episodes, slot queue):
-        1. 3 transfers running (max capacity)
-        2. Notification [A] arrives → Creates transfer → Check status
-           - Transfer status: 'queued' (no slots)
-           - Webhook status: 'QUEUED_SLOT' ✓ (matches transfer)
-        3. Notification [B] arrives (same series/season) → Creates transfer
-           - Transfer status: 'queued' (path conflict with A)
-           - Webhook status: 'QUEUED_PATH' ✓ (matches transfer)
-        4. Slot opens → [A] promoted via start_queued_transfer()
-           - Transfer status: 'pending' → 'running'
-           - Webhook status: 'QUEUED_SLOT' → 'syncing' ✓ (synced on promotion)
-        5. [A] completes → mark_pending_by_series_season_completed()
-           - Only marks notifications with status='syncing' as completed
-           - [A]: 'syncing' → 'completed' ✓
-           - [B]: 'QUEUED_PATH' → stays 'QUEUED_PATH' ✓ (NOT marked completed)
-        6. [B] promoted → Starts running
-           - Webhook status: 'QUEUED_PATH' → 'syncing' ✓
-        7. [B] completes
-           - [B]: 'syncing' → 'completed' ✓
-        
-        This prevents the bug where [B] was prematurely marked completed when [A] finished.
-        """
-        try:
-            # Get notification details
-            notification = self.series_webhook_model.get(notification_id)
-            if not notification:
-                return False, "Notification not found"
-            
-            if notification['status'] == 'syncing':
-                return False, "Sync already in progress"
-            
-            if notification['status'] == 'completed':
-                return False, "Already synced"
-            
-            # Generate transfer ID
-            # NOTE: Don't update webhook status to 'syncing' yet - will be set based on actual transfer status
-            transfer_id = f"series_webhook_{notification_id}_{int(datetime.now().timestamp())}"
-            
-            # Extract series details
-            series_path = notification.get('series_path')
-            season_path = notification.get('season_path')
-            season_number = notification.get('season_number')
-            media_type = notification['media_type']
-            
-            # Determine source path - prefer the actual season_path from webhook
-            # (extracted from real episode file path on remote server)
-            if season_path:
-                # PRIMARY: Use the actual season path from webhook notification
-                # This is extracted from the episode file path and represents the real folder on disk
-                source_path = season_path
-                print(f"📁 Using actual season_path from webhook: {source_path}")
-            elif series_path and season_number is not None:
-                # FALLBACK: Reconstruct season path if season_path is not available
-                # This is a fallback only, assumes Sonarr's standard "Season XX" format
-                source_path = f"{series_path.rstrip('/')}/Season {season_number:02d}"
-                print(f"⚠️  season_path not in notification, reconstructed: {source_path}")
-            elif series_path:
-                # Whole series sync (rare case, no season specified)
-                source_path = series_path
-                print(f"📁 Using series_path for whole series sync: {source_path}")
-            else:
-                self.series_webhook_model.update(notification_id, {
-                    'status': 'failed',
-                    'error_message': 'Missing series_path and season_path in notification'
-                })
-                return False, "Missing series_path and season_path in notification"
-            
-            # Use PathService to construct destination path consistently
-            # This ensures folder names match the remote server (already sanitized by Sonarr)
-            try:
-                dest_path = self.path_service.get_destination_path(source_path, media_type)
-            except ValueError as e:
-                self.series_webhook_model.update(notification_id, {
-                    'status': 'failed',
-                    'error_message': str(e)
-                })
-                return False, str(e)
-            
-            # Extract folder and season names for transfer record (from actual paths, not title)
-            import os
-            folder_name, season_name = self.path_service.extract_folder_components(source_path, media_type)
-            
-            # Store transfer ID in primary notification
-            self.series_webhook_model.update(notification_id, {'transfer_id': transfer_id})
-            
-            # Link ALL batched notifications to the same transfer
-            # This ensures all episodes in the batch are properly linked
-            if batched_notification_ids and len(batched_notification_ids) > 1:
-                log_batch("WebhookService", f"Linking batched notifications to transfer", 
-                         len(batched_notification_ids), icon="🔗", 
-                         notification_ids=batched_notification_ids, transfer_id=transfer_id)
-                self.series_webhook_model.link_notifications_to_transfer(
-                    batched_notification_ids,
-                    transfer_id
-                )
-            
-            # Start the transfer using transfer coordinator
-            # Returns (success, queue_type) where queue_type is:
-            # 'running', 'QUEUED_SLOT', 'QUEUED_PATH', or 'failed'
-            success, queue_type = self.transfer_coordinator.start_transfer(
-                transfer_id=transfer_id,
-                source_path=source_path,
-                dest_path=dest_path,
-                operation_type='folder',
-                media_type=media_type,
-                folder_name=folder_name,
-                season_name=season_name
-            )
-            
-            series_title = notification['series_title']
-            
-            if success:
-                # Transfer started or queued successfully
-                # Use the explicit queue_type returned from coordinator
-                log_sync("WebhookService", f"Transfer coordinator returned: queue_type={queue_type}", 
-                        transfer_id=transfer_id, icon="🔍")
-                
-                # Map queue type to webhook status
-                webhook_status_map = {
-                    'running': 'syncing',        # Transfer actively running
-                    'pending': 'syncing',        # Transfer preparing to start (shouldn't happen with new code)
-                    'QUEUED_SLOT': 'QUEUED_SLOT',  # Queued due to slot limit
-                    'QUEUED_PATH': 'QUEUED_PATH',  # Queued due to path conflict
-                }
-                
-                webhook_status = webhook_status_map.get(queue_type, 'syncing')
-                
-                log_sync("WebhookService", f"Webhook status determined: {webhook_status}", 
-                        transfer_id=transfer_id, icon="📋")
-                
-                # Update all notifications linked to this transfer (all batched episodes)
-                # This ensures all episodes maintain the same status as their transfer
-                if webhook_status == 'syncing':
-                    # Mark all notifications with this transfer_id as SYNCING
-                    self.series_webhook_model.update_notifications_by_transfer_id(
-                        transfer_id,
-                        {'status': 'syncing', 'completed_at': datetime.now().isoformat()}
-                    )
-                elif webhook_status in ['QUEUED_SLOT', 'QUEUED_PATH']:
-                    # Mark all notifications with this transfer_id as queued
-                    self.series_webhook_model.update_notifications_by_transfer_id(
-                        transfer_id,
-                        {'status': webhook_status}
-                    )
-                
-                status_message = {
-                    'syncing': f"Sync started for {series_title} Season {season_number}",
-                    'QUEUED_SLOT': f"Queued (waiting for transfer slot) - {series_title} Season {season_number}",
-                    'QUEUED_PATH': f"Queued (waiting for same path) - {series_title} Season {season_number}"
-                }
-                
-                print(f"✅ {status_message.get(webhook_status, 'Transfer initiated')}")
-                return True, status_message.get(webhook_status, f"Transfer initiated for {series_title} Season {season_number}")
-            else:
-                # Transfer failed to start completely
-                self.series_webhook_model.update(notification_id, {
-                    'status': 'failed',
-                    'error_message': 'Failed to start transfer'
-                })
-                return False, "Failed to start transfer"
-                
-        except Exception as e:
-            print(f"❌ Error triggering series webhook sync: {e}")
-            self.series_webhook_model.update(notification_id, {
-                'status': 'failed',
-                'error_message': str(e)
-            })
-            return False, f"Failed to trigger sync: {str(e)}"
+        """Sync one series/anime notification (and any batched with it), through the pipeline."""
+        ids = [notification_id] + [n for n in (batched_notification_ids or []) if n != notification_id]
+        result = self._engine().sync_notifications(ids)
+        return bool(result.get('ok')), result.get('message') or ''
     
     def update_webhook_transfer_status(self, transfer_id: str, status: str, transfer_model):
         """

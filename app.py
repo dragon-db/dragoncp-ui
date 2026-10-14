@@ -42,6 +42,9 @@ from services import TransferCoordinator
 from services.rename_service import RenameService
 from services.simulation_service import SimulationService
 from services.explore.service import ExploreService
+from routes.media_library import init_media_library_routes, media_library_bp
+from services.connectors import configure as configure_connectors
+from models.connector import ConnectorStore
 
 # Import routes
 from routes import (
@@ -51,6 +54,8 @@ from routes import (
     explore_bp, init_explore_routes,
     activity_bp, init_activity_routes,
     remote_daemon_bp, init_remote_daemon_routes,
+    connectors_bp, init_connector_routes,
+    sync_engine_bp, init_sync_engine_routes,
     init_webhook_routes, init_debug_routes, init_simulation_routes
 )
 
@@ -318,6 +323,28 @@ init_explore_routes(explore_service)
 # idle shutdown from racing a starting transfer, and neither works with two.
 init_remote_daemon_routes(transfer_coordinator.remote_daemon)
 
+# The connector layer — one way to talk to an outside service. Configured
+# before anything can announce something, because `notify()` is a no-op until
+# it is, and a startup that announced into nowhere would be silent in exactly
+# the situation the operator most wants to hear about.
+connector_store = ConnectorStore(db_manager)
+connector_service = configure_connectors(connector_store)
+init_connector_routes(connector_service, connector_store)
+
+# Background work starts only now, with the connector layer up: the sync
+# engine's restart recovery and the completion watchers for transfers that
+# survived a restart can both announce what they find, and before this point
+# those announcements would go nowhere.
+transfer_coordinator.start_background()
+
+# The pipeline view, the Notifications tab and the scheduler's jobs.
+init_sync_engine_routes(transfer_coordinator)
+
+# The library and history views read through the same index the scheduler uses,
+# so what the page shows and what the gate decides can never drift apart.
+init_media_library_routes(transfer_coordinator.media_index,
+                          scanner=transfer_coordinator.auto_scanner)
+
 # Register route blueprints
 app.register_blueprint(auth_bp, url_prefix='/api')
 app.register_blueprint(media_bp, url_prefix='/api')
@@ -330,6 +357,9 @@ app.register_blueprint(simulation_bp, url_prefix='/api')
 app.register_blueprint(explore_bp, url_prefix='/api')
 app.register_blueprint(activity_bp, url_prefix='/api')
 app.register_blueprint(remote_daemon_bp, url_prefix='/api')
+app.register_blueprint(media_library_bp, url_prefix='/api')
+app.register_blueprint(connectors_bp, url_prefix='/api')
+app.register_blueprint(sync_engine_bp, url_prefix='/api')
 
 logger.info('Backend logging file: %s', LOG_FILE_PATH)
 

@@ -14,6 +14,12 @@ import { StatTiles } from "@/components/layout/stat-tiles";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+import { errorText } from "@/lib/api-error";
+import { useSyncRunAction, useSyncRuns } from "@/hooks/useSync";
+import type { RunSummary } from "@/lib/sync-types";
+import { SyncRow } from "@/components/pipeline/sync-row";
+import { SyncSheet } from "@/components/pipeline/sync-sheet";
 import {
   useActiveTransfers,
   useAllTransfers,
@@ -94,6 +100,18 @@ const HISTORY_FILTERS = [
 ] as const;
 
 const HISTORY_PAGE_SIZE = 25;
+
+/*
+ * Syncs with no transfer row of their own, listed beside the transfers.
+ *
+ * A sync becomes a transfer once it reaches the queue. Before that it can wait
+ * for Sonarr, for a person, or for its dry run — and it can end there too,
+ * stopped by the safety check or cancelled. Those used to live only on a
+ * separate Pipeline page; here they sit with the copies they would have been.
+ */
+const NOT_STARTED_STATES = "held,waiting,checking";
+const ENDED_BEFORE_COPY_STATES = "failed,cancelled,refused,interrupted";
+const ENDED_PAGE_SIZE = 10;
 
 interface TransferRowProps {
   transfer: Transfer;
@@ -344,6 +362,16 @@ function TransferList({
 
 export function TransfersPage() {
   const [activeTab, setActiveTab] = useState("activity");
+  // `?sync=<run id>` is the sync open in the side panel. Kept in the address so
+  // an alert, a webhook or the auto-scanner's card can link straight to it.
+  const { sync: openRunId } = useSearch({ from: "/_authenticated/transfers" });
+  const navigate = useNavigate();
+  const openSync = (runId: string) =>
+    navigate({ to: "/transfers", search: (prev) => ({ ...prev, sync: runId }) });
+  const closeSync = () =>
+    navigate({ to: "/transfers", search: (prev) => ({ ...prev, sync: undefined }) });
+  const [endedOffset, setEndedOffset] = useState(0);
+  const [endedLimit, setEndedLimit] = useState(ENDED_PAGE_SIZE);
   const [historyFilter, setHistoryFilter] = useState<string>("all");
   const [historySearch, setHistorySearch] = useState("");
   const [historyOffset, setHistoryOffset] = useState(0);
@@ -380,6 +408,27 @@ export function TransfersPage() {
   // page cannot see past its own window.
   const simulationStatus = useSimulationStatus(false);
   const posters = useTransferPosters();
+
+  const notStartedQuery = useSyncRuns({ state: NOT_STARTED_STATES, copied: false, limit: 50 });
+  const endedQuery = useSyncRuns({
+    state: ENDED_BEFORE_COPY_STATES,
+    copied: false,
+    limit: endedLimit,
+    offset: endedOffset,
+    enabled: activeTab === "history",
+  });
+  const notStarted = notStartedQuery.data?.runs ?? [];
+  const notStartedTotal = notStartedQuery.data?.total ?? 0;
+  const runAction = useSyncRunAction();
+
+  const goNow = async (run: RunSummary) => {
+    try {
+      const result = await runAction.mutateAsync({ runId: run.run_id, action: "go-now" });
+      toast.success(result.message || "Starting now.");
+    } catch (error) {
+      toast.error(errorText(error, "Could not start it."));
+    }
+  };
 
   const cancelMutation = useCancelTransfer();
   const restartMutation = useRestartTransfer();
@@ -630,12 +679,17 @@ export function TransfersPage() {
     },
     onStop: (transfer) => setStopTarget(transfer),
     onRestart: async (transfer) => {
+      // A restart is a new sync now: the safety check runs first, then the
+      // queue. The server says which, and why when it refuses — a restore, for
+      // one, is run again from the Backups page.
       try {
-        await restartMutation.mutateAsync(transfer.id);
-        toast.success("Transfer restarted");
+        const result = (await restartMutation.mutateAsync(transfer.id)) as { message?: string };
+        toast.success(result.message || "Restart requested");
         refreshAll();
-      } catch {
-        toast.error("Could not restart the transfer");
+      } catch (error) {
+        toast.error(
+          error instanceof Error && error.message ? error.message : "Could not restart the transfer"
+        );
       }
     },
     onDelete: (transfer) => setDeleteTarget(transfer),
@@ -715,7 +769,9 @@ export function TransfersPage() {
               value: "activity",
               label: "Activity",
               icon: IconActivity,
-              count: activeTransfers.length,
+              // Copies in flight and syncs still getting ready: everything on
+              // the tab that has not ended.
+              count: activeTransfers.length + notStartedTotal,
             },
             {
               value: "history",
@@ -766,6 +822,35 @@ export function TransfersPage() {
               },
             ]}
           />
+
+          {notStartedTotal > 0 && (
+            <SectionCard
+              label="Waiting to start"
+              description="Syncs not copying yet: waiting for the download, for its safety check, or for you to press Sync"
+              toolbar={
+                <span className="ml-auto font-mono text-[11px] text-muted-foreground">
+                  {notStartedTotal} waiting
+                </span>
+              }
+            >
+              <ul>
+                {notStarted.map((run) => (
+                  <SyncRow
+                    key={run.run_id}
+                    run={run}
+                    onOpen={openSync}
+                    onGoNow={goNow}
+                    busy={runAction.isPending}
+                  />
+                ))}
+              </ul>
+              {notStartedTotal > notStarted.length && (
+                <p className="border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
+                  Showing the newest {notStarted.length} of {notStartedTotal}.
+                </p>
+              )}
+            </SectionCard>
+          )}
 
           <SectionCard
             label="In flight"
@@ -918,11 +1003,38 @@ export function TransfersPage() {
               noun="transfers"
             />
           </SectionCard>
+
+          {(endedQuery.data?.total ?? 0) > 0 && (
+            <SectionCard
+              label="Stopped before copying"
+              description="Syncs that ended without a transfer: stopped by the safety check, cancelled, failed, or cut off by a restart"
+            >
+              <ul>
+                {(endedQuery.data?.runs ?? []).map((run) => (
+                  <SyncRow key={run.run_id} run={run} onOpen={openSync} />
+                ))}
+              </ul>
+              <ListPagination
+                offset={endedOffset}
+                limit={endedLimit}
+                total={endedQuery.data?.total ?? 0}
+                count={endedQuery.data?.runs.length ?? 0}
+                onOffsetChange={setEndedOffset}
+                onLimitChange={(value) => {
+                  setEndedLimit(value);
+                  setEndedOffset(0);
+                }}
+                noun="syncs"
+              />
+            </SectionCard>
+          )}
         </TabsContent>
         <TabsContent value="simulate" className="mt-4">
           <SimulationPanel onStarted={() => setActiveTab("activity")} />
         </TabsContent>
       </Tabs>
+
+      <SyncSheet runId={openRunId ?? null} onClose={closeSync} onOpenRun={openSync} />
 
       <ConfirmDialog
         open={Boolean(stopTarget)}

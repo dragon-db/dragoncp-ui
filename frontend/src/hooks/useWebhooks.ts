@@ -18,14 +18,6 @@ export interface WebhookSettings {
   series_anime_sync_wait_time: number;
 }
 
-export interface DiscordSettings {
-  webhook_url: string;
-  app_url: string;
-  manual_sync_thumbnail_url: string;
-  icon_url: string;
-  enabled: boolean;
-}
-
 /** What a paged listing returns, alongside the rows themselves. */
 export interface ListPage {
   /** Records matching the filter, across both webhook tables. */
@@ -261,6 +253,7 @@ export function useTriggerWebhookSync() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["webhooks"] });
       queryClient.invalidateQueries({ queryKey: ["transfers"] });
+      queryClient.invalidateQueries({ queryKey: ["sync"] });
     },
   });
 }
@@ -365,42 +358,6 @@ export function useUpdateWebhookSettings() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["webhooks", "settings"] });
-    },
-  });
-}
-
-export function useDiscordSettings() {
-  return useQuery({
-    queryKey: ["discord", "settings"],
-    queryFn: async () => {
-      const response = await api.get<{
-        status: string;
-        settings: DiscordSettings;
-      }>("/discord/settings");
-      return response.data;
-    },
-  });
-}
-
-export function useUpdateDiscordSettings() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: async (settings: Partial<DiscordSettings>) => {
-      const response = await api.post("/discord/settings", settings);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["discord", "settings"] });
-    },
-  });
-}
-
-export function useTestDiscord() {
-  return useMutation({
-    mutationFn: async () => {
-      const response = await api.post("/discord/test");
-      return response.data;
     },
   });
 }

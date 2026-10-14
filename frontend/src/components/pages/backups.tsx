@@ -27,6 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
 import { StatTiles } from "@/components/layout/stat-tiles";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { useTestMode } from "@/hooks/useConfig";
 import { cn } from "@/lib/utils";
 import { formatBytes, formatWhen } from "@/lib/explore-format";
 import {
@@ -118,6 +119,7 @@ export function BackupsPage() {
   // Two panes side by side from lg up, one at a time below it — which is what
   // makes this usable on a phone without a second layout to keep in step.
   const isWide = useMediaQuery("(min-width: 1024px)");
+  const testMode = useTestMode();
 
   const overview = useBackupsOverview();
   const titles = useBackupTitles(library);
@@ -361,6 +363,30 @@ export function BackupsPage() {
           }
         />
       </header>
+
+      {/*
+        Test mode's one gap, stated where it applies. Restore is rehearsed here
+        like a sync, but deleting and moving act on the backup folder itself —
+        which a test instance mirroring production shares with it. Each of
+        those buttons also asks for a tick before it runs.
+      */}
+      {testMode && (
+        <div
+          role="note"
+          className="flex items-start gap-3 rounded-xl border border-rose-500/40 bg-rose-500/[0.08] px-4 py-3"
+        >
+          <IconAlertTriangle className="mt-0.5 size-5 flex-none text-rose-400" />
+          <div className="text-[13px]">
+            <div className="font-medium text-rose-300">
+              Test mode is on, but deleting here is real
+            </div>
+            <p className="text-muted-foreground">
+              Restore is only rehearsed. Delete, the retention clean-up and adopting old folders
+              change the real backup folder — production&apos;s too, when it uses the same one.
+            </p>
+          </div>
+        </div>
+      )}
 
       {notConfigured && (
         <div className="flex items-start gap-3 rounded-xl border border-amber-500/35 bg-amber-500/[0.08] px-4 py-3">
@@ -754,6 +780,7 @@ export function BackupsPage() {
         loading={previewDelete.isPending}
         submitting={removeMany.isPending}
         scope={deleteScope}
+        testMode={testMode}
         onConfirm={confirmDelete}
       />
 
@@ -762,12 +789,14 @@ export function BackupsPage() {
           open={showRetention}
           onOpenChange={setShowRetention}
           rule={overview.data.retention}
+          testMode={testMode}
         />
       )}
       <MigrationDialog
         open={showMigration}
         onOpenChange={setShowMigration}
         legacyFolders={overview.data?.legacy_folders ?? 0}
+        testMode={testMode}
       />
     </div>
   );

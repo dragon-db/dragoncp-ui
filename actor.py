@@ -102,6 +102,15 @@ AUTO_WEBHOOK_SERIES = automated_actor('webhook-series')
 AUTO_WEBHOOK_ANIME = automated_actor('webhook-anime')
 AUTO_WEBHOOK_RENAME = automated_actor('webhook-rename')
 AUTO_RETENTION = automated_actor('retention')
+#: The library sweep — the safety net under the webhook. Named apart from
+#: `auto-sync` on purpose: a transfer this started means a notification was
+#: never received, which is a different thing to know than "a webhook arrived
+#: and the batch window closed", and the Activity screen should be able to
+#: separate them without reading the summary text.
+AUTO_LIBRARY_SWEEP = automated_actor('library-sweep')
+#: The scheduled auto-scanner, which replaced the sweep in 2.3.0. A sync it
+#: starts means the service imported something no webhook delivered.
+AUTO_SCANNER = automated_actor('auto-scanner')
 #: Files kept out of the way of a sync. Named separately from the person who
 #: started the sync, and from retention, so the History tab can tell "this
 #: version was created for you" apart from "this version was taken away".
@@ -130,6 +139,8 @@ NAMED_AUTOMATION = {
         AUTO_WEBHOOK_ANIME,
         AUTO_WEBHOOK_RENAME,
         AUTO_RETENTION,
+        AUTO_LIBRARY_SWEEP,
+        AUTO_SCANNER,
     )
 }
 

@@ -1,7 +1,7 @@
 # Settings Screen
 
-Last updated: 2026-08-06
-Primary files: `settings_registry.py`, `services/settings_service.py`, `frontend/src/components/settings/settings-panel.tsx`, `frontend/src/components/settings/backend-log-panel.tsx`, `frontend/src/components/pages/settings.tsx`, `frontend/src/hooks/useConfig.ts`, `app.py`, `config.py`, `routes/webhooks.py`, `routes/logs.py`, `models/settings.py`, `websocket.py`
+Last updated: 2026-10-05
+Primary files: `settings_registry.py`, `services/settings_service.py`, `frontend/src/components/settings/settings-panel.tsx`, `frontend/src/components/settings/backend-log-panel.tsx`, `frontend/src/components/settings/remote-transfer-panel.tsx`, `frontend/src/components/pages/settings.tsx`, `frontend/src/hooks/useConfig.ts`, `app.py`, `config.py`, `routes/webhooks.py`, `routes/logs.py`, `models/settings.py`, `websocket.py`
 
 ## Where a setting lives
 
@@ -14,9 +14,9 @@ settings render read-only, with a note saying they come from
 A save that includes an environment key refuses it **by name** rather than
 ignoring it.
 
-The **Automation** tab keeps its purpose-built controls for auto-sync and
-Discord. Those are database settings too, written through the same resolver, so
-the two tabs cannot disagree.
+The **Automation** tab keeps its purpose-built controls for auto-sync. Those are
+database settings too, written through the same resolver, so the two tabs cannot
+disagree. Discord left this screen for Integrations in 2.3.0; the tab links there.
 
 **The old warning on this page no longer applies.** The two tabs used to save to
 different places — Core Config to a per-browser Flask session that background
@@ -31,13 +31,15 @@ cutover soak. New clients use only the grouped configuration payload.
 ## Purpose
 
 The Settings screen is where an operator sees how DragonCP is configured, turns webhook
-auto-sync on or off, configures Discord notifications, and reaches the connection and
-WebSocket diagnostics.
+auto-sync on or off, sets the fallback wait for TV and anime, reaches the SSH connection
+controls and the fast transfer route, and reads the WebSocket diagnostics and the backend
+log. Discord, and the Sonarr and Radarr auto-scanners, are configured under Integrations
+instead — see [Integrations](../integrations/README.md).
 
 The most important thing to understand about this screen is that **not everything on it
 is editable**, and the screen says which is which. Where the media lives and how to
-reach the remote come from the environment file on the server; automation, notifications,
-retention and the realtime timeout come from the database and can be changed here.
+reach the remote come from the environment file on the server; automation, retention,
+the fast route and the realtime timeout come from the database and can be changed here.
 
 ## Layout
 
@@ -66,18 +68,20 @@ The SSH tile polls `GET /api/runtime/status` every 5 seconds. If that endpoint r
 
 ### Tabs
 
-`Core Config`, `Automation`, `Account`, `Diagnostics`.
+`Core Config`, `Connections`, `Automation`, `Account`, `Diagnostics`.
 
-The Account tab shows the signed-in identity and supports self-service password
-changes. Diagnostics contains SSH and Socket.IO state plus the backend log
-viewer, with level/search filters, manual or automatic refresh, and an
-authenticated full-log download.
+Connections holds the SSH connection controls and the **Fast transfers** panel
+(see [fast transfers](../fast-transfers/README.md)). The Account tab shows the
+signed-in identity and supports self-service password changes. Diagnostics
+contains the Socket.IO state plus the backend log viewer, with level/search
+filters, manual or automatic refresh, and an authenticated full-log download.
 
 ## Core Config tab
 
 Generated from `settings_registry.py` — the panel walks the groups `GET /api/config`
 returns rather than holding its own list of fields, so adding a setting to the registry
-adds it here.
+adds it here. The one group it skips is `automation`, which the Automation tab draws with
+its own controls and labels.
 
 Each setting renders with its group, label and description, and with a badge saying
 which store it came from:
@@ -109,10 +113,11 @@ saves 60, because that plainly meant "as high as it goes".
 
 ### Masked fields
 
-Editable secrets — currently the Discord webhook URL — are sent to the browser as the
-literal string `<redacted>` when a value is stored, and as an empty string when none is.
-Sending `<redacted>` back means "unchanged", so saving the form without touching the
-field keeps the stored value.
+Editable secrets are sent to the browser as the literal string `<redacted>` when a value
+is stored, and as an empty string when none is. Sending `<redacted>` back means
+"unchanged", so saving the form without touching the field keeps the stored value. No
+database setting is a secret today — the Discord webhook URL, which was, became a
+connector credential in 2.3.0 — but the rule stands for any that becomes one.
 
 Clearing the box and saving stores an empty value, and an empty value is honoured as a
 deliberate choice: it is not treated as "nothing saved", and it is not overwritten from
@@ -139,13 +144,37 @@ invisible to the server's own stale-connection reaper.
 Two cards. Neither is documented in depth here.
 
 - **Webhook Auto-Sync** - Auto-sync Movies, Auto-sync TV Shows, Auto-sync Anime, and
-  Series/Anime Wait Time (seconds). See [auto-sync](../auto-sync/README.md) for what
+  **Fallback wait (seconds)**. See [auto-sync](../auto-sync/README.md) for what
   these actually drive.
-- **Discord Settings** - Enable Discord Notifications, Discord Webhook URL, App URL, Icon
-  URL, Manual Sync Thumbnail URL, and a **Test Discord Notification** button. See
-  [notifications](../notifications/README.md).
+- **Notifications** - a pointer, not a form: Discord moved to Integrations → Discord, and
+  **Open Discord settings** goes there. See [notifications](../notifications/README.md).
 
-Two behaviours belong to this screen rather than to those features:
+Behaviours that belong to this screen rather than to those features:
+
+**The wait time is a fallback now.** Since 2.3.0 it decides when a TV or anime season
+starts only when Sonarr cannot be asked — the Sonarr connector is off or has no address
+or key, Sonarr does not answer (or stops answering partway through the wait), or the
+series carries no TVDB id. When Sonarr answers,
+its own "time left" decides, for at most 30 minutes; see
+[the sync engine](../sync-engine/README.md). As a fallback the timer runs from the first
+webhook of a batch, each later webhook adds the same again, and it never runs past
+15 minutes after the first. The deadline is stored on the batch and re-read at every
+step, so a later webhook really does extend it.
+
+**The screen says so.** Since 2026-10-05 the field reads **Fallback wait (seconds)**,
+with the sentence "Used only when Sonarr cannot be asked: how long a TV or anime season
+waits for more episodes before syncing, plus this again for each later episode, never
+more than 15 minutes. When Sonarr answers, it decides instead." The auto-sync popover on
+the Webhooks page says "TV & anime start once Sonarr has nothing more for the season; if
+Sonarr cannot be asked, Ns after the last episode." Both used to describe the old fixed
+wait — the field was *Series/Anime Wait Time (seconds)* and the popover read "TV & anime
+wait Ns after the last episode." The label and sentence are written into this tab rather
+than read from the registry. Today the label is the registry's and the sentence says
+what its description says, in slightly different words, but nothing keeps the two in
+step: the Core Config tab leaves the automation group to this tab, so the
+registry's own label and description reach only the grouped configuration payload. The
+card's own description is unchanged: "Control movie/series/anime auto-sync behavior and
+wait window".
 
 **Wait time is clamped differently at each end.** The page only guards against zero and
 non-numbers (minimum 1). The registry clamps to 30-900 seconds wherever it is written.
@@ -153,11 +182,27 @@ Type `5`, save, and the stored value is `30`; the field corrects itself after th
 refetches. The bounds used to be enforced in one route only, so the same value written
 through another path was accepted unclamped.
 
-**The Test button uses saved settings, not what is on screen.** The button is enabled
-only when the on-screen Enable toggle is on, but `POST /api/discord/test` reads the
-webhook URL and the enabled flag out of storage. So: typing a new webhook URL and
-hitting **Save Automation** first is what makes Test exercise the new URL, and flipping
-the toggle on without saving makes Test fail with "Discord notifications are disabled".
+**There is no switch for asking Sonarr.** Pre-release builds of 2.3.0 had one,
+`AUTOSYNC_GATE_ENABLED` ("Wait for the download instead of the clock"), with
+`AUTOSYNC_GATE_POLL_SECONDS` and `AUTOSYNC_GATE_SETTLE_SECONDS` beside it. All three are
+gone from the registry and nothing reads them: whether Sonarr's API answers decides, the
+pause before the first question is a fixed 10 seconds, and the next question follows
+Sonarr's own estimate. A value one of those builds saved stays in `app_settings`, unread.
+
+**Turning auto-sync on does not release what is already held.** With a switch off, each
+webhook still opens a batch, held for a person. Switching it on leaves those batches held
+until another webhook for the same folder arrives — that webhook sets its batch going — or
+someone presses Sync.
+
+**Discord is not configured here any more.** It became a connector in 2.3.0, with named
+webhooks and a choice of destination per notification, and it lives under Integrations →
+Discord in the sidebar. The Automation tab links to it. Each webhook has its own Test
+button that sends to *that* webhook, which is the question the old single Test button
+could not answer once there was more than one destination.
+
+**Neither is the auto-scanner.** Its switch and interval are per service, on the Sonarr
+and Radarr Connection tabs under Integrations, where an Auto-scanner card shows its next
+scan and what the last one found.
 
 ## Where a save goes
 
@@ -167,20 +212,25 @@ Each tab writes its own settings, through the same resolver, into the same datab
 | --- | --- | --- |
 | Core Config | `POST /api/config` | every editable key in the registry |
 | Automation | `POST /api/webhook/settings` | the three auto-sync toggles and the wait time |
-| Automation | `POST /api/discord/settings` | the five Discord fields |
 
-All of them land in the `app_settings` table. They are global — one value for the whole
-installation, visible to every operator — and they survive a restart.
+Connectors write elsewhere — `POST /api/connectors/<id>` and the destination routes,
+into the `connector` tables rather than `app_settings`. That includes Discord and the
+Sonarr and Radarr auto-scanner switches. See [Integrations](../integrations/README.md).
+
+Both tabs' settings land in the `app_settings` table. They are global — one value for the
+whole installation, visible to every operator — and they survive a restart.
 
 They are read at the moment they are needed rather than cached: the auto-sync flags when
-a webhook arrives, the Discord settings when a notification is about to be sent, the
+a webhook arrives, the fallback wait when a batch opens or a webhook joins one, the
 retention rule when a transfer finishes. So a change is live for the next event with no
 reconnect and no restart. That immediacy is the entire reason these live in the database
 rather than the environment file, and caching them would quietly undo it.
 
-The one wrinkle is the wait time: it is read when a batch is scheduled or extended, so a
-series batch already counting down keeps the deadline it was given until the next episode
-for that batch arrives.
+Two wrinkles. The fallback wait is read when a batch opens and each time a webhook joins
+it, so a batch already counting down keeps its deadline until the next webhook for that
+folder arrives — and the wait matters at all only when Sonarr cannot be asked. An
+auto-sync flag is read when a webhook arrives, so a batch held while it was off stays
+held after it is switched on, until another webhook for that folder or a press of Sync.
 
 ### Adoption on first start
 
@@ -201,9 +251,9 @@ config-changed state, where its button reads **Apply settings**.
 The SSH connection details are environment settings and cannot be changed from a
 browser, so nothing on this screen can invalidate the SSH session. Editing
 `dragoncp_env.env` and restarting is what changes them; **Auto Connect** on the
-Diagnostics tab rebuilds the session from the current values.
+Connections tab rebuilds the session from the current values.
 
-## Diagnostics tab
+## Connections tab
 
 **Connection Controls**
 
@@ -215,6 +265,11 @@ Diagnostics tab rebuilds the session from the current values.
 
 The SSH session is a single process-wide connection, not one per operator. Disconnecting
 here disconnects browsing and any SSH-dependent work for everyone using the installation.
+
+Below it, the **Fast transfers** panel shows the transfer server on the media host; see
+[fast transfers](../fast-transfers/README.md).
+
+## Diagnostics tab
 
 **WebSocket Diagnostics**
 
@@ -230,15 +285,19 @@ It shows `{"status": "no data"}` before the first successful response.
 | Change | Where it is stored | Scope | When it takes effect |
 | --- | --- | --- | --- |
 | Source, destination, disk and disk-API paths | `dragoncp_env.env` | whole installation | after editing the file on the server and restarting |
-| `REMOTE_IP`, `REMOTE_USER`, `REMOTE_PASSWORD`, `SSH_KEY_PATH` | `dragoncp_env.env` | whole installation | after a restart, then Auto Connect on the Diagnostics tab |
+| `REMOTE_IP`, `REMOTE_USER`, `REMOTE_PASSWORD`, `SSH_KEY_PATH` | `dragoncp_env.env` | whole installation | after a restart, then Auto Connect on the Connections tab |
 | `WEBSOCKET_TIMEOUT_MINUTES` | `app_settings` table | whole installation | on the next realtime connection (Apply settings) |
-| Auto-sync toggles and wait time | `app_settings` table | whole installation | next webhook; a batch already waiting keeps its deadline |
-| Discord fields | `app_settings` table | whole installation | next notification sent |
+| Auto-sync toggles | `app_settings` table | whole installation | next webhook; a batch already held stays held until another webhook for its folder or a press of Sync |
+| Fallback wait (`SERIES_ANIME_SYNC_WAIT_TIME`) | `app_settings` table | whole installation | the next batch, or the next webhook joining one; used only when Sonarr cannot be asked |
+| Discord destinations and routing | connector tables (Integrations → Discord) | whole installation | next announcement |
+| Auto-scanner switch and interval | connector settings (Integrations → Sonarr / Radarr → Connection) | per service | noticed within 5 seconds; the next scan comes then, or one interval after the previous scan if that is later |
 | Backup retention rule | `app_settings` table | whole installation | next time a transfer stores a version |
 
 ## Related
 
 - [Auto-sync](../auto-sync/README.md)
+- [Sync engine](../sync-engine/README.md) — when the fallback wait applies
+- [Integrations](../integrations/README.md) — Discord and the auto-scanner
 - [Discord notifications](../notifications/README.md)
 - [Configuration reference](../../reference/configuration.md)
 - [API reference](../../reference/api.md)

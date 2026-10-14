@@ -61,28 +61,50 @@ class QueueManager:
         
         return path
     
+    @staticmethod
+    def _overlaps(path_a: str, path_b: str) -> bool:
+        """Two normalised destinations collide: the same folder, or one inside the other.
+
+        A whole-series copy writes every season folder, so it collides with a
+        copy of any one of them. Two different seasons of one show do not, and
+        may copy side by side (decided 2026-10-02).
+        """
+        if path_a == path_b:
+            return True
+        return path_a.startswith(path_b + os.sep) or path_b.startswith(path_a + os.sep)
+
     def _check_duplicate_destination_internal(self, dest_path: str, proposed_transfer_id: str = None) -> Tuple[bool, Optional[str]]:
         """
-        Internal method: Check for duplicate destination (lock must be held by caller)
-        
+        Internal method: Check for a colliding destination (lock must be held by caller)
+
+        Collides means the same folder, or one folder inside the other — see
+        `_overlaps`. The exact match is checked first so the common case keeps
+        naming the transfer it always named.
+
         Args:
             dest_path: Destination path to check
             proposed_transfer_id: Transfer ID being checked (to exclude self)
-        
+
         Returns:
-            (True, transfer_id) if duplicate found
-            (False, None) if no duplicate
+            (True, transfer_id) if a collision was found
+            (False, None) if the destination is free
         """
         normalized_dest = self._normalize_path(dest_path)
-        
+
         # Check if this destination is already being synced
         if normalized_dest in self.active_destinations:
             existing_transfer_id = self.active_destinations[normalized_dest]
-            
+
             # Don't mark as duplicate if it's the same transfer (e.g., restart)
             if existing_transfer_id != proposed_transfer_id:
                 return (True, existing_transfer_id)
-        
+
+        for existing_dest, existing_transfer_id in self.active_destinations.items():
+            if existing_transfer_id == proposed_transfer_id:
+                continue
+            if self._overlaps(normalized_dest, existing_dest):
+                return (True, existing_transfer_id)
+
         return (False, None)
     
     def check_duplicate_destination(self, dest_path: str, proposed_transfer_id: str = None) -> Tuple[bool, Optional[str]]:
@@ -124,13 +146,25 @@ class QueueManager:
         )
 
     def _register_running_transfer_internal(self, transfer_id: str, dest_path: str,
-                                            enforce_capacity: bool = True) -> Tuple[bool, str]:
-        """Reserve a destination and register a transfer as running (lock must be held)."""
+                                            enforce_capacity: bool = True,
+                                            check_overlap: bool = True) -> Tuple[bool, str]:
+        """Reserve a destination and register a transfer as running (lock must be held).
+
+        `check_overlap=False` is for rebuilding state at start-up: transfers that
+        are already running are re-registered as they are, collision or not —
+        they are writing either way, and refusing the reservation would only
+        hide one of them from the queue.
+        """
         normalized_dest = self._normalize_path(dest_path)
         existing_transfer_id = self.active_destinations.get(normalized_dest)
 
         if existing_transfer_id and existing_transfer_id != transfer_id:
             return (False, 'duplicate')
+
+        if check_overlap:
+            for other_dest, other_id in self.active_destinations.items():
+                if other_id != transfer_id and self._overlaps(normalized_dest, other_dest):
+                    return (False, 'duplicate')
 
         existing_dest = self.running_transfers.get(transfer_id)
         if existing_dest == normalized_dest:
@@ -159,7 +193,13 @@ class QueueManager:
             )
 
     def _restore_queued_reservations_internal(self, queued_records: List[Dict]) -> int:
-        """Restore one queued reservation per destination path (lock must be held)."""
+        """Restore queued reservations at start-up (lock must be held).
+
+        One owner per set of overlapping folders, oldest first — what the queue
+        holds while running, where only a transfer that was free to start
+        reserves its folder. Reserving a season and the whole series it belongs
+        to would leave each waiting on the other for ever.
+        """
         restored_count = 0
 
         queued_records.sort(key=lambda t: t.get('created_at', t.get('start_time', '')))
@@ -171,7 +211,7 @@ class QueueManager:
                 continue
 
             normalized_dest = self._normalize_path(dest_path)
-            if normalized_dest in self.active_destinations:
+            if any(self._overlaps(normalized_dest, other) for other in self.active_destinations):
                 continue
 
             self.active_destinations[normalized_dest] = transfer_id
@@ -284,13 +324,16 @@ class QueueManager:
         
         # Get all queued transfers from database (both transfer records and webhook notifications)
         all_transfers = self.transfer_model.get_all(statuses=['queued'], include_logs=False)
-        
-        # Filter for transfers with status='queued' and same dest_path
+
+        # Queued transfers this folder was blocking: the same folder, a season
+        # inside it, or the whole series it belongs to.
+        freed = self._normalize_path(dest_path)
         queued_path_transfers = [
             t for t in all_transfers
-            if t['status'] == 'queued' and self._normalize_path(t.get('dest_path', '')) == self._normalize_path(dest_path)
+            if t['status'] == 'queued' and t.get('transfer_id') not in self.running_transfers
+            and self._overlaps(self._normalize_path(t.get('dest_path', '')), freed)
         ]
-        
+
         # Prefer explicit/fallback path-queue entries first, then oldest first.
         queued_path_transfers.sort(
             key=lambda t: (
@@ -298,20 +341,26 @@ class QueueManager:
                 t.get('created_at', t.get('start_time', ''))
             )
         )
-        
+
         if not queued_path_transfers:
             print(f"✅ No QUEUED_PATH transfers found for {dest_path}")
             return
-        
-        # Promote the oldest one
-        queued_transfer = queued_path_transfers[0]
-        transfer_id = queued_transfer['transfer_id']
-        
-        # Re-check for duplicate destination (safety check)
-        is_duplicate, existing_transfer_id = self._check_duplicate_destination_internal(dest_path, transfer_id)
-        if is_duplicate:
-            print(f"⚠️  Path {dest_path} still has active transfer {existing_transfer_id}, cannot promote yet")
+
+        # Promote the oldest one that is now free. A whole-series copy may still
+        # be blocked by another season; one later in the list may not be.
+        queued_transfer = None
+        for candidate in queued_path_transfers:
+            is_duplicate, existing_transfer_id = self._check_duplicate_destination_internal(
+                candidate['dest_path'], candidate['transfer_id'])
+            if is_duplicate:
+                print(f"⚠️  {candidate['transfer_id']} still blocked by {existing_transfer_id}")
+                continue
+            queued_transfer = candidate
+            break
+        if queued_transfer is None:
             return
+        transfer_id = queued_transfer['transfer_id']
+        dest_path = queued_transfer['dest_path']
 
         registered, register_status = self._register_running_transfer_internal(
             transfer_id,
@@ -423,6 +472,10 @@ class QueueManager:
                             )
                             if updated:
                                 print(f"   ✅ Updated {updated} webhook notification(s) to QUEUED_PATH")
+                    # The pipeline view says why it waits; keep that sentence true.
+                    if self.coordinator is not None:
+                        self.coordinator._hook('on_transfer_waiting', transfer_id, 'path',
+                                               queue_message)
                     
                     # Skip promotion for now - will be picked up by _promote_same_path_queued()
                     continue
@@ -489,10 +542,15 @@ class QueueManager:
                 'active_destinations': list(self.active_destinations.values())
             }
     
-    def force_unregister_stale_transfers(self):
+    def force_unregister_stale_transfers(self, promote: bool = True):
         """
         Cleanup method to remove stale entries from tracking and rebuild queue state.
         Should be called on app startup or periodically.
+
+        `promote=False` rebuilds without starting anything. Start-up uses it so
+        the sync engine can look at what a restart interrupted before the queue
+        starts moving again — otherwise a copy started here reads as one the
+        restart cut off. `promote_waiting()` then starts what is free to start.
         """
         with self.lock:
             all_transfers = self.transfer_model.get_all(
@@ -537,7 +595,8 @@ class QueueManager:
                 registered, status = self._register_running_transfer_internal(
                     transfer_id,
                     dest_path,
-                    enforce_capacity=False
+                    enforce_capacity=False,
+                    check_overlap=False,
                 )
                 if registered:
                     restored_count += 1
@@ -555,8 +614,18 @@ class QueueManager:
             if restored_queued_count:
                 print(f"🧾 Restored {restored_queued_count} queued destination reservation(s) from database")
 
-            while self.coordinator and len(self.running_transfers) < self.MAX_CONCURRENT_TRANSFERS:
-                running_before = len(self.running_transfers)
-                self._promote_next_queued_transfer()
-                if len(self.running_transfers) == running_before:
-                    break
+            if promote:
+                self._promote_while_room()
+
+    def promote_waiting(self) -> None:
+        """Start every queued transfer that has a free slot and a free folder."""
+        with self.lock:
+            self._promote_while_room()
+
+    def _promote_while_room(self) -> None:
+        """Promote until the slots are full or nothing more can start (lock held)."""
+        while self.coordinator and len(self.running_transfers) < self.MAX_CONCURRENT_TRANSFERS:
+            running_before = len(self.running_transfers)
+            self._promote_next_queued_transfer()
+            if len(self.running_transfers) == running_before:
+                break

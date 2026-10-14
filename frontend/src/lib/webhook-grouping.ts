@@ -116,8 +116,19 @@ const STATUS_PRIORITY = [
   "manual_sync_required",
 ] as const;
 
+/**
+ * The status a person should see. A sync the safety check stopped, or a restart
+ * interrupted, leaves its webhooks `pending` with a flag raised; shown as plain
+ * Pending it would look like it was still on its way.
+ */
+export function effectiveStatus(notification: WebhookNotification): string {
+  return notification.requires_manual_sync && notification.status === "pending"
+    ? "MANUAL_SYNC_REQUIRED"
+    : notification.status;
+}
+
 export function groupStatus(notifications: WebhookNotification[]): string {
-  const present = new Set(notifications.map((n) => n.status));
+  const present = new Set(notifications.map(effectiveStatus));
   return STATUS_PRIORITY.find((status) => present.has(status)) ?? "completed";
 }
 

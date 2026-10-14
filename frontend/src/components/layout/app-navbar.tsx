@@ -1,6 +1,6 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import { useActiveTransfers } from "@/hooks/useTransfers";
-import { useWebhookNotifications } from "@/hooks/useWebhooks";
+import { useAlertSummary } from "@/hooks/useSync";
 import { useAppVersion, useTestMode } from "@/hooks/useConfig";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
@@ -18,14 +18,28 @@ const CRUMBS: Array<[string, Crumb]> = [
   ["/dashboard", { section: "Workspace", label: "Dashboard" }],
   ["/transfers", { section: "Workspace", label: "Transfers" }],
   ["/webhooks", { section: "Workspace", label: "Webhooks" }],
+  ["/notifications", { section: "Workspace", label: "Notifications" }],
   ["/media/movies", { section: "Library", label: "Movies" }],
   ["/media/tvshows", { section: "Library", label: "TV Shows" }],
   ["/media/anime", { section: "Library", label: "Anime" }],
   ["/backups", { section: "System", label: "Backups" }],
+  ["/activity", { section: "System", label: "Activity" }],
   ["/settings", { section: "System", label: "Settings" }],
 ];
 
 function resolveCrumb(pathname: string): Crumb {
+  // Integrations are one page per connector and the list comes from the server,
+  // so there is nothing static to match against. The id in the path is the
+  // name — "discord" is Discord — which holds for any connector added later
+  // without this table needing to hear about it.
+  if (pathname.startsWith("/integrations/")) {
+    const id = pathname.split("/")[2] ?? "";
+    return {
+      section: "Integrations",
+      label: id ? id.charAt(0).toUpperCase() + id.slice(1) : "Integrations",
+    };
+  }
+
   const match = CRUMBS.find(([prefix]) => pathname === prefix || pathname.startsWith(prefix + "/"));
   return match?.[1] ?? { section: "Workspace", label: "Dashboard" };
 }
@@ -40,10 +54,9 @@ export function AppNavbar() {
   const running = activeQuery.data?.queue_status.running_count ?? 0;
   const queued = activeQuery.data?.queue_status.queued_count ?? 0;
 
-  const notificationsQuery = useWebhookNotifications();
-  const pendingCount = (notificationsQuery.data?.notifications ?? []).filter(
-    (n) => n.status === "pending"
-  ).length;
+  // The bell is for what needs a person — open alerts — not for every webhook
+  // still waiting its turn, which is the pipeline doing its job.
+  const openAlerts = useAlertSummary().data?.open ?? 0;
 
   return (
     <header className="flex h-[58px] shrink-0 items-center gap-3 border-b border-border px-4 md:px-6">
@@ -102,15 +115,19 @@ export function AppNavbar() {
       {/* Notifications — the link carries the button styling itself; a <button>
           nested inside the <a> would be an interactive element inside another. */}
       <Link
-        to="/webhooks"
+        to="/notifications"
         className={cn(
           buttonVariants({ variant: "ghost", size: "icon" }),
           "relative size-8 text-muted-foreground hover:text-foreground"
         )}
-        title={pendingCount > 0 ? `${pendingCount} pending webhook(s)` : "Webhooks"}
+        title={
+          openAlerts > 0
+            ? `${openAlerts} notification${openAlerts === 1 ? "" : "s"} need you`
+            : "Notifications"
+        }
       >
         <IconBell className="size-[18px]" />
-        {pendingCount > 0 && (
+        {openAlerts > 0 && (
           <span className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-brand-accent ring-2 ring-background" />
         )}
       </Link>

@@ -290,10 +290,13 @@ in the UI.
 no size, no modification time, no per-episode sync status - and the endpoint has
 no try/except, so any failure shows as an empty list.
 
-**A single-episode transfer does not conflict with its season.** The destination
-path for `type=file` includes the episode filename, and
-`QueueManager._normalize_path` compares exact paths, so the queue does not see
-it as a conflict with a running transfer targeting the parent season folder.
+**A single-episode transfer waits for its season.** The destination path for
+`type=file` includes the episode filename, and since 2026-10-05 the queue treats
+a folder and anything inside it as one writer (`QueueManager._overlaps`), so it
+queues behind a running transfer of the parent season folder, and the other way
+round. Until then the queue compared exact paths and let both run at once. A
+separate, older bug sends such a transfer into a new folder named after the
+file: see [known issues](../../operations/known-issues.md).
 
 **Dry-run does not need the browse session.** `POST /api/media/dry-run` never
 checks `ssh_manager`; it shells out to rsync, which opens its own ssh connection

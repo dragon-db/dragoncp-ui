@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { IconAlertTriangle, IconPinFilled, IconTrash } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,6 +13,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatBytes, formatWhen } from "@/lib/explore-format";
 import { FullPath } from "@/components/layout/full-path";
+import { RealDataWarning } from "@/components/backups/real-data-warning";
 import type { DeleteCandidate, DeletePreview } from "@/lib/backup-types";
 
 /**
@@ -102,15 +104,7 @@ function CandidateRow({ candidate }: { candidate: DeleteCandidate }) {
   );
 }
 
-export function DeleteDialog({
-  open,
-  onOpenChange,
-  preview,
-  loading,
-  submitting,
-  scope,
-  onConfirm,
-}: {
+type DeleteDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   preview: DeletePreview | null;
@@ -118,16 +112,12 @@ export function DeleteDialog({
   submitting: boolean;
   /** What was selected, in words: "3 versions", "everything in 2 items". */
   scope: string;
+  /** Test mode is on — the one state in which this dialog needs to say it is real. */
+  testMode: boolean;
   onConfirm: () => void;
-}) {
-  // No preview counts as nothing to do, not as something to do. The optional
-  // chain made a failed or absent preview leave the button enabled, so a
-  // permanent deletion could be confirmed against numbers that never arrived.
-  const nothingToDo = !loading && !preview?.count;
-  const shown = (preview?.captures ?? []).slice(0, LISTED);
-  const beyondListed = (preview?.count ?? 0) - shown.length;
-  const beyondDetailed = shown.length - (preview?.detailed ?? shown.length);
+};
 
+export function DeleteDialog({ open, onOpenChange, ...body }: DeleteDialogProps) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       {/*
@@ -140,72 +130,112 @@ export function DeleteDialog({
         to go.
       */}
       <AlertDialogContent className="flex max-h-[85vh] flex-col data-[size=default]:max-w-[calc(100vw-2rem)] data-[size=default]:sm:max-w-2xl">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete {scope}?</AlertDialogTitle>
-          <AlertDialogDescription className="text-[12.5px]">
-            {loading
-              ? "Working out what this would remove…"
-              : nothingToDo
-                ? "Nothing would be removed."
-                : `This permanently removes ${preview?.count ?? 0} stored version(s) from the backup disk, freeing ${formatBytes(preview?.total_size)}. Your media library is not touched, and this cannot be undone.`}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-
-        {loading ? (
-          <div className="space-y-2">
-            {[0, 1, 2].map((row) => (
-              <Skeleton key={row} className="h-16 w-full" />
-            ))}
-          </div>
-        ) : (
-          <>
-            {(preview?.skipped_pinned ?? 0) > 0 && (
-              <div className="flex items-start gap-2 rounded-lg border border-brand/35 bg-brand/[0.08] px-3 py-2 text-[12px] text-brand-foreground">
-                <IconPinFilled className="mt-px size-3.5 flex-none" />
-                <span>
-                  {preview!.skipped_pinned} pinned version(s) will be left alone. Unpin them first
-                  if you want them gone.
-                </span>
-              </div>
-            )}
-
-            {shown.length > 0 && (
-              <ul className="min-h-0 flex-1 divide-y divide-border/50 overflow-y-auto rounded-lg border border-border">
-                {shown.map((candidate) => (
-                  <CandidateRow key={candidate.capture_id} candidate={candidate} />
-                ))}
-              </ul>
-            )}
-
-            {/* Both limits are stated. A list that silently stops reads as the
-                whole set, and the total above would then look wrong. */}
-            {beyondListed > 0 && (
-              <p className="text-[11px] text-muted-foreground">
-                …and {beyondListed} more version(s) not listed here, all included in the total
-                above.
-              </p>
-            )}
-            {beyondDetailed > 0 && (
-              <p className="text-[11px] text-muted-foreground">
-                File paths are shown for the first {preview?.detailed} version(s).
-              </p>
-            )}
-          </>
-        )}
-
-        <AlertDialogFooter className="gap-2">
-          <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
-          <Button
-            variant="destructive"
-            disabled={loading || submitting || nothingToDo}
-            onClick={onConfirm}
-          >
-            <IconTrash className="size-4" />
-            {submitting ? "Deleting…" : `Delete ${formatBytes(preview?.total_size)}`}
-          </Button>
-        </AlertDialogFooter>
+        <DeleteDialogBody {...body} />
       </AlertDialogContent>
     </AlertDialog>
+  );
+}
+
+/**
+ * Everything inside the dialog, as its own component so the test-mode tick
+ * starts unticked every time. The content unmounts when the dialog closes, and
+ * the page closes it by clearing its selection rather than through the
+ * dialog — state held one level up would carry yesterday's tick into today's
+ * deletion.
+ */
+function DeleteDialogBody({
+  preview,
+  loading,
+  submitting,
+  scope,
+  testMode,
+  onConfirm,
+}: Omit<DeleteDialogProps, "open" | "onOpenChange">) {
+  const [acknowledged, setAcknowledged] = useState(false);
+  // No preview counts as nothing to do, not as something to do. The optional
+  // chain made a failed or absent preview leave the button enabled, so a
+  // permanent deletion could be confirmed against numbers that never arrived.
+  const nothingToDo = !loading && !preview?.count;
+  const shown = (preview?.captures ?? []).slice(0, LISTED);
+  const beyondListed = (preview?.count ?? 0) - shown.length;
+  const beyondDetailed = shown.length - (preview?.detailed ?? shown.length);
+  const blockedByTestMode = testMode && !acknowledged;
+
+  return (
+    <>
+      <AlertDialogHeader>
+        <AlertDialogTitle>Delete {scope}?</AlertDialogTitle>
+        <AlertDialogDescription className="text-[12.5px]">
+          {loading
+            ? "Working out what this would remove…"
+            : nothingToDo
+              ? "Nothing would be removed."
+              : `This permanently removes ${preview?.count ?? 0} stored version(s) from the backup disk, freeing ${formatBytes(preview?.total_size)}. Your media library is not touched, and this cannot be undone.`}
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+
+      {testMode && !nothingToDo && (
+        <RealDataWarning
+          consequence="delete real backups"
+          acknowledgement="I understand these backups are deleted for real"
+          acknowledged={acknowledged}
+          onAcknowledge={setAcknowledged}
+        />
+      )}
+
+      {loading ? (
+        <div className="space-y-2">
+          {[0, 1, 2].map((row) => (
+            <Skeleton key={row} className="h-16 w-full" />
+          ))}
+        </div>
+      ) : (
+        <>
+          {(preview?.skipped_pinned ?? 0) > 0 && (
+            <div className="flex items-start gap-2 rounded-lg border border-brand/35 bg-brand/[0.08] px-3 py-2 text-[12px] text-brand-foreground">
+              <IconPinFilled className="mt-px size-3.5 flex-none" />
+              <span>
+                {preview!.skipped_pinned} pinned version(s) will be left alone. Unpin them first if
+                you want them gone.
+              </span>
+            </div>
+          )}
+
+          {shown.length > 0 && (
+            <ul className="min-h-0 flex-1 divide-y divide-border/50 overflow-y-auto rounded-lg border border-border">
+              {shown.map((candidate) => (
+                <CandidateRow key={candidate.capture_id} candidate={candidate} />
+              ))}
+            </ul>
+          )}
+
+          {/* Both limits are stated. A list that silently stops reads as the
+              whole set, and the total above would then look wrong. */}
+          {beyondListed > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              …and {beyondListed} more version(s) not listed here, all included in the total above.
+            </p>
+          )}
+          {beyondDetailed > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              File paths are shown for the first {preview?.detailed} version(s).
+            </p>
+          )}
+        </>
+      )}
+
+      <AlertDialogFooter className="gap-2">
+        <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
+        <Button
+          variant="destructive"
+          disabled={loading || submitting || nothingToDo || blockedByTestMode}
+          onClick={onConfirm}
+        >
+          <IconTrash className="size-4" />
+          {submitting ? "Deleting…" : `Delete ${formatBytes(preview?.total_size)}`}
+        </Button>
+      </AlertDialogFooter>
+    </>
   );
 }
 

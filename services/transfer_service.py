@@ -53,6 +53,12 @@ class TransferRoute:
 # UI is told about every one over the socket; this only bounds writes.
 PROGRESS_WRITE_INTERVAL = 1.0
 
+# Said when DragonCP restarted during a copy and could not read how it ended.
+# Starts with the prefix the sync engine looks for (`UNKNOWN_RESULT_PREFIX`).
+UNKNOWN_RESULT_MESSAGE = ('Result unknown: DragonCP restarted while this was copying and '
+                          'could not read how rsync finished. Check the folder, then retry '
+                          'or mark it done.')
+
 # How many trailing lines ride along on a progress event.
 SOCKET_LOG_TAIL = 100
 
@@ -456,7 +462,29 @@ class TransferService:
             
             # Parse output with destination path for local file counting
             validation_result = self._parse_dry_run_output(result.stdout, result.stderr, dest_path)
-            
+            validation_result['rsync_exit_code'] = result.returncode
+
+            # rsync's own verdict comes first. A dry run that could not finish —
+            # the media server unreachable, the folder missing — lists nothing,
+            # and nothing listed would otherwise read as "nothing to change".
+            # 24 is files vanishing mid-scan (Sonarr moving an import), which is
+            # still a complete answer.
+            if result.returncode not in (0, 24):
+                # The first line that names a cause: "ssh: Could not resolve
+                # hostname …", "rsync: change_dir … No such file or directory".
+                # rsync's closing "rsync error: … (code N)" line only restates
+                # the exit code, and ssh's host-key notices are not the problem.
+                lines = [line.strip() for line in (result.stderr or '').splitlines()
+                         if line.strip()]
+                causes = [line for line in lines
+                          if not line.startswith(('rsync error:', 'Warning:'))]
+                why = (causes or lines or ['rsync gave no error output'])[0]
+                validation_result['safe_to_sync'] = False
+                validation_result['reason'] = (
+                    f"The dry run did not finish (rsync exit {result.returncode}): {why}")
+                print(f"❌ Dry-run did not finish: exit {result.returncode}: {why}")
+                return validation_result
+
             # Perform safety checks
             deleted_count = validation_result['deleted_count']
             incoming_count = validation_result['incoming_count']
@@ -1416,10 +1444,14 @@ class TransferService:
                     ).start()
                     resumed_count += 1
                 else:
-                    # Process is no longer running, mark as failed
+                    # rsync is gone and nobody saw how it ended: it may have
+                    # finished before DragonCP stopped, or been cut off with it.
+                    # Recorded as failed so it can be retried, but worded as
+                    # what it is, so the pipeline raises "Result unknown" rather
+                    # than announcing a failure nobody saw.
                     self.transfer_model.update(transfer['transfer_id'], {
                         'status': 'failed',
-                        'progress': 'Transfer process was interrupted',
+                        'progress': UNKNOWN_RESULT_MESSAGE,
                         'end_time': datetime.now().isoformat()
                     })
                     print(f"❌ Transfer {transfer['transfer_id']} marked as failed (process not found)")
@@ -1456,9 +1488,13 @@ class TransferService:
             return_code = process.wait()
 
             if return_code is None:
+                # rsync is not this process's child any more, so its exit status
+                # cannot be read. Calling that "completed" claimed a success
+                # nobody saw; the sync engine turns this wording into an alert
+                # that asks a person to check the folder instead.
                 self.transfer_model.update(transfer_id, {
-                    'status': 'completed',
-                    'progress': 'Transfer finished after restart (exit status unavailable)',
+                    'status': 'failed',
+                    'progress': UNKNOWN_RESULT_MESSAGE,
                     'end_time': datetime.now().isoformat()
                 })
                 return
@@ -1477,8 +1513,8 @@ class TransferService:
                 })
         except psutil.NoSuchProcess:
             self.transfer_model.update(transfer_id, {
-                'status': 'completed',
-                'progress': 'Transfer process ended before restart monitoring attached',
+                'status': 'failed',
+                'progress': UNKNOWN_RESULT_MESSAGE,
                 'end_time': datetime.now().isoformat()
             })
         except Exception as e:

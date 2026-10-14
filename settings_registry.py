@@ -170,26 +170,29 @@ _DB_SETTINGS: List[Setting] = [
     Setting('AUTO_SYNC_ANIME', DB, 'automation', 'Auto-sync anime',
             'Start a transfer once a season’s episodes have settled.',
             kind='boolean', default='false'),
-    # SECONDS, not minutes — `AutoSyncScheduler.schedule_job` adds it straight
-    # to `time.time()`. The bounds are the ones the webhook settings route was
-    # already applying; they live here now so there is one clamp rather than a
-    # route that enforced 30-900 and a reader that enforced nothing.
-    Setting('SERIES_ANIME_SYNC_WAIT_TIME', DB, 'automation', 'Batch wait (seconds)',
-            'How long to wait for more episodes of a season before starting a transfer.',
+    # SECONDS, not minutes. Since 2.3.0 this is the sync engine's fallback
+    # timer: it decides when a season starts only when Sonarr cannot be asked
+    # (not connected, or not answering). Each later webhook adds the same again,
+    # never past 15 minutes from the first. When Sonarr answers, Sonarr's own
+    # "time left" decides instead.
+    Setting('SERIES_ANIME_SYNC_WAIT_TIME', DB, 'automation', 'Fallback wait (seconds)',
+            'Used only when Sonarr cannot be asked: how long to wait for more episodes '
+            'of a season before starting, plus this again for each later episode, at '
+            'most 15 minutes. When Sonarr answers, it decides instead.',
             kind='number', default='60', minimum=30, maximum=900),
 
-    Setting('DISCORD_NOTIFICATIONS_ENABLED', DB, 'notifications', 'Discord notifications',
-            'Send a message when a transfer finishes, fails or a rename completes.',
-            kind='boolean', default='false'),
-    Setting('DISCORD_WEBHOOK_URL', DB, 'notifications', 'Discord webhook URL',
-            'Where those messages go.', kind='password', sensitive=True),
-    Setting('DISCORD_APP_URL', DB, 'notifications', 'App URL',
-            'Used to link back to this app from a notification.',
-            default='http://localhost:5000'),
-    Setting('DISCORD_ICON_URL', DB, 'notifications', 'Notification icon',
-            'Image shown beside the message.'),
-    Setting('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', DB, 'notifications',
-            'Manual-sync thumbnail', 'Image used for manually started transfers.'),
+    # There is no switch for asking Sonarr. Whether its API is up decides
+    # (decided 2026-10-02): up, the engine asks and waits as long as Sonarr says
+    # is left; down, this timer decides. The scheduled auto-scanner's settings
+    # live on the Sonarr and Radarr connectors, because two services can want
+    # different schedules.
+
+    # The five DISCORD_* settings that used to live here moved to the connector
+    # layer in 2.3.0. They were never really settings: a webhook URL is one
+    # *destination among several*, and this registry holds singleton keys whose
+    # existence is known at import time. They are rows in `connector`,
+    # `connector_secret` and `connector_target` now, migrated automatically on
+    # first start by `DatabaseManager._migrate_discord_to_connector`.
 
     Setting('BACKUP_RETENTION_ENABLED', DB, 'backups', 'Prune old versions',
             'Remove old backup versions automatically once a new one is stored.',
@@ -244,7 +247,8 @@ GROUPS: Tuple[Tuple[str, str], ...] = (
     ('disks', 'Disk reporting'),
     ('security', 'Security'),
     ('automation', 'Automation'),
-    ('notifications', 'Notifications'),
+    # 'notifications' was here until Discord became a connector. Groups are
+    # rendered from this list, so an empty one is an empty card on the screen.
     ('backups', 'Backups'),
     ('runtime', 'Runtime'),
 )

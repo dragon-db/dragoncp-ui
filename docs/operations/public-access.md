@@ -42,7 +42,7 @@ list and it replaces Socket.IO's default of accepting its own origin, so the
 public hostname has to be named explicitly:
 
 ```
-CORS_ORIGINS="http://dragondb:5000,https://cp.example.tld"
+CORS_ORIGINS="http://myhost:5000,https://cp.example.tld"
 ```
 
 Exact scheme and host, no trailing slash, no port for the tunnel entry. Omit it

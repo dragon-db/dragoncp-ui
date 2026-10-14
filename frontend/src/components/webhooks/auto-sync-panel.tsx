@@ -140,7 +140,8 @@ export function AutoSyncControl() {
         <Separator />
 
         <p className="px-3 py-2 font-mono text-[10.5px] text-muted-foreground">
-          TV &amp; anime wait {waitSeconds}s after the last episode.
+          TV &amp; anime start once Sonarr has nothing more for the season; if Sonarr cannot be
+          asked, {waitSeconds}s after the last episode.
         </p>
       </PopoverContent>
     </Popover>

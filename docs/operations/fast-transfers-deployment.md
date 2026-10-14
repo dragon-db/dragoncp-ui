@@ -40,7 +40,7 @@ installs the same password.
 
 Confirmed on 2026-08-16, so you are not guessing:
 
-- Runs from `/home/dragondb/dragondev/dragoncp-ui` on `main`, as
+- Runs from `/home/<user>/dragoncp-ui` on `main`, as
   `dragoncp-ui.service` under gunicorn.
 - Its database has **600 transfers** and **no `transport` column** yet — the
   migration adds it on the next start.
@@ -62,7 +62,7 @@ Only the steps around it are specific to this feature.
 ### 1. Merge, and check nothing is running
 
 ```bash
-cd /home/dragondb/dragondev/dragoncp-ui
+cd /home/<user>/dragoncp-ui
 git fetch origin && git log --oneline -1 origin/main
 ```
 
@@ -77,7 +77,7 @@ nothing is lost.
 ### 2. Add the two settings
 
 ```bash
-cd /home/dragondb/dragondev/dragoncp-ui
+cd /home/<user>/dragoncp-ui
 cp dragoncp_env.env dragoncp_env.env.bak-before-fast-transfers
 ```
 

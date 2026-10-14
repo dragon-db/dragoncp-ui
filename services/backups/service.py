@@ -511,6 +511,23 @@ class BackupsService:
         # restore to `system` and lose the person who actually did it.
         initiator = current_actor()
 
+        # The restore's run in the sync pipeline, so it is listed and inspectable
+        # with every other sync. Recorded, never required: a restore must not
+        # fail because its bookkeeping did.
+        engine = getattr(self.coordinator, 'sync_engine', None)
+        if engine is not None:
+            try:
+                preview = (f"The restore preview named what this does: "
+                           f"{len(plan.operations)} file(s) put back, "
+                           f"{plan.replaces_count} replacing a file in the library.")
+                engine.begin_restore(
+                    transfer_id, plan.slot_display, plan.target_dir,
+                    plan.operations[0].source if plan.operations else '',
+                    media_type_for_library(plan.library) or 'backup', preview,
+                    capture_id, actor=initiator)
+            except Exception as error:  # noqa: BLE001
+                print(f"⚠️  Could not record the restore in the sync pipeline: {error}")
+
         threading.Thread(
             target=self._run_restore,
             args=(transfer_id, capture_id, capture, plan, initiator),
@@ -692,6 +709,13 @@ class BackupsService:
             'message': completion_message,
             'folder_name': plan.slot_display,
         })
+
+        engine = getattr(self.coordinator, 'sync_engine', None)
+        if engine is not None:
+            try:
+                engine.on_transfer_finished(transfer_id, completion_status)
+            except Exception as error:  # noqa: BLE001 - the restore itself is done
+                print(f"⚠️  Could not close the restore's pipeline run: {error}")
 
         queue = getattr(self.coordinator, 'queue_manager', None)
         if queue is not None:

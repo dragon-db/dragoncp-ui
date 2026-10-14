@@ -144,67 +144,46 @@ def api_transfer():
         print(f"📁 Final source path: {source_path}")
         print(f"📁 Final destination path: {dest_path}")
 
-        # Generate transfer ID
-        transfer_id = f"transfer_{int(time.time())}"
-        
-        # Start transfer
-        print(f"🚀 Starting transfer with ID: {transfer_id}")
-        print(f"📋 Transfer parameters:")
-        print(f"   - media_type: {media_type}")
-        print(f"   - folder_name: {folder_name}")
-        print(f"   - season_name: {season_name}")
-        print(f"   - episode_name: {episode_name}")
-        print(f"   - operation_type: {operation_type}")
-
+        # Through the pipeline like every other sync: the folder's batch, the
+        # safety check, the queue. The transfer is created once the safety
+        # check passes, so the answer here is the run to follow.
+        from services.sync_engine.engine import SyncRequest
         try:
-            transfer_started, transfer_state = transfer_coordinator.start_transfer(
-                transfer_id, 
-                source_path, 
-                dest_path, 
-                operation_type,
-                media_type,
-                folder_name,
-                season_name
-            )
-            
-            if transfer_started:
-                print(f"✅ Transfer {transfer_id} started successfully")
-                record(
-                    'transfer.start',
-                    f"Started a {media_type} sync of {_target_label(folder_name, season_name)}",
-                    target_type='transfer', target_id=transfer_id,
-                    target_label=_target_label(folder_name, season_name),
-                    detail={'media_type': media_type, 'operation': operation_type,
-                            'queued': transfer_state != 'running'},
-                )
-                # Verify the transfer was created in database
-                db_transfer = transfer_coordinator.get_transfer_status(transfer_id)
-                if db_transfer:
-                    print(f"✅ Transfer {transfer_id} found in database with status: {db_transfer['status']}")
-                else:
-                    print(f"❌ Transfer {transfer_id} NOT found in database!")
-                
-                return jsonify({
-                    "status": "success", 
-                    "transfer_id": transfer_id,
-                    "transfer_state": transfer_state,
-                    "message": "Transfer started" if transfer_state == "running" else "Transfer queued",
-                    "source": source_path,
-                    "destination": dest_path,
-                    "episode_name": episode_name
-                })
-            else:
-                print(f"❌ Failed to start transfer {transfer_id}")
-                return jsonify({
-                    "status": "error",
-                    "message": f"Failed to start transfer: {transfer_state}"
-                })
-                
+            result = transfer_coordinator.sync_engine.submit(SyncRequest(
+                kind='manual', media_type=media_type,
+                source_path=source_path, dest_path=dest_path,
+                folder_name=folder_name, season_name=season_name,
+                operation_type=operation_type,
+                title=folder_name,
+            ))
         except Exception as e:
-            print(f"❌ Exception starting transfer {transfer_id}: {e}")
+            print(f"❌ Exception starting transfer for {folder_name}: {e}")
             import traceback
             traceback.print_exc()
             return jsonify({"status": "error", "message": f"Exception starting transfer: {str(e)}"})
+
+        if not result.ok:
+            return jsonify({"status": "error", "message": f"Failed to start transfer: {result.message}",
+                            "run_id": result.run_id})
+
+        record(
+            'transfer.start',
+            f"Started a {media_type} sync of {_target_label(folder_name, season_name)}",
+            target_type='sync_run', target_id=result.run_id,
+            target_label=_target_label(folder_name, season_name),
+            detail={'media_type': media_type, 'operation': operation_type,
+                    'run_id': result.run_id},
+        )
+        return jsonify({
+            "status": "success",
+            "transfer_id": result.transfer_id,
+            "run_id": result.run_id,
+            "transfer_state": result.state,
+            "message": result.message,
+            "source": source_path,
+            "destination": dest_path,
+            "episode_name": episode_name
+        })
             
     except Exception as e:
         print(f"❌ Error in api_transfer: {e}")
@@ -359,6 +338,15 @@ def api_all_transfers():
                 "created_at": transfer["created_at"],
                 "log_count": transfer["log_count"],
                 "is_simulation": bool(transfer.get("is_simulation")),
+                # Who started it, how it reached the media host, why it waits
+                # and which sync it belongs to — the page draws all four, and
+                # leaving them out of this list made them read as unknown.
+                "started_by_kind": transfer.get("started_by_kind"),
+                "started_by_name": transfer.get("started_by_name"),
+                "started_by_account_id": transfer.get("started_by_account_id"),
+                "transport": transfer.get("transport"),
+                "queue_reason": transfer.get("queue_reason"),
+                "sync_run_id": transfer.get("sync_run_id"),
                 **build_progress_stats(transfer)
             }
             formatted_transfers.append(formatted_transfer)
@@ -417,10 +405,18 @@ def api_active_transfers():
                 # it started, which is the difference between a slow copy and a
                 # backed-up queue.
                 "created_at": transfer["created_at"],
-                "queue_reason": transfer.get("queue_reason"),
                 "rsync_process_id": transfer.get("rsync_process_id"),
                 "log_count": transfer["log_count"],
                 "is_simulation": bool(transfer.get("is_simulation")),
+                # Who started it, how it reached the media host, why it waits
+                # and which sync it belongs to — the page draws all four, and
+                # leaving them out of this list made them read as unknown.
+                "started_by_kind": transfer.get("started_by_kind"),
+                "started_by_name": transfer.get("started_by_name"),
+                "started_by_account_id": transfer.get("started_by_account_id"),
+                "transport": transfer.get("transport"),
+                "queue_reason": transfer.get("queue_reason"),
+                "sync_run_id": transfer.get("sync_run_id"),
                 **build_progress_stats(transfer)
             }
             formatted_transfers.append(formatted_transfer)
@@ -455,19 +451,36 @@ def api_queue_status():
 @transfers_bp.route('/transfer/<transfer_id>/restart', methods=['POST'])
 @require_auth
 def api_restart_transfer(transfer_id):
-    """Restart a failed or cancelled transfer"""
+    """Restart a failed or cancelled transfer — as a new run through the pipeline."""
     try:
-        success = transfer_coordinator.restart_transfer(transfer_id)
-        if success:
+        result = transfer_coordinator.sync_engine.restart_transfer(transfer_id)
+        if result.ok:
             record('transfer.restart', f"Restarted the sync of {_describe(transfer_id)}",
                    target_type='transfer', target_id=transfer_id,
-                   target_label=_describe(transfer_id))
-            return jsonify({"status": "success", "message": "Transfer restarted successfully"})
+                   target_label=_describe(transfer_id),
+                   detail={'run_id': result.run_id})
+            return jsonify({"status": "success", "message": result.message,
+                            "run_id": result.run_id})
         else:
-            return jsonify({"status": "error", "message": "Failed to restart transfer"})
+            return jsonify({"status": "error", "message": result.message or "Failed to restart transfer"})
     except Exception as e:
         print(f"❌ Error restarting transfer {transfer_id}: {e}")
         return jsonify({"status": "error", "message": f"Failed to restart transfer: {str(e)}"})
+
+
+def _cancel_before_delete(transfer_ids):
+    """Cancel waiting transfers before their rows go.
+
+    A queued, paused or starting transfer holds a place in the queue and a
+    sync in the pipeline waiting on it. Deleting the row alone leaves the
+    folder reserved and the sync open, so later webhooks for the folder join a
+    sync that can never start.
+    """
+    for transfer_id in transfer_coordinator.transfer_model.waiting_ids_among(list(transfer_ids)):
+        try:
+            transfer_coordinator.cancel_transfer(transfer_id)
+        except Exception as error:  # noqa: BLE001 - the delete still goes ahead
+            print(f"⚠️  Could not cancel {transfer_id} before deleting it: {error}")
 
 
 @transfers_bp.route('/transfer/<transfer_id>/delete', methods=['POST'])
@@ -488,6 +501,7 @@ def api_delete_transfer(transfer_id):
         # and an entry saying only an id would be useless to read back.
         label = _target_label(transfer.get('folder_name'), transfer.get('season_name'))
 
+        _cancel_before_delete([transfer_id])
         deleted = transfer_coordinator.transfer_model.delete(transfer_id)
         if deleted:
             record('transfer.delete', f"Deleted the sync record for {label}",
@@ -521,11 +535,13 @@ def api_bulk_delete_transfers():
 
         if payload.get('all_matching'):
             statuses = payload.get('statuses')
-            deleted, skipped = model.delete_matching(
+            matching = dict(
                 status_filter=payload.get('status'),
                 statuses=statuses if isinstance(statuses, list) else None,
                 search=(payload.get('search') or '').strip() or None,
             )
+            _cancel_before_delete(model.waiting_ids_matching(**matching))
+            deleted, skipped = model.delete_matching(**matching)
         else:
             transfer_ids = payload.get('ids') or []
             if not isinstance(transfer_ids, list):
@@ -535,6 +551,7 @@ def api_bulk_delete_transfers():
                     "status": "success", "deleted_count": 0, "skipped": [],
                     "message": "Nothing to delete",
                 })
+            _cancel_before_delete(transfer_ids)
             deleted, skipped = model.delete_many(transfer_ids)
 
         record('transfer.bulk_delete',

@@ -28,6 +28,27 @@ ACTIONS = {
     'transfer.delete': 'Deleted a sync record',
     'transfer.bulk_delete': 'Deleted several sync records',
     'transfer.cleanup': 'Cleaned up duplicate sync records',
+
+    # the library sweep — the safety net under the webhook
+    #
+    # Kept apart from `transfer.start` on purpose. A sync the sweep began means
+    # a notification was never received, which is a different thing to know
+    # than "a webhook arrived", and an operator should be able to filter for it
+    # without reading summary text.
+    'sweep.run': 'Checked a library for missed imports',
+    'sweep.sync_started': 'Synced something a notification never arrived for',
+    'sweep.sync_failed': 'Could not sync something found by a library check',
+    # the scheduled auto-scanner, which replaced the sweep (2.3.0)
+    'scanner.run': 'Ran the scheduled auto-scanner',
+    'scanner.sync_started': 'Started a sync the auto-scanner found',
+    # the sync engine — acting on a sync before or instead of its transfer
+    'sync.go_now': 'Told a waiting sync to go now',
+    'sync.cancel': 'Cancelled a sync',
+    'sync.sync_anyway': 'Went ahead despite a safety check',
+    # the Notifications tab
+    'alert.resolve': 'Acted on an alert',
+    # the scheduler
+    'scheduler.run_now': 'Ran a background job now',
     # backups
     'backup.capture': 'Kept files a sync was about to replace',
     'backup.restore': 'Restored a backup',
@@ -54,8 +75,16 @@ ACTIONS = {
     # settings and connection
     'settings.update': 'Changed settings',
     'settings.webhook_update': 'Changed webhook settings',
-    'settings.discord_update': 'Changed Discord settings',
-    'settings.discord_test': 'Sent a Discord test message',
+    # connectors — the outside services this app talks to. These replaced
+    # 'settings.discord_update' and 'settings.discord_test' when Discord
+    # stopped being five settings keys and became one connector among several.
+    'connector.update': 'Changed a connector’s settings',
+    'connector.check': 'Tested a connection to an outside service',
+    'connector.target_add': 'Added a notification destination',
+    'connector.target_update': 'Changed a notification destination',
+    'connector.target_delete': 'Removed a notification destination',
+    'connector.target_test': 'Sent a test message',
+    'connector.routes_update': 'Changed where notifications are sent',
     'ssh.connect': 'Connected to the media server',
     'ssh.disconnect': 'Disconnected from the media server',
     # the transfer server on the remote host

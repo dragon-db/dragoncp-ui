@@ -398,7 +398,7 @@ def _with_rival_note(error: str, pending_replacement: Optional[Dict]) -> str:
 
 def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
                  decisions: Optional[Dict[str, Dict]] = None,
-                 keep_a_copy=None) -> Dict:
+                 keep_a_copy=None, dry_run: bool = False) -> Dict:
     """
     Carry out a plan, one file at a time.
 
@@ -421,6 +421,10 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
     alone.
 
     A file that fails is reported and the rest still run.
+
+    `dry_run` is test mode's rehearsal: every check above still runs and the
+    answer lists what would be moved, deleted or replaced, but no file is
+    kept, moved, renamed or removed.
     """
     moved: List[Dict] = []
     failed: List[Dict] = []
@@ -496,6 +500,29 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
             failed.append({
                 'relative_path': action.relative_path,
                 'error': 'the file is no longer there',
+            })
+            continue
+
+        if dry_run:
+            # Test mode: the same checks and the same answer, and nothing on
+            # disk changes — no copy kept, no file moved, renamed or removed.
+            if action.needs_decision and decision == KEEP_EXISTING:
+                deleted.append({
+                    'relative_path': action.relative_path,
+                    'kept_instead': action.rival.relative_path if action.rival else '',
+                    'size': action.size,
+                })
+                continue
+            if action.needs_decision and decision == REPLACE and action.rival:
+                replaced.append({
+                    'relative_path': action.rival.relative_path,
+                    'replaced_by': action.relative_path,
+                    'size': action.rival.size,
+                })
+            moved.append({
+                'relative_path': action.relative_path,
+                'destination': action.destination,
+                'size': action.size,
             })
             continue
 
@@ -618,6 +645,7 @@ def apply_repair(local_root: str, plan: RepairPlan, allowed_paths: List[str],
         })
 
     return {
+        'dry_run': dry_run,
         'moved': moved,
         'deleted': deleted,
         'replaced': replaced,

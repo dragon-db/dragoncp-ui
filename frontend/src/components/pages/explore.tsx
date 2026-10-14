@@ -116,7 +116,16 @@ function isInteractive(element: HTMLElement | null): boolean {
   );
 }
 
-export function ExplorePage({ mediaType }: { mediaType: string }) {
+export function ExplorePage({
+  mediaType,
+  initialSeries,
+  initialSeason,
+}: {
+  mediaType: string;
+  /** Open on this series (and season) — a link from a Sonarr or Radarr title. */
+  initialSeries?: string;
+  initialSeason?: string;
+}) {
   const navigate = useNavigate();
   // A movie folder holds files, not seasons — the season layer is skipped
   // entirely rather than shown as one nameless row.
@@ -126,14 +135,16 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
   const [statusFilter, setStatusFilter] = useState<"all" | ExploreStatus>("all");
   const [sort, setSort] = useState<"recent" | "name">("recent");
   const [view, setView] = useState<ViewMode>("list");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedSeries, setSelectedSeries] = useState<string | null>(null);
-  const [selectedSeason, setSelectedSeason] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set(initialSeries ? [initialSeries] : [])
+  );
+  const [selectedSeries, setSelectedSeries] = useState<string | null>(initialSeries ?? null);
+  const [selectedSeason, setSelectedSeason] = useState<string | null>(initialSeason ?? null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [lastIndex, setLastIndex] = useState<number | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showBackups, setShowBackups] = useState(false);
-  const [pane, setPane] = useState<Pane>("tree");
+  const [pane, setPane] = useState<Pane>(initialSeason ? "table" : "tree");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   // The row cursor belongs to whichever node is open, so changing selection
   // resets it without an effect writing state on every navigation.
@@ -489,8 +500,11 @@ export function ExplorePage({ mediaType }: { mediaType: string }) {
               `removed ${result.deleted_count} redundant (${formatBytes(result.freed_size)} freed)`
             );
           if (result.replaced_count) parts.push(`replaced ${result.replaced_count}`);
+          // Test mode rehearses a repair: the same report, nothing moved.
+          const rehearsal = result.dry_run ? "Test mode — nothing was moved. Would have: " : "";
           toast.success(
-            (parts.join(", ") || "Nothing needed doing") +
+            rehearsal +
+              (parts.join(", ") || "Nothing needed doing") +
               (result.failed_count ? ` — ${result.failed_count} could not be done` : "")
           );
           if (result.failed_count) {

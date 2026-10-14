@@ -8,8 +8,11 @@ import {
   connectSocket,
   disconnectSocket,
   getSocket,
+  onAlertsChanged,
   onRenameCompleted,
   onRenameWebhookReceived,
+  onSyncRunEvent,
+  onSyncRunUpdated,
   onTransferComplete,
   onTransferPromoted,
   onTransferQueued,
@@ -368,7 +371,40 @@ export function useRuntimeConnection() {
       queryClient.invalidateQueries({ queryKey: ["webhooks"] });
     });
 
+    // A run changes several times a step, so its queries refresh at most once a
+    // second and a half each; the polling in useSync is the floor either way.
+    const lastRefresh = new Map<string, number>();
+    const refreshSoon = (key: string, queryKey: unknown[]) => {
+      const now = Date.now();
+      if (now - (lastRefresh.get(key) ?? 0) < 1500) return;
+      lastRefresh.set(key, now);
+      queryClient.invalidateQueries({ queryKey });
+    };
+
+    const unbindSyncRunUpdated = onSyncRunUpdated((payload) => {
+      refreshSoon("runs", ["sync", "runs"]);
+      refreshSoon(`run:${payload.run_id}`, ["sync", "run", payload.run_id]);
+    });
+
+    const unbindSyncRunEvent = onSyncRunEvent((payload) => {
+      refreshSoon(`run:${payload.run_id}`, ["sync", "run", payload.run_id]);
+    });
+
+    const unbindAlertsChanged = onAlertsChanged((payload) => {
+      const previous = queryClient.getQueryData<{ open: number }>(["alerts", "summary"]);
+      queryClient.setQueryData(["alerts", "summary"], payload);
+      queryClient.invalidateQueries({ queryKey: ["alerts", "list"] });
+      if (previous && payload.open > previous.open) {
+        const message = "Something needs a person — see Notifications.";
+        setLiveActivity("info", message);
+        toast.warning(message);
+      }
+    });
+
     return () => {
+      unbindSyncRunUpdated();
+      unbindSyncRunEvent();
+      unbindAlertsChanged();
       unbindWebhookCaptured();
       unbindTestWebhook();
       unbindRenameReceived();

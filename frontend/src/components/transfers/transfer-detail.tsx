@@ -1,8 +1,13 @@
 import { cn } from "@/lib/utils";
 import { ActorBadge } from "@/components/activity/actor-badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Chip, Fact, PathBlock, ProgressMeter } from "@/components/transfers/transfer-bits";
 import { TransferLogConsole } from "@/components/transfers/transfer-logs";
+import { AlertCard } from "@/components/pipeline/alert-card";
+import { KindBadge } from "@/components/pipeline/pipeline-bits";
+import { RunStages } from "@/components/pipeline/run-stages";
+import { useSyncRun } from "@/hooks/useSync";
 import type { Transfer } from "@/lib/api-types";
 import {
   formatBytes,
@@ -10,7 +15,6 @@ import {
   formatEta,
   formatSizePair,
   formatSpeed,
-  parseTimestamp,
   transferElapsed,
   transferPercent,
 } from "@/lib/transfer-progress";
@@ -31,92 +35,57 @@ export interface TransferActions {
 }
 
 /**
- * The transfer's own history: how long it waited, how long it has run, and
- * whether a pause interrupted it. A queue that holds work for forty minutes
- * looks identical to a slow copy in a status column — here it doesn't.
+ * Why this transfer ran and what each stage of its sync decided, in place of
+ * the old queued / started / completed timeline — which said when, never why.
+ *
+ * The flow on its own, with one stage's details at a time: the copy's own
+ * progress, facts and rsync output are already above and below this in the
+ * row, so the Transfer stage leaves them out here. The webhooks that asked are
+ * under Receive. An alert still waiting on a person is the one thing shown
+ * unasked, with its buttons — it is why someone opened the row.
  */
-function Timeline({ transfer, now }: { transfer: Transfer; now: number }) {
-  const created = parseTimestamp(transfer.created_at);
-  const started = parseTimestamp(transfer.start_time);
-  const paused = parseTimestamp(transfer.paused_at);
-  const ended = parseTimestamp(transfer.end_time);
-
-  const stages: Array<{ label: string; at: number | null; span: string | null; tone?: string }> =
-    [];
-
-  if (created != null) {
-    stages.push({
-      label: "Queued",
-      at: created,
-      span: started != null ? formatDuration(started - created) : null,
-    });
-  }
-  if (started != null) {
-    stages.push({
-      label: transfer.status === "queued" ? "Waiting" : "Started",
-      at: started,
-      span: formatDuration((ended ?? now) - started),
-      tone: "brand",
-    });
-  }
-  if (paused != null) {
-    stages.push({
-      label: "Paused",
-      at: paused,
-      span: formatDuration(now - paused),
-      tone: "warn",
-    });
-  }
-  if (ended != null) {
-    stages.push({
-      label:
-        transfer.status === "completed"
-          ? "Completed"
-          : transfer.status === "cancelled"
-            ? "Stopped"
-            : "Ended",
-      at: ended,
-      span: null,
-      tone: transfer.status === "completed" ? "ok" : "muted",
-    });
-  }
-
-  if (!stages.length) return null;
+function TransferPipeline({ runId }: { runId: string | null | undefined }) {
+  const runQuery = useSyncRun(runId ?? undefined);
+  const run = runQuery.data;
+  const openAlerts = (run?.alerts ?? []).filter((alert) => alert.state === "open");
 
   return (
-    <section className="flex flex-col gap-1.5">
-      <span className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground uppercase">
-        Timeline
-      </span>
-      <ol className="flex flex-col">
-        {stages.map((stage, index) => (
-          <li key={stage.label} className="flex items-start gap-2.5">
-            <div className="flex flex-col items-center self-stretch">
-              <span
-                className={cn(
-                  "mt-1 size-1.5 shrink-0 rounded-full",
-                  stage.tone === "brand" && "bg-brand-hover",
-                  stage.tone === "ok" && "bg-emerald-400",
-                  stage.tone === "warn" && "bg-amber-400",
-                  (!stage.tone || stage.tone === "muted") && "bg-muted-foreground/60"
-                )}
-              />
-              {index < stages.length - 1 && <span className="w-px flex-1 bg-border" />}
-            </div>
-            <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-0.5 pb-2">
-              <span className="text-xs font-medium text-foreground">{stage.label}</span>
-              <span className="font-mono text-[10.5px] text-muted-foreground">
-                {stage.at != null ? new Date(stage.at).toLocaleTimeString() : ""}
-              </span>
-              {stage.span && (
-                <span className="font-mono text-[10.5px] text-muted-foreground/80">
-                  · {stage.span}
-                </span>
-              )}
-            </div>
-          </li>
-        ))}
-      </ol>
+    <section className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-semibold tracking-[0.14em] text-muted-foreground uppercase">
+          Pipeline
+        </span>
+        {run && <KindBadge kind={run.kind} label={run.kind_label} />}
+      </div>
+
+      {openAlerts.map((alert) => (
+        <AlertCard key={alert.alert_id} alert={alert} showRunLink={false} />
+      ))}
+
+      {!runId ? (
+        // Transfers from before 2.3.0 were not part of a sync.
+        <p className="text-xs text-muted-foreground">
+          This transfer ran before syncs recorded their stages.
+        </p>
+      ) : runQuery.isLoading ? (
+        <div className="flex flex-col gap-2">
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-40 w-full" />
+        </div>
+      ) : !run ? (
+        <p className="text-xs text-muted-foreground">
+          Its sync could not be loaded.{" "}
+          <button
+            type="button"
+            className="font-medium text-brand-hover hover:underline"
+            onClick={() => runQuery.refetch()}
+          >
+            Try again
+          </button>
+        </p>
+      ) : (
+        <RunStages run={run} showTransferFacts={false} />
+      )}
     </section>
   );
 }
@@ -262,7 +231,9 @@ export function TransferDetailPanel({
         <PathBlock label="To (local)" value={transfer.dest_path} />
       </section>
 
-      <Timeline transfer={transfer} now={now} />
+      {/* Every transfer since 2.3.0 belongs to a sync; its stages say why it
+          ran, what the safety check found and what was announced. */}
+      <TransferPipeline runId={transfer.sync_run_id} />
 
       {/* The last thing rsync said, when it is not just another progress tick */}
       {transfer.progress && !active && (

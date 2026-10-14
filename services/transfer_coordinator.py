@@ -5,10 +5,8 @@ Main orchestrator that coordinates transfer, backup, webhook, and notification s
 """
 
 import os
-import re
 import time
 import json
-import requests
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -18,12 +16,20 @@ from services.backups.layout import BackupPathNotConfigured
 from services.transfer_service import TransferService
 from services.notification_service import NotificationService
 from services.webhook_service import WebhookService
-from services.auto_sync_scheduler import AutoSyncScheduler
+from services.auto_scanner import AutoScanner
+from services.media_index import MediaIndex
+from services.scheduler import SchedulerService
+from services.alert_service import AlertService
+from services.sync_engine.engine import SyncEngine
+from models.alert import AlertStore
+from models.sync_run import SyncRunStore
 from services.sync_logger import log_sync, log_validation, log_state_change
 from services.queue_manager import QueueManager
 from services.path_service import PathService
 from services.settings_service import SettingsService
 from services.remote_daemon import RemoteDaemonService
+from services.connectors import notify
+from services.connectors.events import ACCENT_BLOCKED, WARNING, Event, Field
 
 # The model owns the definition of "active"; importing it here keeps one list
 # rather than two that can drift.
@@ -80,28 +86,88 @@ class TransferCoordinator:
                                                 remote_daemon=self.remote_daemon)
         self.notification_service = NotificationService(config, self.settings_service, self.transfer_model, self.webhook_model, self.series_webhook_model)
         self.webhook_service = WebhookService(config, self.webhook_model, self.series_webhook_model, self)
-        self.auto_sync_scheduler = AutoSyncScheduler(db_manager, self.settings)
-        
-        # Set coordinator reference in scheduler and queue manager (circular dependencies)
-        self.auto_sync_scheduler.set_coordinator(self)
-        self.queue_manager.set_coordinator(self)
-        
-        print(f"✅ TransferCoordinator initialized")
-        
-        # Clean up stale transfer tracking before resuming
-        self.queue_manager.force_unregister_stale_transfers()
-        
-        # Resume any transfers that were running when the app was stopped
-        resumed_transfer_ids = self.transfer_service.resume_active_transfers()
 
-        if resumed_transfer_ids:
-            import threading
-            for transfer_id in resumed_transfer_ids:
-                threading.Thread(
-                    target=self._post_transfer_completion,
-                    args=(transfer_id,),
-                    daemon=True
-                ).start()
+        # The title index: one row per film or series, keyed by the identifier
+        # the service will not change. Built here so the engine, the webhook
+        # path and the auto-scanner all read and write the same instance.
+        self.media_index = MediaIndex(db_manager, config=config)
+
+        # Everything that needs a person — the Notifications tab.
+        self.alerts = AlertService(AlertStore(db_manager), socketio)
+
+        # The sync engine: the one pipeline every sync goes through. Built
+        # here because it hands transfers to this coordinator's queue; started
+        # by `start_background()`, once the connector layer is up, so what it
+        # finds on start-up can be announced.
+        self.sync_engine = SyncEngine(
+            SyncRunStore(db_manager), coordinator=self, media_index=self.media_index,
+            settings=self.settings_service, socketio=socketio, alerts=self.alerts,
+            config=config)
+        self.alerts.engine = self.sync_engine
+
+        # The scheduled auto-scanner — what a webhook never delivered — and the
+        # scheduler that runs it. One scheduler for everything DragonCP does on
+        # a clock; this release gives it the Sonarr and Radarr auto-scanners.
+        self.auto_scanner = AutoScanner(db_manager, self.media_index, self.sync_engine,
+                                        config, alerts=self.alerts)
+        self.scheduler = SchedulerService(db_manager, alerts=self.alerts)
+        for job in self.auto_scanner.jobs():
+            self.scheduler.register(job)
+        self.alerts.scheduler = self.scheduler
+        self.queue_manager.set_coordinator(self)
+
+        print(f"✅ TransferCoordinator initialized")
+
+        # Clean up stale transfer tracking before resuming. Nothing is started
+        # here: the sync engine first looks at what the restart interrupted
+        # (`start_background`), then the queue moves on.
+        self.queue_manager.force_unregister_stale_transfers(promote=False)
+
+        # Resume any transfers that were running when the app was stopped. Their
+        # completion watchers start in `start_background()`: a watcher that
+        # finds its transfer already ended announces the result, and before the
+        # connector layer exists that announcement goes nowhere.
+        self._resumed_transfer_ids = self.transfer_service.resume_active_transfers()
+        self._background_started = False
+
+    def start_background(self) -> None:
+        """Start the work that runs on its own: watchers and the sync engine.
+
+        Called once, after the connector layer is configured, so that what a
+        restart finds — a transfer that failed while DragonCP was down, a batch
+        that was waiting — is announced rather than dropped.
+        """
+        if self._background_started:
+            return
+        self._background_started = True
+        # Recovery first. A completion watcher that finds its transfer already
+        # ended releases its queue slot, and releasing a slot starts the next
+        # queued transfer — which recovery would then take for one a restart
+        # cut off. So the engine looks before anything is allowed to move.
+        self.sync_engine.start()
+        import threading
+        for transfer_id in self._resumed_transfer_ids or []:
+            threading.Thread(
+                target=self._post_transfer_completion,
+                args=(transfer_id,),
+                daemon=True
+            ).start()
+        # After recovery: a transfer started now goes through the engine's
+        # hooks like any other, instead of being mistaken for an interrupted one.
+        self.queue_manager.promote_waiting()
+        self.scheduler.start()
+
+    def _hook(self, name: str, *args) -> None:
+        """Tell the sync engine about a transfer's lifecycle. Never raises."""
+        engine = getattr(self, 'sync_engine', None)
+        if engine is None:
+            return
+        try:
+            getattr(engine, name)(*args)
+        except Exception as error:  # noqa: BLE001 - bookkeeping must not break a transfer
+            print(f"⚠️  Sync engine hook {name} failed: {error}")
+            import traceback
+            traceback.print_exc()
     
     # Transfer Operations
     def start_transfer(self, transfer_id: str, source_path: str, dest_path: str,
@@ -260,12 +326,16 @@ class TransferCoordinator:
                 return (False, 'failed')
             print(f"📁 Backup staging dir: {backup_dir}")
 
-            # Start the actual transfer process
+            # Start the actual transfer process. The engine flips its run to
+            # "copying" first, so a webhook arriving from here on goes to the
+            # follow-up batch rather than into a copy that may have started.
             print(f"🚀 Calling start_rsync_process...")
+            self._hook('before_transfer_start', transfer_id)
             success = self.transfer_service.start_rsync_process(transfer_id, source_path, dest_path, operation_type, backup_dir)
             print(f"   start_rsync_process returned: {success}")
-            
+
             if success:
+                self._hook('on_transfer_started', transfer_id)
                 # Start a thread to finalize backup and send notifications after completion
                 import threading
                 threading.Thread(
@@ -345,15 +415,19 @@ class TransferCoordinator:
                 print(f"🏁 Transfer {transfer_id} finished with status: {status}")
                 self.queue_manager.unregister_transfer(transfer_id, dest_path)
 
-                # Update webhook notification status
-                self.webhook_service.update_webhook_transfer_status(transfer_id, status, self.transfer_model)
-                
-                # Send Discord notification for completed and failed transfers
-                if status in ['completed', 'failed']:
-                    try:
-                        self.notification_service.send_discord_notification(transfer_id, status)
-                    except Exception as de:
-                        print(f"⚠️  Discord notification error for {transfer_id}: {de}")
+                if transfer and transfer.get('sync_run_id') and getattr(self, 'sync_engine', None):
+                    # The pipeline's Finish and Tell stages: webhooks marked,
+                    # the outcome announced, alerts opened, follow-ups told.
+                    self._hook('on_transfer_finished', transfer_id, status)
+                else:
+                    # A transfer from before the engine existed — finished the
+                    # way it would have been then.
+                    self.webhook_service.update_webhook_transfer_status(transfer_id, status, self.transfer_model)
+                    if status in ['completed', 'failed']:
+                        try:
+                            self.notification_service.send_discord_notification(transfer_id, status)
+                        except Exception as de:
+                            print(f"⚠️  Discord notification error for {transfer_id}: {de}")
                 
                 # File whatever this transfer displaced into the backup tree,
                 # index it, and apply retention. A transfer that displaced
@@ -382,12 +456,17 @@ class TransferCoordinator:
     
     def cancel_transfer(self, transfer_id: str) -> bool:
         """Cancel a running or queued transfer"""
+        before = self.transfer_model.get(transfer_id) or {}
         result = self.transfer_service.cancel_transfer(transfer_id)
-        
+
         # Unregister from queue manager if it was running
         if result:
             self.queue_manager.unregister_transfer(transfer_id)
-        
+            # A queued or paused transfer has no completion watcher, so nothing
+            # else would ever close its run.
+            if before.get('status') in ('queued', 'paused', 'pending'):
+                self._hook('on_transfer_finished', transfer_id, 'cancelled')
+
         return result
     
     def pause_transfer(self, transfer_id: str) -> Tuple[bool, str]:
@@ -406,6 +485,7 @@ class TransferCoordinator:
 
         if success:
             self.queue_manager.unregister_transfer(transfer_id, dest_path)
+            self._hook('on_transfer_paused', transfer_id)
 
         return success, message
 
@@ -446,6 +526,7 @@ class TransferCoordinator:
                     'message': 'Resumed transfer added to queue'
                 })
 
+            self._hook('on_transfer_resumed', transfer_id, 'queued')
             return True, 'Transfer resumed and queued'
 
         if not can_start:
@@ -469,6 +550,8 @@ class TransferCoordinator:
             return False, 'BACKUP_PATH is not configured; refusing to resume'
 
         transfer = self.transfer_model.get(transfer_id)
+        self._hook('on_transfer_resumed', transfer_id, 'running')
+        self._hook('before_transfer_start', transfer_id)
         success = self.transfer_service.start_rsync_process(
             transfer_id,
             transfer['source_path'],
@@ -476,6 +559,8 @@ class TransferCoordinator:
             transfer['operation_type'],
             backup_dir
         )
+        if success:
+            self._hook('on_transfer_started', transfer_id)
 
         if not success:
             # The row was set to 'pending' above. Leaving it there strands the
@@ -490,6 +575,10 @@ class TransferCoordinator:
                 'paused_at': datetime.now().isoformat()
             })
             self.queue_manager.unregister_transfer(transfer_id, transfer['dest_path'])
+            # Its sync was told the copy was starting; it is paused again.
+            self._hook('on_transfer_paused', transfer_id,
+                       'Resuming could not start rsync. The partial files are kept; '
+                       'resume again to continue.')
             return False, 'Failed to resume transfer'
 
         import threading
@@ -502,20 +591,89 @@ class TransferCoordinator:
         return True, 'Transfer resumed'
 
     def restart_transfer(self, transfer_id: str) -> bool:
-        """Restart a failed or cancelled transfer"""
+        """Restart a failed or cancelled transfer — through the pipeline.
+
+        A restart used to start rsync directly, skipping the queue: no folder
+        check, no slot limit, and no watcher, so nothing announced the result.
+        It is a run of its own now (safety check, then the queue), see
+        `SyncEngine.restart_transfer`.
+        """
+        return self.sync_engine.restart_transfer(transfer_id).ok
+
+    def _path_queue_message(self, existing_transfer_id: Optional[str], dest_path: str) -> str:
+        existing_transfer = self.transfer_model.get(existing_transfer_id) if existing_transfer_id else None
+        if existing_transfer:
+            existing_title = existing_transfer.get('parsed_title') or existing_transfer.get('folder_name') or 'Unknown'
+            if existing_transfer.get('season_name'):
+                existing_info = f"{existing_title} - {existing_transfer['season_name']}"
+            else:
+                existing_info = existing_title
+            return f'Queued: Waiting for "{existing_info}" to complete (same destination path)'
+        return f'Queued: Waiting for path to be available: {dest_path}'
+
+    def requeue_transfer(self, transfer_id: str, sync_run_id: Optional[str] = None) -> Tuple[bool, str]:
+        """Run an existing transfer row again, through the queue.
+
+        The same folder check and slot limit a new transfer gets, and the same
+        completion watcher afterwards. rsync picks up its partial files, so a
+        retry continues rather than starts over.
+        """
         transfer = self.transfer_model.get(transfer_id)
         if not transfer:
-            return False
+            return False, 'missing'
+        if transfer.get('status') in ('queued', 'pending', 'running', 'paused'):
+            # Already on its way: a second request must not start a second rsync.
+            return False, 'already_active'
+        dest_path = transfer['dest_path']
+        reset = {
+            'rsync_process_id': None, 'end_time': None, 'paused_at': None,
+            'start_time': datetime.now().isoformat(), 'progress_percent': 0,
+            'bytes_transferred': 0, 'speed_bps': 0, 'eta_seconds': None,
+        }
+        if sync_run_id:
+            reset['sync_run_id'] = sync_run_id
+
+        is_duplicate, existing_transfer_id = self.queue_manager.check_duplicate_destination(
+            dest_path, transfer_id)
+        if is_duplicate:
+            self.transfer_model.update(transfer_id, {
+                **reset, 'status': 'queued', 'queue_reason': 'path',
+                'progress': self._path_queue_message(existing_transfer_id, dest_path)})
+            return True, 'QUEUED_PATH'
+
+        can_start, queue_status = self.queue_manager.register_transfer(transfer_id, dest_path)
+        if queue_status == 'queued':
+            self.transfer_model.update(transfer_id, {
+                **reset, 'status': 'queued', 'queue_reason': 'slot',
+                'progress': 'Waiting in queue...'})
+            return True, 'QUEUED_SLOT'
+        if not can_start:
+            return False, queue_status
+
+        self.transfer_model.update(transfer_id, {**reset, 'status': 'pending',
+                                                 'progress': 'Restarting transfer...'})
         backup_dir = self._staging_dir(transfer_id)
         if backup_dir is None:
-            # Say why on the row, as start and resume already do. Returning a
-            # bare False left the transfer showing whatever it failed with and
-            # the operator retrying a button that could never work.
             self.transfer_model.update(transfer_id, {
+                'status': 'failed',
                 'progress': 'BACKUP_PATH is not configured; refusing to restart',
-            })
-            return False
-        return self.transfer_service.restart_transfer(transfer_id, backup_dir)
+                'end_time': datetime.now().isoformat()})
+            self.queue_manager.unregister_transfer(transfer_id, dest_path)
+            return False, 'failed'
+
+        self._hook('before_transfer_start', transfer_id)
+        success = self.transfer_service.start_rsync_process(
+            transfer_id, transfer['source_path'], dest_path,
+            transfer['operation_type'], backup_dir)
+        if not success:
+            self.queue_manager.unregister_transfer(transfer_id, dest_path)
+            self._release_fast_route()
+            return False, 'failed'
+        self._hook('on_transfer_started', transfer_id)
+        import threading
+        threading.Thread(target=self._post_transfer_completion, args=(transfer_id,),
+                         daemon=True).start()
+        return True, 'running'
 
     def _staging_dir(self, transfer_id: str) -> Optional[str]:
         """
@@ -610,11 +768,15 @@ class TransferCoordinator:
             self.transfer_model.update(transfer_id, {
                 'status': 'failed',
                 'progress': 'BACKUP_PATH is not configured; refusing to start',
+                'end_time': datetime.now().isoformat(),
             })
+            # The sync is told before the folder is handed to the next transfer.
+            self._start_failed(transfer_id)
             self.queue_manager.unregister_transfer(transfer_id, transfer.get('dest_path'))
             return False
 
         # Start the transfer
+        self._hook('before_transfer_start', transfer_id)
         success = self.transfer_service.start_rsync_process(
             transfer_id,
             transfer['source_path'],
@@ -622,8 +784,9 @@ class TransferCoordinator:
             transfer['operation_type'],
             backup_dir
         )
-        
+
         if success:
+            self._hook('on_transfer_started', transfer_id)
             # Start post-completion thread
             import threading
             threading.Thread(
@@ -632,12 +795,41 @@ class TransferCoordinator:
                 daemon=True
             ).start()
         else:
+            # The sync is told before the folder is handed to the next transfer.
+            self._start_failed(transfer_id)
             # If failed to start, unregister from queue manager
             self.queue_manager.unregister_transfer(transfer_id)
             # Same as the first start path: no rsync, no watcher, so release here.
             self._release_fast_route()
 
         return success
+
+    def _start_failed(self, transfer_id: str) -> None:
+        """A transfer the queue let through could not start: tell its sync.
+
+        Started from the queue, nobody is waiting on the answer, and with no
+        rsync there is no completion watcher either. Without this the sync sat
+        at Queued or Copying for good, with no alert and a Retry that could
+        not get past it.
+        """
+        row = self.transfer_model.get(transfer_id) or {}
+        if row.get('status') != 'failed':
+            self.transfer_model.update(transfer_id, {
+                'status': 'failed',
+                'progress': row.get('progress') or 'The transfer could not start',
+                'end_time': datetime.now().isoformat(),
+            })
+        if row.get('sync_run_id') and getattr(self, 'sync_engine', None):
+            self._hook('on_transfer_finished', transfer_id, 'failed')
+            return
+        # Queued before the sync engine existed: closed the way the completion
+        # watcher closes such a transfer, so its episodes stop reading syncing.
+        try:
+            self.webhook_service.update_webhook_transfer_status(
+                transfer_id, 'failed', self.transfer_model)
+            self.notification_service.send_discord_notification(transfer_id, 'failed')
+        except Exception as error:  # noqa: BLE001 - bookkeeping must not break the queue
+            print(f"⚠️  Could not close {transfer_id} after it failed to start: {error}")
     
     def get_queue_status(self) -> Dict:
         """Get current queue status"""
@@ -681,18 +873,25 @@ class TransferCoordinator:
         self.notification_service.send_discord_notification(transfer_id, transfer_status)
     
     # Auto-Sync Operations
-    def schedule_auto_sync(self, notification_id: str, series_title_slug: str, 
-                          season_number: int, media_type: str):
-        """Schedule an auto-sync job for series/anime"""
-        wait_time = self.settings_service.get_int('SERIES_ANIME_SYNC_WAIT_TIME', 60)
-        self.auto_sync_scheduler.schedule_job(
-            notification_id=notification_id,
-            series_title_slug=series_title_slug,
-            season_number=season_number,
-            wait_time=wait_time,
-            media_type=media_type
-        )
-    
+    def index_notification(self, table: str, notification_id: str, media_type: str = '') -> None:
+        """Fold a webhook's title into the index so the engine can ask about it.
+
+        Nothing here reaches the network and nothing here can stop a sync: a
+        failure leaves the index unchanged and the engine falls back to the
+        fixed timer.
+        """
+        try:
+            if table == 'sonarr_webhook':
+                notification = self.series_webhook_model.get(notification_id)
+                if notification:
+                    self.media_index.record_series_notification(notification, media_type)
+            else:
+                notification = self.webhook_model.get(notification_id)
+                if notification:
+                    self.media_index.record_movie_notification(notification)
+        except Exception as exc:  # noqa: BLE001 - indexing must never block a sync
+            print(f"⚠️  Could not index {notification_id}: {exc}")
+
     def perform_dry_run_validation(self, notification: Dict) -> Dict:
         """
         Perform dry-run validation for series/anime sync
@@ -799,95 +998,42 @@ class TransferCoordinator:
         print(f"⚠️  Marked {notification_id} for manual sync: {reason}")
     
     def send_manual_sync_discord_alert(self, notification: Dict, validation_result: Dict):
-        """Send Discord notification when manual sync is required"""
+        """Announce that an automatic sync refused and wants a person.
+
+        The most consequential message this app sends: something was going to
+        run by itself, looked wrong, and stopped. Nobody is watching the screen
+        when it happens, which is the entire reason it is pushed.
+        """
         try:
-            # Check if Discord notifications are enabled
-            if not self.settings_service.get_bool('DISCORD_NOTIFICATIONS_ENABLED'):
-                return
-            
-            webhook_url = self.settings_service.get('DISCORD_WEBHOOK_URL')
-            if not webhook_url:
-                return
-            
             media_type = notification['media_type']
             series_title = notification['series_title']
             season_number = notification['season_number']
             season_path = notification['season_path']
-            
-            # Get app URL for the link
-            app_url = self.settings_service.get('DISCORD_APP_URL')
-            
-            # Create embed
-            embed = {
-                'title': f'**{series_title}** - Season {season_number}',
-                'description': 'Media Type: ' + media_type.upper(),
-                'color': 15844367,  # Gold/warning color
-                'fields': [
-                    {   
-                        'name': 'Season Path',
-                        'value': f'```{season_path}```',
-                        'inline': False
-                    },
-                    {
-                        'name': 'Reason',
-                        'value': validation_result['reason'],
-                        'inline': False
-                    },
-                    {
-                        'name': 'File Analysis',
-                        'value': (
-                            f"```\n"
-                            f"Server Files: {validation_result.get('server_file_count', 0)}\n"
-                            f"Local Files: {validation_result.get('local_file_count', 0)}\n"
-                            f"Would Delete: {validation_result.get('deleted_count', 0)} media files\n"
-                            f"Would Add: {validation_result.get('incoming_count', 0)} media files\n"
-                            f"```"
-                        ),
-                        'inline': False
-                    }
-                ],
-                'footer': {
-                    'text': 'DRAGONCP Auto-Sync Safety Check'
-                },
-                'timestamp': datetime.utcnow().isoformat()
-            }
-            
-            # Add app URL if valid
-            if app_url and self._is_valid_discord_url(app_url):
-                embed['url'] = app_url
-            
-            # Add icon if configured
-            icon_url = self.settings_service.get('DISCORD_ICON_URL')
-            if icon_url:
-                embed['author'] = {
-                    'name': 'Manual Sync Alert ⚠️',
-                    'icon_url': icon_url
-                }
-            
-            # Send to Discord
-            payload = {'embeds': [embed]}
-            response = requests.post(
-                webhook_url,
-                json=payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=10
-            )
-            
-            if response.status_code == 204:
-                print(f"✅ Discord manual sync alert sent for {series_title} Season {season_number}")
-            else:
-                print(f"⚠️  Discord alert failed: {response.status_code}")
-                
+
+            notify(Event(
+                key='autosync.blocked',
+                severity=WARNING,
+                accent=ACCENT_BLOCKED,
+                title=f"**{series_title}** - Season {season_number}",
+                summary='Media Type: ' + media_type.upper(),
+                fields=(
+                    Field('Season Path', season_path, monospace=True),
+                    Field('Reason', validation_result['reason']),
+                    Field(
+                        'File Analysis',
+                        f"Server Files: {validation_result.get('server_file_count', 0)}\n"
+                        f"Local Files: {validation_result.get('local_file_count', 0)}\n"
+                        f"Would Delete: {validation_result.get('deleted_count', 0)} media files\n"
+                        f"Would Add: {validation_result.get('incoming_count', 0)} media files",
+                        monospace=True,
+                    ),
+                ),
+                author='Manual Sync Alert ⚠️',
+                footer='DRAGONCP Auto-Sync Safety Check',
+                context={'media_type': media_type},
+            ))
+
         except Exception as e:
-            print(f"❌ Error sending Discord manual sync alert: {e}")
+            print(f"❌ Error announcing the manual sync alert: {e}")
             import traceback
             traceback.print_exc()
-    
-    def _is_valid_discord_url(self, url: str) -> bool:
-        """Validate URL format for Discord embeds"""
-        try:
-            # Discord accepts http/https URLs with proper domain format
-            url_pattern = r'^https?://(?:(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d{1,5})?(?:/.*)?$'
-            return bool(re.match(url_pattern, url))
-        except Exception:
-            return False

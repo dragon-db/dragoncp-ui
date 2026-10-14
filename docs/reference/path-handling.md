@@ -12,11 +12,11 @@ The application was using **different folder names** for dry-run validation vs a
 
 ### **Root Cause:**
 ```
-Webhook JSON:     "title": "New Gods: Nezha Reborn"        (unsanitized, has colon)
-Remote Folder:    "New Gods Nezha Reborn (2021)"           (sanitized by Radarr, no colon)
+Webhook JSON:     "title": "Alpha: Bravo of the Delta"        (unsanitized, has colon)
+Remote Folder:    "Alpha Bravo of the Delta (2021)"           (sanitized by Radarr, no colon)
 
-❌ Actual Sync:   Used title field → /local/movies/New Gods: Nezha Reborn (2021)
-✅ Dry-Run:       Used folder_path → /local/movies/New Gods Nezha Reborn (2021)
+❌ Actual Sync:   Used title field → /local/movies/Alpha: Bravo of the Delta (2021)
+✅ Dry-Run:       Used folder_path → /local/movies/Alpha Bravo of the Delta (2021)
 
 Result: Paths don't match! Dry-run validates different path than sync uses.
 ```
@@ -26,8 +26,8 @@ Result: Paths don't match! Dry-run validates different path than sync uses.
 2. **Dry-Run**: Extracted folder name from actual file system path (already sanitized by Radarr/Sonarr)
 
 This caused mismatches like:
-- Actual sync destination: `/media/movies/New Gods: Nezha Reborn (2021)` (with colon)
-- Dry-run destination: `/media/movies/New Gods Nezha Reborn (2021)` (without colon)
+- Actual sync destination: `/media/movies/Alpha: Bravo of the Delta (2021)` (with colon)
+- Dry-run destination: `/media/movies/Alpha Bravo of the Delta (2021)` (without colon)
 
 ---
 
@@ -80,11 +80,11 @@ This ensures:
 **Example Transformation:**
 ```python
 # Input
-source = "/remote/Movies/New Gods Nezha Reborn (2021)"
+source = "/remote/Movies/Alpha Bravo of the Delta (2021)"
 media = "movies"
 
 # Output (base path replaced, structure preserved)
-dest = "/local/movies/New Gods Nezha Reborn (2021)"
+dest = "/local/movies/Alpha Bravo of the Delta (2021)"
 ```
 
 ### **2. Updated All Callers to Use PathService**
@@ -195,9 +195,9 @@ else:
 **Where season_path Comes From:**
 ```python
 # In webhook parsing (webhook_service.py):
-episode_file_path = "/remote/TVShows/Breaking Bad/Season 01/episode.mkv"
+episode_file_path = "/remote/TVShows/Example Show/Season 01/episode.mkv"
 season_path = os.path.dirname(episode_file_path)
-# Result: "/remote/TVShows/Breaking Bad/Season 01"
+# Result: "/remote/TVShows/Example Show/Season 01"
 ```
 
 This is the **ACTUAL folder** created by Sonarr on disk!
@@ -235,7 +235,7 @@ This is the **ACTUAL folder** created by Sonarr on disk!
 
 ### **1. Special Characters in Titles**
 **Before:** 
-- Movie: "New Gods: Nezha Reborn" → Creates folder with `:` → Fails
+- Movie: "Alpha: Bravo of the Delta" → Creates folder with `:` → Fails
 - Series: "CSI: Crime Scene Investigation" → Creates folder with `:` → Fails
 
 **After:**
@@ -244,8 +244,8 @@ This is the **ACTUAL folder** created by Sonarr on disk!
 
 ### **2. Dry-Run vs Actual Sync Mismatch**
 **Before:**
-- Dry-run: `/local/movies/New Gods Nezha Reborn (2021)` (from folder_path)
-- Actual sync: `/local/movies/New Gods: Nezha Reborn (2021)` (from title)
+- Dry-run: `/local/movies/Alpha Bravo of the Delta (2021)` (from folder_path)
+- Actual sync: `/local/movies/Alpha: Bravo of the Delta (2021)` (from title)
 - Result: Validates wrong path!
 
 **After:**
@@ -318,9 +318,9 @@ This is the **ACTUAL folder** created by Sonarr on disk!
 
 #### **1. Movie with Special Characters**
 ```
-Title: "New Gods: Nezha Reborn"
-Remote: /remote/Movies/New Gods Nezha Reborn (2021)
-Expected Local: /local/movies/New Gods Nezha Reborn (2021)
+Title: "Alpha: Bravo of the Delta"
+Remote: /remote/Movies/Alpha Bravo of the Delta (2021)
+Expected Local: /local/movies/Alpha Bravo of the Delta (2021)
 
 ✅ Test: Dry-run shows safe to sync
 ✅ Test: Actual sync creates correct folder
@@ -340,9 +340,9 @@ Expected Local: /local/tvshows/CSI Crime Scene Investigation/Season 01
 
 #### **3. Anime Episode**
 ```
-Title: "Attack on Titan"
-Remote: /remote/Anime/Attack on Titan (2013)/Season 01
-Expected Local: /local/anime/Attack on Titan (2013)/Season 01
+Title: "Example Anime"
+Remote: /remote/Anime/Example Anime (2013)/Season 01
+Expected Local: /local/anime/Example Anime (2013)/Season 01
 
 ✅ Test: Uses anime destination base path
 ✅ Test: season_path extracted correctly
@@ -401,12 +401,12 @@ The implementation includes helpful logging to show which path method is being u
 
 ### **When using actual season_path (normal case):**
 ```
-📁 Using actual season_path from webhook: /remote/TVShows/Breaking Bad/Season 01
+📁 Using actual season_path from webhook: /remote/TVShows/Example Show/Season 01
 ```
 
 ### **When falling back to reconstruction:**
 ```
-⚠️  season_path not in notification, reconstructed: /remote/TVShows/Breaking Bad/Season 01
+⚠️  season_path not in notification, reconstructed: /remote/TVShows/Example Show/Season 01
 ```
 
 This makes it easy to:
@@ -546,8 +546,8 @@ The DragonCP application now:
 
 **The original issue is completely resolved:**
 ```
-Before: "New Gods: Nezha Reborn" → Mismatch between dry-run and sync
-After:  "New Gods Nezha Reborn" → Consistent paths everywhere ✅
+Before: "Alpha: Bravo of the Delta" → Mismatch between dry-run and sync
+After:  "Alpha Bravo of the Delta" → Consistent paths everywhere ✅
 ```
 
 **Consistency Achieved:**

@@ -363,7 +363,7 @@ class RemoteDaemonService:
             # swallows a failed stop on purpose — it is housekeeping that runs
             # after a transfer and must not raise — so taking the attempt as the
             # answer told operators the port was closed when it was still open.
-            released = self.release(lambda: False)
+            released = self._release(lambda: False)
             shutdown_failed = not released
 
         # A shutdown that did not happen is not a successful install of an
@@ -548,6 +548,22 @@ class RemoteDaemonService:
             self.release(still_needed or (lambda: False))
 
     def release(self, still_needed: Callable[[], bool]) -> bool:
+        """
+        Switch it off after a dry run or a transfer, if this instance uses it.
+
+        An instance with the fast route switched off never started the server,
+        so it does not stop it either. Two instances can share one media host —
+        production and a test instance on the same machine — and the server
+        belongs to whichever uses the fast route. Before this check, every dry
+        run and every finished transfer on an instance that never used the
+        route connected to the media host and stopped the server anyway, which
+        cuts off the other instance's copy if it is using it.
+        """
+        if not self.settings.get_bool('FAST_TRANSPORT_ENABLED'):
+            return False
+        return self._release(still_needed)
+
+    def _release(self, still_needed: Callable[[], bool]) -> bool:
         """
         Switch it off once nothing needs it, if it is meant to run on demand.
 

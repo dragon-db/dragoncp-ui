@@ -2,6 +2,9 @@ import { useState, type ComponentType } from "react";
 import { Link, useLocation } from "@tanstack/react-router";
 import { useAuthStore } from "@/stores/auth";
 import { useLogout } from "@/hooks/useAuth";
+import { useConnectors } from "@/hooks/useConnectors";
+import { useAlertSummary } from "@/hooks/useSync";
+import { ConnectorIcon } from "@/components/integrations/connector-icon";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,6 +27,7 @@ import {
   IconLayoutDashboard,
   IconTransfer,
   IconWebhook,
+  IconBell,
   IconCategory2,
   IconMovie,
   IconDeviceTv,
@@ -48,6 +52,7 @@ const workspaceItems: NavItem[] = [
   { to: "/dashboard", label: "Dashboard", icon: IconLayoutDashboard },
   { to: "/transfers", label: "Transfers", icon: IconTransfer },
   { to: "/webhooks", label: "Webhooks", icon: IconWebhook },
+  { to: "/notifications", label: "Notifications", icon: IconBell },
 ];
 
 const mediaItems: NavItem[] = [
@@ -99,6 +104,18 @@ export function AppSidebar() {
   const [mediaOpen, setMediaOpen] = useState(true);
   const mediaExpanded = mediaSectionActive || mediaOpen;
 
+  // The connector list comes from the server, not from a list kept here. A
+  // connector added on the backend appears in this menu on the next load
+  // without the frontend knowing it exists — which is the whole point of the
+  // adapters registering themselves.
+  const connectorsQuery = useConnectors();
+  const connectors = connectorsQuery.data ?? [];
+
+  // Open alerts, on the item that lists them: the one count in this menu that
+  // means someone has to do something.
+  const openAlerts = useAlertSummary().data?.open ?? 0;
+  const counts: Record<string, number> = { "/notifications": openAlerts };
+
   const closeMobile = () => setOpenMobile(false);
   const isActive = (item: NavItem) =>
     item.match ? item.match(location.pathname) : location.pathname === item.to;
@@ -140,6 +157,14 @@ export function AppSidebar() {
                   >
                     <item.icon />
                     <span>{item.label}</span>
+                    {(counts[item.to] ?? 0) > 0 && (
+                      <span
+                        className="ml-auto min-w-5 rounded-full border border-amber-500/40 bg-amber-500/15 px-1.5 text-center font-mono text-[10px] leading-4 text-amber-300"
+                        title={`${counts[item.to]} open`}
+                      >
+                        {counts[item.to] > 99 ? "99+" : counts[item.to]}
+                      </span>
+                    )}
                   </SidebarMenuButton>
                 </SidebarMenuItem>
               ))}
@@ -189,6 +214,49 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/*
+          Flat, unlike Browse Media. That one collapses because its three
+          entries are one thing seen three ways; these are separate
+          applications that happen to be reached from the same place, and a
+          "Connectors" parent above them was a level that existed only to be
+          expanded before Discord could be clicked.
+
+          Hidden entirely until the list arrives. A labelled section with
+          nothing under it reads as "there are no connectors" when what it
+          actually means is "the request has not come back" — and if the
+          backend is older than this build it never will.
+        */}
+        {connectors.length > 0 && (
+          <SidebarGroup>
+            <SidebarGroupLabel className={eyebrow}>Integrations</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {connectors.map((connector) => (
+                  <SidebarMenuItem key={connector.id}>
+                    <SidebarMenuButton
+                      render={
+                        <Link to="/integrations/$connector" params={{ connector: connector.id }} />
+                      }
+                      isActive={location.pathname === `/integrations/${connector.id}`}
+                      onClick={closeMobile}
+                      className={navButton}
+                    >
+                      <ConnectorIcon connectorId={connector.id} />
+                      <span>{connector.display_name}</span>
+                      {connector.enabled && (
+                        <span
+                          className="ml-auto size-1.5 rounded-full bg-brand"
+                          title="Turned on"
+                        />
+                      )}
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
 
         <SidebarGroup>
           <SidebarGroupLabel className={eyebrow}>System</SidebarGroupLabel>

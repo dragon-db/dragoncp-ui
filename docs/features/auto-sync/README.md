@@ -1,260 +1,98 @@
-# Series/Anime Auto-Sync Flow V3
+# Automatic sync
 
-Last updated: 2026-03-19
-Primary files: `routes/webhooks.py`, `services/auto_sync_scheduler.py`, `services/webhook_service.py`, `services/transfer_coordinator.py`, `services/queue_manager.py`, `models/webhook.py`
+Last updated: 2026-10-05
 
-## Purpose
+Whether a Sonarr or Radarr webhook starts a sync by itself, and when. Three
+switches decide whether — one each for movies, TV shows and anime — and for TV
+shows and anime, Sonarr decides when: the season starts once Sonarr has nothing
+more for it on the way. Everything a sync does after that is the
+[sync engine](../sync-engine/README.md)'s pipeline; this page covers only what
+"automatic" adds to it.
 
-This document describes the current series/anime auto-sync path, including batching, dry-run validation, queueing, promotion, and webhook/transfer state synchronization.
+## Where it lives
 
-It also calls out the places where the implementation still differs from the original V3 target.
-
-## Current End-to-End Flow
-
-### 1. Webhook reception
-
-Series and anime Sonarr download events enter through:
-- `routes/webhooks.py` series receiver
-- `routes/webhooks.py` anime receiver
-
-For non-test, non-rename events:
-- payloads are parsed by `WebhookService.parse_series_webhook_data()`
-- a row is created in `sonarr_webhook`
-- the initial notification status is `pending`
-
-### 2. Auto-sync batching
-
-If auto-sync is enabled for the media type:
-- `TransferCoordinator.schedule_auto_sync()` delegates to `AutoSyncScheduler.schedule_job()`
-- jobs are grouped by `series_title_slug + season_number`
-- additional episodes for the same season extend the existing batch window
-- `auto_sync_scheduled_at` is stored on the notification rows
-
-Important current behavior:
-- scheduler jobs themselves are still in-memory only
-- the DB stores the next scheduled timestamp, but not a durable recoverable job record
-
-### 3. Dry-run validation
-
-When the batch window expires:
-- `AutoSyncScheduler._execute_job()` fetches the first notification in the batch
-- `TransferCoordinator.perform_dry_run_validation()` resolves the source season path
-- `PathService` computes the destination path using the same rules as real sync
-- `TransferService.perform_dry_run_rsync()` runs rsync dry-run safety checks
-
-If validation passes:
-- all batched notifications are updated to `READY_FOR_TRANSFER`
-- the scheduler calls `WebhookService.trigger_series_webhook_sync()`
-
-If validation fails:
-- each notification is updated through `TransferCoordinator.mark_for_manual_sync()`
-- current implementation keeps `status='pending'`
-- `requires_manual_sync=1` and `manual_sync_reason` hold the real manual-action signal
-- a Discord alert may be sent once for the batch
-
-This is one of the main remaining gaps versus the original V3 plan, which expected a real `MANUAL_SYNC_REQUIRED` status.
-
-## Transfer Creation and Queueing
-
-`WebhookService.trigger_series_webhook_sync()`:
-- creates one `transfer_id` for the batch
-- links all batched notifications to that `transfer_id`
-- resolves `source_path`, `dest_path`, `folder_name`, and `season_name`
-- calls `TransferCoordinator.start_transfer()`
-
-`TransferCoordinator.start_transfer()` returns `(success, queue_type)` where `queue_type` is:
-- `running`
-- `QUEUED_SLOT`
-- `QUEUED_PATH`
-- `failed`
-
-### Queue decision rules
-
-#### Path conflict
-
-If the destination path is already reserved:
-- a transfer row is created with `status='queued'`
-- `queue_reason='path'`
-- progress text explains the blocking transfer/path
-- the coordinator returns `QUEUED_PATH`
-- linked webhook notifications become `QUEUED_PATH`
-
-#### Slot full
-
-If no path conflict exists but all running slots are full:
-- a transfer row is created with `status='queued'`
-- `queue_reason='slot'`
-- the destination path is still reserved in memory
-- the coordinator returns `QUEUED_SLOT`
-- linked webhook notifications become `QUEUED_SLOT`
-
-#### Immediate start
-
-If the path is free and a slot is available:
-- the queue manager reserves the destination and running slot in memory
-- a transfer row is created with `status='pending'`
-- rsync starts
-- linked webhook notifications become `syncing`
-
-## Queue Reason Behavior
-
-`queue_reason` is now part of the real implementation, not just the design:
-- older databases get the `transfers.queue_reason` column automatically at startup
-- `Transfer.create()` persists `queue_reason` on insert
-- queue promotion logic uses `queue_reason` first
-- progress text parsing remains only as a legacy fallback
-
-This fixed the earlier mismatch where the code expected `queue_reason` but the schema/insert path did not actually store it.
-
-## Promotion Rules
-
-Promotion happens after `QueueManager.unregister_transfer()` removes a running transfer.
-
-Promotion order:
-1. same freed path first
-2. general slot queue second
-
-### Path-specific promotion
-
-`QueueManager._promote_same_path_queued(dest_path)`:
-- finds queued transfer rows for the same normalized destination path
-- prefers transfers that are explicitly or implicitly path-queued
-- re-checks path ownership
-- re-registers the promoted transfer in queue-manager running state before start
-- hands the transfer to `TransferCoordinator.start_queued_transfer()`
-
-`start_queued_transfer()` then performs the actual state transition to `pending` / `syncing` after queue ownership has been confirmed.
-
-The re-registration step above is the production fix for issue `#40`.
-
-### Slot promotion
-
-`QueueManager._promote_next_queued_transfer()`:
-- scans queued rows oldest-first
-- classifies each row as path-queue or slot-queue using `queue_reason` first
-- re-checks destination ownership before promotion
-
-If a slot-queued transfer now conflicts with a running transfer on the same path:
-- the transfer stays `queued`
-- `queue_reason` changes from `slot` to `path`
-- progress text is updated
-- linked notifications move from `QUEUED_SLOT` to `QUEUED_PATH`
-
-If the path is free:
-- queue state is reserved in memory
-- the transfer is promoted and started
-
-## Start of Promoted Transfers
-
-`TransferCoordinator.start_queued_transfer()` now performs a defensive check before rsync starts:
-- the transfer must already be represented in queue-manager running state
-- if queue state is missing, the transfer is not started
-
-After that check:
-- transfer status changes to `pending`
-- linked notifications for the `transfer_id` are updated to `syncing`
-- rsync starts
-- post-completion monitoring thread is started
-
-## Completion Marking
-
-### What is correct today
-
-The DB helper `SeriesWebhookNotification.mark_notifications_completed_by_transfer()` only updates rows where:
-- `transfer_id` matches
-- current status is `syncing`
-
-That is the right rule for V3 because it avoids incorrectly completing:
-- late-arriving `pending` notifications
-- validated-but-not-started `READY_FOR_TRANSFER` notifications
-- queued notifications still waiting on slot/path
-
-### What is still not fully aligned
-
-The broader series/anime completion path still bulk-updates linked notifications to `completed` before calling the stricter helper.
-
-So the data model contains the correct narrow completion primitive, but the full runtime path should still be tightened so only truly synced rows move to `completed`.
-
-## Restart and Recovery Behavior
-
-### What survives restart now
-
-Running transfer recovery improved:
-- queue-manager running reservations are rebuilt from DB rows marked `running`
-- monitoring of live rsync PIDs is resumed
-- post-completion watchers are restarted so queue release and downstream cleanup still happen
-
-### What still does not survive restart
-
-Scheduled auto-sync batch windows do not fully survive restart:
-- `auto_sync_scheduled_at` remains in the DB
-- in-memory scheduler jobs are lost
-- no startup recovery currently rebuilds them into `AutoSyncScheduler.jobs`
-
-This is the main blocker for true restart-safe batching.
-
-## Current State Table
-
-### Transfer row states
-
-| Transfer state | Meaning | Extra metadata |
-|---|---|---|
-| `pending` | admitted and preparing to start | none |
-| `queued` | blocked from starting | `queue_reason='slot'` or `queue_reason='path'` |
-| `running` | rsync active | `rsync_process_id` set |
-| `completed` | finished successfully | end time set |
-| `failed` | start or runtime failure | error/progress text |
-| `cancelled` | user/system cancelled | end time set |
-
-### Series/anime webhook row states actually used today
-
-| Webhook state | Meaning |
+| Concern | File |
 |---|---|
-| `pending` | received or waiting; also currently reused for manual-sync-required rows |
-| `READY_FOR_TRANSFER` | dry-run passed and awaiting transfer admission |
-| `QUEUED_SLOT` | blocked by global concurrency |
-| `QUEUED_PATH` | blocked by same destination path |
-| `syncing` | transfer active |
-| `completed` | transfer finished |
-| `failed` | transfer/scheduler error |
-| `cancelled` | transfer cancelled |
+| The three switches and the fallback wait | `settings_registry.py` (`AUTO_SYNC_MOVIES`, `AUTO_SYNC_SERIES`, `AUTO_SYNC_ANIME`, `SERIES_ANIME_SYNC_WAIT_TIME`) |
+| Handing every webhook to the engine, held or not | `routes/webhooks.py` (`_submit_webhook`) |
+| The ready check: asking Sonarr, the fallback timer | `services/sync_engine/engine.py` (`_ready_step` and below) |
+| Sonarr's answer: downloading, stuck, time left | `services/connectors/adapters/_arr.py` (`InFlight`, `classify_row`) |
 
-Supporting manual-sync fields in current use:
-- `requires_manual_sync`
-- `manual_sync_reason`
-- `dry_run_result`
-- `dry_run_performed_at`
+## How it works
 
-## V3 Alignment Status
+### 1. The webhook is stored and handed to the engine
 
-### Implemented and working
+Always, whatever the switch says. With the switch **off**, the batch is opened
+and **held**: Transfers → Activity lists it under **Waiting to start** as
+*Waiting for a person*, and pressing Sync on any of its webhooks (or **Sync
+now** on its row or in its sync panel) sends the whole batch. With the switch **on**, it carries
+on to the ready check.
 
-- season-level batching by series/season
-- dry-run validation before sync
-- queue reason separation between slot and path
-- tuple return contract from `start_transfer()`
-- transfer-to-notification linkage by `transfer_id`
-- slot-to-path queue conversion when a path conflict emerges later
-- same-path promotion re-registration before start
-- restart rebuild of running queue reservations
+### 2. Movies go straight on
 
-### Partially implemented
+A Radarr webhook is one finished movie: the ready check is skipped and the
+safety check runs at once.
 
-- completion marking is designed correctly in the model layer, but the full completion path still needs tightening
-- restart recovery is better for running transfers, but not yet for scheduled batch jobs
+### 3. TV shows and anime wait until the season is ready
 
-### Not yet aligned with the original target
+The webhooks for one season gather into one batch. Ten seconds after the batch
+opens, Sonarr is asked whether anything else for that season is still
+downloading, and asked again by its own time-left estimate (10 seconds to 5
+minutes apart) until nothing is. A download stuck in Sonarr is not waited for;
+a slow one is waited for at most 30 minutes. Details and the alerts each case
+raises: [ready check](../sync-engine/README.md#4-ready-check--still-downloading).
 
-- no real `MANUAL_SYNC_REQUIRED` stored status yet
-- scheduler jobs are not durably persisted/recovered
-- movie webhook lifecycle is not as explicit about queue reasons as series/anime
+### 4. When Sonarr cannot be asked, the fallback timer decides
 
-## Recommended Next Steps
+Sonarr not connected, not answering, or the series has no TVDB id: the season
+starts **Fallback wait** seconds after the first webhook (default 60, allowed
+30–900), plus the same again for each later webhook, never more than 15
+minutes after the first. There is no switch for asking Sonarr — whether it
+answers decides.
 
-1. persist/recover scheduler jobs using DB-backed batch records or deterministic rebuild from `pending` + `auto_sync_scheduled_at`
-2. normalize manual-sync-required notifications to one explicit terminal status
-3. tighten series/anime completion propagation so only rows that were actually `syncing` become `completed`
+The screens say the same. Settings → Automation labels the field **Fallback
+wait (seconds)** and explains it is used only when Sonarr cannot be asked, and
+the Auto-sync popover on the Webhooks page reads "TV & anime start once Sonarr
+has nothing more for the season; if Sonarr cannot be asked, Ns after the last
+episode." Until 2026-10-05 both still described the old fixed wait.
 
-## Summary
+## Behaviour worth knowing
 
-The current V3 implementation is much closer to the intended design after the queue fixes: queue reasons are now persisted, same-path promotions reclaim in-memory ownership correctly, and running transfers recover their path reservations after restart. The main remaining gaps are durable scheduler recovery, explicit manual-sync-required status, and stricter completion propagation.
+- **Switching automatic sync on does not start batches already held.** They
+  wait for a person, or for the next webhook for the same folder, which sets
+  the held batch going.
+- **A lost webhook is not noticed by automatic sync.** The
+  [scheduled auto-scanner](../sync-engine/README.md#the-scheduled-auto-scanner)
+  is what catches those, when it is switched on.
+- **An automatic sync never goes ahead past a failed safety check.** It stops,
+  opens an alert and announces "automatic sync refused" on Discord; only an
+  admin can choose **Sync anyway**, on the alert (Notifications) or on the
+  sync's own page (Pipeline). Its webhooks read **Manual** on the Webhooks page
+  until then.
+- **A batch a person released is a manual sync from then on.** Sync on any of
+  its webhooks, or Go now, while the batch is held or still in its ready check
+  — or a restart that joins it — releases it. A refusal then opens the alert
+  without the Discord announcement, and the result is announced as "Manual
+  Sync". With the switch off, that is every batch. Until 2026-10-05 a released
+  batch kept its automatic label and its refusal was announced.
+
+## Data
+
+Webhooks keep their `status` in step with the run they ride on: `pending`
+while waiting (with `auto_sync_scheduled_at` set to the next ready-check step),
+`READY_FOR_TRANSFER`, `QUEUED_SLOT` or `QUEUED_PATH` in the queue, `syncing`
+while copying, then `completed`, `failed` or `cancelled`. A sync stopped for a
+person sets `requires_manual_sync` and `manual_sync_reason`. Each webhook names
+its run in `sync_run_id`.
+
+## API
+
+No endpoints of its own. The switches are saved through the settings API; the
+runs are read through [the sync engine's API](../sync-engine/README.md#api).
+
+## Related
+
+- [Sync engine](../sync-engine/README.md) — the pipeline every sync follows
+- [Webhooks](../webhooks/README.md) — the receivers
+- [Settings](../settings/README.md) — where the switches are
+- [Archived V3 design](../../archive/auto-sync-flow-v3.md) — the in-memory scheduler this replaced

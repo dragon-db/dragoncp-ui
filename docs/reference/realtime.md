@@ -1,20 +1,20 @@
 # Realtime (Socket.IO) Reference
 
-Last updated: 2026-08-06
-Primary files: `websocket.py`, `app.py`, `services/transfer_service.py`, `services/transfer_coordinator.py`, `services/queue_manager.py`, `services/backups/service.py`, `services/rename_service.py`, `routes/webhooks.py`, `frontend/src/services/socket.ts`, `frontend/src/hooks/useRuntime.ts`
+Last updated: 2026-10-05
+Primary files: `websocket.py`, `app.py`, `services/transfer_service.py`, `services/transfer_coordinator.py`, `services/queue_manager.py`, `services/backups/service.py`, `services/rename_service.py`, `services/sync_engine/engine.py`, `services/alert_service.py`, `routes/webhooks.py`, `frontend/src/services/socket.ts`, `frontend/src/hooks/useRuntime.ts`, `frontend/src/hooks/useSync.ts`
 
 ## Realtime is opt-in
 
 Nothing in DragonCP connects a socket by itself. The browser creates the Socket.IO client with `autoConnect: false` (`frontend/src/services/socket.ts`) and only calls `connectSocket()` when `realtimeRequested` is true in the runtime store. That flag is set by the **Enable realtime** button in the connection popover (`frontend/src/components/layout/realtime-status.tsx`, which calls `enableRealtime()` in `frontend/src/hooks/useRuntime.ts`). Until someone presses it, the app runs with no socket at all.
 
-With realtime off, every page still works, because the React Query hooks poll on their own timers: active transfers every 5 seconds, one transfer's status or its open log every 2 seconds, and queue status every 5 seconds (`frontend/src/hooks/useTransfers.ts`). Transfer **history** does not poll at all - `useAllTransfers` sets no `refetchInterval`, so the History tab only refreshes on an explicit refetch, webhook and rename notifications every 10 seconds (`frontend/src/hooks/useWebhooks.ts`), runtime status on its own interval (`frontend/src/hooks/useConfig.ts`). Turning realtime on does not switch polling off — the socket runs *alongside* the polling and mostly serves to make updates appear sooner and to raise toasts.
+With realtime off, every page still works, because the React Query hooks poll on their own timers: active transfers every 5 seconds, one transfer's status or its open log every 2 seconds, and queue status every 5 seconds (`frontend/src/hooks/useTransfers.ts`). Transfer **history** does not poll at all - `useAllTransfers` sets no `refetchInterval`, so the History tab only refreshes on an explicit refetch, webhook and rename notifications every 10 seconds (`frontend/src/hooks/useWebhooks.ts`), runtime status on its own interval (`frontend/src/hooks/useConfig.ts`), and the sync engine's pages from `frontend/src/hooks/useSync.ts`: a sync still moving every 2.5 seconds, a page of syncs every 4 seconds while one on it is moving and every 15 otherwise, alerts and the open-alert count every 30 seconds. Turning realtime on does not switch polling off — the socket runs *alongside* the polling and mostly serves to make updates appear sooner and to raise toasts.
 
 What this means if you build on these events:
 
 - **Never treat a socket event as the only delivery of a fact.** A user with realtime off will never receive it. Anything that must be durable has to be written to the database and exposed through the REST API (see [`api.md`](api.md)); the event is a hint that the API has something new.
 - **Every listener needs a polling equivalent.** That is how the existing pages are written: the transfers page uses `transfer_progress` to patch the query cache in place and `transfer_complete`/`transfer_queued`/`transfer_promoted` to trigger a refetch, all of which the 2–5 second poll would eventually have done anyway.
-- **Events are broadcast to everyone.** No emit in the codebase passes a `room`, `to`, or `namespace` argument, so every connected client receives every event regardless of which user started the work. There is no per-user filtering to rely on.
-- **Emits are best-effort.** In `routes/webhooks.py` the emit is wrapped by `emit_socketio_event()`, which swallows and logs any exception so a failed emit never fails the webhook. In `services/backups/service.py` they go through `_emit()`, which swallows and logs the same way. If nobody is listening, nothing anywhere notices.
+- **Events are broadcast to everyone.** Apart from `transfer_logs` (see [Log streaming](#log-streaming-and-rooms)), no emit passes a `room`, `to`, or `namespace` argument, so every connected client receives every event regardless of which user started the work. There is no per-user filtering to rely on.
+- **Emits are best-effort.** In `routes/webhooks.py` the emit is wrapped by `emit_socketio_event()`, which swallows and logs any exception so a failed emit never fails the webhook. In `services/backups/service.py` they go through `_emit()`, which swallows and logs the same way. The sync engine (`_event` and `_emit_run` in `services/sync_engine/engine.py`) and the alert service (`_emit` in `services/alert_service.py`) also swallow a failed emit, but **without logging it**, so a broken emit there leaves no trace. If nobody is listening, nothing anywhere notices.
 
 ## Server-emitted events
 
@@ -30,22 +30,55 @@ that asked for that transfer's output. See
 | `transfer_complete` | The rsync monitor thread has seen the process exit | `services/transfer_service.py` | `transfer_id`, `status` (`completed`, `failed`, `paused` or `cancelled`), `message`, `log_count`, `stats`. **No log body** |
 | `transfer_complete` | The rsync monitor thread itself raised — the transfer row is forced to `failed` | `services/transfer_service.py` | `transfer_id`, `status` (`"failed"`), `message`, `log_count` — **no** log body and **no** `stats` on this path |
 | `transfer_complete` | A backup restore finished, successfully or not | `services/backups/service.py` (`_finish_restore`) | `transfer_id`, `status` (`completed` / `failed`), `message`, `folder_name` |
-| `transfer_queued` | A new transfer is held because another transfer already owns the destination path | `services/transfer_coordinator.py:144` | `transfer_id`, `status` (`"queued"`), `queue_type` (`"path"`), `existing_transfer_id`, `dest_path`, `message` |
-| `transfer_queued` | A new transfer is held because the concurrency cap is reached | `services/transfer_coordinator.py:182` | `transfer_id`, `message` (`"Transfer added to queue"`) |
-| `transfer_queued` | A paused transfer was resumed but had to go back into the queue | `services/transfer_coordinator.py:345` | `transfer_id`, `message` (`"Resumed transfer added to queue"`) |
-| `transfer_promoted` | A path-queued transfer got its destination path back and is about to start | `services/queue_manager.py:329` | `transfer_id`, `message`, `queue_type` (`"path"`) |
-| `transfer_promoted` | A slot-queued transfer got a free running slot and is about to start | `services/queue_manager.py:445` | `transfer_id`, `message` (`"Transfer promoted from queue"`) |
+| `transfer_queued` | A new transfer is held because another transfer already owns the destination path | `services/transfer_coordinator.py:238` | `transfer_id`, `status` (`"queued"`), `queue_type` (`"path"`), `existing_transfer_id`, `dest_path`, `message` |
+| `transfer_queued` | A new transfer is held because the concurrency cap is reached | `services/transfer_coordinator.py:277` | `transfer_id`, `message` (`"Transfer added to queue"`) |
+| `transfer_queued` | A paused transfer was resumed but had to go back into the queue | `services/transfer_coordinator.py:515` | `transfer_id`, `message` (`"Resumed transfer added to queue"`) |
+| `transfer_promoted` | A path-queued transfer got its destination path back and is about to start | `services/queue_manager.py:372` | `transfer_id`, `message`, `queue_type` (`"path"`) |
+| `transfer_promoted` | A slot-queued transfer got a free running slot and is about to start | `services/queue_manager.py:492` | `transfer_id`, `message` (`"Transfer promoted from queue"`) |
 | `transfer_logs` | A transfer produced output **and** at least one client is subscribed to it. Also once at completion | `services/transfer_service.py:_emit_logs` | `transfer_id`, `logs` (tail of at most 100 lines), `log_count`, `status`. **Room-scoped**, not broadcast |
-| `webhook_received` | A real (non-test) Radarr/Sonarr webhook was parsed and stored | `routes/webhooks.py:117` (movies), `:245` (series), `:370` (anime) | `notification_id`, `title`, `media_type` (`movies` / `tvshows` / `anime`), `auto_sync` (whether auto-sync is on for that media type), `message`, `timestamp` |
-| `test_webhook_received` | A webhook the receiver classified as a test (`eventType == "Test"`, title `Test Title`, or `testpath` in the folder path) | `routes/webhooks.py:87` (movies), `:201` (series), `:326` (anime) | `message`, `timestamp` |
+| `webhook_received` | A real (non-test) Radarr/Sonarr webhook was parsed and stored. Sent before the webhook is handed to the sync engine, so it says nothing about the batch it joins | `routes/webhooks.py:174` (movies), `:319` (series), `:463` (anime) | `notification_id`, `title`, `media_type` (`movies` / `tvshows` / `anime`), `auto_sync` (whether auto-sync is on for that media type), `message`, `timestamp` |
+| `test_webhook_received` | A webhook the receiver classified as a test (`eventType == "Test"`, title `Test Title`, or `testpath` in the folder path) | `routes/webhooks.py:133` (movies), `:259` (series), `:403` (anime) | `message`, `timestamp` |
 | `rename_webhook_received` | A Sonarr `Rename` webhook was parsed and stored, before the renames are executed | `services/rename_service.py:83` | `notification_id`, `series_title`, `total_files`, `media_type`, `timestamp` |
 | `rename_completed` | The rename run finished **and** its history row was updated successfully | `services/rename_service.py:146` | The whole result object: `notification_id`, `series_title`, `media_type`, `total_files`, `success_count`, `failed_count`, `status` (`completed` / `partial` / `failed`), `renamed_files`, `completed_at`, `message` |
 | `backup_retention` | The automatic retention sweep deleted stored versions after a sync | `services/backups/service.py` (`_apply_retention_quietly`) | `deleted` (count), `reclaimed` (bytes), `summary` (the titles as a phrase), `items` (up to 10 removed versions, each with its display name, sizes and full library/backup paths). Only emitted when something was actually removed |
+| `sync_run_updated` | A sync run changed: every stage outcome the engine records (`_stage`), every write to the run's own row (`_update`, so every state change), and after the rest of a run's stages are marked skipped (`_skip_rest`) or a refusal's Tell stage is recorded (`_refuse`) | `services/sync_engine/engine.py:382` (`_emit_run`) | The run as one list row, built by `SyncEngine.summarise()`: `run_id`, `kind`, `kind_label`, `label` (e.g. `Example Show — Season 01`), `title`, `season_name`, `media_type`, `source`, `state`, `state_label`, `current_stage`, `current_summary` (the sentence that stage last wrote), `outcome`, `outcome_message`, `transfer_id`, `parent_run_id`, `parent_relation`, `is_simulation`, `requested_by` (`kind`, `name`, `label`), `stages` (nine `{id, status}` objects, in pipeline order), `webhook_count` (**always `null` here**; only the REST list fills it), `next_check_at` (ISO-8601), `created_at`, `updated_at`, `started_at`, `finished_at` |
+| `sync_run_event` | A line was added to a run's log: every stage outcome recorded with a sentence, plus the engine's free-standing lines (a webhook joining, a follow-up opening, a restart, what recovery found after a restart) | `services/sync_engine/engine.py:371` (`_event`) | `run_id`, `event`: the stored `sync_run_event` row — `id`, `run_id`, `stage`, `level` (`info` / `success` / `warning` / `error`), `message`, `data` (object or `null`), `created_at` |
+| `alerts_changed` | An alert opened or was bumped (`raise_alert`), an admin acted on one (`act`), or DragonCP closed one itself because Sonarr answered again or a failing job succeeded (`integration_up`, `job_recovered`) | `services/alert_service.py:130` (`_emit`) | `open` (how many alerts are open), `by_severity` (open counts keyed by severity, e.g. `{"warning": 2, "failure": 1}`). Counts only: no alert is in the payload |
 
-`stats` on the transfer events is the five-field object built by `build_progress_stats()` in `services/transfer_service.py:96`: `progress_percent`, `bytes_transferred`, `total_bytes`, `speed_bps`, `eta_seconds`. Individual fields may be `null` when rsync has not reported them yet.
+`stats` on the transfer events is the five-field object built by `build_progress_stats()` in `services/transfer_service.py:138`: `progress_percent`, `bytes_transferred`, `total_bytes`, `speed_bps`, `eta_seconds`. Individual fields may be `null` when rsync has not reported them yet.
 
-Two behaviours worth knowing before you rely on an event:
+The three sync-engine events are hints, like every other event here. Each has a
+REST equivalent that holds the same fact, which is what a page must poll (see
+[`../features/sync-engine/README.md`](../features/sync-engine/README.md#api)):
 
+| Event | Poll instead |
+|---|---|
+| `sync_run_updated` | `GET /api/sync/runs` (the same row, with `webhook_count` filled in) or `GET /api/sync/runs/<run_id>` |
+| `sync_run_event` | `GET /api/sync/runs/<run_id>/events?after=<last id seen>` — the route says it exists for "what a live view polls for between socket events" |
+| `alerts_changed` | `GET /api/alerts/summary` (the same two fields) and `GET /api/alerts` for the alerts themselves |
+
+Behaviours worth knowing before you rely on an event:
+
+- **The React client binds all three, as reasons to refetch sooner.** Since
+  2026-10-05 `useRuntimeConnection` (`frontend/src/hooks/useRuntime.ts`)
+  subscribes through `onSyncRunUpdated`, `onSyncRunEvent` and `onAlertsChanged`
+  (`frontend/src/services/socket.ts`). `sync_run_updated` invalidates the run
+  lists and that run, `sync_run_event` the run, each query key at most once
+  every 1.5 seconds; `alerts_changed` is written straight into the cached
+  open-alert summary — the header bell and the sidebar count — invalidates the
+  alert lists, and raises a toast when the open count went up. The Pipeline,
+  sync and Notifications pages poll the REST equivalents regardless
+  (`frontend/src/hooks/useSync.ts`), so nothing depends on the socket. The
+  client reads only `run_id` from the two run events; the row and the line
+  themselves are fetched.
+- **`sync_run_updated` is not throttled and arrives in bursts.** One step of a
+  run usually emits it more than once — once for the stage, once for the run's
+  state — and each emit re-reads the run and its nine stage rows from SQLite.
+  Read it as "refetch this run", not as a list of distinct changes.
+- **Not every stage change writes a log line.** Stages marked skipped in bulk
+  (`_skip_rest`, e.g. "Not reached: an earlier stage failed.") and the Tell
+  stage after a refusal are written straight to `sync_run_stage`, so they arrive
+  as `sync_run_updated` only, never as `sync_run_event`.
 - **`rename_completed` is skipped when the history write fails.** `services/rename_service.py` returns early if `rename_model.update()` reports failure, so the files were renamed on disk but no completion event is sent. Only the REST rename history will show what happened.
 - **There is no separate failure event for transfers.** A failed rsync arrives as `transfer_complete` with `status: "failed"`, which is exactly how the transfers page and the runtime toast handler distinguish it (`frontend/src/hooks/useRuntime.ts` shows an error toast when `payload.status === "failed"`). See [Known defects](#known-defects).
 
@@ -160,29 +193,33 @@ Three authenticated endpoints report on the socket layer (all in `routes/debug.p
 
 ## Known defects
 
-**The frontend subscribes to `transfer_failed`, which no server code emits.** Verified in both directions on 2026-07-28:
+None open. The three recorded here on 2026-07-28 were rechecked on 2026-10-05
+and are fixed:
 
-- `frontend/src/services/socket.ts:206-211` defines `onTransferError()`, whose body is `socket.on("transfer_failed", callback)` with a matching `off` in the returned cleanup.
-- Searching every tracked file for `transfer_failed` returns exactly one file — `frontend/src/services/socket.ts`. There is no `emit('transfer_failed', ...)` anywhere in `services/`, `routes/`, `app.py` or `websocket.py`. The events in the table above account for every server emit: nineteen call sites across `services/` and `routes/`, which is what a repository-wide search for `socketio.emit` and `emit_socketio_event(` returns.
+- **The frontend no longer subscribes to `transfer_failed`.** `onTransferError()` is gone from `frontend/src/services/socket.ts`; a comment in its place says a failure arrives as `transfer_complete` with `status: "failed"`. No server code emits `transfer_failed`. The string does appear in `services/alert_service.py`, but as the name of an alert kind (`alert.kind`), not as a socket event.
+- **`TransferUpdate` no longer overstates its payload.** Every field but `transfer_id` is optional, which matches `transfer_queued` (the emits at `services/transfer_coordinator.py:277` and `:515` send only `transfer_id` and `message`) and `transfer_promoted`.
+- **`app.py` no longer imports `WEBSOCKET_TIMEOUT_MAX` or `WEBSOCKET_TIMEOUT_DEFAULT`.**
 
-Consequences today are limited, because `onTransferError` is exported but never imported anywhere in `frontend/src/`, so no listener is ever actually registered. The practical risk is for whoever wires it up next: a page that calls `onTransferError()` expecting failure notifications will silently receive nothing forever. Transfer failures currently arrive as `transfer_complete` with `status: "failed"`. Either delete `onTransferError` or point it at `transfer_complete` and filter on status.
-
-Two smaller mismatches found while checking the above:
-
-- The `TransferUpdate` interface in `frontend/src/services/socket.ts` declares `status`, `progress`, `media_type` and `folder_name` as required, but no server payload for `transfer_queued` or `transfer_promoted` contains `media_type` or `folder_name`, and `transfer_queued` from `services/transfer_coordinator.py:182` and `:345` contains only `transfer_id` and `message`. Nothing breaks — TypeScript does not check socket payloads at runtime and the consumers use fallbacks — but the type overstates what arrives.
-- `app.py:23` imports `WEBSOCKET_TIMEOUT_MAX` and `WEBSOCKET_TIMEOUT_DEFAULT` and never uses either.
+The table above accounts for every server emit: twenty-one call sites across `services/` and `routes/`. `services/backups/service.py` sends its three events through one `_emit()`, and `routes/webhooks.py` makes its six through `emit_socketio_event()`; with that helper's own definition, these are the twenty-two lines a repository-wide search for `socketio.emit` and `emit_socketio_event(` returns (the virtualenv aside).
 
 ## Not verified
 
 - **Not verified**: behaviour under multiple backend workers. The connection map, the sweeper thread and the queue manager's state are all process-local, and `socketio_runtime_info` names `gunicorn --config deploy/gunicorn.conf.py app:app` as the recommended production server, but I did not read that config or test a multi-worker run, so I cannot say how emits and idle cleanup behave across workers.
 - **Not verified**: behaviour across a real process restart with an active
   browser and transfer; release validation for the React cutover covers this.
+- **Not verified**: the three sync-engine events on a running server, and the
+  client's handling of them in a browser. Their rows above are read from the
+  code; no test exercises them, because the engine and alert-service tests
+  (`tests/test_sync_engine.py` and the modules built on it) construct both
+  without a socket, and the frontend has no tests.
 
 ## Related documentation
 
 - [`../features/queue/README.md`](../features/queue/README.md) — what `transfer_queued` and `transfer_promoted` mean in queue terms
 - [`../features/transfers/README.md`](../features/transfers/README.md) — the transfer lifecycle behind `transfer_progress` and `transfer_complete`
 - [`../features/webhooks/README.md`](../features/webhooks/README.md) and [`../features/renames/README.md`](../features/renames/README.md) — the receivers that emit the webhook and rename events
+- [`../features/sync-engine/README.md`](../features/sync-engine/README.md) — the runs, stages and alerts behind `sync_run_updated`, `sync_run_event` and `alerts_changed`
+- [`database-schema.md`](database-schema.md) — the `sync_run`, `sync_run_event` and `alert` tables those payloads are read from
 - [`../features/auth/README.md`](../features/auth/README.md) — token validation, refresh, and the `ALLOW_QUERY_TOKEN_AUTH` flag
 - [`api.md`](api.md) — the REST surface that every event is a hint about
 - [`frontend.md`](frontend.md) — where the client-side pieces live

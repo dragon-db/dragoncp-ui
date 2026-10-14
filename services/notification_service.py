@@ -1,25 +1,45 @@
 #!/usr/bin/env python3
 """
 DragonCP Notification Service
-Handles Discord notifications and log parsing for transfers
+
+Turns things that happened into announcements. It knows rsync logs and transfer
+rows; it knows nothing about Discord.
+
+Until 2.3.0 this file built Discord embeds by hand in three places, each with
+its own copy of the enabled check, the webhook URL read, the colour constants,
+the field truncation and the error handling. All of that moved to
+`services/connectors/adapters/discord.py`, which is now the only file in the
+application that knows what an embed is.
+
+What stayed is the part that is genuinely about this application: reading
+rsync's summary output, pulling errors out of a log, and deciding which title
+and poster describe a transfer.
 """
 
 import re
-import requests
-from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+from services.connectors import notify
+from services.connectors.events import (
+    ACCENT_RENAME,
+    FAILURE,
+    SUCCESS,
+    WARNING,
+    Event,
+    Field,
+)
 
 
 class NotificationService:
-    """Service for Discord notifications and log parsing"""
-    
+    """Announcements about transfers, renames and backup retention."""
+
     def __init__(self, config, settings, transfer_model, webhook_model, series_webhook_model=None):
         self.config = config
         self.settings = settings
         self.transfer_model = transfer_model
         self.webhook_model = webhook_model
         self.series_webhook_model = series_webhook_model
-    
+
     def parse_transfer_logs(self, logs: List[str]) -> Dict:
         """Parse rsync transfer logs to extract transfer statistics"""
         try:
@@ -31,10 +51,10 @@ class NotificationService:
                 'bytes_sent': None,
                 'bytes_received': None
             }
-            
+
             if not logs:
                 return stats
-            
+
             # Look through the logs for summary information (usually at the end)
             for line in reversed(logs):
                 # Extract transfer statistics from rsync output
@@ -43,19 +63,19 @@ class NotificationService:
                     match = re.search(r'Number of regular files transferred:\s*(\d+)', line)
                     if match:
                         stats['regular_files_transferred'] = int(match.group(1))
-                
+
                 # Number of deleted files: "Number of deleted files: 0"
                 if 'Number of deleted files:' in line:
                     match = re.search(r'Number of deleted files:\s*(\d+)', line)
                     if match:
                         stats['deleted_files'] = int(match.group(1))
-                
+
                 # Total file size: "Total file size: 3.70G bytes"
                 if 'Total transferred file size:' in line:
                     match = re.search(r'Total transferred file size:\s*([0-9.,]+[KMGT]?)\s*bytes', line)
                     if match:
                         stats['total_transferred_size'] = match.group(1)
-                
+
                 # Speed and bytes info: "sent 103 bytes  received 3.70G bytes  4.68M bytes/sec"
                 if 'sent' in line and 'bytes' in line and 'received' in line and 'bytes/sec' in line:
                     match = re.search(r'sent\s+([0-9.,]+[KMGT]?)\s+bytes\s+received\s+([0-9.,]+[KMGT]?)\s+bytes\s+([0-9.,]+[KMGT]?)\s+bytes/sec', line)
@@ -63,31 +83,31 @@ class NotificationService:
                         stats['bytes_sent'] = match.group(1)
                         stats['bytes_received'] = match.group(2)
                         stats['avg_speed'] = match.group(3) + ' bytes/sec'
-            
+
             print(f"📊 Parsed transfer stats: {stats}")
             return stats
-            
+
         except Exception as e:
             print(f"❌ Error parsing transfer logs: {e}")
             return {}
-    
+
     def extract_rsync_errors(self, logs: List[str]) -> List[str]:
         """Extract rsync error messages from transfer logs"""
         try:
             errors = []
-            
+
             if not logs:
                 return errors
-            
+
             # Look for rsync errors in logs
             for line in logs:
                 line = line.strip()
-                
+
                 # Capture rsync error lines (case-insensitive)
                 if 'rsync:' in line.lower() and ('error' in line.lower() or 'failed' in line.lower()):
                     # Clean up the error message
                     errors.append(line)
-                
+
                 # Capture specific error patterns
                 elif 'no space left on device' in line.lower():
                     errors.append(line)
@@ -97,259 +117,162 @@ class NotificationService:
                     errors.append(line)
                 elif 'timeout' in line.lower() and 'rsync' in line.lower():
                     errors.append(line)
-            
+
             # Limit to last 10 errors to avoid overly long messages
             if len(errors) > 10:
                 errors = errors[-10:]
-            
+
             print(f"🔍 Extracted {len(errors)} error messages from logs")
             return errors
-            
+
         except Exception as e:
             print(f"❌ Error extracting rsync errors: {e}")
             return []
-    
-    def send_discord_notification(self, transfer_id: str, transfer_status: str):
-        """Send Discord webhook notification for completed or failed transfer"""
+
+    # -- announcements -------------------------------------------------------
+
+    def send_discord_notification(self, transfer_id: str, transfer_status: str,
+                                  sync_label: Optional[str] = None):
+        """Announce a finished or failed transfer.
+
+        The name is kept because four callers use it and it is not Discord's
+        any more than it is anyone else's — where this ends up is a routing
+        decision now, not a decision made here.
+
+        `sync_label` is what the sync engine knows about how this sync started
+        ("Automated Sync", "Auto-scanner", "Manual Sync"). Without it the label
+        is guessed from the webhook row, which is all older callers had.
+        """
         try:
-            # Check if Discord notifications are enabled
-            notifications_enabled = self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED')
-            if not notifications_enabled:
-                print("📭 Discord notifications are disabled, skipping notification")
-                return
-            
-            # Get Discord webhook URL from settings
-            discord_webhook_url = self.settings.get('DISCORD_WEBHOOK_URL')
-            if not discord_webhook_url:
-                print("📭 Discord webhook URL not configured, skipping notification")
-                return
-            
-            # Get transfer details
             transfer = self.transfer_model.get(transfer_id)
             if not transfer:
-                print(f"❌ Transfer {transfer_id} not found for Discord notification")
+                print(f"❌ Transfer {transfer_id} not found for notification")
                 return
-            
-            # Only send notifications for completed and failed transfers
-            if transfer_status not in ['completed', 'failed']:
-                print(f"📭 Skipping Discord notification for transfer {transfer_id} with status: {transfer_status}")
+
+            # Only completed and failed transfers are announced. Cancelled and
+            # paused ones are things the operator did on purpose and already
+            # knows about.
+            if transfer_status not in ('completed', 'failed'):
                 return
-            
-            # Parse transfer logs for statistics and errors
+
             logs = transfer.get('logs', [])
             stats = self.parse_transfer_logs(logs)
             errors = self.extract_rsync_errors(logs) if transfer_status == 'failed' else []
-            
-            # Get settings for Discord notification
-            app_url = self.settings.get('DISCORD_APP_URL')
-            manual_sync_thumbnail_url = self.settings.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL')
-            icon_url = self.settings.get('DISCORD_ICON_URL')
-            
-            # Determine title and thumbnail
+
             title = transfer.get('parsed_title', transfer.get('folder_name', 'Unknown'))
-            thumbnail_url = manual_sync_thumbnail_url  # Default to manual sync thumbnail
-            
-            # Check if this was a webhook-triggered transfer to get poster and requested_by
-            requested_by = None
-            webhook_notification = None
-            is_auto_sync = False
-            
-            # Get the transfer's media_type to determine which webhook model to check
-            media_type = transfer.get('media_type', '')
-            
-            if media_type == 'movies':
-                # Look for movie webhook notification linked to this transfer
-                notifications = self.webhook_model.get_all()
-                for notification in notifications:
-                    if notification.get('transfer_id') == transfer_id:
-                        webhook_notification = notification
-                        break
-                
-                if webhook_notification:
-                    # Use poster from webhook if available
-                    if webhook_notification.get('poster_url'):
-                        thumbnail_url = webhook_notification['poster_url']
-                    requested_by = webhook_notification.get('requested_by')
-                    # Movies are always auto-sync if from webhook
-                    is_auto_sync = True
-                    
-            elif media_type in ['series', 'anime', 'tvshows']:
-                # Look for series/anime webhook notification linked to this transfer
-                if self.series_webhook_model:
-                    notifications = self.series_webhook_model.get_all()
-                    for notification in notifications:
-                        if notification.get('transfer_id') == transfer_id:
-                            webhook_notification = notification
-                            break
-                    
-                    if webhook_notification:
-                        # Use poster from webhook if available
-                        if webhook_notification.get('poster_url'):
-                            thumbnail_url = webhook_notification['poster_url']
-                        requested_by = webhook_notification.get('requested_by')
-                        # Check if this was auto-sync (has auto_sync_scheduled_at)
-                        is_auto_sync = webhook_notification.get('auto_sync_scheduled_at') is not None
-            
-            # Determine sync type based on whether it was auto-synced
-            if webhook_notification:
-                sync_type = "Automated Sync" if is_auto_sync else "Manual Sync"
-            else:
-                sync_type = "Manual Sync"
-            
-            # Build Discord embed based on transfer status
-            if transfer_status == 'failed':
-                # Failed transfer - use red color and include error details
-                embed = {
-                    'title': title,
-                    'color': 15158332,  # Red color for failures
-                    'fields': [
-                        {
-                            'name': 'Folder Path',
-                            'value': transfer.get('dest_path', 'Unknown'),
-                            'inline': False
-                        }
-                    ],
-                    'author': {
-                        'name': f"{sync_type} - FAILED ❌",
-                        'icon_url': icon_url
-                    },
-                    'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-                    'thumbnail': {
-                        'url': thumbnail_url
-                    } if thumbnail_url else None
-                }
-                
-                # Add error messages if available
-                if errors:
-                    # Combine error messages, truncate if too long
-                    error_text = '\n'.join(errors)
-                    if len(error_text) > 1000:
-                        error_text = error_text[:997] + '...'
-                    
-                    embed['fields'].append({
-                        'name': 'Error Details',
-                        'value': f"```\n{error_text}\n```",
-                        'inline': False
-                    })
-                else:
-                    # If no specific errors found, use the progress message
-                    progress_msg = transfer.get('progress', 'Unknown error')
-                    if len(progress_msg) > 1000:
-                        progress_msg = progress_msg[:997] + '...'
-                    
-                    embed['fields'].append({
-                        'name': 'Error Details',
-                        'value': f"```\n{progress_msg}\n```",
-                        'inline': False
-                    })
-                
-                # Add partial stats if available
-                if stats.get('regular_files_transferred') is not None or stats.get('deleted_files') is not None:
-                    embed['fields'].append({
-                        'name': 'Partial Transfer Stats',
-                        'value': f"```Transferred: {stats.get('regular_files_transferred', 'N/A')}\nDeleted: {stats.get('deleted_files', 'N/A')}```",
-                        'inline': True
-                    })
-            else:
-                # Successful transfer - use purple color
-                embed = {
-                    'title': title,
-                    'color': 11164867,  # Purple color
-                    'fields': [
-                        {
-                            'name': 'Folder Synced',
-                            'value': transfer.get('dest_path', 'Unknown'),
-                            'inline': False
-                        },
-                        {
-                            'name': 'Files Info',
-                            'value': f"```Transferred files: {stats.get('regular_files_transferred', 'N/A')}\nDeleted Files: {stats.get('deleted_files', 'N/A')}```",
-                            'inline': True
-                        },
-                        {
-                            'name': 'Speed Info',
-                            'value': f"```Transferred: {stats.get('total_transferred_size', 'N/A')}\nAvg Speed: {stats.get('avg_speed', 'N/A')}```",
-                            'inline': True
-                        }
-                    ],
-                    'author': {
-                        'name': sync_type,
-                        'icon_url': icon_url
-                    },
-                    'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-                    'thumbnail': {
-                        'url': thumbnail_url
-                    } if thumbnail_url else None
-                }
-            
-            # Add URL only if it's a valid format (Discord is strict about URL validation)
-            if app_url and self._is_valid_discord_url(app_url):
-                embed['url'] = app_url
-            
-            # Add requested_by field only for webhook transfers
-            if requested_by:
-                embed['fields'].append({
-                    'name': 'Requested by',
-                    'value': requested_by,
-                    'inline': True
-                })
-            
-            # Remove None thumbnail if not set
-            if not thumbnail_url:
-                embed.pop('thumbnail', None)
-            
-            # Prepare Discord payload
-            payload = {
-                'embeds': [embed]
-            }
-            
-            # Send Discord webhook
-            response = requests.post(
-                discord_webhook_url,
-                json=payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=10
+            poster_url, requested_by, is_auto_sync = self._webhook_context(
+                transfer_id, transfer.get('media_type', '')
             )
-            
-            if response.status_code == 204:
-                print(f"✅ Discord notification sent successfully for transfer {transfer_id} (status: {transfer_status})")
+            sync_type = sync_label or ('Automated Sync' if is_auto_sync else 'Manual Sync')
+
+            if transfer_status == 'failed':
+                fields = [Field('Folder Path', transfer.get('dest_path', 'Unknown'))]
+
+                if errors:
+                    detail = '\n'.join(errors)
+                else:
+                    # No recognised rsync error: the progress line is the best
+                    # description of what went wrong that exists.
+                    detail = transfer.get('progress', 'Unknown error')
+                fields.append(Field('Error Details', detail, monospace=True))
+
+                if (stats.get('regular_files_transferred') is not None
+                        or stats.get('deleted_files') is not None):
+                    fields.append(Field(
+                        'Partial Transfer Stats',
+                        f"Transferred: {stats.get('regular_files_transferred', 'N/A')}\n"
+                        f"Deleted: {stats.get('deleted_files', 'N/A')}",
+                        inline=True, monospace=True,
+                    ))
+
+                event_key, severity = 'transfer.failed', FAILURE
+                author = f"{sync_type} - FAILED ❌"
             else:
-                print(f"❌ Discord notification failed for transfer {transfer_id}: {response.status_code} - {response.text}")
-                
+                fields = [
+                    Field('Folder Synced', transfer.get('dest_path', 'Unknown')),
+                    Field(
+                        'Files Info',
+                        f"Transferred files: {stats.get('regular_files_transferred', 'N/A')}\n"
+                        f"Deleted Files: {stats.get('deleted_files', 'N/A')}",
+                        inline=True, monospace=True,
+                    ),
+                    Field(
+                        'Speed Info',
+                        f"Transferred: {stats.get('total_transferred_size', 'N/A')}\n"
+                        f"Avg Speed: {stats.get('avg_speed', 'N/A')}",
+                        inline=True, monospace=True,
+                    ),
+                ]
+                event_key, severity = 'transfer.completed', SUCCESS
+                author = sync_type
+
+            if requested_by:
+                fields.append(Field('Requested by', requested_by, inline=True))
+
+            notify(Event(
+                key=event_key,
+                severity=severity,
+                title=title,
+                fields=tuple(fields),
+                author=author,
+                thumbnail_url=poster_url,
+                context={'transfer_id': transfer_id},
+            ))
+
         except Exception as e:
-            print(f"❌ Error sending Discord notification for transfer {transfer_id}: {e}")
+            print(f"❌ Error announcing transfer {transfer_id}: {e}")
             import traceback
             traceback.print_exc()
-    
-    def send_rename_discord_notification(self, rename_result: Dict):
+
+    def _webhook_context(self, transfer_id: str, media_type: str):
+        """Poster, requester and whether this ran by itself.
+
+        A transfer that came from a Radarr/Sonarr notification carries a poster
+        image and the name of whoever asked for it. Finding that means looking
+        in whichever notification table matches the media type.
         """
-        Send Discord webhook notification for completed file rename operation.
-        
+        poster_url: Optional[str] = None
+        requested_by: Optional[str] = None
+        is_auto_sync = False
+
+        try:
+            if media_type == 'movies':
+                notifications = self.webhook_model.get_all()
+                match = next(
+                    (n for n in notifications if n.get('transfer_id') == transfer_id), None
+                )
+                if match:
+                    poster_url = match.get('poster_url') or None
+                    requested_by = match.get('requested_by')
+                    # A movie sync driven by a notification is always automatic.
+                    is_auto_sync = True
+
+            elif media_type in ('series', 'anime', 'tvshows') and self.series_webhook_model:
+                notifications = self.series_webhook_model.get_all()
+                match = next(
+                    (n for n in notifications if n.get('transfer_id') == transfer_id), None
+                )
+                if match:
+                    poster_url = match.get('poster_url') or None
+                    requested_by = match.get('requested_by')
+                    # A season only counts as automatic if it went through the
+                    # wait-and-batch scheduler. One an operator pressed sync on
+                    # is a manual sync that happens to have a poster.
+                    is_auto_sync = match.get('auto_sync_scheduled_at') is not None
+        except Exception as e:
+            print(f"⚠️  Could not read the notification behind {transfer_id}: {e}")
+
+        return poster_url, requested_by, is_auto_sync
+
+    def send_rename_discord_notification(self, rename_result: Dict):
+        """Announce a finished rename run.
+
         Args:
-            rename_result: Dictionary containing rename operation results with:
-                - notification_id: Unique ID for this rename operation
-                - series_title: Name of the series
-                - total_files: Total number of files to rename
-                - success_count: Number of files successfully renamed
-                - failed_count: Number of files that failed to rename
-                - status: 'completed', 'partial', or 'failed'
-                - renamed_files: List of file rename results
-                - media_type: Type of media (tvshows, anime)
+            rename_result: what the rename produced — series_title, total_files,
+                success_count, failed_count, status ('completed' | 'partial' |
+                'failed'), renamed_files, media_type.
         """
         try:
-            # Check if Discord notifications are enabled
-            notifications_enabled = self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED')
-            if not notifications_enabled:
-                print("📭 Discord notifications are disabled, skipping rename notification")
-                return
-            
-            # Get Discord webhook URL from settings
-            discord_webhook_url = self.settings.get('DISCORD_WEBHOOK_URL')
-            if not discord_webhook_url:
-                print("📭 Discord webhook URL not configured, skipping rename notification")
-                return
-            
-            # Extract rename information
             series_title = rename_result.get('series_title', 'Unknown Series')
             total_files = rename_result.get('total_files', 0)
             success_count = rename_result.get('success_count', 0)
@@ -357,114 +280,55 @@ class NotificationService:
             status = rename_result.get('status', 'unknown')
             renamed_files = rename_result.get('renamed_files', [])
             media_type = rename_result.get('media_type', 'series')
-            
-            # Get settings for Discord notification
-            app_url = self.settings.get('DISCORD_APP_URL')
-            icon_url = self.settings.get('DISCORD_ICON_URL')
-            
-            # Determine color based on status
-            # Teal/Cyan color (1752220) for successful renames - unique to rename operation
-            # Orange (15105570) for partial renames
-            # Red (15158332) for failed renames
+
             if status == 'completed':
-                color = 1752220  # Teal/Cyan - unique to rename
-                status_icon = '✅'
-                status_text = 'Completed'
+                severity, status_icon, status_text = SUCCESS, '✅', 'Completed'
             elif status == 'partial':
-                color = 15105570  # Orange for partial
-                status_icon = '⚠️'
-                status_text = 'Partial'
+                severity, status_icon, status_text = WARNING, '⚠️', 'Partial'
             else:
-                color = 15158332  # Red for failed
-                status_icon = '❌'
-                status_text = 'Failed'
-            
-            # Build file rename summary (show result file names only)
-            rename_summary_lines = []
-            for file_info in renamed_files[:5]:  # Show first 5 renames
-                new_name = file_info.get('new_name', 'Unknown')
-                file_status = file_info.get('status', 'unknown')
-                
-                if file_status == 'success':
-                    rename_summary_lines.append(f"✓ {new_name}")
-                else:
-                    rename_summary_lines.append(f"✗ {new_name}")
-            
+                severity, status_icon, status_text = FAILURE, '❌', 'Failed'
+
+            # Result names only. The old name is on screen in the app; what the
+            # operator wants from a message is what the files are called now.
+            lines = []
+            for file_info in renamed_files[:5]:
+                mark = '✓' if file_info.get('status') == 'success' else '✗'
+                lines.append(f"{mark} {file_info.get('new_name', 'Unknown')}")
             if len(renamed_files) > 5:
-                rename_summary_lines.append(f"... and {len(renamed_files) - 5} more files")
-            
-            rename_summary = '\n'.join(rename_summary_lines) if rename_summary_lines else 'No files renamed'
-            
-            # Truncate if too long for Discord
-            if len(rename_summary) > 900:
-                rename_summary = rename_summary[:897] + '...'
-            
-            # Build Discord embed
-            embed = {
-                'title': series_title,
-                'color': color,
-                'fields': [
-                    {
-                        'name': 'Media Type',
-                        'value': media_type.upper() if media_type else 'SERIES',
-                        'inline': True
-                    },
-                    {
-                        'name': 'Rename Status',
-                        'value': f"{status_icon} {status_text}",
-                        'inline': True
-                    },
-                    {
-                        'name': 'Files Summary',
-                        'value': f"```Total: {total_files}\nRenamed: {success_count}\nFailed: {failed_count}```",
-                        'inline': False
-                    },
-                    {
-                        'name': 'Renamed Files',
-                        'value': f"```{rename_summary}```",
-                        'inline': False
-                    }
-                ],
-                'author': {
-                    'name': f'File Rename',
-                    'icon_url': icon_url
-                },
-                'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-                'footer': {
-                    'text': 'DragonCP Rename Operation'
-                }
-            }
-            
-            # Add URL only if it's a valid format
-            if app_url and self._is_valid_discord_url(app_url):
-                embed['url'] = app_url
-            
-            # Prepare Discord payload
-            payload = {
-                'embeds': [embed]
-            }
-            
-            # Send Discord webhook
-            response = requests.post(
-                discord_webhook_url,
-                json=payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=10
-            )
-            
-            if response.status_code == 204:
-                print(f"✅ Discord rename notification sent successfully for {series_title} (status: {status})")
-            else:
-                print(f"❌ Discord rename notification failed for {series_title}: {response.status_code} - {response.text}")
-                
+                lines.append(f"... and {len(renamed_files) - 5} more files")
+            rename_summary = '\n'.join(lines) if lines else 'No files renamed'
+
+            notify(Event(
+                key='rename.finished',
+                severity=severity,
+                # A finished rename and a finished sync are both successes and
+                # were given different colours on purpose, so a glance tells
+                # them apart.
+                accent=ACCENT_RENAME if status == 'completed' else None,
+                title=series_title,
+                fields=(
+                    Field('Media Type', (media_type or 'series').upper(), inline=True),
+                    Field('Rename Status', f"{status_icon} {status_text}", inline=True),
+                    Field(
+                        'Files Summary',
+                        f"Total: {total_files}\nRenamed: {success_count}\n"
+                        f"Failed: {failed_count}",
+                        monospace=True,
+                    ),
+                    Field('Renamed Files', rename_summary, monospace=True),
+                ),
+                author='File Rename',
+                footer='DragonCP Rename Operation',
+                context={'status': status},
+            ))
+
         except Exception as e:
-            print(f"❌ Error sending Discord rename notification: {e}")
+            print(f"❌ Error announcing rename: {e}")
             import traceback
             traceback.print_exc()
-    
+
     def send_backup_retention_notification(self, summary: Dict):
-        """
-        Send a Discord notification when the retention sweep deletes backups.
+        """Announce that the retention sweep deleted stored backup versions.
 
         This is the only deletion in the application that nobody asked for: it
         runs by itself after a sync, on the one feature whose promise is that
@@ -473,30 +337,17 @@ class NotificationService:
         left in the trail.
 
         Args:
-            summary: Dictionary describing what was removed, with:
-                - deleted_count: How many stored versions went
-                - reclaimed_bytes: Space freed on the backup disk
-                - items: Per-version detail, each with a display name and paths
-                - keep / grace_hours: The rule that selected them
+            summary: what was removed — deleted_count, reclaimed_bytes, items
+                (each with a display name and paths), and the keep / grace_hours
+                rule that selected them.
         """
         try:
-            if not self.settings.get_bool('DISCORD_NOTIFICATIONS_ENABLED'):
-                print("📭 Discord notifications are disabled, skipping retention notification")
-                return
-
-            discord_webhook_url = self.settings.get('DISCORD_WEBHOOK_URL')
-            if not discord_webhook_url:
-                print("📭 Discord webhook URL not configured, skipping retention notification")
-                return
-
             items = summary.get('items') or []
             deleted_count = summary.get('deleted_count') or len(items)
             if not deleted_count:
                 return
 
             reclaimed = summary.get('reclaimed_bytes') or 0
-            app_url = self.settings.get('DISCORD_APP_URL')
-            icon_url = self.settings.get('DISCORD_ICON_URL')
 
             # Names, not just a count. "Removed 3 old versions" and "removed the
             # only copy of the thing you were looking for" read identically when
@@ -509,8 +360,6 @@ class NotificationService:
             if len(items) > 8:
                 listed.append(f"… and {len(items) - 8} more")
             removed_text = '\n'.join(listed) if listed else 'No detail recorded'
-            if len(removed_text) > 900:
-                removed_text = removed_text[:897] + '...'
 
             # The library path of the first thing removed, so the message says
             # where on disk this happened without listing every path.
@@ -530,80 +379,33 @@ class NotificationService:
                 rule_parts.append(f"{summary['grace_hours']}h grace")
 
             fields = [
-                {
-                    'name': 'Removed',
-                    'value': f"```{deleted_count} stored version(s)```",
-                    'inline': True
-                },
-                {
-                    'name': 'Space Reclaimed',
-                    'value': f"```{self._format_size(reclaimed)}```",
-                    'inline': True
-                },
-                {
-                    'name': 'Deleted Media',
-                    'value': f"```{removed_text}```",
-                    'inline': False
-                },
+                Field('Removed', f"{deleted_count} stored version(s)",
+                      inline=True, monospace=True),
+                Field('Space Reclaimed', self._format_size(reclaimed),
+                      inline=True, monospace=True),
+                Field('Deleted Media', removed_text, monospace=True),
             ]
             if location:
-                # Discord rejects the whole message if any field value exceeds
-                # 1024 characters, so an unusually long path would silently cost
-                # the operator the entire notification rather than one field.
-                # The fences and ellipsis are part of the budget.
-                if len(location) > 1000:
-                    location = location[:997] + '...'
-                fields.append({
-                    'name': 'Library Location',
-                    'value': f"```{location}```",
-                    'inline': False
-                })
+                fields.append(Field('Library Location', location, monospace=True))
             if rule_parts:
-                fields.append({
-                    'name': 'Retention Rule',
-                    'value': f"```{', '.join(rule_parts)}```",
-                    'inline': False
-                })
+                fields.append(Field('Retention Rule', ', '.join(rule_parts), monospace=True))
 
-            embed = {
-                'title': '🧹 Automatic backup cleanup',
-                'description': (
+            notify(Event(
+                key='backup.retention_deleted',
+                severity=WARNING,
+                title='🧹 Automatic backup cleanup',
+                summary=(
                     'Old restore points were deleted to keep the backup disk within '
                     'its retention rule. This cannot be undone.'
                 ),
-                # Amber: routine, but it destroyed something.
-                'color': 15105570,
-                'fields': fields,
-                'author': {
-                    'name': 'Backup Retention',
-                    'icon_url': icon_url
-                },
-                'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-                'footer': {
-                    'text': 'DragonCP Backup Retention'
-                }
-            }
-
-            if app_url and self._is_valid_discord_url(app_url):
-                embed['url'] = app_url
-
-            response = requests.post(
-                discord_webhook_url,
-                json={'embeds': [embed]},
-                headers={'Content-Type': 'application/json'},
-                timeout=10
-            )
-
-            if response.status_code == 204:
-                print(f"✅ Discord retention notification sent for {deleted_count} deletion(s)")
-            else:
-                print(
-                    f"❌ Discord retention notification failed: "
-                    f"{response.status_code} - {response.text}"
-                )
+                fields=tuple(fields),
+                author='Backup Retention',
+                footer='DragonCP Backup Retention',
+                context={'deleted_count': deleted_count},
+            ))
 
         except Exception as e:  # noqa: BLE001 - see the docstring; must not raise
-            print(f"❌ Error sending Discord retention notification: {e}")
+            print(f"❌ Error announcing backup retention: {e}")
             import traceback
             traceback.print_exc()
 
@@ -619,15 +421,3 @@ class NotificationService:
                 return f"{size:.0f} {unit}" if unit == 'B' else f"{size:.2f} {unit}"
             size /= 1024
         return f"{size:.2f} TB"
-
-    def _is_valid_discord_url(self, url: str) -> bool:
-        """Validate URL format for Discord embeds"""
-        try:
-            import re
-            # Discord accepts http/https URLs with proper domain format
-            # Allow localhost, IP addresses, and proper domain names
-            url_pattern = r'^https?://(?:(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d{1,5})?(?:/.*)?$'
-            return bool(re.match(url_pattern, url))
-        except Exception:
-            return False
-

@@ -44,6 +44,9 @@ export function PageTabsList({ items, className }: { items: PageTabItem[]; class
         // last segment alone on a second row, which reads as broken; the rail
         // sits inside the segment box now, so scrolling does not clip it.
         "h-auto w-full justify-start gap-1 overflow-x-auto rounded-none border-b border-border p-0",
+        // Never squeezed by a tall panel below it in a column: as a scroll
+        // container it would otherwise shrink to nothing.
+        "shrink-0",
         "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
         "group-data-horizontal/tabs:h-auto",
         className
@@ -57,6 +60,8 @@ export function PageTabsList({ items, className }: { items: PageTabItem[]; class
             // `flex-none` beats the base trigger's `flex-1`, whose 0% basis
             // would stretch three segments across the whole row.
             "h-auto flex-none gap-1.5 px-2 pb-2.5 text-[13px] sm:gap-2 sm:px-3",
+            // A thumb-sized target on a phone (44px); the desktop size from sm.
+            "min-h-11 sm:min-h-0",
             // The base variant hangs its rule 5px below the segment, for a list
             // that has padding under it. This one sits directly on the
             // hairline, so the offset has to go — and the base sets it through

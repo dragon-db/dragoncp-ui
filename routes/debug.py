@@ -385,7 +385,7 @@ def api_local_disk_usage():
 @require_auth
 def api_remote_disk_usage():
     """Get remote disk usage from configured API"""
-    import requests
+    from services.connectors import transport
     if config is None:
         return _service_not_initialized_response("Config service")
     
@@ -403,12 +403,14 @@ def api_remote_disk_usage():
         if api_token:
             headers["Authorization"] = f"Bearer {api_token}"
         
-        # Make request to remote API
-        response = requests.get(api_endpoint, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
+        # The one outbound HTTP path. Nothing raises out of it, the endpoint is
+        # redacted before it reaches any message, and a transient 5xx is retried
+        # once — none of which was true of the bare `requests.get` this replaces.
+        response = transport.send('GET', api_endpoint, headers=headers, timeout=10)
+
+        if response.ok:
+            data = response.json or {}
+
             # Parse the expected format
             if "service_stats_info" in data:
                 stats = data["service_stats_info"]
@@ -461,15 +463,9 @@ def api_remote_disk_usage():
         else:
             return jsonify({
                 "status": "error",
-                "message": f"API request failed: {response.status_code} - {response.text}"
+                "message": response.error or "The disk API did not answer"
             })
-            
-    except requests.RequestException as e:
-        print(f"❌ Error getting remote disk usage: {e}")
-        return jsonify({
-            "status": "error",
-            "message": f"Failed to get remote disk usage: {str(e)}"
-        })
+
     except Exception as e:
         print(f"❌ Error getting remote disk usage: {e}")
         return jsonify({

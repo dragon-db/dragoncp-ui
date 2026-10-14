@@ -55,11 +55,11 @@ class PathService:
             Local destination path (e.g., "/local/movies/Title (2021)")
         
         Examples:
-            >>> get_destination_path("/remote/Movies/New Gods Nezha Reborn (2021)", "movies")
-            "/local/movies/New Gods Nezha Reborn (2021)"
+            >>> get_destination_path("/remote/Movies/Alpha Bravo of the Delta (2021)", "movies")
+            "/local/movies/Alpha Bravo of the Delta (2021)"
             
-            >>> get_destination_path("/remote/TVShows/Breaking Bad (2008)/Season 01", "tvshows")
-            "/local/tvshows/Breaking Bad (2008)/Season 01"
+            >>> get_destination_path("/remote/TVShows/Example Show (2008)/Season 01", "tvshows")
+            "/local/tvshows/Example Show (2008)/Season 01"
         """
         if not source_path:
             raise ValueError("source_path cannot be empty")

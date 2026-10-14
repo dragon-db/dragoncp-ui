@@ -1,7 +1,7 @@
 # Configuration
 
-Last updated: 2026-08-06
-Primary files: `settings_registry.py`, `services/settings_service.py`, `config.py`, `app.py`, `auth.py`, `webhook_auth.py`, `logging_setup.py`, `websocket.py`, `ssh.py`, `models/settings.py`, `deploy/gunicorn.conf.py`
+Last updated: 2026-10-05
+Primary files: `settings_registry.py`, `services/settings_service.py`, `config.py`, `app.py`, `auth.py`, `webhook_auth.py`, `logging_setup.py`, `websocket.py`, `ssh.py`, `models/settings.py`, `deploy/gunicorn.conf.py`, `services/sync_engine/engine.py`, `services/connectors/adapters/_arr.py`
 
 Every setting DragonCP reads, where it comes from, and what an operator sees
 when it is wrong. This page is derived from the code, not from the sample env
@@ -30,9 +30,15 @@ are there for a related reason — the database is not an encrypted store, and a
 key editable from a web form is editable by anyone who reaches that form, using
 a session minted by the very key they would be changing.
 
-**Application settings:** the three auto-sync toggles, the batch wait time, the
-five Discord settings, the three backup-retention settings, and the realtime
-idle timeout.
+**Application settings:** the three auto-sync toggles, the fallback wait for
+series and anime batches, the three backup-retention settings, the realtime
+idle timeout, and the three fast-transfer settings.
+
+Settings that belong to one link to an outside service — Discord's
+destinations, Sonarr's and Radarr's address, key and auto-scanner schedule —
+are neither of these. They are connector configuration, stored in the
+`connector` tables and edited on the Integrations page; the ones this page
+covers are in [Sonarr and Radarr connector settings](#sonarr-and-radarr-connector-settings).
 
 ### The store that used to exist
 
@@ -179,9 +185,99 @@ if **either** check succeeds (`webhook_auth.py:384-411`). The config is cached
 on first use; `reload_webhook_config()` exists to clear it without a restart.
 See [Webhooks](../features/webhooks/README.md).
 
-There are no env keys for `AUTO_SYNC_SERIES` or `AUTO_SYNC_ANIME`. Those two
-resolve from the database with a hard-coded `False` default and read nothing
-from the env file.
+The sample env file has no `AUTO_SYNC_SERIES` or `AUTO_SYNC_ANIME` (nor
+`AUTO_SYNC_MOVIES`). The series and anime toggles therefore normally resolve
+from the database, defaulting to `false`; like every database key, a value
+someone does put in the env file is honoured until a row exists and adopted
+once at startup ([How a database setting resolves](#how-a-database-setting-resolves)).
+
+## Automatic sync timing
+
+How long a series or anime batch waits before it syncs is decided by the sync
+engine's Ready check (`services/sync_engine/engine.py`; see
+[Sync engine](../features/sync-engine/README.md)). When Sonarr can be asked, it
+decides: the engine waits as long as Sonarr's own time-left estimate says, for
+at most 30 minutes. One application setting covers the case where it cannot.
+Movie batches never wait, so none of this applies to them.
+
+| Key | What it does | Default when unset | If wrong or missing |
+|---|---|---|---|
+| `SERIES_ANIME_SYNC_WAIT_TIME` *(an application setting, not env)* | Labelled **Fallback wait (seconds)**. Used only when Sonarr cannot be asked: the Sonarr connector is off or has no address or key, its connection check fails, the series carries no TVDB id, or Sonarr stops answering partway through a wait. The batch then waits this many seconds after its first webhook, plus the same again for each later webhook, never past 15 minutes after the first, before moving on to the safety check (`_wait_seconds`, `_join`, `TIMER_CAP_SECONDS` in `services/sync_engine/engine.py`). | `60` seconds; clamped to 30-900 | Too short, and while Sonarr is unreachable a season's later episodes miss the copy and go into a follow-up batch, a second transfer. Too long only delays the sync. While Sonarr answers, the value has no effect at all. |
+
+Worth knowing about the fallback wait:
+
+- **The value is read when a batch opens and each time a webhook joins it.** A
+  change applies to the next batch and the next join; an end time already
+  worked out is not recalculated. That end time is stored on the run
+  (`sync_run.timer_due_at`) and re-read at every step, so a later webhook
+  really does push it back — the old in-memory scheduler read the extension
+  once and could lose it.
+- **The Ready check's sentence quotes the setting.** When the timer decides,
+  the stage reads "*N* s after the first webhook, plus *N* s for each later
+  one, never more than 15 minutes", with the configured wait as *N*, and the
+  real start time (`_use_timer`).
+- **An unreachable Sonarr is announced; an absent one is not.** A failed
+  connection check opens an *Integration* alert that closes itself when Sonarr
+  answers again; dismissed by a person, it stays closed for 24 hours even if
+  Sonarr is still down (since 2026-10-05). A Sonarr connector that is off or
+  unconfigured uses the timer silently.
+- **The screens say it is a fallback, in their own words.** The registry's
+  label and description ("Fallback wait (seconds)", "Used only when Sonarr
+  cannot be asked…") are served by `GET /api/config`, but the React settings
+  panel skips the `automation` group (`HANDLED_ELSEWHERE` in
+  `frontend/src/components/settings/settings-panel.tsx`). The field an operator
+  actually edits is on Settings → Automation, saved through
+  `/api/webhook/settings`; since 2026-10-05 it is labelled **Fallback wait
+  (seconds)** with its own sentence saying it is used only when Sonarr cannot
+  be asked, and the auto-sync popover on the Webhooks page says "TV & anime
+  start once Sonarr has nothing more for the season; if Sonarr cannot be asked,
+  Ns after the last episode." Before, the field read *Series/Anime Wait Time
+  (seconds)* and the popover "TV & anime wait Ns after the last episode", and
+  neither said the value only applies when Sonarr cannot be asked. Both are
+  hard-coded in the page, so a later change to the registry's wording does not
+  reach them.
+
+The rest of the Ready check is constants in `services/sync_engine/engine.py`.
+**No setting changes them:**
+
+| Constant | Value | Role |
+|---|---|---|
+| `SETTLE_SECONDS` | 10 seconds | Wait after a batch opens before the first question to Sonarr, so a burst of webhooks lands in one batch |
+| `RECHECK_MIN_SECONDS` / `RECHECK_MAX_SECONDS` | 10 / 300 seconds | Bounds on the wait between questions, which otherwise follows Sonarr's time-left estimate |
+| `RECHECK_DEFAULT_SECONDS` | 30 seconds | Wait between questions when Sonarr gives no estimate |
+| `READY_CAP_SECONDS` | 30 minutes | The longest a batch waits for downloads Sonarr says are still coming |
+| `TIMER_CAP_SECONDS` | 15 minutes | Ceiling on the fallback timer |
+
+### Removed in 2.3.0
+
+`AUTOSYNC_GATE_ENABLED`, `AUTOSYNC_GATE_POLL_SECONDS` and
+`AUTOSYNC_GATE_SETTLE_SECONDS` are gone from `settings_registry.py`. There is no
+switch for asking Sonarr any more — whether its API answers decides — and the
+poll and settle intervals became the constants above. A row an installation
+already holds for any of them stays in `app_settings`, read by nothing and not
+shown on the Settings page. A `POST /api/config` naming one is refused by name
+like any unknown key; the response's message still says refused keys "come from
+the environment file" (`app.py`), which for a removed key is not the reason.
+
+## Sonarr and Radarr connector settings
+
+The auto-scanner's switch and interval are not application settings. They are
+fields in each connector's configuration (the `connector` table's `config`),
+because Sonarr and Radarr can want different schedules. They are edited on that
+service's Integrations page and read by `services/connectors/adapters/_arr.py`.
+
+| Field | What it does | Default when unset | If wrong or missing |
+|---|---|---|---|
+| `auto_scanner_enabled` (*Scheduled auto-scanner*) | Runs the scheduled auto-scanner for this service: ask what it imported since the last scan and sync anything this disk does not have yet, through the same pipeline and safety checks as a webhook. For Sonarr it also fills in seasons this disk keeps but is short of. Only takes effect while the connector itself is switched on with an address and key. | off | Off, a webhook that never arrived goes unnoticed until someone looks. The scheduler reads the switch on every tick, so turning it on or off needs no restart. |
+| `auto_scanner_interval_minutes` (*Scan every (minutes)*) | Minutes between scans. After a start-up the next scan comes no sooner than 60 seconds in. | `15`; clamped to 5-360, and a value that is not a whole number reads as 15 | Each scan is a few read-only requests to the service, so a short interval costs it little. |
+
+These fields are new in 2.3.0. A missed-import check with three fields of its
+own (`sweep_enabled`, `sweep_interval_minutes`, `sweep_auto_sync`) existed
+briefly on the development branch and never shipped; nothing reads those
+fields, so a development database that still holds them in a connector's
+`config` runs no scanner until *Scheduled auto-scanner* is switched on.
+`GET /api/scheduler/jobs` reports each job's `enabled` and `interval_seconds`
+from the same two readers the scheduler uses, so it always matches what runs.
 
 ## Logging
 
@@ -211,8 +307,9 @@ contains `SECRET`, `PASSWORD`, `TOKEN`, `API_KEY` or `WEBHOOK` are replaced with
 | `GUNICORN_GRACEFUL_TIMEOUT` | Seconds allowed for a clean shutdown (`:13`). | `30` | Too low and a restart cuts in-flight rsync monitoring short. |
 | `GUNICORN_KEEPALIVE` | Seconds an idle keep-alive connection is held (`:14`). | `5` | Very low values cause avoidable reconnects for polling clients. |
 
-`workers` is pinned to `1` in code and must stay there: Socket.IO state and the
-background scheduler are process-local. See
+`workers` is pinned to `1` in code and must stay there: Socket.IO state, the
+sync engine's worker loop and per-folder locks, and the scheduler are all
+process-local. See
 [Runtime and deployment](../operations/runtime-and-deployment.md).
 
 ## WebSocket and Socket.IO
@@ -284,28 +381,42 @@ A two-column key-value table in `dragoncp.db` (`models/database.py`,
 background work, because they are read straight from SQLite with no request
 context needed. That is the whole reason a setting lives here.
 
-Thirteen keys live here, all of them listed in `settings_registry.py`:
+Eleven keys live here, all of them listed in `settings_registry.py`.
+
+The five `DISCORD_*` keys that used to be among them are gone. They were never
+really settings: a webhook URL is one *destination among several*, and this
+table holds singleton values whose existence is known at import time. Discord is
+a connector now — rows in `connector`, `connector_secret` and `connector_target`
+— and existing installs are migrated automatically on first start. See
+[the integrations page](../features/integrations/README.md).
 
 | Key | Default when no row exists | Bounds |
 |---|---|---|
 | `AUTO_SYNC_MOVIES` | `false` | — |
 | `AUTO_SYNC_SERIES` | `false` | — |
 | `AUTO_SYNC_ANIME` | `false` | — |
-| `SERIES_ANIME_SYNC_WAIT_TIME` | `60` **seconds** | 30-900 |
-| `DISCORD_NOTIFICATIONS_ENABLED` | `false` | — |
-| `DISCORD_WEBHOOK_URL` | empty — notifications are skipped | — |
-| `DISCORD_APP_URL` | `http://localhost:5000` | — |
-| `DISCORD_ICON_URL` | empty | — |
-| `DISCORD_MANUAL_SYNC_THUMBNAIL_URL` | empty | — |
+| `SERIES_ANIME_SYNC_WAIT_TIME` | `60` **seconds**; the fallback wait, used only when Sonarr cannot be asked ([Automatic sync timing](#automatic-sync-timing)) | 30-900 |
 | `BACKUP_RETENTION_ENABLED` | `true` | — |
 | `BACKUP_RETENTION_KEEP` | `2` | 1-50 |
 | `BACKUP_RETENTION_GRACE_HOURS` | `24` | 0-720 |
 | `WEBSOCKET_TIMEOUT_MINUTES` | `30` | 5-60 |
+| `FAST_TRANSPORT_ENABLED` | `false` | — |
+| `FAST_TRANSPORT_ACCESS_MODE` | `restricted` (the other value is `password`) | — |
+| `FAST_TRANSPORT_LIFECYCLE` | `on_demand` (the other value is `always`) | — |
 
 Bounds are enforced in the registry, so they apply wherever the key is written
-rather than only in the one route that happened to check.
+rather than only in the one route that happened to check. The three fast-transfer
+keys are explained in [Fast transfers](../features/fast-transfers/README.md).
 
-Nothing else belongs in this table. In particular, none of the connection,
+The three `AUTOSYNC_GATE_*` keys that were also here before 2.3.0 are covered
+under [Removed in 2.3.0](#removed-in-230). The auto-scanner's last-scan times
+(`AUTO_SCANNER_LAST_SCAN_SONARR`, `AUTO_SCANNER_LAST_SCAN_RADARR`) are rows in
+this table too, but they are bookkeeping written directly by
+`services/auto_scanner.py`, not settings: they are not in the registry, not
+counted above, and not shown or editable on the Settings page. See
+[the schema reference](database-schema.md#table-app_settings).
+
+No other setting belongs in this table. In particular, none of the connection,
 path, auth, logging or runtime keys are read from it.
 
 ### How a database setting resolves
@@ -365,10 +476,12 @@ trigger.
 - [Installation](../getting-started/installation.md)
 - [Runtime and deployment](../operations/runtime-and-deployment.md)
 - [Troubleshooting](../operations/troubleshooting.md)
-- [API reference](api.md) — `/api/config`, `/api/webhook/settings`, `/api/discord/settings`
-- [Database schema](database-schema.md) — the `app_settings` table
+- [API reference](api.md) — `/api/config`, `/api/webhook/settings`, `/api/connectors`
+- [Database schema](database-schema.md) — the `app_settings` and `connector` tables
 - [Authentication](../features/auth/README.md)
 - [Webhooks](../features/webhooks/README.md)
 - [Auto-sync](../features/auto-sync/README.md)
+- [Sync engine](../features/sync-engine/README.md) — the Ready check the fallback wait belongs to, and the auto-scanner
+- [Integrations](../features/integrations/README.md) — where the Sonarr and Radarr connector settings are edited
 - [Notifications](../features/notifications/README.md) — what the Discord keys do
 - [System overview](../architecture/system-overview.md)

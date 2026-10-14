@@ -35,15 +35,15 @@ class RenameServiceTests(unittest.TestCase):
             self.rename_model,
         )
 
-        self.series_folder = 'My Status as an Assassin Obviously Exceeds the Hero\'s (2025)'
+        self.series_folder = 'Alpha Bravo of the Delta\'s (2025)'
         self.series_path = f'/remote/anime/{self.series_folder}'
         self.previous_relative_path = (
-            'Season 01/My Status as an Assassin Obviously Exceeds the Hero\'s (2025) - '
-            'S01E09 - 009 - The Assassin Sees The Sights [WEBDL-1080p][JA+EN][VARYG-Dragon DB].mkv'
+            'Season 01/Alpha Bravo of the Delta\'s (2025) - '
+            'S01E09 - 009 - An Episode Title Here [WEBDL-1080p][JA+EN][VARYG-Dragon DB].mkv'
         )
         self.new_relative_path = (
-            'Season 01/My Status as an Assassin Obviously Exceeds the Hero\'s (2025) - '
-            'S01E09 - 009 - The Assassin Sees The Sights [Anime Dual-Audio WEBDL-1080p][JA+EN][VARYG-Dragon DB].mkv'
+            'Season 01/Alpha Bravo of the Delta\'s (2025) - '
+            'S01E09 - 009 - An Episode Title Here [Anime Dual-Audio WEBDL-1080p][JA+EN][VARYG-Dragon DB].mkv'
         )
         self.previous_local_path = os.path.join(self.anime_dest, self.series_folder, self.previous_relative_path)
         self.new_local_path = os.path.join(self.anime_dest, self.series_folder, self.new_relative_path)

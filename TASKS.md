@@ -45,56 +45,162 @@ Notes:
 
 ## In progress
 
-### TASK-016 — Retire the legacy HTML UI
+### TASK-019 — Connectors phase 1: one way to talk to an outside service
 Status: done (unreleased)      Priority: high
-Tags: frontend, deployment, auth, activity           Branch: multi-admin-accounts
-Docs: [docs/operations/legacy-ui-retirement.md](docs/operations/legacy-ui-retirement.md)
+Tags: backend, frontend, notifications, architecture            Branch: global-connectors
+Docs: [docs/features/integrations/README.md](docs/features/integrations/README.md)
 
-Plan: verify that the React application covers the operator workflows still
-available in the Flask template/static client, define the production serving
-cutover, fix non-legacy blockers found during PR #58 review, and document a
-retirement path that does not strand production on an unserved build.
+Plan: every outside service this app talks to was wired up on its own terms.
+Five places sent a Discord message and each re-read the enabled flag and the
+webhook URL, built its own embed, posted with its own `requests.post`, checked
+for `204` and printed its own error. `_is_valid_discord_url` existed three times
+verbatim. A failed send was printed and lost. One URL meant one destination for
+every event.
+
+There is now a connector module owning "is this configured, does it work,
+deliver this, here is what happened", with a per-service adapter on top.
+Adding a service is one file in `services/connectors/adapters/` plus one import
+line — nothing else changes, because the API, the sidebar and the settings form
+are all driven by what the adapter declares.
+
+Decided 2026-08-13, built 2026-08-17:
+- Connectors have their own top-level sidebar group, **Integrations**, one page
+  per connector, each with its own tabs.
+- Discord has named webhooks and a per-event routing table. A missing route
+  means the default, so nothing ships silent.
+- Sonarr, Radarr and Jellyfin store credentials and test connectivity; nothing
+  reads them yet (TASK-020).
+- Connector rows live outside `settings_registry`; secrets live in their own
+  table with no read path to a response body.
 
 Steps:
-- [x] Inventory legacy and React operator capabilities
-- [x] Decide whether retirement is safe in this PR and record any prerequisites
-- [x] Fix confirmed PR defects that do not depend on the legacy UI
-- [x] Update runtime, frontend, auth, and activity documentation
-- [x] Verify backend tests and the production frontend build
+- [x] The surface: connector contract, one HTTP transport, event catalogue,
+      registry, with a fake adapter in tests
+- [x] Five tables and the migration — the existing webhook becomes the default
+      destination, the presentation URLs move into connector config, the five
+      `DISCORD_*` rows are dropped so no value has two homes
+- [x] The Discord adapter, and all four senders converted to describe what
+      happened instead of building embeds. Three duplicate validators deleted
+- [x] Routing resolution and a background dispatch thread
+- [x] `routes/connectors.py` — 11 endpoints; `/api/discord/*` removed
+- [x] The Integrations section and the Discord page; Discord card removed from
+      Settings, which now links to it
+- [x] Sonarr/Radarr/Jellyfin stubs with a shared `_arr` base
+- [x] `routes/debug.py` storage-host call moved onto the same transport
+- [x] Docs: new integrations page, notifications/settings/webhooks/api/schema/
+      configuration updated, CHANGELOG entry, version to 2.3.0
 
 Notes:
-- 2026-08-06 (audit): React covered every retired operator workflow except the
-  backend application-log viewer. The viewer was added to Settings Diagnostics.
-- 2026-08-06 (cutover): Flask now serves the generated React build same-origin;
-  the template/static client is removed. Deprecated config, media and backup
-  contracts remain for one production soak so rollback does not need a database
-  rollback.
-- 2026-08-06 (review): fixed fallback-token resurrection, same-name fallback
-  lockout recovery, bounded WebSocket revocation, ISO activity filters and
-  incorrect series/anime activity labels. The ActorBadge and `--db` review
-  comments were already satisfied by the branch.
-- 2026-08-06 (verification): 509 backend tests and 2 subtests pass; frontend
-  formatting, ESLint, TypeScript and the Vite production build pass.
-- 2026-08-07 (review follow-up): verified all ten new PR findings against the
-  branch and fixed each one. The behavior fixes cover positive-only auth
-  settings, malformed fallback passwords, partial restore completion,
-  lockfile-aware frontend installs, and refreshed WebSocket identity races;
-  the remaining changes are small deployment, documentation, and UI typing or
-  styling corrections.
-- 2026-08-07 (verification): all 518 backend tests pass; frontend formatting,
-  ESLint, TypeScript and the Vite production build pass.
-- 2026-08-07 (WebSocket follow-up): revocation cleanup now compares only the
-  account identity fields, so an activity ping cannot keep a revoked socket
-  alive. Idle-timeout cleanup still compares the full connection snapshot, and
-  the full 519-test backend suite passes.
-- Handoff: the latest WebSocket review follow-up is implemented and validated
-  locally. Commit and push it when requested; on deployment, build
-  `frontend/dist`, restart the single-worker Gunicorn service, then run the
-  production checklist in the retirement doc before ending the compatibility
-  soak.
+- 2026-08-11 (claude): raised by the 2.2.0 review, which asked for the Discord
+  duplication to be extracted. Skipped at the time — a refactor of working
+  methods inside a UI PR would have put unrelated risk in that change.
+- 2026-08-13 (claude): analysed and planned. Design in `planning/connectors.md`,
+  build order in `planning/connectors-implementation.md` (both local-only).
+- 2026-08-17 (claude): built on `global-connectors`. 100 new tests
+  (`tests/test_connectors.py`, `tests/test_connector_routes.py`); suite is 789
+  passing, frontend build and lint clean. Migration verified against a copy of
+  the production database and is idempotent.
+- 2026-08-17: the sweep found a real defect, not just duplication. A rename
+  webhook from Sonarr posted to Discord **synchronously inside the HTTP
+  request** (`rename_service.py:155` ← `routes/webhooks.py:282`), so Sonarr
+  waited up to 10 seconds for Discord. Fixed by the dispatch thread.
+- Three other real defects fixed on the way: Discord's own field/title/footer
+  limits were never enforced, so one long path could cost the whole message;
+  a failed send printed the webhook URL — which *is* the credential — next to
+  the response body; and there was no host restriction on where the server
+  would post.
+- 2026-10-02 (claude): privacy sweep before this branch's first push. Every
+  file going to GitHub was checked against the real values in the env files,
+  both databases, the tailnet and the library's own title and episode lists.
+  Real titles, a real TVDB id, exact service build numbers, the machine name
+  and a home path were replaced with stand-ins — in new files and in docs and
+  tests pushed earlier. Older commits still carry some of them; see TASK-021.
+- Handoff: committed and pushed on `global-connectors` on 2026-10-02; not
+  merged or deployed. Not yet exercised against a live Discord webhook end to
+  end — worth one real send per event type before this reaches production.
+  TASK-020 is the follow-on and shares the branch.
+
+### TASK-020 — Connectors phase 2: let Sonarr and Radarr gate a sync
+Status: in progress      Priority: medium
+Tags: backend, frontend, auto-sync, architecture            Branch: global-connectors
+Docs: [docs/features/integrations/README.md](docs/features/integrations/README.md) (out of date — see steps)
+
+Plan: a season sync starts when a timer expires, not when the season is
+actually complete. `AutoSyncScheduler` waits `SERIES_ANIME_SYNC_WAIT_TIME`
+seconds after the last episode webhook and goes; a download that outruns that
+window gets a sync of a half-populated folder.
+
+With an API key, the app can ask instead: is anything for this series still in
+the download queue, and do all monitored episodes of this season have files. It
+starts only when both answer cleanly. The timer stays as the fallback for when
+the connector is unconfigured, disabled, or failing its check.
+
+Depends on TASK-019 — specifically on "is this connector usable right now"
+being a first-class question rather than a try/except around a request.
+
+Scope grew while building it: a Library view of each service against the disk,
+and a sweep that catches what a lost webhook never triggered.
+
+Steps:
+- [x] Scope the APIs and write up what can be used —
+      `planning/arr-api-research.md`
+- [x] Confirm the endpoints against the live instances. The tests carry the
+      shapes seen live: a stalled download, a row stuck in import-pending for
+      days, a Radarr row with no movie id, and Radarr answering 502 with HTML
+- [x] Sonarr client: `queue/details?seriesId=` filtered by season, plus
+      `episode?seriesId=&seasonNumber=` for the report
+- [x] Radarr client: `queue/details?movieIds=` plus `movie/{id}.hasFile`
+- [x] Replace the fixed wait with a poll for series and anime, keeping the
+      timer as fallback — "Wait for the download instead of the clock", off by
+      default, with poll and settle seconds beside it
+- [x] Title index (`media_item`): resolves each service's own ids and matches
+      service titles to local folders by reading the disk, not the transfer log
+- [x] Library, Queue and History tabs on the Sonarr and Radarr pages, with sync
+      and refresh actions (`/api/library/<source>/…`)
+- [x] Safety-net sweep for titles or seasons the service holds and the disk
+      does not. Per connector: on/off, interval, and whether it syncs on its
+      own. At most 5 transfers a pass, 2 attempts per gap, re-announced at
+      most once a day
+- [ ] Gate movies too — Radarr's in-flight check exists, nothing calls it yet
+- [ ] Relabel the batch-wait setting as the fallback timer (decided: it stays
+      in Settings)
+- [ ] Docs: integrations and auto-sync pages, API reference, schema
+      (`media_item`), configuration (the three gate settings), and the 2.3.0
+      changelog, which still says Sonarr and Radarr are unused
+- [ ] Live run: switch the gate on and watch one season sync during a real
+      download; let the sweep run one pass with auto-sync off and read it
+
+Notes:
+- 2026-08-13 (claude): scoped alongside TASK-019 so phase 1's surface is shaped
+  for this rather than against it.
+- 2026-08-17 (claude): API research done against Sonarr `develop` controller
+  source and Radarr's OpenAPI spec. Both are API v3 on the installed versions
+  (Sonarr v4, Radarr v6).
+- The gate is **not** "is the season complete" — a weekly-airing season never
+  is. It is "is anything in flight for this series+season right now", which
+  `GET /api/v3/queue/details?seriesId=` answers in one call; `QueueResource`
+  carries `seasonNumber`, so no per-episode fan-out is needed.
+- The load-bearing detail: a queue row in `trackedDownloadState = Imported`
+  must **not** block. A torrent client keeps seeding after import, so "queue is
+  empty" would make every season sync wait out a seed ratio. Blocking states
+  are Downloading, ImportPending, Importing, ImportBlocked, FailedPending.
+- Neither service's plain `/api/v3/queue` can filter by series or movie, and it
+  pages at 10. `queue/details` filters server-side and is unpaged.
+- Jellyfin/Jellyseerr stay a stub until there is a decision about what they are
+  *for*. "Refresh the library after a sync lands" is the obvious candidate but
+  nobody has asked for it, and a connector built on a guess is built wrong.
+- 2026-08-18 → 2026-09-02 (claude): built on `global-connectors`. This file was
+  not updated while it happened; the steps above were reconstructed on
+  2026-10-02 from the code and its tests.
+- A sweep on the dev instance, in test mode, started 170 transfers overnight
+  before it remembered what it had already tried. All were dry runs and
+  nothing moved. The attempt limit and the once-a-day re-announce came from it.
+- Handoff: committed and pushed on 2026-10-02 alongside TASK-019. Next: wire the
+  movie gate or decide to ship without it, bring the docs up to date, then the
+  live run. 902 backend tests pass; frontend typecheck and lint are clean.
 
 ### TASK-014 — Backup and restore rework
-Status: done (unreleased)      Priority: high
+Status: in progress      Priority: high
 Tags: backend, frontend, backups                     Branch: backup-and-rename
 Docs: [docs/features/backups/README.md](docs/features/backups/README.md), [docs/plans/backup-restore-rework.md](docs/plans/backup-restore-rework.md)
 
@@ -130,9 +236,8 @@ Steps:
       worth deleting, and one action to clear the unidentified bucket
 - [x] Retention settings are saved to `app_settings`, so the rule can be
       changed from the UI and takes effect without a restart
-- [ ] Verify on the live instance: preview the migration, apply it, then walk
-      one restore end to end. Nothing has been run against the real disk yet
-      beyond the read-only preview
+- [x] Verify on the live instance: preview the migration, apply it, then walk
+      one restore end to end — see the 2026-10-02 note for the evidence
 - [ ] Retire the legacy `backup` / `backup_file` tables once the migration has
       run and been trusted for a while — migration still reads them
 
@@ -237,132 +342,22 @@ Notes:
   covering 51 folders; only 7 were reachable through the index and the other 44
   were sitting there unlistable. The rebuild renamed them apart. No media moved
   — 334 files before and after, newest file mtime unchanged.
-- Handoff: built, tested (406), and verified against the live disk read-only.
-  What has NOT happened is the migration itself — preview it in the UI, read the
-  mapping, then apply. Do it with no transfers running; the code refuses
-  otherwise. Deploy to prod before adopting: both instances share `BACKUP_PATH`
-  but keep separate databases, so adopting from either side moves folders the
-  other's index still names.
-
-### TASK-015 — One settings boundary: env for constants, database for the rest
-Status: done (unreleased)      Priority: high
-Tags: backend, frontend, settings                    Branch: backup-and-rename
-Docs: [docs/reference/configuration.md](docs/reference/configuration.md#where-a-setting-lives)
-
-Plan: settings lived in three places and one of them was a lie. Establish two
-stores with a written boundary, and delete the third.
-
-Done looks like: every setting declared in one registry, the UI showing which
-store each came from, and no field that appears editable and silently is not.
-
-Steps:
-- [x] `settings_registry.py` — one row per setting: store, type, default,
-      bounds, whether it is a secret. 28 env, 13 database
-- [x] `services/settings_service.py` — reads either store, writes only the
-      database half, refuses env keys by name
-- [x] Removed the per-browser session store, `save_config`, `/api/config/reset`
-      and `/api/config/env-only`
-- [x] `WEBSOCKET_TIMEOUT_MINUTES` moved out of the session into the database —
-      it lived nowhere else, so it was per-operator and invisible to the
-      cleanup thread that enforces it
-- [x] Every consumer repointed at the resolver, so the env fallback is applied
-      in one place instead of per call site
-- [x] Startup adoption: database-eligible values still in the env file are
-      copied in once, so nothing changes behaviour on the way over
-- [x] Settings page generated from the registry — env read-only with
-      provenance, database editable
-- [x] 31 tests pinning the boundary, including that the path settings and the
-      secrets cannot become editable
-
-Notes:
-- 2026-08-01 (operator): boundary chosen — remote connection, the six media
-  directories, `BACKUP_PATH`, disk paths/API and `TEST_MODE` are constants;
-  everything else variable.
-- 2026-08-01 (claude): kept the 11 credential/secret/security keys in the env
-  file against that instruction, and said so. The database is not encrypted, and
-  a key editable from a web form is editable by anyone reaching that form using
-  a session minted by the key they would be changing. The seven path settings
-  are also the path-traversal boundary — `get_all_allowed_paths()` returns
-  exactly those.
-- 2026-08-01 (claude): writing the registry found `SERIES_ANIME_SYNC_WAIT_TIME`
-  is in **seconds**, not minutes — the scheduler adds it straight to
-  `time.time()`. Its 30–900 bounds were enforced in one route and nowhere else,
-  so any other path wrote it unchecked.
-- 2026-08-01 (claude): `AUTO_SYNC_MOVIES` read the env file as a fallback while
-  `AUTO_SYNC_SERIES` and `AUTO_SYNC_ANIME` did not, so the same setting was
-  configured two different ways depending on media type. One reader now.
-- 2026-08-01 (claude): regression sweep over the whole branch after a reported
-  UI crash. Four real defects found and fixed:
-  1. `useRuntimeConnection` read `settings?.groups.flatMap(...)` — the optional
-     chain stopped at `settings`, so any response without `groups` threw. That
-     hook wraps every authenticated route, so it white-screened the entire app,
-     not just Settings. It now tolerates the grouped shape, the previous flat
-     shape and anything else, which is what a partial deploy actually looks
-     like.
-  2. The legacy static UI calls `/api/config/env-only` and `/api/config/reset`
-     and reads a FLAT config map. Both endpoints had been deleted and the shape
-     changed — that is the production UI. Both restored, and `/api/config` now
-     returns the flat map alongside the grouped payload.
-  3. `RetentionPolicy.save()` called `set_bool` on the settings resolver, which
-     has no such method — every attempt to save the retention rule would have
-     raised AttributeError. Hidden by a test double that answered `set_bool`;
-     the tests now use the real service over a real table.
-  4. Discord and auto-sync settings were still read and written through the raw
-     model in five places, bypassing the registry's defaults and bounds. Every
-     settings path now goes through the resolver.
-- Verified with an in-process sweep of 27 endpoints against the real app and
-  the live database: no 5xx, no duplicate route rules. The realtime idle
-  timeout still resolves to the same 35 minutes it did before it moved stores.
-- 2026-08-01 (claude): reported as "Core Config is empty". Diagnosed, not
-  guessed: the dev backend on :5050 had been up 28 hours and was still serving
-  the previous `/api/config`, while Vite had hot-reloaded the new frontend. So
-  the cause was a missing restart — but two things about that were my fault and
-  are fixed:
-  1. The defensive guard added for the earlier crash rendered a BLANK panel
-     when it did not recognise the response. Silence is not tolerance. It now
-     says the backend is running an older version and to restart it, and has
-     separate states for a failed request and a genuinely empty list.
-  2. The page header still carried a "Save Automation" button, left over from
-     "Save All" when one button saved every tab. A page-level button that saves
-     one tab is worse than none — moved to the end of the Automation tab, next
-     to what it saves.
-- Verified against the restarted backend: Core Config renders 6 cards / 25
-  settings, env keys refuse writes by name, the automation and Discord round
-  trips are byte-identical, and the 9 stored settings survived the restart
-  untouched.
-- 2026-08-01 (claude): reported as "migration says 10 transfers are running when
-  none are". `Transfer.get_active()` was `get_all(status_filter=None)` — the
-  whole table — behind a docstring promising active transfers, with a comment
-  saying filtering happened in memory that was never written. The dev database
-  holds 10 completed transfers, so the guard read 10 running ones. Pre-existing,
-  and dead code until the guard called it.
-  Fixed at the model, not worked around at the call site: `get_active()` now
-  filters on the four unfinished statuses, and `get_active_transfers()`
-  delegates to it so `/api/transfers/active` and the guard share one definition.
-  That delegation is byte-identical to what the listing returned before —
-  pinned by `tests/test_transfer_listing.py::ActiveTransferListingTests`.
-  Note the contract choice: the old docstring said running/pending, and
-  implementing it literally would have dropped queued and paused transfers out
-  of the Activity panel. The four-status set the coordinator already used won,
-  and the docstring was corrected to match.
-- 2026-08-02 (review): three more defects on this boundary, all fixed.
-  1. A save committed each key as it went, so an invalid value part-way through
-     left everything before it written while the response was a 400. The whole
-     payload is validated first now, then written in one transaction.
-  2. A stored empty string was treated as "nothing saved", so the resolver fell
-     back to the env file. Clearing the Discord webhook in the UI looked like it
-     worked and notifications kept going to the old URL; startup adoption then
-     wrote the env value back over the blank on every restart. An empty row is
-     now a deliberate choice, distinct from no row at all.
-  3. The legacy static UI — which is what production serves — still rendered
-     env-owned fields as editable, and after a refused save it compared what it
-     had *typed* against what was loaded, dropped the realtime connection and
-     announced that critical changes were saved. It now disables those fields
-     using the `editable` flag the server already sends, and only reacts to keys
-     in the server's `saved` list.
-- Handoff: done and verified live. The Settings page's Automation tab still has
-  its own controls for auto-sync and Discord; they write through the same
-  resolver, so they cannot disagree with the Config tab.
+- 2026-10-02 (claude): read-only check of both instances. The migration has
+  been applied: the shared backup area is in the new layout, with **5**
+  old-style folders left of the original 864 (3 files, ~3.7 GB, 2 empty).
+  Production indexes 341 versions; dev 265. The legacy tables hold 167/260 rows
+  on production and 11/19 on dev, and nothing has written to them since
+  2026-08-02. A restore ran end to end on dev on 2026-08-15 and succeeded. Also
+  in the backup area: a 2025 `.rsync-partial` (2 files, ~0.5 GB) and an empty
+  `.partials`, neither of which the migration touches.
+- 2026-10-02 (operator): retire the legacy tables on both instances and move
+  fully to the new layout — no restore has needed them. The inventory of what
+  that removes has been taken; waiting on the go-ahead for its scope.
+- Handoff: everything but the legacy retirement is released. Next is that
+  retirement, once its scope is confirmed: the `backup` / `backup_file`
+  tables, their model, the deprecated `/api/backups` endpoints and the docs that
+  describe them. Decide first what happens to the 5 leftover folders — adopt
+  them with the existing migration, or delete them.
 
 ### TASK-010 — Explore rebuild
 Status: in progress      Priority: high
@@ -535,8 +530,36 @@ Notes:
   Still open: `@tanstack/react-virtual` before anyone opens a 500-episode
   series, and a decision on the two orphaned media endpoints.
 
+## Planned
+
+### TASK-021 — Real titles and host details in already-pushed history
+Status: planned      Priority: high
+Tags: privacy, repository                            Branch: —
+Docs: —
+
+Plan: the 2026-10-02 privacy sweep cleaned the current files, but earlier
+commits on GitHub still hold real media titles (mostly from late July, in
+docs and test fixtures), the machine name, a home path, real library paths and
+real release-group tags. No keys, tokens, passwords, IP addresses or tailnet
+names were found anywhere in the pushed history.
+
+Removing them from history means rewriting it and force-pushing every branch,
+and anything already cloned or cached keeps the old commits. Decision needed
+from the operator: rewrite, or accept and move on.
+
+Steps:
+- [ ] Decide: rewrite history, or leave it
+- [ ] If rewriting: list the exact strings, rewrite with a filter tool on a
+      fresh mirror clone, force-push, and re-clone both checkouts
+
+Notes:
+- 2026-10-02 (claude): found by scanning the pushed history against the env
+  files, both databases and the library's own title and episode lists. The
+  findings are not recorded here, because this file is public.
+- Handoff: waiting on the decision above.
+
 ### TASK-011 — "Sync all" creates one transfer per episode
-Status: done (unreleased)      Priority: high
+Status: planned      Priority: high
 Tags: backend, frontend, webhooks                    Branch: explore-page
 Docs: [docs/features/webhooks/README.md](docs/features/webhooks/README.md)
 
@@ -568,42 +591,10 @@ Notes:
   `auto_sync_scheduler`); only the manual path never reached it.
 - The grouping is deliberately re-derived server-side: the resulting rsync runs
   with `--delete`, so the client must not get to name the folder.
+- 2026-10-02 (claude): the "Sync all" half is released and live. The two
+  queue-collapse steps have not been started.
 - Handoff: the queue-collapse step is the durable fix — it also closes the
   auto-sync-vs-manual race that produced the 7th row. Own branch, own tests.
-
-### TASK-012 — The UI reloads itself when you switch back to the browser
-Status: done (unreleased)      Priority: medium
-Tags: frontend, tooling                              Branch: explore-page
-Docs: [docs/getting-started/running.md](docs/getting-started/running.md#do-not-open-the-dev-server-on-a-phone)
-
-Plan: reported as "on mobile the whole page reloads every time I switch apps
-back to Chrome or Firefox, once in three times, worse on Firefox". Done looks
-like: a way to open the UI on a phone that stays where you left it.
-
-Steps:
-- [x] Establish it is not the app — `refetchOnWindowFocus` is off, the socket
-      reconnects in place, and the only `location.reload()` anywhere is Vite's
-- [x] `preview` block in `vite.config.ts` (it does not inherit `server.proxy`)
-- [x] `npm run serve:prod` — build, then serve `dist/` on 5181
-- [x] Documented in `running.md` and the frontend README
-
-Notes:
-- 2026-07-31 (claude): cause is the Vite dev client. Port 5181 was running
-  `npm run dev:prod`, so the page carried `/@vite/client`. That client holds a
-  websocket to the dev server; a phone drops it when the tab backgrounds, and
-  the client's handler for a dropped socket polls until the server answers and
-  then calls `location.reload()`. It waits for `document.visibilityState` to be
-  `visible` first, which is why the reload lands exactly as you switch back.
-  Firefox on Android suspends background sockets sooner than Chrome — hence
-  "worse on Firefox".
-  Verified: `curl :5181` returns `/@vite/client`; `curl :5002` (the nginx
-  container) and `vite preview` do not.
-- The container on 5002 was already a reload-free prod UI; it just needs
-  `./deploy-frontend.sh` to pick up new code. `serve:prod` is the lighter option.
-- Handoff: nothing outstanding. If the dev server is ever wanted on a phone,
-  the only lever is `server.hmr: false`, which costs hot reload for everyone.
-
-## Planned
 
 ### TASK-001 — In-app task manager
 Status: planned      Priority: medium
@@ -644,34 +635,6 @@ Notes:
 - Parked until the native transfer client exists; a check written against
   rsync-over-SSH would largely be rewritten. The safety rules for writing to and
   deleting from the remote server are recorded in the plan.
-
-
----
-
-### TASK-008 — Compact the stored transfer logs on production
-Status: planned      Priority: medium
-Tags: operations, database
-Docs: [docs/plans/rsync-log-streaming.md](docs/plans/rsync-log-streaming.md)
-
-Plan: new transfers collapse rsync progress lines as they are written, but rows
-created before that still hold every tick. Run the compaction over what is
-already stored, once this branch is deployed.
-
-Measured against a snapshot of production: 150,870 lines across 521 transfers,
-5.5 MB of log occupying 38% of a 15.4 MB database, going to 13,842 lines and
-574 KB — the file drops from 14.7 MB to 8.8 MB after `VACUUM`.
-
-Steps:
-- [ ] deploy this branch to production
-- [ ] `python scripts/compact_transfer_logs.py` — report first, confirm the figures
-- [ ] `python scripts/compact_transfer_logs.py --apply --backup`
-- [ ] check the reported skip list is empty, or re-run for those rows
-
-Notes:
-- Safe to run while transfers are in flight: each row is rewritten only if its
-  log is still exactly what was read, and any row that moved is named so it can
-  be re-run.
-- Handoff: this is the only follow-up left from the rsync log storage work.
 
 ### TASK-009 — Rebind transfer socket listeners without churn
 Status: planned      Priority: medium
@@ -777,47 +740,6 @@ Notes:
 
 - Handoff: not started. Step 1 is a console toggle and costs nothing to try.
 
-### TASK-019 — Connectors: one way to talk to an outside service
-Status: planned      Priority: medium
-Tags: backend, notifications, architecture            Branch: —
-Docs: —
-
-Plan: every outside service this app talks to is wired up on its own terms.
-Discord is three near-identical blocks inside `services/notification_service.py`
-— each re-reading `DISCORD_NOTIFICATIONS_ENABLED` and `DISCORD_WEBHOOK_URL`,
-each posting with its own `requests.post(..., timeout=10)`, each checking for
-`204` and printing its own error. Sonarr and Radarr arrive as webhooks with no
-outbound side at all, and the storage host is a bare `requests` call in
-`routes/debug.py`.
-
-The intent is a connector module: one place that owns "is this service
-configured, send this payload, here is what happened", with a per-service
-adapter on top of it. Then adding a service is writing an adapter rather than
-another copy of the plumbing, and retries, timeouts and failure reporting are
-decided once.
-
-Done looks like: a new outbound integration needs no new HTTP handling, and
-turning one off is a setting rather than a code path.
-
-Steps:
-- [ ] Name the surface: what a connector must answer (configured?, send,
-      test) and what the caller gets back
-- [ ] Extract the shared Discord webhook flow behind it — the enabled/URL
-      checks, the post, the `204` handling, the error reporting. Raised in the
-      2.2.0 review and deliberately deferred here rather than done as a
-      drive-by refactor of three working methods
-- [ ] Move the storage-host call in `routes/debug.py` onto the same path
-- [ ] Decide whether Sonarr/Radarr *outbound* calls (the API integration that
-      renames wait on) belong here or stay separate
-
-Notes:
-- 2026-08-11 (claude): raised by the 2.2.0 review, which asked for the Discord
-  duplication to be extracted. Skipped at the time — it is a refactor of three
-  methods that work, and doing it inside a UI PR would have put unrelated risk
-  in that change. Recorded here because the operator already has this plan.
-- Handoff: not started. The Discord extraction is the smallest useful first
-  step and is worth doing on its own.
-
 ## Backlog
 
 ### TASK-004 — Triage the known issues
@@ -908,6 +830,237 @@ Work from there.
 ---
 
 ## Done
+
+### TASK-008 — Compact the stored transfer logs on production
+Status: done      Priority: medium
+Tags: operations, database
+Docs: [docs/plans/rsync-log-streaming.md](docs/plans/rsync-log-streaming.md)
+
+Plan: new transfers collapse rsync progress lines as they are written, but rows
+created before that still hold every tick. Run the compaction over what is
+already stored, once this branch is deployed.
+
+Measured against a snapshot of production: 150,870 lines across 521 transfers,
+5.5 MB of log occupying 38% of a 15.4 MB database, going to 13,842 lines and
+574 KB — the file drops from 14.7 MB to 8.8 MB after `VACUUM`.
+
+Steps:
+- [x] deploy this branch to production
+- [x] `python scripts/compact_transfer_logs.py` — report first, confirm the figures
+- [x] `python scripts/compact_transfer_logs.py --apply --backup`
+- [x] check the reported skip list is empty, or re-run for those rows
+
+Notes:
+- Safe to run while transfers are in flight: each row is rewritten only if its
+  log is still exactly what was read, and any row that moved is named so it can
+  be re-run.
+- 2026-10-02 (claude): verified read-only on production. The report finds
+  **0 rows left to compact** across 758 transfers: 19,234 stored log lines and
+  816 KB of log column, against 150,870 lines and 5.5 MB for 521 transfers
+  before. The database is 13.9 MB with no free pages, so it was vacuumed; most
+  of it is now the Sonarr webhook table (9.8 MB), not logs. No pre-compaction
+  backup copy is left beside the database.
+- Handoff: nothing outstanding.
+
+### TASK-016 — Retire the legacy HTML UI
+Status: done      Priority: high
+Tags: frontend, deployment, auth, activity           Branch: multi-admin-accounts
+Docs: [docs/operations/legacy-ui-retirement.md](docs/operations/legacy-ui-retirement.md)
+
+Plan: verify that the React application covers the operator workflows still
+available in the Flask template/static client, define the production serving
+cutover, fix non-legacy blockers found during PR #58 review, and document a
+retirement path that does not strand production on an unserved build.
+
+Steps:
+- [x] Inventory legacy and React operator capabilities
+- [x] Decide whether retirement is safe in this PR and record any prerequisites
+- [x] Fix confirmed PR defects that do not depend on the legacy UI
+- [x] Update runtime, frontend, auth, and activity documentation
+- [x] Verify backend tests and the production frontend build
+
+Notes:
+- 2026-08-06 (audit): React covered every retired operator workflow except the
+  backend application-log viewer. The viewer was added to Settings Diagnostics.
+- 2026-08-06 (cutover): Flask now serves the generated React build same-origin;
+  the template/static client is removed. Deprecated config, media and backup
+  contracts remain for one production soak so rollback does not need a database
+  rollback.
+- 2026-08-06 (review): fixed fallback-token resurrection, same-name fallback
+  lockout recovery, bounded WebSocket revocation, ISO activity filters and
+  incorrect series/anime activity labels. The ActorBadge and `--db` review
+  comments were already satisfied by the branch.
+- 2026-08-06 (verification): 509 backend tests and 2 subtests pass; frontend
+  formatting, ESLint, TypeScript and the Vite production build pass.
+- 2026-08-07 (review follow-up): verified all ten new PR findings against the
+  branch and fixed each one. The behavior fixes cover positive-only auth
+  settings, malformed fallback passwords, partial restore completion,
+  lockfile-aware frontend installs, and refreshed WebSocket identity races;
+  the remaining changes are small deployment, documentation, and UI typing or
+  styling corrections.
+- 2026-08-07 (verification): all 518 backend tests pass; frontend formatting,
+  ESLint, TypeScript and the Vite production build pass.
+- 2026-08-07 (WebSocket follow-up): revocation cleanup now compares only the
+  account identity fields, so an activity ping cannot keep a revoked socket
+  alive. Idle-timeout cleanup still compares the full connection snapshot, and
+  the full 519-test backend suite passes.
+- 2026-10-02 (claude): released. Production runs `main` at the PR #61 merge
+  (2.2.0), which includes this work.
+- Handoff: nothing outstanding here. The deprecated backup endpoints kept for
+  the compatibility soak are being retired under TASK-014.
+
+### TASK-015 — One settings boundary: env for constants, database for the rest
+Status: done      Priority: high
+Tags: backend, frontend, settings                    Branch: backup-and-rename
+Docs: [docs/reference/configuration.md](docs/reference/configuration.md#where-a-setting-lives)
+
+Plan: settings lived in three places and one of them was a lie. Establish two
+stores with a written boundary, and delete the third.
+
+Done looks like: every setting declared in one registry, the UI showing which
+store each came from, and no field that appears editable and silently is not.
+
+Steps:
+- [x] `settings_registry.py` — one row per setting: store, type, default,
+      bounds, whether it is a secret. 28 env, 13 database
+- [x] `services/settings_service.py` — reads either store, writes only the
+      database half, refuses env keys by name
+- [x] Removed the per-browser session store, `save_config`, `/api/config/reset`
+      and `/api/config/env-only`
+- [x] `WEBSOCKET_TIMEOUT_MINUTES` moved out of the session into the database —
+      it lived nowhere else, so it was per-operator and invisible to the
+      cleanup thread that enforces it
+- [x] Every consumer repointed at the resolver, so the env fallback is applied
+      in one place instead of per call site
+- [x] Startup adoption: database-eligible values still in the env file are
+      copied in once, so nothing changes behaviour on the way over
+- [x] Settings page generated from the registry — env read-only with
+      provenance, database editable
+- [x] 31 tests pinning the boundary, including that the path settings and the
+      secrets cannot become editable
+
+Notes:
+- 2026-08-01 (operator): boundary chosen — remote connection, the six media
+  directories, `BACKUP_PATH`, disk paths/API and `TEST_MODE` are constants;
+  everything else variable.
+- 2026-08-01 (claude): kept the 11 credential/secret/security keys in the env
+  file against that instruction, and said so. The database is not encrypted, and
+  a key editable from a web form is editable by anyone reaching that form using
+  a session minted by the key they would be changing. The seven path settings
+  are also the path-traversal boundary — `get_all_allowed_paths()` returns
+  exactly those.
+- 2026-08-01 (claude): writing the registry found `SERIES_ANIME_SYNC_WAIT_TIME`
+  is in **seconds**, not minutes — the scheduler adds it straight to
+  `time.time()`. Its 30–900 bounds were enforced in one route and nowhere else,
+  so any other path wrote it unchecked.
+- 2026-08-01 (claude): `AUTO_SYNC_MOVIES` read the env file as a fallback while
+  `AUTO_SYNC_SERIES` and `AUTO_SYNC_ANIME` did not, so the same setting was
+  configured two different ways depending on media type. One reader now.
+- 2026-08-01 (claude): regression sweep over the whole branch after a reported
+  UI crash. Four real defects found and fixed:
+  1. `useRuntimeConnection` read `settings?.groups.flatMap(...)` — the optional
+     chain stopped at `settings`, so any response without `groups` threw. That
+     hook wraps every authenticated route, so it white-screened the entire app,
+     not just Settings. It now tolerates the grouped shape, the previous flat
+     shape and anything else, which is what a partial deploy actually looks
+     like.
+  2. The legacy static UI calls `/api/config/env-only` and `/api/config/reset`
+     and reads a FLAT config map. Both endpoints had been deleted and the shape
+     changed — that is the production UI. Both restored, and `/api/config` now
+     returns the flat map alongside the grouped payload.
+  3. `RetentionPolicy.save()` called `set_bool` on the settings resolver, which
+     has no such method — every attempt to save the retention rule would have
+     raised AttributeError. Hidden by a test double that answered `set_bool`;
+     the tests now use the real service over a real table.
+  4. Discord and auto-sync settings were still read and written through the raw
+     model in five places, bypassing the registry's defaults and bounds. Every
+     settings path now goes through the resolver.
+- Verified with an in-process sweep of 27 endpoints against the real app and
+  the live database: no 5xx, no duplicate route rules. The realtime idle
+  timeout still resolves to the same 35 minutes it did before it moved stores.
+- 2026-08-01 (claude): reported as "Core Config is empty". Diagnosed, not
+  guessed: the dev backend on :5050 had been up 28 hours and was still serving
+  the previous `/api/config`, while Vite had hot-reloaded the new frontend. So
+  the cause was a missing restart — but two things about that were my fault and
+  are fixed:
+  1. The defensive guard added for the earlier crash rendered a BLANK panel
+     when it did not recognise the response. Silence is not tolerance. It now
+     says the backend is running an older version and to restart it, and has
+     separate states for a failed request and a genuinely empty list.
+  2. The page header still carried a "Save Automation" button, left over from
+     "Save All" when one button saved every tab. A page-level button that saves
+     one tab is worse than none — moved to the end of the Automation tab, next
+     to what it saves.
+- Verified against the restarted backend: Core Config renders 6 cards / 25
+  settings, env keys refuse writes by name, the automation and Discord round
+  trips are byte-identical, and the 9 stored settings survived the restart
+  untouched.
+- 2026-08-01 (claude): reported as "migration says 10 transfers are running when
+  none are". `Transfer.get_active()` was `get_all(status_filter=None)` — the
+  whole table — behind a docstring promising active transfers, with a comment
+  saying filtering happened in memory that was never written. The dev database
+  holds 10 completed transfers, so the guard read 10 running ones. Pre-existing,
+  and dead code until the guard called it.
+  Fixed at the model, not worked around at the call site: `get_active()` now
+  filters on the four unfinished statuses, and `get_active_transfers()`
+  delegates to it so `/api/transfers/active` and the guard share one definition.
+  That delegation is byte-identical to what the listing returned before —
+  pinned by `tests/test_transfer_listing.py::ActiveTransferListingTests`.
+  Note the contract choice: the old docstring said running/pending, and
+  implementing it literally would have dropped queued and paused transfers out
+  of the Activity panel. The four-status set the coordinator already used won,
+  and the docstring was corrected to match.
+- 2026-08-02 (review): three more defects on this boundary, all fixed.
+  1. A save committed each key as it went, so an invalid value part-way through
+     left everything before it written while the response was a 400. The whole
+     payload is validated first now, then written in one transaction.
+  2. A stored empty string was treated as "nothing saved", so the resolver fell
+     back to the env file. Clearing the Discord webhook in the UI looked like it
+     worked and notifications kept going to the old URL; startup adoption then
+     wrote the env value back over the blank on every restart. An empty row is
+     now a deliberate choice, distinct from no row at all.
+  3. The legacy static UI — which is what production serves — still rendered
+     env-owned fields as editable, and after a refused save it compared what it
+     had *typed* against what was loaded, dropped the realtime connection and
+     announced that critical changes were saved. It now disables those fields
+     using the `editable` flag the server already sends, and only reacts to keys
+     in the server's `saved` list.
+- 2026-10-02 (claude): released with 2.2.0; production runs it.
+- Handoff: done and verified live. The Settings page's Automation tab still has
+  its own controls for auto-sync and Discord; they write through the same
+  resolver, so they cannot disagree with the Config tab.
+
+### TASK-012 — The UI reloads itself when you switch back to the browser
+Status: done      Priority: medium
+Tags: frontend, tooling                              Branch: explore-page
+Docs: [docs/getting-started/running.md](docs/getting-started/running.md#do-not-open-the-dev-server-on-a-phone)
+
+Plan: reported as "on mobile the whole page reloads every time I switch apps
+back to Chrome or Firefox, once in three times, worse on Firefox". Done looks
+like: a way to open the UI on a phone that stays where you left it.
+
+Steps:
+- [x] Establish it is not the app — `refetchOnWindowFocus` is off, the socket
+      reconnects in place, and the only `location.reload()` anywhere is Vite's
+- [x] `preview` block in `vite.config.ts` (it does not inherit `server.proxy`)
+- [x] `npm run serve:prod` — build, then serve `dist/` on 5181
+- [x] Documented in `running.md` and the frontend README
+
+Notes:
+- 2026-07-31 (claude): cause is the Vite dev client. Port 5181 was running
+  `npm run dev:prod`, so the page carried `/@vite/client`. That client holds a
+  websocket to the dev server; a phone drops it when the tab backgrounds, and
+  the client's handler for a dropped socket polls until the server answers and
+  then calls `location.reload()`. It waits for `document.visibilityState` to be
+  `visible` first, which is why the reload lands exactly as you switch back.
+  Firefox on Android suspends background sockets sooner than Chrome — hence
+  "worse on Firefox".
+  Verified: `curl :5181` returns `/@vite/client`; `curl :5002` (the nginx
+  container) and `vite preview` do not.
+- The container on 5002 was already a reload-free prod UI; it just needs
+  `./deploy-frontend.sh` to pick up new code. `serve:prod` is the lighter option.
+- Handoff: nothing outstanding. If the dev server is ever wanted on a phone,
+  the only lever is `server.hmr: false`, which costs hot reload for everyone.
 
 ### TASK-007 — Pagination, search and bulk clear
 Status: done      Priority: high

@@ -1,6 +1,6 @@
 # DragonCP API Reference
 
-Last updated: 2026-08-06
+Last updated: 2026-10-05
 
 Purpose: human-friendly reference for every backend HTTP API endpoint implemented by the Python server.
 
@@ -37,7 +37,12 @@ Source checked while writing this file:
 - `routes/debug.py`
 - `routes/logs.py`
 - `routes/simulation.py`
+- `routes/sync_engine.py`
+- `routes/media_library.py`
 - `services/rename_service.py`
+- `services/sync_engine/engine.py`, `services/sync_engine/stages.py`
+- `services/alert_service.py`
+- `services/scheduler.py`
 
 Base URL:
 ```text
@@ -123,8 +128,11 @@ Webhook status values (combined):
 - `cancelled`
 
 Current implementation note:
-- series/anime manual-sync-required rows are not yet persisted as `MANUAL_SYNC_REQUIRED`
+- manual-sync-required rows — series/anime, and movies since 2026-10-05 — are not yet persisted as `MANUAL_SYNC_REQUIRED`
 - they currently remain `pending` with `requires_manual_sync=1` and `manual_sync_reason` populated
+
+Sync run states and stage statuses (the sync engine, which every sync now goes
+through) are listed in section 13.
 
 ---
 
@@ -560,7 +568,7 @@ The folder, season, episode and sync-status endpoints that used to sit here
 were retired when Explore replaced Browse Media. They inferred a folder's state
 from whether a completed transfer row existed for it, which cannot tell "the
 files match" from "we ran a transfer here once". Explore compares both
-libraries file by file instead — see section 9.
+libraries file by file instead — see section 12.
 
 ### POST `/media/dry-run`
 What it does: simulates an rsync for a chosen media folder (no file changes).
@@ -591,17 +599,35 @@ Output JSON:
     "local_file_count": 9,
     "incoming_files": [],
     "deleted_files": [],
-    "raw_output": "..."
+    "raw_output": "...",
+    "rsync_exit_code": 0
   }
 }
 ```
+
+`safe_to_sync` is `false` when rsync did not finish — an exit code other than
+`0` or `24` (files that vanished mid-scan) — with `reason` reading
+`The dry run did not finish (rsync exit N): <cause>`. `<cause>` is the first
+line of rsync's error output that names one — `ssh: Could not resolve hostname
+…`, `rsync: change_dir … No such file or directory` — skipping rsync's closing
+`rsync error: … (code N)` line and ssh's `Warning:` host-key notices; failing
+that, the first line, and `rsync gave no error output` when there is none. The
+counts are whatever rsync listed before it stopped, except `local_file_count`,
+which is read from this disk either way. `rsync_exit_code` is absent when
+rsync never ran or ran out of time (`SSH credentials not configured`,
+`Dry-run operation timed out`, `Dry-run execution error: …`). This is the same
+dry run the sync engine's safety check runs.
 
 ---
 
 ## 4) Transfer Endpoints
 
 ### POST `/transfer`
-What it does: starts transfer immediately or queues it if slots/path locks are busy.
+What it does: syncs one folder (or one file) named by the caller. The request
+goes through the sync engine as a `manual` run (section 13), like every other
+sync: the folder's batch, the safety dry run, then the queue. The transfer is
+only created once the safety check passes, so the answer names the run to
+follow rather than a transfer.
 
 Auth: required.
 
@@ -618,20 +644,51 @@ Input JSON:
 
 Rules:
 - `media_type` and `folder_name` are required.
-- If `type=file`, `episode_name` is required.
+- If `type=file`, `episode_name` is required. A `type=file` sync skips the
+  safety check's dry run, since rsync deletes nothing when it is given one
+  file. Known defect: the episode name is appended to the destination as well,
+  so the file is copied into a new folder named after it rather than over it,
+  and when the file already exists here the transfer fails ("Failed to create
+  destination: …"). No screen sends `type=file`; see
+  `../operations/known-issues.md`.
 
 Output JSON:
 ```json
 {
   "status": "success",
-  "transfer_id": "transfer_1700000000",
-  "transfer_state": "running",
-  "message": "Transfer started",
+  "transfer_id": null,
+  "run_id": "run_3f2a9c1d0b7e",
+  "transfer_state": "checking",
+  "message": "Sync started for Example Show — Season 01.",
   "source": "/source/path",
   "destination": "/destination/path",
   "episode_name": null
 }
 ```
+
+- `transfer_id` — `null`: no transfer exists yet when this returns. The run's
+  `transfer_id` (`GET /sync/runs/{run_id}`) is filled in when it reaches the
+  queue.
+- `transfer_state` — the **run's** state, not the queue's. A new run answers
+  `checking`, because a manual sync skips the ready check. Before the sync
+  engine this field carried the queue's answer (`running`, `QUEUED_SLOT`,
+  `QUEUED_PATH`).
+- When a sync for the same folder exists and has not started copying, the
+  request joins it and tells it to go now: `run_id` is that run's,
+  `transfer_state` is `waiting` (or its current state if it was already past
+  the ready check), and the message reads `Starting … now.` or
+  `… is already on its way (…).`. When the folder is being copied right now, a
+  follow-up run is opened behind the copy (`… is copying right now; this waits
+  in a follow-up batch and runs straight after.`).
+
+Error behavior:
+- Missing `media_type`/`folder_name` or an unconfigured source or destination
+  root answers `status: "error"` with HTTP 200.
+- An invalid folder, season or episode name, a missing `episode_name` for
+  `type=file`, or a destination that escapes its configured root answers `400`.
+- When the engine cannot work out the folders, the answer is
+  `{"status":"error","message":"Failed to start transfer: <reason>","run_id":"run_…"}`
+  with HTTP 200; the run is still recorded, as `failed`.
 
 ### GET `/transfer/{transfer_id}/status`
 What it does: returns one transfer object with progress/log summary.
@@ -743,7 +800,19 @@ Errors (HTTP 400):
 - `{"status":"error","message":"Another transfer is already syncing to this destination"}`
 
 ### POST `/transfer/{transfer_id}/restart`
-What it does: restarts failed/cancelled transfer.
+What it does: retries a `failed`, `cancelled` or `completed` transfer as a new
+`restart` run through the sync engine (section 13): the safety check runs
+first, then the queue. The transfer keeps its id, and rsync picks up its
+partial files. The safety check's dry run is skipped, with the reason on the
+run, when the transfer is a simulation's, a single file, or an Explore plan's
+(which copies its own file list and deletes nothing). A restore is refused.
+When the transfer belonged to an earlier run, the webhooks linked to it move
+to the new run, which names it as its parent (`parent_relation: "retry"`).
+
+If a sync for the same folder is already open and has not started copying, the
+restart joins it instead of copying twice, and that run is told to go now — a
+webhook or auto-scanner run released that way counts as a manual sync from
+then on.
 
 Auth: required.
 
@@ -752,11 +821,29 @@ Path param:
 
 Output JSON:
 ```json
-{"status":"success","message":"Transfer restarted successfully"}
+{
+  "status": "success",
+  "message": "Restart requested: the safety check runs first, then the queue.",
+  "run_id": "run_3f2a9c1d0b7e"
+}
 ```
+
+Error behavior (HTTP 200, `status: "error"`):
+- `Transfer not found`
+- `Only a failed, cancelled or finished transfer can be restarted (this one is running).`
+- `A restore is run again from the Backups page, where its preview shows what it will replace.`
+
+The response only says the run was opened. A refusal after that — the safety
+check stopping it, or the queue refusing it (for example when `BACKUP_PATH` is
+not configured) — is recorded on the run and opens an alert; it is not in this
+response.
 
 ### POST `/transfer/{transfer_id}/delete`
 What it does: deletes transfer record from DB (cannot delete running transfer).
+A `queued` or `paused` transfer is cancelled first, as
+`/transfer/{transfer_id}/cancel` would, so its queue reservation is freed and
+its sync run closes as `cancelled`; a `pending` one cannot be cancelled and is
+deleted as it is. Files on disk are not touched.
 
 Auth: required.
 
@@ -809,7 +896,7 @@ Output JSON:
   `search`, for a tab badge that should not move while someone types
 
 Each transfer object carries the listing fields described under
-`/transfers/active` below, plus `end_time` and `created_at`.
+`/transfers/active` below, except `rsync_process_id`, plus `end_time`.
 
 Implementation notes:
 - Filtering, searching and paging all happen in SQL. `status` previously
@@ -830,7 +917,7 @@ Input JSON — either an explicit list:
 ```
 or every record a filter finds:
 ```json
-{ "all_matching": true, "status": "failed", "statuses": ["completed", "failed"], "search": "dune" }
+{ "all_matching": true, "status": "failed", "statuses": ["completed", "failed"], "search": "example" }
 ```
 
 `all_matching` re-evaluates the filter here rather than trusting a list of ids,
@@ -850,6 +937,9 @@ Output JSON:
 - `skipped` — ids of transfers left alone because they are still `running`. A
   running transfer has a live rsync process behind it, so its row is never
   deleted; it must be cancelled first.
+- In both forms, every `queued` or `paused` transfer among the rows is
+  cancelled before anything is deleted, as for a single delete, so its queue
+  reservation is freed and its sync run closed.
 
 Deleting `completed` records also removes the sync history that Browse Media
 reads, so media those transfers copied will show as not yet synced afterwards.
@@ -890,7 +980,15 @@ Each transfer object contains:
 | `rsync_process_id` | PID of the running rsync, if any |
 | `log_count` | Number of stored log lines (the lines themselves are not included) |
 | `is_simulation` | True for rows created by the simulation tool |
+| `started_by_kind`, `started_by_name`, `started_by_account_id` | Who started it, as in the activity trail: `admin`, `automated` or `system`, the name as it read then, and the account id when a signed-in person started it. Null on rows from before attribution was recorded |
+| `transport` | The route rsync took to the media host: `daemon` (the fast transfer server) or `ssh`. Written when rsync starts; null before that, for a simulation (which never leaves this machine), and on rows from before the column existed |
+| `sync_run_id` | The sync run the transfer belongs to (section 13); null on transfers from before the sync engine |
 | `progress_percent`, `bytes_transferred`, `total_bytes`, `speed_bps`, `eta_seconds` | Parsed rsync progress; see `database-schema.md` |
+
+Until 2026-10-05 neither listing returned `started_by_*`, `transport` or
+`sync_run_id`, and `/transfers/all` did not return `queue_reason` either; the
+Transfers page draws all of them, so every transfer there read "not recorded"
+for who started it and the fast route never showed.
 
 Implementation notes:
 - `queue_status.active_destinations` currently contains the transfer IDs that own reserved destinations, not the normalized path strings themselves.
@@ -943,8 +1041,18 @@ HMAC `X-DragonCP-Signature` when `WEBHOOK_SECRET` is set and an IP allowlist
 when `WEBHOOK_ALLOWED_IPS` is set. They are open only when neither is
 configured. See `../features/webhooks/README.md`.
 
+Every stored notification is handed to the sync engine (section 13), whether
+automatic sync is on or not, so it always belongs to a run and the answer
+carries that run's `run_id`. With automatic sync off for the library, the run
+is opened `held` and waits for someone to press Sync on a notification or Go
+now on the run. A notification for a folder whose run has not started copying
+joins that run; one arriving while the folder is being copied opens a
+follow-up run behind the copy.
+
 ### POST `/webhook/movies`
-What it does: receives Radarr movie webhook, stores notification, optionally auto-syncs.
+What it does: receives Radarr movie webhook, stores notification, hands it to
+the sync engine as a `radarr_webhook` run. A Radarr run skips the ready check,
+so with auto-sync on it goes straight to the safety check and the queue.
 
 Auth: webhook auth (HMAC signature and/or IP allowlist), not JWT.
 
@@ -952,17 +1060,35 @@ Input JSON: Radarr payload (movie import/test event payload).
 
 Special behavior:
 - Detects test webhooks (`eventType=Test`, `title=Test Title`, or `testpath`) and returns test success.
-- For normal events, creates notification record and either triggers sync automatically or leaves for manual sync.
+- For normal events, creates the notification record and submits it to the sync engine.
 
-Output JSON:
+Output JSON (auto-sync off):
 ```json
 {
   "status": "success",
-  "message": "Webhook received for Movie Name. Manual sync required.",
-  "notification_id": "id",
-  "auto_sync": false
+  "message": "Webhook received for Example Film. Manual sync required.",
+  "notification_id": "movie_42_1759655524",
+  "auto_sync": false,
+  "run_id": "run_3f2a9c1d0b7e"
 }
 ```
+
+Output JSON (auto-sync on):
+```json
+{
+  "status": "success",
+  "message": "Webhook received. Sync started for Example Film (2024).",
+  "notification_id": "movie_42_1759655524",
+  "auto_sync": true,
+  "run_id": "run_3f2a9c1d0b7e"
+}
+```
+
+With auto-sync on, `auto_sync` reports whether the engine accepted the
+request. When it could not work out the folders, `status` is `warning`,
+`auto_sync` is `false`, the message is
+`Webhook received but auto-sync failed: <reason>`, and `run_id` names the run
+recorded as `failed`.
 
 ### POST `/webhook/series`
 What it does: receives Sonarr series webhook for TV shows.
@@ -974,17 +1100,29 @@ Input JSON: Sonarr payload.
 Special behavior:
 - Handles test webhook detection.
 - If `eventType` is `Rename`, processes rename workflow instead of import sync flow.
-- For import flow, creates series notification and optionally schedules auto-sync.
+- For import flow, creates the series notification and submits it to the sync
+  engine as a `sonarr_webhook` run. With auto-sync on, the run waits in the
+  ready check — asking Sonarr whether anything for the season is still
+  downloading, or on the fallback wait when Sonarr cannot answer — before the
+  safety check and the queue.
 
 Output JSON:
 ```json
 {
   "status": "success",
-  "message": "Series webhook received for Show Season 1. Auto-sync scheduled.",
-  "notification_id": "id",
-  "auto_sync": true
+  "message": "Series webhook received for Example Show Season 1. Sync started for Example Show — Season 01.",
+  "notification_id": "tvshows_7_s1_ef1201",
+  "auto_sync": true,
+  "run_id": "run_3f2a9c1d0b7e"
 }
 ```
+
+The sentence after the first full stop is the engine's: `Sync started for …`
+for a new run, `Added to the batch already open for …` when it joined one, or
+the follow-up message when the season is being copied. With auto-sync off the
+message ends `Manual sync required.` and `auto_sync` is `false`. With auto-sync
+on and a request the engine refused, `status` is `warning` and `auto_sync` is
+`false`. `Auto-sync scheduled.` is no longer sent.
 
 ### POST `/webhook/anime`
 What it does: receives Sonarr anime webhook (same logic pattern as series endpoint but `media_type=anime`).
@@ -993,7 +1131,8 @@ Auth: webhook auth (HMAC signature and/or IP allowlist), not JWT.
 
 Input JSON: Sonarr payload.
 
-Output JSON shape is same pattern as series endpoint.
+Output JSON shape is same pattern as series endpoint, `run_id` included, with
+messages starting `Anime webhook received for …`.
 
 ---
 
@@ -1039,6 +1178,17 @@ Each notification carries `media_type` (`movie` for Radarr rows, the stored
 value for Sonarr rows) and `display_title` so a caller does not need to know
 which table it came from.
 
+Notifications are returned as whole table rows, here and in the other
+endpoints that return movie, series or anime notifications, so each also
+carries `sync_run_id` — the sync run it rides on now (section 13), `null` for a
+notification stored before the sync engine existed — and `sync_attached_at`,
+when it joined that run. They carry `requires_manual_sync` and
+`manual_sync_reason` too (movie rows since 2026-10-05); the web app shows a
+`pending` notification with the flag raised as Manual, and links a
+notification's detail to its sync (`/transfers?sync=<sync_run_id>`) when it
+has one. Rename
+notifications live in a separate table and do not have these columns.
+
 Implementation notes:
 - Ordering, paging and counting run across both tables in one query. The
   endpoint used to read each table with the same `limit`, merge in Python and
@@ -1057,7 +1207,7 @@ Input JSON — either an explicit list:
 ```
 or every notification a filter finds:
 ```json
-{ "all_matching": true, "status": "failed", "media_type": "tvshows", "search": "dune" }
+{ "all_matching": true, "status": "failed", "media_type": "tvshows", "search": "example" }
 ```
 
 Ids are unique across both tables, so a delete by id finds the owning table
@@ -1130,7 +1280,9 @@ Error behavior:
 - `404` if notification or raw data not available.
 
 ### POST `/webhook/notifications/{notification_id}/sync`
-What it does: manually triggers sync for a movie notification.
+What it does: syncs a notification by hand, as a `manual` run in the sync
+engine (section 13). The ready check is skipped; the safety check and the queue
+still apply.
 
 Auth: required.
 
@@ -1139,35 +1291,57 @@ Path param:
 
 Output JSON:
 ```json
-{"status":"success","message":"..."}
+{
+  "status": "success",
+  "message": "Sync started for Example Film (2024).",
+  "run_ids": ["run_3f2a9c1d0b7e"]
+}
 ```
 
+Behaviour:
+- The id is looked up in both notification tables, so this endpoint and its
+  series and anime twins below accept any notification id. The path no longer
+  decides which table is read.
+- If the notification's folder has a run that has not started copying, the
+  notification joins it, and a run still held or waiting in the ready check is
+  told to go now (`Starting … now.`). If another run is copying the folder, a
+  follow-up run is opened behind it.
+- A notification already `completed` is skipped (`<id>: already synced`), and
+  so is one riding on a run that is copying right now (`S01E01: being copied
+  right now`): moving it would leave that copy unable to mark it synced.
+- `failed` and `cancelled` notifications can be synced again.
+
 Error behavior:
-- `400` if trigger fails.
+- `400` with `message` when nothing could be synced: the notification does not
+  exist (`1 webhook(s) no longer exist`), it was skipped for one of the reasons
+  above, or its folders could not be worked out. No `run_ids` in that case.
 
 ### POST `/webhook/series/notifications/{notification_id}/sync`
-What it does: manually triggers sync for a series notification.
+What it does: syncs a series notification by hand.
 
 Auth: required.
 
 Path param:
 - `notification_id`
 
-Output JSON: same shape as movie sync endpoint.
+Output JSON: same shape and behaviour as the movie sync endpoint, including
+`run_ids`.
 
 ### POST `/webhook/anime/notifications/{notification_id}/sync`
-What it does: manually triggers sync for an anime notification.
+What it does: syncs an anime notification by hand.
 
 Auth: required.
 
 Path param:
 - `notification_id`
 
-Output JSON: same shape as series sync endpoint.
+Output JSON: same shape and behaviour as the movie sync endpoint, including
+`run_ids`.
 
 ### POST `/webhook/series/notifications/sync-batch`
-What it does: syncs a whole group of series/anime notifications as **one
-transfer per season**, which is what "Sync all" on a group calls.
+What it does: syncs a whole group of notifications as **one sync run per
+folder** — for series and anime, one per season — which is what "Sync all" on
+a group calls. Each run is a `manual` run in the sync engine (section 13).
 
 Auth: required.
 
@@ -1176,30 +1350,44 @@ season down. Posting each notification separately produced one transfer per
 episode against a single destination — the queue serialised them on the path
 conflict and all but the first moved zero bytes.
 
-The grouping is re-derived on the server from each notification's
-`(media_type, series_title_slug, season_number)`. The client does not get to
-name the folder, because the resulting rsync runs with `--delete`. The whole
-group is submitted, including notifications that are already `completed`, so
-they end up linked to the run that actually fetched them.
+The grouping is re-derived on the server: each notification's destination
+folder is worked out from the notification itself, and notifications with the
+same destination form one run. Ids are looked up in both notification tables.
+The client does not get to name the folder, because the resulting rsync runs
+with `--delete`. Notifications already `completed` are skipped, and so is any
+notification riding on a run that is copying right now; the message names
+each one skipped and why. The same joining rules as the single sync endpoint
+apply to each folder.
 
-Input JSON:
+Input JSON — notification ids, as strings:
 ```json
-{"notification_ids": [12, 13, 14, 15, 16, 17]}
+{"notification_ids": ["tvshows_7_s1_ef1201", "tvshows_7_s1_ef1202", "tvshows_7_s1_ef1203"]}
 ```
 
 Output JSON:
 ```json
 {
   "status": "success",
-  "message": "Started 1 transfer(s) for 6 episode(s)",
-  "transfers": [{"season": 1, "notification_id": 13, "transfer_id": "transfer_1757226652"}]
+  "message": "Sync started for Example Show — Season 01.",
+  "transfer_ids": [],
+  "run_ids": ["run_3f2a9c1d0b7e"]
 }
 ```
 
-Returns 400 for an empty list, and reports ids that no longer exist in
-`message` rather than failing the whole call. Notifications whose status is
-already terminal are skipped; if none of them can be synced the call returns
-`status: "error"` with `nothing to sync`.
+- `run_ids` — one per folder the group covered. Follow them with
+  `GET /sync/runs/{run_id}`.
+- `transfer_ids` — always an empty list now: each run creates its transfer
+  once its safety check passes, after this call has returned.
+- `message` joins the outcome for each folder, then the ids skipped and why,
+  then `N webhook(s) no longer exist` for ids not found, separated by `; `.
+
+Error behavior:
+- `400` when `notification_ids` is missing, empty or not a list
+  (`notification_ids must be a non-empty list`), or holds anything other than
+  non-empty strings (`notification_ids must be strings`).
+- `400` with `status: "error"` when nothing in the group could be synced;
+  `message` says why and `run_ids` is still present.
+- `500` on an unexpected error.
 
 ### POST `/webhook/notifications/{notification_id}/complete`
 What it does: manually marks movie notification as completed.
@@ -1441,7 +1629,7 @@ practice and how the Renames tab presents them.
 
 ---
 
-## 7) Webhook and Discord Settings Endpoints
+## 7) Webhook Settings and Connector Endpoints
 
 ### GET `/webhook/settings`
 What it does: returns webhook auto-sync settings.
@@ -1478,14 +1666,36 @@ Input JSON (any subset):
 
 Notes:
 - `series_anime_sync_wait_time` is clamped to minimum `30`, maximum `900`.
+- `series_anime_sync_wait_time` is the sync engine's fallback timer, in
+  seconds: it decides when a season's run starts only when Sonarr cannot be
+  asked (not connected, not answering, or no TVDB id). When Sonarr answers, its
+  own estimate of the time left decides instead. See `timer_due_at` in
+  section 13.
+- The `auto_sync_*` switches decide whether a webhook's run starts by itself or
+  is opened `held` for a person (section 5).
 
 Output JSON:
 ```json
 {"status":"success","message":"Settings updated successfully"}
 ```
 
-### GET `/discord/settings`
-What it does: returns Discord notification settings.
+## Connectors
+
+Discord used to be configured through `/discord/settings` and `/discord/test`,
+which read and wrote five `DISCORD_*` settings keys. Those endpoints are gone.
+Discord is one connector among several now, with named destinations and a
+choice of destination per notification.
+
+**No response from any endpoint below ever contains a credential.** Secrets are
+stored in `connector_secret`, which has no read path to a response body. What a
+client gets instead is `secrets_set` — whether a value exists — which is all a
+form needs to show "configured" beside a field it must never be shown. A secret
+sent back as the string `<redacted>` on save means "unchanged".
+
+### GET `/connectors`
+Every connector this build knows about, configured or not. Driven by the
+adapter registry rather than by database rows, so a fresh install still lists
+all of them.
 
 Auth: required.
 
@@ -1493,51 +1703,182 @@ Output JSON:
 ```json
 {
   "status": "success",
-  "settings": {
-    "webhook_url": "",
-    "app_url": "http://localhost:5000",
-    "manual_sync_thumbnail_url": "",
-    "icon_url": "",
-    "enabled": false
-  }
+  "connectors": [
+    {
+      "id": "discord",
+      "display_name": "Discord",
+      "description": "Post announcements to Discord channels through webhooks.",
+      "capabilities": ["notify"],
+      "config_fields": [
+        {"name": "app_url", "label": "App URL", "kind": "url",
+         "secret": false, "required": false, "placeholder": "http://localhost:5000",
+         "description": "Where a message links back to."}
+      ],
+      "settings_label": "Appearance",
+      "settings_description": "How a message looks when it arrives in Discord.",
+      "supports_check": false,
+      "enabled": true,
+      "configured": true,
+      "config": {"app_url": "http://localhost:5000"},
+      "secrets_set": {},
+      "last_check_at": null,
+      "last_check_ok": null,
+      "last_check_message": null,
+      "exists": true,
+      "target_noun": "webhook",
+      "targets": [
+        {"target_id": "tgt_abc123", "connector_id": "discord", "label": "Default",
+         "is_default": true, "enabled": true, "last_send_at": null,
+         "last_send_ok": null, "last_send_error": null}
+      ]
+    }
+  ]
 }
 ```
 
-### POST `/discord/settings`
-What it does: updates Discord notification settings.
+Notes:
+- `configured` for a notifying connector means "has a default destination", not
+  "has credentials" — Discord needs no connector-level credential because a
+  webhook URL carries its own.
+- `exists` is false until the connector has been saved at least once.
+- `settings_label` and `settings_description` name the settings form. Most
+  connectors are reached with an address and a key, so theirs say "Connection";
+  Discord's holds only presentation and says "Appearance". The client renders
+  what it is given rather than assuming.
+- `supports_check` is false when there is nothing to reach at connector level.
+
+### GET `/connectors/<connector_id>`
+One connector, plus its stored routes. `404` for an id no adapter claims.
+
+### POST `/connectors/<connector_id>`
+Saves settings. Fields declared `secret` go to `connector_secret`; everything
+else goes in the config blob.
 
 Auth: required.
 
 Input JSON (any subset):
 ```json
+{"enabled": true, "config": {"base_url": "http://localhost:8989", "api_key": "..."}}
+```
+
+Notes:
+- Omitting `enabled` leaves it alone; omitting a config key leaves that key alone.
+- A secret sent as `<redacted>` is not written. A secret sent as `""` is deleted.
+- A key the connector does not declare is a `400`, naming the key.
+
+### POST `/connectors/<connector_id>/check`
+Reaches the service now and reports what happened.
+
+`400` when the connector declares `supports_check: false` — Discord has no
+endpoint to reach at this level, and answering `ok` would put a green
+"last checked" badge on something nothing checked. Test a webhook instead.
+
+Output JSON:
+```json
+{"status": "success", "result": {"ok": true, "message": "Connected to Sonarr 4.0.0", "detail": {}}}
+```
+
+The result is stored on the connector row, so the page can show when it was
+last checked and what it said.
+
+### POST `/connectors/<connector_id>/targets`
+Adds a destination. Only for connectors that can notify — `400` otherwise.
+
+Input JSON:
+```json
+{"label": "alerts", "credential": "https://discord.com/api/webhooks/...", "make_default": false}
+```
+
+Notes:
+- `label` is unique per connector and is what the routing table offers by name.
+- The credential is validated by the adapter first. Discord requires `https`,
+  a host in the Discord set, and `/api/webhooks/` in the path — the server posts
+  to whatever is stored, so this is where it is decided where it may be pointed.
+- The first destination of a connector always becomes the default.
+
+### PATCH `/connectors/<connector_id>/targets/<target_id>`
+Renames, replaces the credential, takes one in or out of service, or makes it
+the default. Setting a new default clears the old one in the same transaction.
+
+### DELETE `/connectors/<connector_id>/targets/<target_id>`
+Removes a destination and its credential. If it was the default, the oldest
+remaining destination is promoted. Routes pointing at it are cleared to `null`
+rather than deleted, so those notifications fall back to the default instead of
+going silent.
+
+### POST `/connectors/<connector_id>/targets/<target_id>/test`
+Sends a real message to one destination, now, ignoring routing entirely — the
+question being asked is "does this webhook work", not "where would a sync
+notification go".
+
+Error behavior: `400` with the service's own explanation, redacted.
+
+### GET `/connectors/events`
+The notification catalogue and where each announcement currently goes.
+
+Output JSON:
+```json
 {
-  "enabled": true,
-  "webhook_url": "https://discord.com/api/webhooks/...",
-  "app_url": "https://dragoncp.example.com",
-  "manual_sync_thumbnail_url": "https://example.com/thumb.png",
-  "icon_url": "https://example.com/icon.png"
+  "status": "success",
+  "events": [
+    {
+      "key": "transfer.failed",
+      "label": "Sync failed",
+      "description": "A transfer stopped without finishing, with the errors rsync reported.",
+      "default_severity": "failure",
+      "routes": {
+        "discord": {"target_id": "tgt_abc123", "enabled": true, "using_default": false}
+      }
+    }
+  ],
+  "connectors": [{"id": "discord", "display_name": "Discord", "targets": []}]
 }
 ```
 
-Output JSON:
+Every event appears whether or not it has been routed: a notification nobody
+can see is a notification nobody can turn off. `using_default` true means no
+destination was chosen, which is not a gap — it is the rule that keeps a
+notification added in a later version from shipping silent.
+
+### PUT `/connectors/routes`
+Saves the routing table.
+
+Input JSON:
 ```json
-{"status":"success","message":"Discord settings updated successfully"}
+{"routes": [
+  {"event_key": "transfer.failed", "connector_id": "discord",
+   "target_id": "tgt_abc123", "enabled": true},
+  {"event_key": "transfer.completed", "connector_id": "discord",
+   "target_id": null, "enabled": true}
+]}
 ```
 
-### POST `/discord/test`
-What it does: sends a test embed notification to configured Discord webhook.
+Notes:
+- `target_id: null` means "use the connector's default", the same as no row.
+- An unknown event key, an unknown connector, or a destination belonging to a
+  different connector is a `400` and nothing is saved for that row.
 
-Auth: required.
-
-Input: no body required.
+### GET `/connectors/<connector_id>/deliveries`
+The last hundred announcements this connector handled, newest first. This is
+the whole answer to "why didn't I get told about that", which before this
+existed required reading the server console.
 
 Output JSON:
 ```json
-{"status":"success","message":"Test Discord notification sent successfully!"}
+{
+  "status": "success",
+  "deliveries": [
+    {"id": 12, "connector_id": "discord", "target_label": "alerts",
+     "event_key": "transfer.failed", "title": "Example Show", "ok": true,
+     "skipped_reason": null, "status_code": 204, "error": null,
+     "duration_ms": 143, "created_at": "2026-08-17 01:20:11"}
+  ]
+}
 ```
 
-Error behavior:
-- `400` if Discord notifications are disabled or webhook URL missing/invalid/fails.
+A row with `ok: false` and a `skipped_reason` was held back deliberately —
+the notification is switched off, the destination is out of service, or no
+default is set. A row with `ok: false` and an `error` was attempted and failed.
 
 ---
 
@@ -1653,7 +1994,9 @@ restore cannot run at all.
 
 ### POST `/backups/captures/{capture_id}/restore`
 What it does: starts a restore. Returns as soon as it is accepted; it runs as a
-queued transfer with progress and logs.
+queued transfer with progress and logs, and is also recorded as a `restore`
+run in the sync engine (section 13). That record is bookkeeping: a restore
+does not fail because it could not be written.
 
 Auth: required. Input: same `files` rule as `/plan`.
 
@@ -2066,7 +2409,9 @@ Scenario keys: `queue_overflow`, `path_conflict`, `slow_copy`, `failure`,
 
 ### POST `/simulation/start`
 What it does: generates fixture files and starts the scenario's transfers
-through `TransferCoordinator.start_transfer`.
+through the sync engine, as `simulation` runs (section 13). A simulation run
+skips the batch, ready and safety stages and is not announced; the queue and
+rsync are real.
 
 Auth: required.
 
@@ -2115,7 +2460,8 @@ Output JSON:
 What it does: removes every simulation row and the files it generated.
 
 Deletes only rows carrying `is_simulation` and only files under the simulation
-directory. Real transfers, notifications and media are untouched.
+directory, and the sync runs flagged as simulations. Real transfers,
+notifications, runs and media are untouched.
 
 Auth: required.
 
@@ -2506,7 +2852,8 @@ the plan moves its local copy aside first.
 ### POST `/explore/transfer`
 What it does: executes a stored plan. Moves what the plan supersedes or removes
 into that run's backup directory, then hands the file list to the normal
-transfer pipeline. Consumes the plan.
+transfer pipeline — each season as an `explore` run in the sync engine
+(section 13), handed to the queue before this call returns. Consumes the plan.
 
 Auth: required.
 
@@ -2544,28 +2891,934 @@ queue's slot cap.
 `transfer_id` is a convenience for the common single-season case and is `null`
 whenever there is not exactly one. A run with `state: "done"` moved files to
 backup and had nothing to download — it is recorded as a completed
-`explore_prune` transfer rather than queued.
+`explore_prune` transfer rather than queued, and as an `explore` sync run that
+is already `completed`.
+
+---
+
+## 13) Sync Engine, Notifications and Scheduler Endpoints
+
+Every sync passes the same nine stages — `receive`, `identify`, `batch`,
+`ready`, `safety`, `queue`, `transfer`, `finish`, `tell` — whatever started it:
+a Sonarr or Radarr webhook, the auto-scanner, a press of Sync, an Explore plan,
+a restart, a restore or a simulation. Each pass is a **run**, kept in the
+`sync_run` table and named by a `run_id` such as `run_3f2a9c1d0b7e`. A run is
+what the webhook receivers and the manual sync endpoints answer with, because
+its transfer is only created when the run reaches the queue. How each stage
+behaves, and why a kind of sync skips one, is in
+`../features/sync-engine/README.md`.
+
+Implementation: `routes/sync_engine.py`, `services/sync_engine/`,
+`services/alert_service.py`, `services/scheduler.py`.
+
+Every endpoint in this section requires auth, and answers `503` with
+`{"status":"error","message":"The sync engine is not running"}` when the part
+it reads is not wired up. The alert and scheduler endpoints use that same
+message.
+
+The vocabulary, as `/sync/catalogue` serves it:
+
+| Term | Values |
+|---|---|
+| Stage ids, in order | `receive`, `identify`, `batch`, `ready`, `safety`, `queue`, `transfer`, `finish`, `tell` |
+| Stage status | `pending`, `running`, `waiting`, `passed`, `skipped`, `failed`, `refused` |
+| Run state, open — not copying yet; a new request for the same folder joins it | `held` (automatic sync is off: waiting for a person), `waiting` (the ready check), `checking` (the safety dry run), `queued` |
+| Run state, active — copying; a new webhook or manual request for the folder opens a follow-up run behind it | `transferring`, `paused`, `finishing` |
+| Run state, finished | `completed`, `failed`, `cancelled`, `refused` (the safety check stopped it for a person), `interrupted` (a restart stopped it; an alert asks a person what to do) |
+| Kind | `sonarr_webhook`, `radarr_webhook`, `auto_scanner`, `manual`, `explore`, `restart`, `restore`, `simulation` |
+
+`explore`, `restore` and `simulation` runs never take in other requests
+(`mergeable: false` in the catalogue).
+
+Live updates go out over Socket.IO: `sync_run_updated` carries a run's list row
+whenever the run changes, `sync_run_event` carries `{run_id, event}` for each
+new log line, and `alerts_changed` carries the `/alerts/summary` figures.
+
+### GET `/sync/catalogue`
+What it does: describes the pipeline the engine runs — the stages, every kind
+of sync and how it runs each stage, with the sentence shown for a stage it runs
+differently or skips. A client draws the pipeline from this rather than keeping
+its own copy.
+
+Auth: required.
+
+Output JSON (abridged):
+```json
+{
+  "status": "success",
+  "stages": [
+    {"id": "receive", "label": "Receive", "tagline": "Who or what asked",
+     "description": "Records the request and who or what made it — a webhook, the auto-scanner or a person — before anything else happens."}
+  ],
+  "kinds": [
+    {
+      "id": "radarr_webhook",
+      "label": "Radarr webhook",
+      "description": "One webhook per imported or upgraded movie. Never waits.",
+      "mergeable": true,
+      "stages": {
+        "receive": {"mode": "run", "note": ""},
+        "ready": {"mode": "skip", "note": "A Radarr webhook means one finished movie, so there is nothing to wait for — whether Radarr’s API is up or not."}
+      }
+    }
+  ],
+  "stage_statuses": ["pending", "running", "waiting", "passed", "skipped", "failed", "refused"],
+  "states": {
+    "open": ["held", "waiting", "checking", "queued"],
+    "active": ["transferring", "paused", "finishing"],
+    "terminal": ["completed", "failed", "cancelled", "refused", "interrupted"],
+    "labels": {"held": "Waiting for a person", "completed": "Synced"}
+  },
+  "state_groups": {
+    "open": ["held", "waiting", "checking", "queued"],
+    "active": ["transferring", "paused", "finishing"],
+    "live": ["held", "waiting", "checking", "queued", "transferring", "paused", "finishing"],
+    "finished": ["completed", "failed", "cancelled", "refused", "interrupted"]
+  },
+  "alert_actions": {"sync_now": "Sync now", "dismiss": "Dismiss"},
+  "alert_kinds": {"sync_refused": "Safety check", "transfer_failed": "Failed"}
+}
+```
+
+- Each kind lists all nine stages. `mode` is `run` (the standard stage),
+  `diff` (runs differently; `note` says how) or `skip` (`note` says why).
+- The catalogue describes kinds, so it cannot show three skips the engine
+  decides per run, each with its own sentence on the run's `safety` stage: a
+  restart of a simulated transfer (which also skips `tell`), a single-file
+  sync, and a restart of an Explore plan's transfer. `GET /sync/runs/{run_id}`
+  shows what a given run actually did.
+- `states.labels` holds a label for every state; `state_groups` are the names
+  `/sync/runs?state=` accepts.
+- `alert_actions` and `alert_kinds` map every alert action and kind to its
+  label (see `/alerts` below).
+
+### GET `/sync/runs`
+What it does: one page of runs, newest first, each with its stage strip.
+
+Auth: required.
+
+Query parameters, all optional and combined with AND:
+
+| Parameter | Meaning |
+|---|---|
+| `state` | one state, several separated by commas, or one group: `open`, `active`, `live` (open and active), `finished`, `all` (the default). A group name inside a comma list is read as a state and matches nothing |
+| `kind` | one kind, or several separated by commas |
+| `search` (or `q`) | matches title, folder, season, destination path, run id or transfer id, case-insensitively and anywhere in the value |
+| `simulations` | `0`, `false` or `no` leaves simulation runs out; absent or anything else includes them |
+| `copied` | `0` (or `false`, `no`): only runs whose Transfer stage never started — waiting to start, or ended before copying, which the Transfers page lists beside its transfers. `1` (or `true`, `yes`): only runs whose copy started. Absent: both. Decided from the Transfer stage, not `transfer_id`, which a retry inherits from the copy it retries |
+| `limit` / `offset` | paging; `limit` defaults to `50` and is clamped to 1–200 |
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "limit": 50,
+  "offset": 0,
+  "total": 1,
+  "state_counts": {"waiting": 1, "completed": 12},
+  "runs": [
+    {
+      "run_id": "run_3f2a9c1d0b7e",
+      "kind": "sonarr_webhook",
+      "kind_label": "Sonarr webhook",
+      "label": "Example Show — Season 01",
+      "title": "Example Show",
+      "season_name": "Season 01",
+      "media_type": "tvshows",
+      "source": "sonarr",
+      "state": "waiting",
+      "state_label": "Waiting for the download",
+      "current_stage": "ready",
+      "current_summary": "Sonarr is reachable (…). Waiting until 09:12:14 so the rest of the burst can join, then asking.",
+      "outcome": null,
+      "outcome_message": null,
+      "transfer_id": null,
+      "parent_run_id": null,
+      "parent_relation": null,
+      "is_simulation": false,
+      "requested_by": {"kind": "automated", "name": "webhook-series", "label": "AUTO / webhook-series"},
+      "stages": [
+        {"id": "receive", "status": "passed"},
+        {"id": "identify", "status": "passed"},
+        {"id": "batch", "status": "passed"},
+        {"id": "ready", "status": "waiting"},
+        {"id": "safety", "status": "pending"},
+        {"id": "queue", "status": "pending"},
+        {"id": "transfer", "status": "pending"},
+        {"id": "finish", "status": "pending"},
+        {"id": "tell", "status": "pending"}
+      ],
+      "webhook_count": 1,
+      "next_check_at": "2026-10-05T09:12:14.113402+00:00",
+      "created_at": "2026-10-05T09:12:04.113402+00:00",
+      "updated_at": "2026-10-05T09:12:04.198733+00:00",
+      "started_at": null,
+      "finished_at": null
+    }
+  ]
+}
+```
+
+- `total` — runs matching every filter.
+- `state_counts` — runs per state across the whole table. It honours
+  `simulations` only, so it does not move with `state`, `kind` or `search`.
+- `label` — the title, with ` — <season>` when there is one.
+- `current_summary` — the sentence the stage named in `current_stage` last
+  wrote: what a run still moving is doing now, and for a finished run whatever
+  its last stage said (`SyncRunStore.current_summaries`, read for the whole
+  page at once). `null` when that stage has written nothing. Every place a run
+  appears as a list row carries it — this list, the run itself and its
+  `related` runs, `/sync/lookup` and the `sync_run_updated` socket event. Added
+  2026-10-05.
+- `source` — `sonarr` or `radarr` when a service is behind the request; often
+  `null` otherwise.
+- `transfer_id` — `null` until the run reaches the queue, where its transfer is
+  created.
+- `outcome` — set when the run ends: `completed`, `failed`, `cancelled`,
+  `refused` or `interrupted`, with `outcome_message` saying why.
+- `parent_relation` — `follow_up` (opened behind a copy of the same folder that
+  was already running) or `retry` (a restart of an earlier run's transfer).
+- `requested_by.kind` — `admin`, `automated` or `system`, as in the activity
+  trail.
+- `next_check_at` — when the ready check next looks again (asks Sonarr, or the
+  fallback wait runs out); `null` outside the ready check.
+- Timestamps are UTC ISO 8601.
+
+### GET `/sync/runs/{run_id}`
+What it does: one run in full — every stage with its sentence, detail and its
+own log lines, the webhooks riding on it, its transfer, related runs, its
+alerts, and what can be done to it now.
+
+Auth: required.
+
+Path param:
+- `run_id`
+
+The run carries every field of a `/sync/runs` row — `webhook_count` here
+counts the `webhooks` below — plus the fields shown here.
+
+Output JSON (abridged — list-row fields left out, one of the nine stages shown):
+```json
+{
+  "status": "success",
+  "run": {
+    "run_id": "run_3f2a9c1d0b7e",
+    "state": "waiting",
+    "source_path": "/remote/tv/Example Show (2020)/Season 01",
+    "dest_path": "/media/tv/Example Show (2020)/Season 01",
+    "operation_type": "folder",
+    "ready_mode": "ask",
+    "checks_made": 0,
+    "timer_due_at": "2026-10-05T09:13:04.113402+00:00",
+    "ready_deadline_at": "2026-10-05T09:42:04.113402+00:00",
+    "force_safety": false,
+    "stage_detail": [
+      {
+        "id": "batch",
+        "label": "Batch",
+        "tagline": "Group requests for one folder",
+        "description": "Looks for a batch already open for the same folder. ...",
+        "mode": "run",
+        "policy_note": "",
+        "status": "passed",
+        "summary": "Opened a new batch for Example Show — Season 01 with 1 webhook.",
+        "detail": null,
+        "started_at": "2026-10-05T09:12:04.143636+00:00",
+        "finished_at": "2026-10-05T09:12:04.143636+00:00",
+        "events": [
+          {"id": 3, "run_id": "run_3f2a9c1d0b7e", "stage": "batch", "level": "success",
+           "message": "Opened a new batch for Example Show — Season 01 with 1 webhook.",
+           "data": null, "created_at": "2026-10-05T09:12:04.151967+00:00"}
+        ]
+      }
+    ],
+    "webhooks": [
+      {"notification_id": "tvshows_7_s1_ef1201", "table": "sonarr_webhook",
+       "label": "S01E01", "status": "pending", "season_number": 1,
+       "title": "Example Show", "created_at": "2026-10-05 09:12:03",
+       "sync_attached_at": "2026-10-05T09:12:04.160012+00:00", "transfer_id": null,
+       "requires_manual_sync": 0, "manual_sync_reason": null}
+    ],
+    "transfer": null,
+    "related": [],
+    "alerts": [],
+    "actions": ["go_now", "cancel"]
+  }
+}
+```
+
+- `stage_detail` — always nine entries, in stage order. `mode` and
+  `policy_note` say how this run's kind treats the stage; `summary` is the
+  stage's current sentence, `detail` its structured facts (the dry-run counts
+  under `safety`, for example), and `events` its own log lines.
+- `webhooks` — oldest first. Series rows carry an episode `label` such as
+  `S01E01` or `S01E05–E06`; movie rows carry `year` and a `Title (year)`
+  label. Both carry `requires_manual_sync` and `manual_sync_reason`
+  (`SyncRunStore.webhooks`).
+- `transfer` — `null` until the run has a transfer; then `transfer_id`,
+  `status`, `progress`, `transport`, `progress_percent`, `bytes_transferred`,
+  `total_bytes`, `speed_bps`, `eta_seconds`, `start_time`, `end_time`,
+  `log_count` and `queue_reason`. The rsync lines are at
+  `/transfer/{transfer_id}/logs`.
+- `related` — list rows with a `relation`: the run this one follows or retries
+  (`follow_up_of`, `retry_of`) and the runs that follow or retry it
+  (`follow_up`, `retry`).
+- `alerts` — up to 20 alerts raised about this run, in any state, newest first,
+  in the `/alerts` shape.
+- `ready_mode` — `ask` (asking Sonarr), `timer` (the fallback wait, used when
+  Sonarr is not connected, does not answer, or the series has no TVDB id), or
+  `null` before the ready check has decided. `checks_made` counts the
+  questions put to Sonarr.
+- `timer_due_at` — when the fallback wait runs out: the configured wait
+  (`series_anime_sync_wait_time` in `/webhook/settings`, 30–900 seconds) after
+  the first webhook, extended by the same again for each later one, never past
+  15 minutes from the first.
+- `ready_deadline_at` — the longest the ready check waits: 30 minutes after the
+  run opened.
+- `force_safety` — true once an admin chose to go ahead despite the safety
+  check.
+- `actions` — what can be done now:
+
+| Action | Offered when | How |
+|---|---|---|
+| `go_now` | `held` or `waiting` | `POST /sync/runs/{run_id}/go-now` |
+| `cancel` | any open or active state | `POST /sync/runs/{run_id}/cancel` |
+| `sync_anyway` | `refused` | `POST /sync/runs/{run_id}/sync-anyway` |
+| `restart` | `failed` or `cancelled`, with a transfer | `POST /transfer/{transfer_id}/restart` — there is no run endpoint for it |
+
+Error behavior:
+- `404` `{"status":"error","message":"No such sync run"}`.
+
+### GET `/sync/runs/{run_id}/events`
+What it does: a run's log lines after a given one — what a live view polls for
+between socket events.
+
+Auth: required.
+
+Query params:
+- `after` (default `0`) — an event `id`; only later lines are returned
+- `stage` (optional) — only that stage's lines
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "events": [
+    {"id": 3, "run_id": "run_3f2a9c1d0b7e", "stage": "batch", "level": "success",
+     "message": "Opened a new batch for Example Show — Season 01 with 1 webhook.",
+     "data": null, "created_at": "2026-10-05T09:12:04.151967+00:00"}
+  ]
+}
+```
+
+Oldest first. `level` is `info`, `success`, `warning` or `error`. A run keeps
+at most 2,000 lines; past that the oldest are dropped.
+
+Error behavior:
+- `404` for an unknown run.
+
+### GET `/sync/lookup`
+What it does: the run behind a transfer or a webhook, so any screen can link to
+it.
+
+Auth: required.
+
+Query params (one of):
+- `transfer_id` — the newest run that owns the transfer; failing that, the run
+  named on the transfer row
+- `notification_id` — the run the notification rides on now. A notification can
+  move to a later run: a follow-up batch, or a restart.
+
+When both are given, `transfer_id` is used.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "run_id": "run_3f2a9c1d0b7e",
+  "run": {"run_id": "run_3f2a9c1d0b7e", "state": "waiting", "stages": [ ... ]}
+}
+```
+
+`run` is a `/sync/runs` row, except that `webhook_count` is `null` here.
+
+Error behavior:
+- `400` `Give a transfer_id or a notification_id` when neither is given.
+- `404` `No sync run found` when nothing links to a run — for example a
+  transfer or notification from before the sync engine existed.
+
+### POST `/sync/runs/{run_id}/go-now`, `/cancel`, `/sync-anyway`
+What they do: act on a run that has not finished. Each call is recorded in the
+activity trail — `sync.go_now`, `sync.cancel`, `sync.sync_anyway` — refusals
+included, against target type `sync_run`.
+
+Auth: required.
+
+Input: no body.
+
+All three answer in one shape:
+```json
+{
+  "status": "success",
+  "ok": true,
+  "run_id": "run_3f2a9c1d0b7e",
+  "action": "promoted",
+  "state": "waiting",
+  "message": "Starting Example Show now.",
+  "transfer_id": null,
+  "queue_state": null
+}
+```
+
+`200` with `status: "success"` when `ok` is true; otherwise `409` with
+`status: "error"`, `action: "failed"` and `message` saying why. `404`
+`{"status":"error","message":"No such sync run"}` for an unknown run.
+
+**go-now** — a run that is `held` (automatic sync is off) or `waiting` in the
+ready check goes now: the ready check passes at once and the run moves on to the
+safety check. `action` is `promoted`. For a run already past the ready check
+(checking, queued, copying, paused, finishing) it changes nothing and answers
+`200`, with a message saying the sync is already on its way and naming its
+state (`Example Show is already on its way (copying).`). `409` when the run
+already ended (`This sync already ended.`). A `sonarr_webhook`,
+`radarr_webhook` or `auto_scanner` run released this way counts as a manual
+sync from then on: its result is announced as "Manual Sync", and a
+safety-check refusal of it is not announced on Discord.
+
+**cancel** — ends the run. A run in the queue, copying or paused has its
+transfer cancelled; a run still held, in the ready check or in the safety check
+is closed as `cancelled`, with its webhooks — and so is a queued run whose
+transfer row has gone (deleted from the transfer list), which there is no
+transfer to cancel for. `action` is `cancelled`. `409` when the run already
+ended (`This sync already ended.`) or its transfer could not be cancelled.
+
+**sync-anyway** — goes ahead with a run the safety check stopped (`refused`).
+The safety stage is marked passed with a warning naming who overrode it, and
+the run is handed to the queue inside this request, so `transfer_id` is filled
+in and `state` is the run's state after the hand-off. `action` is `promoted`.
+`409` when the run is not `refused`
+(`Only a sync the safety check stopped can be overridden.`), when another sync
+for the same folder is already on its way, or when the queue refused the
+transfer — then `state` is `failed` and `message` says why.
+
+### GET `/alerts`
+What it does: the Notifications page — alerts, newest first. An alert is
+something that needs a person; it stays open until an admin acts on it.
+
+Auth: required.
+
+Query params:
+- `state` — `open` (default), `done`, `wrong`, `dismissed`, several of them
+  separated by commas, or `all`. The Closed tab asks for
+  `done,wrong,dismissed`. Spaces around a state are ignored; a name that is not
+  a state matches nothing, so `all` inside a comma list does not mean all.
+  Several states are accepted since 2026-10-05
+- `kind` — one kind, or several separated by commas (table below)
+- `limit` / `offset` — paging; `limit` defaults to `50` and is clamped to 1–200
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "limit": 50,
+  "offset": 0,
+  "total": 1,
+  "open": 1,
+  "by_severity": {"warning": 1},
+  "alerts": [
+    {
+      "id": 1,
+      "alert_id": "alert_7c1e04b9a2d3",
+      "kind": "sync_refused",
+      "kind_label": "Safety check",
+      "severity": "warning",
+      "title": "Sync stopped by the safety check: Example Show — Season 01",
+      "message": "Would delete 40 files here. Nothing was written. Media server: 2 files · this disk: 0 · would delete 40 · would add 2.",
+      "state": "open",
+      "dedupe_key": "refused:run_3f2a9c1d0b7e",
+      "run_id": "run_3f2a9c1d0b7e",
+      "transfer_id": null,
+      "unit_key": "/media/tv/Example Show (2020)/Season 01",
+      "link": "/transfers?sync=run_3f2a9c1d0b7e",
+      "actions": ["sync_anyway", "dismiss"],
+      "action_buttons": [
+        {"id": "sync_anyway", "label": "Sync anyway"},
+        {"id": "dismiss", "label": "Dismiss"}
+      ],
+      "data": {"reason": "Would delete 40 files here", "counts": "...",
+               "explore": {"media_type": "tvshows", "folder": "Example Show (2020)", "season": "Season 01"}},
+      "occurrences": 1,
+      "created_at": "2026-10-05T09:12:14.364264+00:00",
+      "updated_at": "2026-10-05T09:12:14.364264+00:00",
+      "resolved_at": null,
+      "resolved_action": null,
+      "resolved_by_kind": null,
+      "resolved_by_name": null,
+      "resolved_by_account_id": null
+    }
+  ]
+}
+```
+
+- `total` — alerts in the requested `state` (or states) and, when given, `kind`.
+- `open`, `by_severity` — the `/alerts/summary` figures, always for open
+  alerts.
+- `severity` — `warning`, or `failure` for a failed transfer.
+- `dedupe_key` — one open alert per subject. The same thing happening again
+  while the alert is open bumps `occurrences` and updates `message` instead of
+  opening a second alert. For `scanner_gap`, `integration_down` and
+  `job_failing`, which watch a condition, an alert with the same key that a
+  person closed with `dismiss` or `mark_wrong` in the last 24 hours keeps a new
+  one from opening, or being announced; after that, a condition still there
+  opens one again.
+- `unit_key` — the destination folder the alert is about, when it is about one.
+- `link` — where the web app shows the subject: `/transfers?sync=<run_id>` (the
+  sync panel on Transfers) for a run, `/integrations/<source>` for an
+  integration; `null` when there is neither. Alerts opened before 2026-10-06
+  carry `/pipeline/<run_id>`, which the web app redirects to the same place.
+- `actions` — what this alert offers; `action_buttons` adds each button's
+  label.
+- `resolved_*` — who closed it, when and how. `resolved_action` is `auto` when
+  the alert closed itself.
+
+| `kind` | `kind_label` | Opens when | `actions` |
+|---|---|---|---|
+| `restart_unfinished` | After a restart | webhooks were waiting to sync when DragonCP stopped | `sync_now`, `mark_done`, `mark_wrong`, `dismiss` |
+| `transfer_unknown` | Result unknown | DragonCP restarted during a copy and could not read how it ended | `retry`, `mark_done`, `dismiss` |
+| `stuck_download` | Stuck download | a season synced without a download stuck in Sonarr | `dismiss` |
+| `ready_timeout` | Waited 30 minutes | a season synced after 30 minutes with Sonarr still downloading | `dismiss` |
+| `sync_refused` | Safety check | the safety dry run stopped a sync | `sync_anyway`, `dismiss` |
+| `transfer_failed` | Failed | a transfer failed, or the queue refused it. For a restore the title reads `Restore failed: …` and the message ends `Run it again from the Backups page.` | `retry`, `mark_done`, `dismiss`; for a restore, `dismiss` only |
+| `scanner_gap` | Auto-scanner | the auto-scanner tried a gap twice and will not retry it by itself | `sync_now`, `dismiss` |
+| `integration_down` | Integration | Sonarr did not answer the ready check; closes itself (`auto`) when it answers again | `dismiss` |
+| `job_failing` | Scheduler | a background job failed three times in a row; closes itself (`auto`) on its next success | `run_now`, `dismiss` |
+
+### GET `/alerts/summary`
+What it does: how many alerts are open — the dot on the header bell and the
+count beside Notifications in the sidebar.
+
+Auth: required.
+
+Output JSON:
+```json
+{"status": "success", "open": 2, "by_severity": {"warning": 1, "failure": 1}}
+```
+
+### POST `/alerts/{alert_id}/action`
+What it does: does what the alert's button says, then closes the alert. If the
+action itself fails, the alert stays open.
+
+Auth: required.
+
+Path param:
+- `alert_id`
+
+Input JSON:
+```json
+{"action": "sync_anyway"}
+```
+
+| `action` | What it does | Alert becomes |
+|---|---|---|
+| `sync_now` | Syncs the webhooks the alert names, as the notification sync endpoints do; for an auto-scanner gap, submits a `manual` run for the folder it names | `done` |
+| `retry` | Restarts the alert's transfer, as `POST /transfer/{transfer_id}/restart` does | `done` |
+| `sync_anyway` | Overrides the safety check on the alert's run, as `POST /sync/runs/{run_id}/sync-anyway` does | `done` |
+| `run_now` | Runs the alert's scheduler job, as `POST /scheduler/jobs/{name}/run` does | `done` |
+| `mark_done` | On `transfer_failed`, `transfer_unknown` and `restart_unfinished` alerts it records the work as finished: the webhooks the alert lists are marked `completed`, and when the alert names a run, that run is closed as `completed` and its webhooks are marked `completed`. The transfer itself keeps its own status — a `failed` transfer stays `failed` in the history, and the run's Finish stage says so. On other kinds it only closes the alert | `done` |
+| `mark_wrong` | Closes the alert only | `wrong` |
+| `dismiss` | Closes the alert only. Accepted on every open alert, whether offered or not | `dismissed` |
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "message": "Going ahead despite the safety check.",
+  "alert": {
+    "alert_id": "alert_7c1e04b9a2d3",
+    "state": "done",
+    "resolved_action": "sync_anyway",
+    "resolved_at": "2026-10-05T09:20:41.563086+00:00",
+    "resolved_by_kind": "admin",
+    "resolved_by_name": "admin",
+    "resolved_by_account_id": 1
+  }
+}
+```
+
+`alert` is the whole alert in the `/alerts` shape, after the change. Each
+successful action is recorded in the activity trail as `alert.resolve`.
+
+Error behavior:
+- `400` `Unknown action '<action>'` when `action` is missing or not one of the
+  seven above.
+- `404` `No such alert`.
+- `409` when the alert is already closed (`This alert is already closed`), the
+  action is not one it offers, or the action itself failed. The body carries
+  `message` and the alert as it stands.
+
+### GET `/scheduler/jobs`
+What it does: every background job on the scheduler's clock, with its switch,
+interval, last run and next run. This release registers two:
+`sonarr_auto_scanner` and `radarr_auto_scanner`.
+
+Auth: required.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "jobs": [
+    {
+      "name": "sonarr_auto_scanner",
+      "label": "Sonarr auto-scanner",
+      "description": "Asks Sonarr what it imported and syncs anything this disk does not have yet.",
+      "enabled": true,
+      "interval_seconds": 3600.0,
+      "running": false,
+      "last_run_at": "2026-10-05T08:00:04.113402+00:00",
+      "last_finished_at": "2026-10-05T08:00:09.551210+00:00",
+      "last_ok": true,
+      "last_result": {"ok": true, "summary": "Checked 42 Sonarr title(s): everything it imported is here."},
+      "consecutive_failures": 0,
+      "next_run_at": "2026-10-05T09:00:04.113402+00:00"
+    }
+  ]
+}
+```
+
+- `enabled` and `interval_seconds` are read from the job's own settings on every
+  call — for the auto-scanners, the switch and interval on the Sonarr and Radarr
+  integrations. `interval_seconds` is `null` when the job is off, and so is
+  `next_run_at`; `next_run_at` is also `null` until the scheduler's first tick
+  after start-up.
+- `last_result` — what the last run returned, minus any stack trace; `summary`
+  is the sentence to show. `{}` until the job has run. An auto-scanner run also
+  reports `found`, `started`, `already_on_its_way`, `held_back`,
+  `needs_a_person`, `failed`, `since` and its `decisions`.
+- `last_run_at`, `last_finished_at`, `last_ok`, `last_result` and
+  `consecutive_failures` are kept in the `scheduled_job` table and survive a
+  restart. Three failures in a row open a `job_failing` alert.
+
+### POST `/scheduler/jobs/{name}/run`
+What it does: runs a job now, whatever its schedule — a job whose switch is off
+runs once. Returns as soon as the run has started; the job runs in the
+background.
+
+Auth: required.
+
+Path param:
+- `name` — a job name from `/scheduler/jobs`
+
+Output JSON:
+```json
+{"status": "success", "message": "Started.", "job": {"name": "sonarr_auto_scanner", "running": true}}
+```
+
+`job` is the job in the `/scheduler/jobs` shape. The call is recorded in the
+activity trail as `scheduler.run_now`.
+
+Error behavior:
+- `404` `{"status":"error","message":"No such job"}`.
+- `409` `That job is already running.`, with `job` — a job never overlaps
+  itself.
+
+---
+
+## 14) Media Library Endpoints
+
+The Library, Queue and History tabs of the Sonarr and Radarr integrations.
+`{source}` is `sonarr` or `radarr`; anything else is a `404`. Every endpoint
+answers `503` when the title index is not available.
+
+Responses here use `success` (`true`/`false`) and `error` rather than the
+`status` envelope. Sonarr and Radarr are only ever read: the connector adapters
+refuse any verb but GET and HEAD.
+
+Implementation: `routes/media_library.py`, `services/media_index.py`,
+`services/library_compare.py`, `services/local_library.py`,
+`services/auto_scanner.py` (`sync_one`).
+
+### GET `/library/{source}`
+What it does: one row per title the service holds, with what this disk holds
+beside it and a verdict, worked out from one catalogue read, the service's
+imports of the last 14 days and the disk — never a call per title. A title
+opened with the endpoint below in the last ten minutes carries that exact answer
+instead. The rules are in
+[integrations](../features/integrations/README.md#the-library-tab-in-sync-or-not).
+
+Auth: required.
+
+Query: `refresh=1` (or `true`, `yes`) pulls the service's whole catalogue into
+the index first.
+
+Output JSON: `source`, `live` (false when the service could not be read and the
+index answered instead), `history_checked` (false when the import history could
+not be read, so only the counts were compared), `total`, `counts` (titles per
+`sync_state`) and `items`, plus `success: true`, `read_only: true` and
+`test_mode`.
+
+Each item keeps the fields the auto-scanner reads (`present_locally`,
+`service_has_files`, `seasons[]` with `season_number`, `episode_file_count`,
+`files_here`, `counts_towards_state`; `service_item_id`, `service_path`,
+`local_folder`, `media_type`, `external_id`, `title`) and adds:
+
+- `sync_state` — `out_of_sync`, `in_sync`, `kept_here` (in sync, with more kept
+  here than the service still holds), `never` (nothing here), `no_files` (the
+  service holds no files), `orphan` (the service no longer lists it) or
+  `unknown`. Until 2026-10-06 the words were `synced`, `partial`, `never`,
+  `no_files`, `orphan` and `unknown`.
+- `state_reason` — one sentence; `state_exact` — whether it came from a
+  file-by-file comparison.
+- `attention` — why it is out of sync, each `{kind, season_number, count, …}`:
+  `new_import` and `new_file` (with `episodes` and `imported_at`), `short` and
+  `season_not_here` (with `theirs` and `ours`), `missing`, `different`.
+- `kept_here_count`, `last_import_at`, `service_files_counted` and
+  `episodes_here` (the counts line; Specials left out), and for a film
+  `service_file_size`, `local_file_size` and `quality`.
+- per season, `episodes_here` (distinct episodes read from the file names) and
+  `folder_here`.
+
+### GET `/library/{source}/{external_id}`
+What it does: one title compared episode by episode — the panel a Library card,
+a History row or a Queue row opens. Read-only towards the service: the series,
+its episodes and its files (or the film), and a fresh read of the one folder
+here.
+
+Auth: required. `external_id` is the TVDB id (Sonarr) or TMDB id (Radarr).
+
+Output JSON:
+```json
+{
+  "success": true, "source": "sonarr", "external_id": "900001",
+  "live": true, "found": true, "read_only": true,
+  "title": {"title": "Example Show", "year": 2021, "poster": "https://…",
+            "status": "continuing", "network": "Example Network", "monitored": true,
+            "local_folder": "Example Show (2021)", "media_type": "tvshows", "…": "…"},
+  "state": "out_of_sync",
+  "summary": "1 episode on Sonarr is not here yet: S01E08 “Episode Eight”.",
+  "counts": {"missing_here": 1, "different": 0, "in_sync": 0, "only_here": 7, "not_downloaded": 0},
+  "seasons": [{
+    "season_number": 1, "specials": false, "counts_towards_state": true,
+    "folder_here": "Season 01", "service_folder": "Season 01", "explore_season": "Season 01",
+    "counts": {"missing_here": 1, "only_here": 7, "…": 0},
+    "state": "out_of_sync", "service_file_count": 1, "files_here": 7, "episodes_here": 7,
+    "local_only_files": 7, "last_synced_at": "2026-10-01T10:00:00+00:00",
+    "unidentified_here": [],
+    "episodes": [{
+      "code": "S01E08", "season_number": 1, "episode_number": 8, "title": "Episode Eight",
+      "air_date": "2026-10-04", "monitored": true, "state": "missing_here",
+      "service_file": {"name": "Example Show (2021) - S01E08 - Episode Eight [WEBDL-1080p].mkv",
+                       "size": 1503238553, "quality": "WEBDL-1080p",
+                       "custom_formats": ["WEB Tier 01"], "custom_format_score": 1700, "…": "…"},
+      "local_file": null, "local_duplicates": 0
+    }]
+  }],
+  "movie": null,
+  "attention": [{"kind": "missing", "season_number": 1, "count": 1, "episodes": ["S01E08"]}],
+  "kept_here_count": 7,
+  "last_synced_at": "2026-10-01T10:00:00+00:00",
+  "actions": {
+    "sync": {"offered": false, "seasons": [],
+             "reason": "Season 1 also holds 7 files kept only here. Syncing the whole season folder would remove them, so the safety check would stop it. Fetch only what is missing in Explore."},
+    "explore": {"media_type": "tvshows", "series": "Example Show (2021)", "season": "Season 01"}
+  },
+  "computed_at": "2026-10-06T12:00:00+00:00"
+}
+```
+
+- Episode `state` is `in_sync` (same file, by size), `different` (both have
+  it, sizes differ), `missing_here` (needs syncing), `only_here` (normal after
+  the media server's cleanup) or `not_downloaded`. `state` for the title uses
+  the list's words; it is `out_of_sync` exactly when an episode outside
+  Specials is `missing_here` or `different`.
+- A film has `seasons: []` and `movie: {state, service_file, local_file,
+  other_files_here}`.
+- `actions.sync.offered` is true only where the title's Sync
+  (`POST /library/{source}/sync`) would copy season folders holding nothing kept
+  only here; otherwise `reason` says why not. `actions.explore` names the
+  Explore library, folder and season (`/media/<media_type>?series=…&season=…`)
+  where only the missing files can be fetched.
+
+### GET `/library/{source}/{external_id}/history`
+What it does: one title's history, newest first: the service's own events for
+it beside DragonCP's syncs of its folder here. The History tab of the series
+pop-up reads it. Read-only on both sides: one call to the service
+(`/api/v3/history/series` or `/api/v3/history/movie`), plus Sonarr's episode
+list when its history names episodes by id only.
+
+Auth: required. `external_id` is the TVDB id (Sonarr) or TMDB id (Radarr): `400`
+when it is not a number, `404` when nothing knows it.
+
+Output JSON:
+```json
+{
+  "success": true, "source": "sonarr", "external_id": "900001",
+  "live": true, "read_only": true, "total": 3,
+  "entries": [
+    {"at": "2026-10-05T01:23:00+00:00", "side": "dragoncp", "kind": "sync",
+     "title": "Sync of Season 01 was stopped by the safety check",
+     "detail": "Sonarr webhook · Would delete 7 media files but only receive 1",
+     "status": "not_done", "episodes": [], "run_id": "run_3f2a9c1d0b7e",
+     "state": "refused", "season": "Season 01"},
+    {"at": "2026-10-04T06:53:00+00:00", "side": "service", "kind": "imported",
+     "title": "Sonarr imported S01E08", "detail": "Episode Eight · WEBDL-1080p · 1.6 GB",
+     "status": "info", "episodes": ["S01E08"], "quality": "WEBDL-1080p",
+     "custom_formats": ["WEB Tier 01"], "service_id": 1},
+    {"at": "2026-10-02T04:39:00+00:00", "side": "service", "kind": "deleted",
+     "title": "Sonarr deleted its files for S01E01 to S01E07", "detail": "Deleted by hand",
+     "status": "info", "episodes": ["S01E01", "…", "S01E07"]}
+  ]
+}
+```
+
+- `status` is `done`, `not_done` (stopped by the safety check, cancelled, cut
+  off by a restart), `failed`, `in_progress` or `info`. An import's status is
+  left `info`: whether its episode is here now is the episode comparison's to
+  say, and the pop-up marks it from `GET /library/{source}/{external_id}`.
+- DragonCP's side is every sync run whose destination is the title's folder or
+  inside it (rehearsals left out), and the transfers from before the sync
+  engine that no run covers ("Before sync records").
+- A burst of the same deletion or rename within ten minutes is one entry
+  naming every episode.
+- With the service down, `live` is false and only DragonCP's side is listed.
+- At most 150 entries; `total` counts them all.
+
+Error behavior:
+- `400` when `external_id` is not a number.
+- `404` `{"success": false, "error": "Sonarr does not list this title"}` when
+  neither the service nor the index knows it.
+- `200` with `live: false` and `message` when the service is not connected or
+  does not answer.
+
+### GET `/library/{source}/history`
+What it does: a page of the service's own history, each row with its title and
+episode folded in by the service (`includeSeries`/`includeEpisode`, or
+`includeMovie`), and titles the index knows matched in.
+
+Auth: required.
+
+Query params: `page` (default `1`), `page_size` (default `50`, clamped to
+1–200), `event` (`imported`, `grabbed`, `deleted`, `failed`, `renamed`,
+`ignored`, or `all`; the service filters, so `total` is the filtered count).
+`400` when `page` or `page_size` is not a number or `event` is not one of those.
+
+Output JSON: `source`, `live`, `records`, `page`, `page_size`, `total`, `event`,
+plus `success` and `read_only`. Each record carries `event_type` (the
+service's own name), `event` and `event_label`, `date`, `source_title` (the
+release), `quality`, `custom_formats` (names) and `custom_format_score`,
+`title` and `year`, `season_number`, `episode_number`, `episode_code`
+(`S01E08`), `episode_label` (`1x08`), `episode_title`, `download_client`,
+`indexer`, `release_group`, `size`, `reason` (why it was deleted, why it
+failed, what it was renamed from), `external_id` (set even for a title the
+index does not know) and `known_here`. When the service is not connected or
+does not answer, `live` is false, `records` is empty and `message` says which.
+
+### GET `/library/{source}/queue`
+What it does: what is waiting on the service, and why each row is waiting. Rows
+that need attention come first. The service folds each row's title and episode
+in; the Ready check's own queue read is unchanged.
+
+Auth: required.
+
+Output JSON: `source`, `live`, `rows`, `counts` (rows per `verdict`), `total`,
+`needing_attention` and `holding_a_sync`, plus `success` and `read_only`. Each
+row carries `verdict`, `why`, `holds_sync` and `needs_attention` beside the
+service's own progress, size and download-client fields, and `title`, `year`,
+`episode_code`, `episode_title`, `quality`, `custom_formats`, `seconds_left`,
+`external_id`, and its state in plain words: `status_label` (Downloading,
+Waiting to import, Importing, Imported, Stuck, Failed, Stale, Paused, Queued,
+Delayed, Unrecognised), `status_detail` (the reason, often the service's own
+sentence), `status_text` ("Stuck: …") and `tone` (`brand`, `warn`, `crit`,
+`ok`, `muted`). When the service is not connected or does not answer, `live` is
+false, `rows` is empty and `message` says which.
+
+### POST `/library/{source}/sync`
+What it does: syncs what this disk is missing of one title, because someone
+pressed Sync on it. What to fetch is worked out on the server from the service
+as it is now: for Sonarr, every season that counts towards the title's state
+and holds fewer files here than in Sonarr; for Radarr, the movie when it is not
+here. Each becomes a `manual` run in the sync engine (section 13), so the
+safety check and the queue apply as for any other sync.
+
+Auth: required.
+
+Input JSON — the title's TVDB id for Sonarr, TMDB id for Radarr:
+```json
+{"external_id": "900001"}
+```
+
+Output JSON:
+```json
+{
+  "success": true,
+  "transfers_started": 1,
+  "error": "",
+  "runs": [
+    {"ok": true, "run_id": "run_3f2a9c1d0b7e", "action": "opened", "state": "checking",
+     "message": "Sync started for Example Show — Season 02.", "transfer_id": null,
+     "queue_state": null}
+  ]
+}
+```
+
+- `runs` — one entry per season (or the movie), in the shape the run actions
+  answer with. Before the sync engine this response carried a `decision` object
+  instead.
+- `transfers_started` — despite its name, the number of runs the engine
+  accepted. No transfer exists yet when this returns; each run creates its own
+  once its safety check passes.
+
+Error behavior:
+- `400` `external_id is required`.
+- `409` with `success: false` and `error` when there is nothing to start: the
+  service did not answer, the title is not recorded, the service holds no files
+  for it yet, or everything it holds is already here. When every run was
+  refused, `error` joins their messages and `runs` is present too.
+- `500` on an unexpected error; `503` when syncing from the library view is not
+  available.
+
+### POST `/library/{source}/refresh`
+What it does: pulls the service's catalogue into the index. A POST because it
+writes — to this side's database only.
+
+Auth: required.
+
+Output JSON:
+```json
+{"success": true, "source": "sonarr", "titles_seen": 128, "read_only": true}
+```
+
+Error behavior:
+- `502` when the service does not answer.
 
 ---
 
 ## Full Endpoint Coverage Checklist
 
-This document covers all `/api/*` routes currently implemented in backend Python route decorators:
+This document covers these `/api/*` routes from the backend Python route decorators:
 - 7 auth endpoints
 - 3 activity endpoints
 - 8 config/SSH endpoints
 - 2 media endpoints (`/media-types` and `/media/dry-run`; the rest were retired
   with Browse Media)
 - 13 transfer endpoints (including `pause`, `resume` and `bulk-delete`)
-- 32 webhook-related endpoints (receivers, management, rename, settings, Discord)
+- 29 webhook-related endpoints (receivers, management, rename, settings)
+- 11 connector endpoints (listing, settings, destinations, routing, delivery history)
 - 28 backup endpoints
 - 7 debug endpoints
 - 4 simulation endpoints
 - 2 server log endpoints
 - 11 explore endpoints (including `repair`)
+- 13 sync engine, alert and scheduler endpoints
+- 6 media library endpoints
 
-Total covered: 117 method+path API endpoints.
+Total covered: 144 method+path API endpoints.
+
+Not covered here: the 8 `/remote-transfer/*` endpoints in
+`routes/remote_daemon.py`, which `../features/fast-transfers/README.md` lists.
+With them the backend serves 152.
 
 Counts verified against the `@*_bp.route`/`@app.route` decorators in `routes/`
-and `app.py`, counting one per method+path. `GET /` is excluded: it serves the
-React application shell and is not an API route.
+and `app.py`, counting one per method+path. `GET /` and
+`GET /<path:frontend_path>` are excluded: they serve the React application
+shell and are not API routes.

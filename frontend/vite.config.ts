@@ -28,7 +28,7 @@ console.log(
 )
 
 // Allow opening the server via Tailscale MagicDNS hostnames: the machine's
-// short name (e.g. "dragondb") and full .ts.net names.
+// short name (e.g. "myhost") and full .ts.net names.
 const allowedHosts = [hostname().toLowerCase(), ".ts.net"]
 
 const proxy = {

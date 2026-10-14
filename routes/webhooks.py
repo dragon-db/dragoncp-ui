@@ -8,26 +8,14 @@ import os
 import logging
 from datetime import datetime
 from flask import Blueprint, jsonify, request, Response, g
-import requests
 import json
 from activity_log import record, record_failure
 from actor import AUTO_WEBHOOK_RENAME, webhook_actor
 from auth import require_auth
 from webhook_auth import require_webhook_auth
 from models.webhook import NotificationCatalog
-from settings_registry import REDACTED
 
 webhooks_bp = Blueprint('webhooks', __name__)
-
-
-def _redacted(value):
-    """A stored secret as the client should see it: a placeholder, or nothing.
-
-    Sending the placeholder back on save means "unchanged" — `SettingsService`
-    treats it that way for every sensitive setting — so the field round-trips
-    without the value ever leaving the server.
-    """
-    return REDACTED if value else ''
 
 # A page the UI would never render is a payload nobody reads.
 MAX_PAGE_SIZE = 200
@@ -65,6 +53,26 @@ def init_webhook_routes(app_config, app_transfer_coordinator, app_rename_service
     config = app_config
     transfer_coordinator = app_transfer_coordinator
     rename_service = app_rename_service
+
+
+def _submit_webhook(kind, source, table, media_type, notification_id, auto_sync_enabled):
+    """Hand a stored webhook to the sync engine.
+
+    Always handed over, automatic sync or not: with it off, the engine opens
+    the batch and holds it for a person, so the webhook is visible in the
+    pipeline either way and a later press of Sync picks up the whole batch.
+    """
+    from services.sync_engine.engine import SyncRequest
+    transfer_coordinator.index_notification(table, notification_id, media_type)
+    return transfer_coordinator.sync_engine.submit(SyncRequest(
+        kind=kind, source=source, media_type=media_type,
+        webhooks=[(table, notification_id)], hold=not auto_sync_enabled,
+    ))
+
+
+def _manual_sync(notification_ids):
+    """An admin pressed Sync: the engine groups by folder and does the rest."""
+    return transfer_coordinator.sync_engine.sync_notifications(notification_ids)
 
 
 _notification_catalog = None
@@ -179,31 +187,26 @@ def api_webhook_movies_receiver():
             auto_sync=auto_sync_enabled,
         )
         
+        result = _submit_webhook('radarr_webhook', 'radarr', 'radarr_webhook', 'movies',
+                                 notification_id, auto_sync_enabled)
         if auto_sync_enabled:
-            print(f"🎬 Auto-sync enabled, triggering sync for {parsed_data['title']}")
-            # Trigger automatic sync
-            success, message = transfer_coordinator.trigger_webhook_sync(notification_id)
-            if success:
-                return jsonify({
-                    "status": "success",
-                    "message": f"Webhook received and auto-sync started for {parsed_data['title']}",
-                    "notification_id": notification_id,
-                    "auto_sync": True
-                })
-            else:
-                return jsonify({
-                    "status": "warning",
-                    "message": f"Webhook received but auto-sync failed: {message}",
-                    "notification_id": notification_id,
-                    "auto_sync": False
-                })
+            print(f"🎬 Auto-sync enabled: {result.message}")
+            return jsonify({
+                "status": "success" if result.ok else "warning",
+                "message": (f"Webhook received. {result.message}" if result.ok
+                            else f"Webhook received but auto-sync failed: {result.message}"),
+                "notification_id": notification_id,
+                "auto_sync": result.ok,
+                "run_id": result.run_id,
+            })
         else:
-            print(f"🎬 Auto-sync disabled, storing notification for manual sync")
+            print(f"🎬 Auto-sync disabled, holding notification for manual sync")
             return jsonify({
                 "status": "success",
                 "message": f"Webhook received for {parsed_data['title']}. Manual sync required.",
                 "notification_id": notification_id,
-                "auto_sync": False
+                "auto_sync": False,
+                "run_id": result.run_id,
             })
         
     except Exception as e:
@@ -329,28 +332,25 @@ def api_webhook_series_receiver():
             auto_sync=auto_sync_enabled,
         )
         
+        result = _submit_webhook('sonarr_webhook', 'sonarr', 'sonarr_webhook', 'tvshows',
+                                 notification_id, auto_sync_enabled)
         if auto_sync_enabled:
-            print(f"📺 Series auto-sync enabled, scheduling auto-sync for {parsed_data['series_title']}")
-            # Schedule auto-sync job
-            transfer_coordinator.schedule_auto_sync(
-                notification_id=notification_id,
-                series_title_slug=parsed_data['series_title_slug'],
-                season_number=parsed_data['season_number'],
-                media_type='tvshows'
-            )
+            print(f"📺 Series auto-sync: {result.message}")
             return jsonify({
-                "status": "success",
-                "message": f"Series webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Auto-sync scheduled.",
+                "status": "success" if result.ok else "warning",
+                "message": f"Series webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. {result.message}",
                 "notification_id": notification_id,
-                "auto_sync": True
+                "auto_sync": result.ok,
+                "run_id": result.run_id,
             })
         else:
-            print(f"📺 Series auto-sync disabled, storing notification for manual sync")
+            print(f"📺 Series auto-sync disabled, holding notification for manual sync")
             return jsonify({
                 "status": "success",
                 "message": f"Series webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Manual sync required.",
                 "notification_id": notification_id,
-                "auto_sync": False
+                "auto_sync": False,
+                "run_id": result.run_id,
             })
         
     except Exception as e:
@@ -476,28 +476,25 @@ def api_webhook_anime_receiver():
             auto_sync=auto_sync_enabled,
         )
         
+        result = _submit_webhook('sonarr_webhook', 'sonarr', 'sonarr_webhook', 'anime',
+                                 notification_id, auto_sync_enabled)
         if auto_sync_enabled:
-            print(f"🍙 Anime auto-sync enabled, scheduling auto-sync for {parsed_data['series_title']}")
-            # Schedule auto-sync job
-            transfer_coordinator.schedule_auto_sync(
-                notification_id=notification_id,
-                series_title_slug=parsed_data['series_title_slug'],
-                season_number=parsed_data['season_number'],
-                media_type='anime'
-            )
+            print(f"🍙 Anime auto-sync: {result.message}")
             return jsonify({
-                "status": "success",
-                "message": f"Anime webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Auto-sync scheduled.",
+                "status": "success" if result.ok else "warning",
+                "message": f"Anime webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. {result.message}",
                 "notification_id": notification_id,
-                "auto_sync": True
+                "auto_sync": result.ok,
+                "run_id": result.run_id,
             })
         else:
-            print(f"🍙 Anime auto-sync disabled, storing notification for manual sync")
+            print(f"🍙 Anime auto-sync disabled, holding notification for manual sync")
             return jsonify({
                 "status": "success",
                 "message": f"Anime webhook received for {parsed_data['series_title']} Season {parsed_data.get('season_number', 'Unknown')}. Manual sync required.",
                 "notification_id": notification_id,
-                "auto_sync": False
+                "auto_sync": False,
+                "run_id": result.run_id,
             })
         
     except Exception as e:
@@ -745,20 +742,22 @@ def api_webhook_notification_json(notification_id):
 def api_webhook_sync(notification_id):
     """Manually trigger sync for a webhook notification (movies)"""
     try:
-        success, message = transfer_coordinator.trigger_webhook_sync(notification_id)
-        
-        if success:
+        result = _manual_sync([notification_id])
+
+        if result['ok']:
             record('notification.sync', f"Synced the movie notification {notification_id}",
                    target_type='notification', target_id=notification_id,
-                   detail={'media_type': 'movie', 'manual': True})
+                   detail={'media_type': 'movie', 'manual': True,
+                           'run_ids': result['run_ids']})
             return jsonify({
                 "status": "success",
-                "message": message
+                "message": result['message'],
+                "run_ids": result['run_ids'],
             })
         else:
             return jsonify({
                 "status": "error",
-                "message": message
+                "message": result['message']
             }), 400
             
     except Exception as e:
@@ -774,20 +773,22 @@ def api_webhook_sync(notification_id):
 def api_series_webhook_sync(notification_id):
     """Manually trigger sync for a series webhook notification"""
     try:
-        success, message = transfer_coordinator.trigger_series_webhook_sync(notification_id)
-        
-        if success:
+        result = _manual_sync([notification_id])
+
+        if result['ok']:
             record('notification.sync', f"Synced the series notification {notification_id}",
                    target_type='notification', target_id=notification_id,
-                   detail={'media_type': 'series', 'manual': True})
+                   detail={'media_type': 'series', 'manual': True,
+                           'run_ids': result['run_ids']})
             return jsonify({
                 "status": "success",
-                "message": message
+                "message": result['message'],
+                "run_ids": result['run_ids'],
             })
         else:
             return jsonify({
                 "status": "error",
-                "message": message
+                "message": result['message']
             }), 400
             
     except Exception as e:
@@ -825,9 +826,8 @@ def api_series_webhook_sync_batch():
                 "message": "notification_ids must be strings"
             }), 400
 
-        success, message, transfer_ids = transfer_coordinator.sync_notification_group(
-            notification_ids
-        )
+        result = _manual_sync(notification_ids)
+        success = result['ok']
 
         # After the call, and reflecting what it actually returned: recording
         # "synced" up front made a refused or failed batch read as a success.
@@ -836,13 +836,17 @@ def api_series_webhook_sync_batch():
             f"{'Synced' if success else 'Failed to sync'} a group of "
             f"{len(notification_ids)} notification(s) as one transfer",
             target_type='notification',
-            detail={'notification_count': len(notification_ids)},
+            detail={'notification_count': len(notification_ids),
+                    'run_ids': result['run_ids']},
         )
 
         return jsonify({
             "status": "success" if success else "error",
-            "message": message,
-            "transfer_ids": transfer_ids,
+            "message": result['message'],
+            # Transfers are created once each batch passes its safety check,
+            # so a fresh request has run ids to follow, not transfer ids yet.
+            "transfer_ids": [],
+            "run_ids": result['run_ids'],
         }), (200 if success else 400)
 
     except Exception as e:
@@ -860,20 +864,22 @@ def api_series_webhook_sync_batch():
 def api_anime_webhook_sync(notification_id):
     """Manually trigger sync for an anime webhook notification"""
     try:
-        success, message = transfer_coordinator.trigger_series_webhook_sync(notification_id)
-        
-        if success:
+        result = _manual_sync([notification_id])
+
+        if result['ok']:
             record('notification.sync', f"Synced the anime notification {notification_id}",
                    target_type='notification', target_id=notification_id,
-                   detail={'media_type': 'anime', 'manual': True})
+                   detail={'media_type': 'anime', 'manual': True,
+                           'run_ids': result['run_ids']})
             return jsonify({
                 "status": "success",
-                "message": message
+                "message": result['message'],
+                "run_ids": result['run_ids'],
             })
         else:
             return jsonify({
                 "status": "error",
-                "message": message
+                "message": result['message']
             }), 400
             
     except Exception as e:
@@ -1175,202 +1181,12 @@ def api_webhook_settings():
             }), 500
 
 
-# ===== DISCORD SETTINGS =====
-
-@webhooks_bp.route('/discord/settings', methods=['GET', 'POST'])
-@require_auth
-def api_discord_settings():
-    """Get or update Discord notification settings"""
-    if request.method == 'GET':
-        try:
-            # Read through the resolver so the defaults here match the ones
-            # the notification service applies when it actually sends.
-            store = transfer_coordinator.settings_service
-            settings = {
-                # Redacted the same way `/api/config` redacts it — it is the
-                # same secret, and one endpoint handing it back in full made
-                # the other's redaction decorative. Sending the placeholder
-                # back on save means "unchanged", so the round trip still works.
-                "webhook_url": _redacted(store.get('DISCORD_WEBHOOK_URL')),
-                "app_url": store.get('DISCORD_APP_URL'),
-                "manual_sync_thumbnail_url": store.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL'),
-                "icon_url": store.get('DISCORD_ICON_URL'),
-                "enabled": store.get_bool('DISCORD_NOTIFICATIONS_ENABLED'),
-            }
-            return jsonify({
-                "status": "success",
-                "settings": settings
-            })
-        except Exception as e:
-            return jsonify({
-                "status": "error",
-                "message": f"Failed to get Discord settings: {str(e)}"
-            }), 500
-    
-    else:  # POST
-        try:
-            data = request.json
-            if not data:
-                return jsonify({"status": "error", "message": "No data provided"}), 400
-            
-            # Update Discord settings
-            # One writer. These are database settings like any other, so they
-            # go through the resolver rather than reaching for the raw model —
-            # which is what kept the bounds and the redaction rule in one place.
-            store = transfer_coordinator.settings_service
-            payload = {
-                key: data[form_key]
-                for key, form_key in (
-                    ('DISCORD_NOTIFICATIONS_ENABLED', 'enabled'),
-                    ('DISCORD_WEBHOOK_URL', 'webhook_url'),
-                    ('DISCORD_APP_URL', 'app_url'),
-                    ('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', 'manual_sync_thumbnail_url'),
-                    ('DISCORD_ICON_URL', 'icon_url'),
-                )
-                if form_key in data
-            }
-            saved, _refused, errors = store.set_many(payload)
-            if errors:
-                return jsonify({"status": "error", "message": "; ".join(errors)}), 400
-            # After the error gate: a rejected save must not be recorded as a
-            # change, and `saved` is what actually persisted.
-            record('settings.discord_update',
-                   f"Changed Discord settings: {', '.join(sorted(saved)) or 'nothing'}",
-                   target_type='setting', target_id='discord',
-                   detail={'keys': sorted(saved)})
-            for key in saved:
-                print(f"🎮 {key} updated (DB)")
-
-            return jsonify({
-                "status": "success",
-                "message": "Discord settings updated successfully"
-            })
-            
-        except Exception as e:
-            print(f"❌ Error updating Discord settings: {e}")
-            return jsonify({
-                "status": "error",
-                "message": f"Failed to update Discord settings: {str(e)}"
-            }), 500
-
-
-@webhooks_bp.route('/discord/test', methods=['POST'])
-@require_auth
-def api_discord_test():
-    """Test Discord webhook with a sample notification"""
-    try:
-        # Check if Discord notifications are enabled
-        store = transfer_coordinator.settings_service
-        notifications_enabled = store.get_bool('DISCORD_NOTIFICATIONS_ENABLED')
-        if not notifications_enabled:
-            return jsonify({
-                "status": "error",
-                "message": "Discord notifications are disabled. Please enable them first."
-            }), 400
-        
-        # Get Discord webhook URL from settings
-        discord_webhook_url = store.get('DISCORD_WEBHOOK_URL')
-        if not discord_webhook_url:
-            return jsonify({
-                "status": "error",
-                "message": "Discord webhook URL not configured"
-            }), 400
-        
-        # Get other Discord settings
-        app_url = store.get('DISCORD_APP_URL')
-        manual_sync_thumbnail_url = store.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL')
-        icon_url = store.get('DISCORD_ICON_URL')
-        
-        # Create test embed
-        embed = {
-            'title': 'DragonCP Test Notification',
-            'color': 11164867,  # Purple color
-            'fields': [
-                {
-                    'name': 'Folder Synced',
-                    'value': '/test/path/sample_movie',
-                    'inline': False
-                },
-                {
-                    'name': 'Files Info',
-                    'value': '```Transferred files: 1\nDeleted Files: 2```',
-                    'inline': True
-                },
-                {
-                    'name': 'Speed Info',
-                    'value': '```Transferred: 3.84G\nAvg Speed: 7.31M bytes/sec```',
-                    'inline': True
-                },
-                {
-                    'name': 'Requested by',
-                    'value': 'test',
-                    'inline': True
-                }
-            ],
-            'author': {
-                'name': 'Test Notification',
-                'icon_url': icon_url
-            },
-            'timestamp': datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-            'footer': {
-                'text': 'This is a test notification from DragonCP'
-            }
-        }
-        
-        # Add URL only if it's a valid format (Discord is strict about URL validation)
-        if app_url and _is_valid_discord_url(app_url):
-            embed['url'] = app_url
-        
-        # Add thumbnail if configured
-        if manual_sync_thumbnail_url:
-            embed['thumbnail'] = {
-                'url': manual_sync_thumbnail_url
-            }
-        
-        # Prepare Discord payload
-        payload = {
-            'embeds': [embed]
-        }
-        
-        # Send test notification
-        response = requests.post(
-            discord_webhook_url,
-            json=payload,
-            headers={'Content-Type': 'application/json'},
-            timeout=10
-        )
-        
-        if response.status_code == 204:
-            record('settings.discord_test', 'Sent a Discord test message',
-                   target_type='setting', target_id='discord')
-            return jsonify({
-                "status": "success",
-                "message": "Test Discord notification sent successfully!"
-            })
-        else:
-            return jsonify({
-                "status": "error",
-                "message": f"Discord webhook test failed: {response.status_code} - {response.text}"
-            }), 400
-            
-    except Exception as e:
-        print(f"❌ Error testing Discord webhook: {e}")
-        return jsonify({
-            "status": "error",
-            "message": f"Failed to test Discord webhook: {str(e)}"
-        }), 500
-
-
-def _is_valid_discord_url(url: str) -> bool:
-    """Validate URL format for Discord embeds"""
-    try:
-        import re
-        # Discord accepts http/https URLs with proper domain format
-        # Allow localhost, IP addresses, and proper domain names
-        url_pattern = r'^https?://(?:(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+|localhost|\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?::\d{1,5})?(?:/.*)?$'
-        return bool(re.match(url_pattern, url))
-    except Exception:
-        return False
+# ===== DISCORD =====
+#
+# Discord used to be configured here: /discord/settings and /discord/test,
+# reading and writing five DISCORD_* settings keys. It is a connector now —
+# see routes/connectors.py — because one webhook URL could only ever mean one
+# destination, and every announcement the app makes landed in it.
 
 
 # ===== DRY-RUN ENDPOINTS =====

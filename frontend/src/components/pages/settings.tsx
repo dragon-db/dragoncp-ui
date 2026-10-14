@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { PageHeader } from "@/components/layout/page-header";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -11,13 +12,7 @@ import { SettingsPanel } from "@/components/settings/settings-panel";
 import { AccountPanel } from "@/components/settings/account-panel";
 import { BackendLogPanel } from "@/components/settings/backend-log-panel";
 import { RemoteTransferPanel } from "@/components/settings/remote-transfer-panel";
-import {
-  useDiscordSettings,
-  useTestDiscord,
-  useUpdateDiscordSettings,
-  useUpdateWebhookSettings,
-  useWebhookSettings,
-} from "@/hooks/useWebhooks";
+import { useUpdateWebhookSettings, useWebhookSettings } from "@/hooks/useWebhooks";
 import { useRuntimeStore } from "@/stores/runtime";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,13 +38,10 @@ import {
 
 export function SettingsPage() {
   const webhookSettingsQuery = useWebhookSettings();
-  const discordSettingsQuery = useDiscordSettings();
   const sshStatusQuery = useSSHStatus();
   const wsStatusQuery = useWebSocketStatus();
 
   const updateWebhookSettings = useUpdateWebhookSettings();
-  const updateDiscordSettings = useUpdateDiscordSettings();
-  const testDiscord = useTestDiscord();
 
   const autoConnect = useSSHAutoConnect();
   const disconnect = useSSHDisconnect();
@@ -61,13 +53,6 @@ export function SettingsPage() {
     auto_sync_series: false,
     auto_sync_anime: false,
     series_anime_sync_wait_time: "60",
-  });
-  const [discordDraft, setDiscordDraft] = useState({
-    enabled: false,
-    webhook_url: "",
-    app_url: "",
-    icon_url: "",
-    manual_sync_thumbnail_url: "",
   });
 
   /* eslint-disable react-hooks/set-state-in-effect -- query payloads intentionally reset controlled form drafts */
@@ -82,17 +67,6 @@ export function SettingsPage() {
     });
   }, [webhookSettingsQuery.data]);
 
-  useEffect(() => {
-    const settings = discordSettingsQuery.data?.settings;
-    if (!settings) return;
-    setDiscordDraft({
-      enabled: Boolean(settings.enabled),
-      webhook_url: settings.webhook_url ?? "",
-      app_url: settings.app_url ?? "",
-      icon_url: settings.icon_url ?? "",
-      manual_sync_thumbnail_url: settings.manual_sync_thumbnail_url ?? "",
-    });
-  }, [discordSettingsQuery.data]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const connectionState = sshStatusQuery.data ? "Connected" : "Disconnected";
@@ -103,10 +77,6 @@ export function SettingsPage() {
    * "save everything" button would have to claim it wrote things it did not.
    */
   const saveAutomationSettings = async () => {
-    // Two requests, so say which one failed. "Failed to save settings" after
-    // the first succeeded left the screen and the database disagreeing with no
-    // clue which half was live.
-    let failed: string | null = null;
     try {
       await updateWebhookSettings.mutateAsync({
         auto_sync_movies: webhookDraft.auto_sync_movies,
@@ -117,32 +87,14 @@ export function SettingsPage() {
           Number(webhookDraft.series_anime_sync_wait_time) || 60
         ),
       });
-    } catch {
-      failed = "auto-sync";
-    }
-
-    try {
-      await updateDiscordSettings.mutateAsync({
-        enabled: discordDraft.enabled,
-        webhook_url: discordDraft.webhook_url,
-        app_url: discordDraft.app_url,
-        icon_url: discordDraft.icon_url,
-        manual_sync_thumbnail_url: discordDraft.manual_sync_thumbnail_url,
-      });
-    } catch {
-      failed = failed ? "auto-sync and Discord" : "Discord";
-    }
-
-    if (failed) {
-      toast.error(`Could not save the ${failed} settings`);
-    } else {
       toast.success("Settings saved");
+    } catch {
+      toast.error("Could not save the auto-sync settings");
     }
 
-    // Refetched either way. After a partial save the screen has to show what
+    // Refetched either way. After a failed save the screen has to show what
     // the server actually holds, which is exactly when it differs from the form.
     webhookSettingsQuery.refetch();
-    discordSettingsQuery.refetch();
     wsStatusQuery.refetch();
   };
 
@@ -321,7 +273,12 @@ export function SettingsPage() {
               </div>
               <Separator className="bg-neutral-800" />
               <div className="space-y-2">
-                <Label className="text-neutral-200">Series/Anime Wait Time (seconds)</Label>
+                <Label className="text-neutral-200">Fallback wait (seconds)</Label>
+                <p className="text-xs text-neutral-500">
+                  Used only when Sonarr cannot be asked: how long a TV or anime season waits for
+                  more episodes before syncing, plus this again for each later episode, never more
+                  than 15 minutes. When Sonarr answers, it decides instead.
+                </p>
                 <Input
                   type="number"
                   value={webhookDraft.series_anime_sync_wait_time}
@@ -337,77 +294,24 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          {/* Discord used to be configured here. It is a connector now, with
+              named webhooks and a choice of destination per notification —
+              Integrations → Discord in the sidebar. */}
           <Card className="border-neutral-800 bg-neutral-900/50">
             <CardHeader>
-              <CardTitle className="text-white">Discord Settings</CardTitle>
+              <CardTitle className="text-white">Notifications</CardTitle>
               <CardDescription className="text-neutral-400">
-                Notification webhook, app links, and branding settings
+                Discord moved to its own page under Integrations, where a webhook can be named and
+                each notification pointed at whichever one you choose.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-white">Enable Discord Notifications</div>
-                  <div className="text-xs text-neutral-500">
-                    Send transfer and sync notifications to Discord
-                  </div>
-                </div>
-                <Switch
-                  checked={discordDraft.enabled}
-                  onCheckedChange={(checked) =>
-                    setDiscordDraft((previous) => ({ ...previous, enabled: checked }))
-                  }
-                />
-              </div>
-              <Input
-                placeholder="Discord Webhook URL"
-                value={discordDraft.webhook_url}
-                onChange={(event) =>
-                  setDiscordDraft((previous) => ({ ...previous, webhook_url: event.target.value }))
-                }
-                className="border-neutral-700 bg-neutral-900"
-              />
-              <Input
-                placeholder="App URL"
-                value={discordDraft.app_url}
-                onChange={(event) =>
-                  setDiscordDraft((previous) => ({ ...previous, app_url: event.target.value }))
-                }
-                className="border-neutral-700 bg-neutral-900"
-              />
-              <Input
-                placeholder="Icon URL"
-                value={discordDraft.icon_url}
-                onChange={(event) =>
-                  setDiscordDraft((previous) => ({ ...previous, icon_url: event.target.value }))
-                }
-                className="border-neutral-700 bg-neutral-900"
-              />
-              <Input
-                placeholder="Manual Sync Thumbnail URL"
-                value={discordDraft.manual_sync_thumbnail_url}
-                onChange={(event) =>
-                  setDiscordDraft((previous) => ({
-                    ...previous,
-                    manual_sync_thumbnail_url: event.target.value,
-                  }))
-                }
-                className="border-neutral-700 bg-neutral-900"
-              />
+            <CardContent>
               <Button
                 variant="outline"
-                onClick={async () => {
-                  try {
-                    await testDiscord.mutateAsync();
-                    toast.success("Discord test notification sent");
-                  } catch {
-                    toast.error("Discord test failed");
-                  }
-                }}
-                disabled={testDiscord.isPending || !discordDraft.enabled}
+                render={<Link to="/integrations/$connector" params={{ connector: "discord" }} />}
               >
                 <IconBrandDiscord className="mr-2 h-4 w-4" />
-                Test Discord Notification
+                Open Discord settings
               </Button>
             </CardContent>
           </Card>
@@ -415,16 +319,11 @@ export function SettingsPage() {
           {/* Saves this tab, next to what it saves. */}
           <div className="flex items-center justify-end gap-2">
             <span className="text-[12px] text-muted-foreground">
-              Auto-sync and Discord settings are stored in the database and take effect immediately.
+              Auto-sync settings are stored in the database and take effect immediately.
             </span>
-            <Button
-              onClick={saveAutomationSettings}
-              disabled={updateWebhookSettings.isPending || updateDiscordSettings.isPending}
-            >
+            <Button onClick={saveAutomationSettings} disabled={updateWebhookSettings.isPending}>
               <IconCheck className="mr-2 h-4 w-4" />
-              {updateWebhookSettings.isPending || updateDiscordSettings.isPending
-                ? "Saving…"
-                : "Save automation settings"}
+              {updateWebhookSettings.isPending ? "Saving…" : "Save automation settings"}
             </Button>
           </div>
         </TabsContent>

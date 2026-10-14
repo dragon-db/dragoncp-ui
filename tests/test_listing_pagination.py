@@ -80,22 +80,22 @@ class TransferPagingTests(unittest.TestCase):
         self.assertEqual(self.model.count(), 25, "the total must survive a limit")
 
     def test_search_matches_title_season_and_path(self):
-        self.make("a", title="The Bear")
-        self.make("b", title="Severance", season_name="Season 2")
-        self.make("c", title="Andor")
+        self.make("a", title="The Bravo")
+        self.make("b", title="Example Drama", season_name="Season 2")
+        self.make("c", title="Charlie")
 
-        self.assertEqual(self.model.count(search="bear"), 1)
+        self.assertEqual(self.model.count(search="bravo"), 1)
         self.assertEqual(self.model.count(search="Season 2"), 1)
         # The destination path is built from the title, so it matches too.
-        self.assertEqual(self.model.count(search="/local/Andor"), 1)
+        self.assertEqual(self.model.count(search="/local/Charlie"), 1)
         self.assertEqual(self.model.count(search="nothing here"), 0)
 
     def test_search_and_status_filter_apply_together(self):
-        self.make("a", status="failed", title="Severance")
-        self.make("b", status="completed", title="Severance")
-        self.make("c", status="failed", title="Andor")
+        self.make("a", status="failed", title="Example Drama")
+        self.make("b", status="completed", title="Example Drama")
+        self.make("c", status="failed", title="Charlie")
 
-        self.assertEqual(self.model.count(status_filter="failed", search="severance"), 1)
+        self.assertEqual(self.model.count(status_filter="failed", search="example drama"), 1)
 
     def test_status_counts_cover_the_whole_table(self):
         self.make("a", status="completed")
@@ -121,11 +121,11 @@ class TransferPagingTests(unittest.TestCase):
         self.assertIsNone(self.model.get("done"))
 
     def test_delete_matching_re_evaluates_the_filter_and_spares_running(self):
-        self.make("keep", status="completed", title="The Bear")
-        self.make("drop", status="failed", title="Severance")
-        self.make("live", status="running", title="Severance")
+        self.make("keep", status="completed", title="The Bravo")
+        self.make("drop", status="failed", title="Example Drama")
+        self.make("live", status="running", title="Example Drama")
 
-        deleted, skipped = self.model.delete_matching(search="severance")
+        deleted, skipped = self.model.delete_matching(search="example drama")
 
         self.assertEqual(deleted, 1)
         self.assertEqual(skipped, ["live"])
@@ -251,17 +251,28 @@ class NotificationCatalogTests(unittest.TestCase):
             self.catalog.status_counts(), {"failed": 1, "pending": 2}
         )
 
+    def test_the_manual_filter_finds_movies_too(self):
+        self.add_movie("m1", "2026-01-01 10:00:00", status="pending")
+        self.add_series("s1", "2026-01-02 10:00:00", status="pending")
+        with self.db.get_connection() as conn:
+            conn.execute("UPDATE radarr_webhook SET requires_manual_sync = 1")
+            conn.execute("UPDATE sonarr_webhook SET requires_manual_sync = 1")
+            conn.commit()
+
+        self.assertEqual(self.catalog.manual_sync_count(), 2)
+        self.assertEqual(self.catalog.manual_sync_count(media_type="movies"), 1)
+
     def test_legacy_series_media_type_still_matches_tvshows(self):
         self.add_series("legacy", "2026-01-01 10:00:00", media_type="series")
 
         self.assertEqual(self.catalog.count(media_type="tvshows"), 1)
 
     def test_search_spans_both_tables(self):
-        self.add_movie("m1", "2026-01-01 10:00:00", title="Dune")
-        self.add_series("s1", "2026-01-02 10:00:00", title="Dune Prophecy")
+        self.add_movie("m1", "2026-01-01 10:00:00", title="Alpha")
+        self.add_series("s1", "2026-01-02 10:00:00", title="Alpha Chronicles")
 
-        self.assertEqual(self.catalog.count(search="dune"), 2)
-        self.assertEqual(self.catalog.count(search="prophecy"), 1)
+        self.assertEqual(self.catalog.count(search="alpha"), 2)
+        self.assertEqual(self.catalog.count(search="chronicles"), 1)
 
     def test_delete_by_id_finds_the_owning_table(self):
         self.add_movie("m1", "2026-01-01 10:00:00")
@@ -281,15 +292,15 @@ class NotificationCatalogTests(unittest.TestCase):
         self.assertEqual([n["notification_id"] for n in self.catalog.page()], ["keep"])
 
     def test_delete_matching_respects_search(self):
-        self.add_movie("dune", "2026-01-01 10:00:00", title="Dune")
-        self.add_movie("bear", "2026-01-02 10:00:00", title="The Bear")
+        self.add_movie("alpha", "2026-01-01 10:00:00", title="Alpha")
+        self.add_movie("bravo", "2026-01-02 10:00:00", title="The Bravo")
 
-        self.assertEqual(self.catalog.delete_matching(search="dune"), 1)
-        self.assertEqual([n["notification_id"] for n in self.catalog.page()], ["bear"])
+        self.assertEqual(self.catalog.delete_matching(search="alpha"), 1)
+        self.assertEqual([n["notification_id"] for n in self.catalog.page()], ["bravo"])
 
     def test_page_carries_display_fields_for_both_sources(self):
-        self.add_movie("m1", "2026-01-01 10:00:00", title="Dune")
-        self.add_series("s1", "2026-01-02 10:00:00", title="The Bear")
+        self.add_movie("m1", "2026-01-01 10:00:00", title="Alpha")
+        self.add_series("s1", "2026-01-02 10:00:00", title="The Bravo")
         with self.db.get_connection() as conn:
             conn.execute("UPDATE sonarr_webhook SET season_number = 2 WHERE notification_id = 's1'")
             conn.commit()
@@ -297,8 +308,8 @@ class NotificationCatalogTests(unittest.TestCase):
         by_id = {n["notification_id"]: n for n in self.catalog.page()}
 
         self.assertEqual(by_id["m1"]["media_type"], "movie")
-        self.assertEqual(by_id["m1"]["display_title"], "Dune")
-        self.assertEqual(by_id["s1"]["display_title"], "The Bear Season 2")
+        self.assertEqual(by_id["m1"]["display_title"], "Alpha")
+        self.assertEqual(by_id["s1"]["display_title"], "The Bravo Season 2")
         # JSON columns are decoded, and blank ones do not become a crash.
         self.assertEqual(by_id["m1"]["languages"], [])
         self.assertEqual(by_id["s1"]["episodes"], [])

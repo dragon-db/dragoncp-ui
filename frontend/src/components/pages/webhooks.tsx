@@ -480,17 +480,23 @@ export function WebhooksPage() {
    */
   const runSync = async (notification: WebhookNotification, options?: { silent?: boolean }) => {
     try {
-      await syncMutation.mutateAsync({
+      const result = (await syncMutation.mutateAsync({
         notificationId: notification.notification_id,
         mediaType: mapMediaType(notification.media_type),
-      });
+      })) as { status?: string; message?: string };
+      // The sync goes through the pipeline — safety check, then the queue — so
+      // the server's own sentence says what actually happened to the request.
+      if (result?.status === "error") throw new Error(result.message || "");
       if (!options?.silent) {
-        toast.success("Sync started");
+        toast.success(result?.message || "Sync requested");
         notificationsQuery.refetch();
       }
       return true;
-    } catch {
-      if (!options?.silent) toast.error("Could not start the sync");
+    } catch (error) {
+      if (!options?.silent)
+        toast.error(
+          error instanceof Error && error.message ? error.message : "Could not start the sync"
+        );
       return false;
     }
   };

@@ -12,8 +12,10 @@ Schema v2 Changes:
 - Added: updated_at to webhook and backup tables
 """
 
-import sqlite3
+import json
 import os
+import sqlite3
+import uuid
 
 
 class DatabaseManager:
@@ -37,6 +39,370 @@ class DatabaseManager:
 
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
         print(f"🧩 Added missing column {table_name}.{column_name}")
+
+    def _migrate_discord_to_connector(self, conn):
+        """Move the single Discord webhook onto the connector layer.
+
+        Discord used to be five `DISCORD_*` rows in `app_settings`: one URL,
+        one on/off switch and three presentation URLs. It is now a connector
+        with named destinations and per-event routing.
+
+        The upgrade has to be invisible. The stored URL becomes a destination
+        called "Default", and **no routing rows are written** — a missing route
+        means "use the default", so every notification carries on going exactly
+        where it went before.
+
+        Guarded on the connector row already existing rather than on a version
+        number, so it is safe to run on every start and safe to run twice.
+        """
+        already = conn.execute(
+            "SELECT 1 FROM connector WHERE connector_id = 'discord'"
+        ).fetchone()
+        if already:
+            return
+
+        rows = conn.execute(
+            "SELECT key, value FROM app_settings WHERE key LIKE 'DISCORD_%'"
+        ).fetchall()
+        if not rows:
+            return
+
+        values = {row[0]: (row[1] or '') for row in rows}
+        webhook_url = values.get('DISCORD_WEBHOOK_URL', '').strip()
+        enabled = values.get('DISCORD_NOTIFICATIONS_ENABLED', '').strip().lower() \
+            in ('1', 'true', 'yes', 'on')
+        config = {
+            'app_url': values.get('DISCORD_APP_URL', '').strip(),
+            'icon_url': values.get('DISCORD_ICON_URL', '').strip(),
+            'manual_sync_thumbnail_url':
+                values.get('DISCORD_MANUAL_SYNC_THUMBNAIL_URL', '').strip(),
+        }
+        config = {k: v for k, v in config.items() if v}
+
+        if not webhook_url and not config and not enabled:
+            # Rows existed but held nothing. Leave no connector row behind, so
+            # the Integrations page shows Discord as never configured rather
+            # than as configured-and-empty.
+            conn.execute("DELETE FROM app_settings WHERE key LIKE 'DISCORD_%'")
+            return
+
+        conn.execute('''
+            INSERT INTO connector (connector_id, display_name, enabled, config)
+            VALUES ('discord', 'Discord', ?, ?)
+        ''', (1 if enabled else 0, json.dumps(config)))
+
+        if webhook_url:
+            target_id = f"tgt_{uuid.uuid4().hex[:12]}"
+            secret_ref = f"target:{target_id}"
+            conn.execute('''
+                INSERT INTO connector_secret (connector_id, name, value)
+                VALUES ('discord', ?, ?)
+            ''', (secret_ref, webhook_url))
+            conn.execute('''
+                INSERT INTO connector_target
+                    (target_id, connector_id, label, secret_ref, is_default, enabled)
+                VALUES (?, 'discord', 'Default', ?, 1, 1)
+            ''', (target_id, secret_ref))
+
+        # One value, one home. Leaving these behind would give the same
+        # setting two places to live, which is the exact failure the settings
+        # boundary was rebuilt to end.
+        conn.execute("DELETE FROM app_settings WHERE key LIKE 'DISCORD_%'")
+        print("🔌 Migrated Discord settings onto the connector layer")
+
+    def _backfill_media_items(self, conn):
+        """
+        Build the title index out of rows this database already holds.
+
+        No API call, no operator step. Every notification ever received carries
+        the external identifier — `tvdb_id` on 820 of 820 series rows,
+        `tmdb_id` on 72 of 72 film rows — and each one points at the transfer it
+        started, which is where the library folder name actually lives. Between
+        the two, the mapping this table exists to hold can simply be read off.
+
+        Runs once: guarded on the table being empty rather than on a version
+        number, so it is safe on every start and safe to run twice. An install
+        with no history gets an empty table and fills it as webhooks arrive.
+
+        A title string is used in exactly one place here — attributing the
+        transfers that were started by hand or by Explore and so never carried
+        an identifier. That is a one-off at migration rather than a lookup on
+        every operation, and anything it cannot match is left null and shown as
+        unattributed rather than guessed at.
+        """
+        if conn.execute('SELECT COUNT(*) FROM media_item').fetchone()[0] > 0:
+            return
+
+        def _tables():
+            return {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+
+        present = _tables()
+        made = 0
+
+        # -- series, keyed by tvdb_id ---------------------------------------
+        if 'sonarr_webhook' in present:
+            rows = conn.execute("""
+                SELECT tvdb_id,
+                       MAX(series_title)      AS title,
+                       MAX(series_title_slug) AS slug,
+                       MAX(imdb_id)           AS imdb_id,
+                       MAX(series_id)         AS service_item_id,
+                       MAX(year)              AS year,
+                       MAX(media_type)        AS media_type
+                  FROM sonarr_webhook
+                 WHERE tvdb_id IS NOT NULL AND tvdb_id != ''
+                 GROUP BY tvdb_id
+            """).fetchall()
+            # Positional rather than by name: this connection is the plain one
+            # init_database opens, without a row factory.
+            for tvdb_id, title, slug, imdb_id, service_item_id, year, media_type in rows:
+                folder = conn.execute("""
+                    SELECT t.folder_name FROM transfers t
+                      JOIN sonarr_webhook w ON w.transfer_id = t.transfer_id
+                     WHERE w.tvdb_id = ? AND t.folder_name IS NOT NULL
+                     ORDER BY t.created_at DESC LIMIT 1
+                """, (tvdb_id,)).fetchone()
+                conn.execute("""
+                    INSERT OR IGNORE INTO media_item
+                        (source, external_id, media_type, service_item_id, title,
+                         year, title_slug, imdb_id, local_folder)
+                    VALUES ('sonarr', ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (str(tvdb_id), media_type, service_item_id, title, year,
+                      slug, imdb_id, folder[0] if folder else None))
+                made += 1
+
+        # -- films, keyed by tmdb_id ----------------------------------------
+        if 'radarr_webhook' in present:
+            rows = conn.execute("""
+                SELECT tmdb_id,
+                       MAX(title)   AS title,
+                       MAX(imdb_id) AS imdb_id,
+                       MAX(year)    AS year
+                  FROM radarr_webhook
+                 WHERE tmdb_id IS NOT NULL AND tmdb_id != ''
+                 GROUP BY tmdb_id
+            """).fetchall()
+            for tmdb_id, title, imdb_id, year in rows:
+                folder = conn.execute("""
+                    SELECT t.folder_name FROM transfers t
+                      JOIN radarr_webhook w ON w.transfer_id = t.transfer_id
+                     WHERE w.tmdb_id = ? AND t.folder_name IS NOT NULL
+                     ORDER BY t.created_at DESC LIMIT 1
+                """, (tmdb_id,)).fetchone()
+                conn.execute("""
+                    INSERT OR IGNORE INTO media_item
+                        (source, external_id, media_type, title, year,
+                         imdb_id, local_folder)
+                    VALUES ('radarr', ?, 'movies', ?, ?, ?, ?)
+                """, (str(tmdb_id), title, year, imdb_id,
+                      folder[0] if folder else None))
+                made += 1
+
+        if not made:
+            return
+
+        # -- attach transfers, identifier first ------------------------------
+        linked = 0
+        for wh, col, src in (('sonarr_webhook', 'tvdb_id', 'sonarr'),
+                             ('radarr_webhook', 'tmdb_id', 'radarr')):
+            if wh not in present:
+                continue
+            cur = conn.execute(f"""
+                UPDATE transfers SET media_item_id = (
+                    SELECT m.id FROM media_item m
+                      JOIN {wh} w ON w.{col} = m.external_id
+                     WHERE w.transfer_id = transfers.transfer_id
+                       AND m.source = '{src}'
+                     LIMIT 1)
+                 WHERE media_item_id IS NULL
+                   AND transfer_id IN (SELECT transfer_id FROM {wh}
+                                        WHERE transfer_id IS NOT NULL)
+            """)
+            linked += cur.rowcount or 0
+
+        # -- then, and only then, by folder name -----------------------------
+        by_name = conn.execute("""
+            UPDATE transfers SET media_item_id = (
+                SELECT m.id FROM media_item m
+                 WHERE m.local_folder = transfers.folder_name LIMIT 1)
+             WHERE media_item_id IS NULL AND folder_name IS NOT NULL
+               AND EXISTS (SELECT 1 FROM media_item m
+                            WHERE m.local_folder = transfers.folder_name)
+        """).rowcount or 0
+
+        # -- stored versions follow their transfer, or their folder ----------
+        if 'backup_capture' in present:
+            conn.execute("""
+                UPDATE backup_capture SET media_item_id = (
+                    SELECT t.media_item_id FROM transfers t
+                     WHERE t.transfer_id = backup_capture.source_transfer_id
+                       AND t.media_item_id IS NOT NULL LIMIT 1)
+                 WHERE media_item_id IS NULL AND source_transfer_id IS NOT NULL
+            """)
+            conn.execute("""
+                UPDATE backup_capture SET media_item_id = (
+                    SELECT m.id FROM media_item m
+                     WHERE m.local_folder = backup_capture.title LIMIT 1)
+                 WHERE media_item_id IS NULL AND title IS NOT NULL
+                   AND EXISTS (SELECT 1 FROM media_item m
+                                WHERE m.local_folder = backup_capture.title)
+            """)
+
+        print(f"🧩 Built the title index: {made} titles, "
+              f"{linked} transfers by identifier, {by_name} by folder name")
+
+    def _create_sync_engine_tables(self, conn):
+        """The sync engine's memory: every pass through the pipeline, stage by stage.
+
+        One `sync_run` is one pass — a batch of webhooks for a season, a manual
+        sync, an Explore plan, a restart. It is written as it changes, so a
+        restart can see what was in flight and say so instead of forgetting it.
+
+        `sync_run_stage` holds one row per stage of a run: where it got to and a
+        sentence saying why — including, always, why a stage was skipped.
+        `sync_run_event` is the log, every line tagged with the stage it belongs
+        to, which is what lets the interface show each stage's own output.
+        """
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS sync_run (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT UNIQUE NOT NULL,
+                kind TEXT NOT NULL,
+                source TEXT,
+                media_type TEXT,
+                unit_key TEXT,
+                mergeable INTEGER NOT NULL DEFAULT 1,
+                title TEXT,
+                season_number INTEGER,
+                season_name TEXT,
+                folder_name TEXT,
+                source_path TEXT,
+                dest_path TEXT,
+                operation_type TEXT DEFAULT 'folder',
+                state TEXT NOT NULL,
+                current_stage TEXT,
+                outcome TEXT,
+                outcome_message TEXT,
+                transfer_id TEXT,
+                parent_run_id TEXT,
+                parent_relation TEXT,
+                requested_by_kind TEXT,
+                requested_by_name TEXT,
+                requested_by_account_id INTEGER,
+                is_simulation INTEGER NOT NULL DEFAULT 0,
+                ready_mode TEXT,
+                next_check_at REAL,
+                timer_due_at REAL,
+                ready_deadline_at REAL,
+                checks_made INTEGER NOT NULL DEFAULT 0,
+                go_now INTEGER NOT NULL DEFAULT 0,
+                force_safety INTEGER NOT NULL DEFAULT 0,
+                options TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS sync_run_stage (
+                run_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL,
+                summary TEXT,
+                detail TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, stage)
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS sync_run_event (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                level TEXT NOT NULL DEFAULT 'info',
+                message TEXT NOT NULL,
+                data TEXT,
+                created_at TEXT NOT NULL
+            )
+        ''')
+
+        # Which run a webhook rides on, and which run owns a transfer. A column
+        # rather than a join table: a webhook belongs to exactly one run at a
+        # time, and "webhooks that belong to no run" is the question the
+        # restart recovery asks.
+        self._ensure_column(conn, 'sonarr_webhook', 'sync_run_id', "TEXT")
+        self._ensure_column(conn, 'sonarr_webhook', 'sync_attached_at', "TEXT")
+        self._ensure_column(conn, 'radarr_webhook', 'sync_run_id', "TEXT")
+        self._ensure_column(conn, 'radarr_webhook', 'sync_attached_at', "TEXT")
+        self._ensure_column(conn, 'transfers', 'sync_run_id', "TEXT")
+        # A movie the safety check stopped, or a restart interrupted, carries
+        # the same "needs a person" flag a series webhook does.
+        self._ensure_column(conn, 'radarr_webhook', 'requires_manual_sync', "INTEGER DEFAULT 0")
+        self._ensure_column(conn, 'radarr_webhook', 'manual_sync_reason', "TEXT")
+
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_run_state ON sync_run(state)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_run_unit ON sync_run(unit_key, state)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_run_transfer ON sync_run(transfer_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_run_created ON sync_run(created_at DESC)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_run_due ON sync_run(state, next_check_at)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sync_event_run ON sync_run_event(run_id, id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_sonarr_webhook_sync_run ON sonarr_webhook(sync_run_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_radarr_webhook_sync_run ON radarr_webhook(sync_run_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_transfers_sync_run ON transfers(sync_run_id)')
+
+        # ---- the Notifications tab -----------------------------------------
+        # Everything that needs a person. An alert is opened by the engine (a
+        # restart left work unfinished, a download is stuck, a sync was refused
+        # or failed) and closed by an admin acting on it. `dedupe_key` keeps one
+        # open alert per subject: a second occurrence bumps the first.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS alert (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                alert_id TEXT UNIQUE NOT NULL,
+                kind TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT,
+                state TEXT NOT NULL DEFAULT 'open',
+                dedupe_key TEXT,
+                run_id TEXT,
+                transfer_id TEXT,
+                unit_key TEXT,
+                link TEXT,
+                actions TEXT NOT NULL DEFAULT '[]',
+                data TEXT NOT NULL DEFAULT '{}',
+                occurrences INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT,
+                resolved_action TEXT,
+                resolved_by_kind TEXT,
+                resolved_by_name TEXT,
+                resolved_by_account_id INTEGER
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_alert_state ON alert(state, created_at DESC)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_alert_dedupe ON alert(dedupe_key, state)')
+
+        # ---- the scheduler's memory -----------------------------------------
+        # One row per background job: when it last ran, whether it worked, and
+        # what it said. Kept so the interface can show a job's state after a
+        # restart, and so a job failing again and again is noticed.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS scheduled_job (
+                name TEXT PRIMARY KEY,
+                last_run_at TEXT,
+                last_finished_at TEXT,
+                last_ok INTEGER,
+                last_result TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+        ''')
 
     def init_database(self):
         """Initialize database and create tables"""
@@ -530,6 +896,198 @@ class DatabaseManager:
             self._ensure_column(conn, 'backup_capture', 'restored_by_name', "TEXT")
             self._ensure_column(conn, 'backup_capture', 'restored_by_account_id', "INTEGER")
 
+            # ---- the title index ------------------------------------------
+            # One row per title, keyed by the identifier the service will not
+            # change: tvdbId for Sonarr, tmdbId for Radarr. See
+            # models/media_item.py for why neither the service's own row id nor
+            # the title itself can play that part.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS media_item (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    external_id TEXT NOT NULL,
+                    media_type TEXT,
+                    service_item_id INTEGER,
+                    service_item_id_seen_at DATETIME,
+                    title TEXT,
+                    year INTEGER,
+                    title_slug TEXT,
+                    imdb_id TEXT,
+                    local_folder TEXT,
+                    present_in_service INTEGER DEFAULT 1,
+                    last_seen_in_service_at DATETIME,
+                    first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(source, external_id)
+                )
+            ''')
+
+            # Counts are a cache of what the service said, which is why every
+            # row carries the moment it was true. A reader that cannot see the
+            # age of an answer ends up trusting a stale one.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS media_item_season (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    media_item_id INTEGER NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    episodes_total INTEGER,
+                    episodes_with_file INTEGER,
+                    episodes_monitored INTEGER,
+                    refreshed_at DATETIME,
+                    last_synced_transfer_id TEXT,
+                    last_synced_at DATETIME,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(media_item_id, season_number)
+                )
+            ''')
+
+            # Plain nullable integers rather than declared foreign keys: no
+            # other table in this database declares one, SQLite does not enforce
+            # them unless switched on per connection, and adding constraints to
+            # only the newest relationships would change delete behaviour in one
+            # corner of a schema that is otherwise consistent.
+            self._ensure_column(conn, 'transfers', 'media_item_id', "INTEGER")
+            self._ensure_column(conn, 'backup_capture', 'media_item_id', "INTEGER")
+
+            # ---- what the library sweep has already seen -------------------
+            # Without this the sweep has no memory: it re-derives the same gap
+            # every run, re-announces it, and — when it is allowed to act —
+            # starts the same transfer again. Measured before this existed: the
+            # same five seasons queued 34 times in eight hours, and Discord got
+            # a message for each round.
+            #
+            # A finding is keyed by what it is about, not by when it was found,
+            # so the same gap seen an hour later updates a row rather than
+            # adding one. `resolved_at` is what makes a reappearance tellable
+            # from a persistence — a season that came back after being fetched
+            # is news; one that has been missing all week is not.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS sweep_finding (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source TEXT NOT NULL,
+                    external_id TEXT NOT NULL,
+                    season_number INTEGER,
+                    title TEXT,
+                    finding TEXT,
+                    detail TEXT,
+                    first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    notified_at DATETIME,
+                    sync_started_at DATETIME,
+                    sync_attempts INTEGER DEFAULT 0,
+                    last_transfer_id TEXT,
+                    resolved_at DATETIME,
+                    UNIQUE(source, external_id, season_number)
+                )
+            ''')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_sweep_finding_open '
+                         'ON sweep_finding(source, resolved_at)')
+
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_media_item_folder ON media_item(local_folder)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_media_item_service ON media_item(source, service_item_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_media_item_type ON media_item(media_type)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_media_item_season_item ON media_item_season(media_item_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_transfers_media_item ON transfers(media_item_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_backup_capture_media_item ON backup_capture(media_item_id)')
+
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_occurred ON activity(occurred_at DESC)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_actor ON activity(actor_account_id)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_action ON activity(action)')
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_target ON activity(target_type, target_id)')
+
+            # ==========================================
+            # Tables: connectors
+            # ==========================================
+            # A connector is a link to one outside service. These are a *list*,
+            # not a fixed set of keys, which is why they sit outside
+            # `settings_registry` — that registry holds singleton values whose
+            # existence is known at import time, and "the three Discord
+            # webhooks this operator added" is not that.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS connector (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    connector_id TEXT UNIQUE NOT NULL,
+                    display_name TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    config TEXT NOT NULL DEFAULT '{}',
+                    last_check_at DATETIME,
+                    last_check_ok INTEGER,
+                    last_check_message TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Secrets live in their own table under one rule: no read path
+            # reaches a response body. Not redacted, not partially shown —
+            # there is simply no route that serialises this. That is easier to
+            # keep true than "remember which four keys inside a JSON blob need
+            # masking", which is how the setting this replaces was handled.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS connector_secret (
+                    connector_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (connector_id, name)
+                )
+            ''')
+
+            # One destination belonging to a connector — a named Discord
+            # webhook today. The label is unique per connector because it is an
+            # identifier an operator picked and reasons about, not decoration.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS connector_target (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_id TEXT UNIQUE NOT NULL,
+                    connector_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    secret_ref TEXT NOT NULL,
+                    is_default INTEGER NOT NULL DEFAULT 0,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_send_at DATETIME,
+                    last_send_ok INTEGER,
+                    last_send_error TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (connector_id, label)
+                )
+            ''')
+
+            # Which destination an announcement goes to. A missing row means
+            # "use the connector's default", so a newly added event type is
+            # delivered rather than silently dropped.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS notification_route (
+                    event_key TEXT NOT NULL,
+                    connector_id TEXT NOT NULL,
+                    target_id TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (event_key, connector_id)
+                )
+            ''')
+
+            # What actually happened, bounded. This is the whole answer to "why
+            # didn't I get told about that", which before this table required
+            # reading the server console while it was still in the buffer.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS connector_delivery (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    connector_id TEXT NOT NULL,
+                    target_id TEXT,
+                    target_label TEXT,
+                    event_key TEXT,
+                    title TEXT,
+                    ok INTEGER NOT NULL,
+                    skipped_reason TEXT,
+                    status_code INTEGER,
+                    error TEXT,
+                    duration_ms INTEGER DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_occurred ON activity(occurred_at DESC)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_actor ON activity(actor_account_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_activity_action ON activity(action)')
@@ -538,6 +1096,17 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_transfer_file_transfer ON transfer_file(transfer_id)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_explore_plan_expiry ON explore_plan(expires_at)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_admin_account_active ON admin_account(is_active)')
+
+            conn.execute('CREATE INDEX IF NOT EXISTS idx_connector_target_owner ON connector_target(connector_id)')
+            conn.execute(
+                'CREATE INDEX IF NOT EXISTS idx_connector_delivery_recent '
+                'ON connector_delivery(connector_id, id DESC)'
+            )
+
+            self._create_sync_engine_tables(conn)
+
+            self._migrate_discord_to_connector(conn)
+            self._backfill_media_items(conn)
 
             conn.commit()
         
