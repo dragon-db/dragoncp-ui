@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from activity_log import record
 from actor import current_actor
+from services.connectors.events import headline
 from models.alert import DISMISSED, DONE, OPEN, WRONG, AlertStore
 
 log = logging.getLogger('dragoncp.alerts')
@@ -62,6 +63,25 @@ KINDS = {
 }
 
 
+#: The Discord headline for each kind of alert ("TOPIC - DETAIL", upper case).
+#: The safety check's used to read "Manual Sync Alert ⚠️", which named what a
+#: person had to do next rather than what happened: an automatic sync stopped
+#: because its dry run would have deleted more than it copied, or found fewer
+#: files on the remote server than here.
+HEADLINES = {
+    'restart_unfinished': ('After restart', 'sync may be skipped'),
+    'transfer_unknown': ('After restart', 'result unknown'),
+    'stuck_download': ('Ready check', 'stuck download'),
+    'ready_timeout': ('Ready check', 'waited 30 minutes'),
+    'sync_refused': ('Safety check', 'auto sync stopped'),
+    'transfer_failed': ('Sync failed', ''),
+    'scanner_gap': ('Auto-scanner', 'gap not closed'),
+    'integration_down': ('Integration down', ''),
+    'job_failing': ('Scheduler', 'job failing'),
+    'fast_route_failed': ('Fast transfer failed', 'SSH fallback used'),
+}
+
+
 def _run_label(run: Dict[str, Any]) -> str:
     label = run.get('title') or run.get('folder_name') or 'A sync'
     if run.get('season_name'):
@@ -91,7 +111,9 @@ class AlertService:
                     actions: Sequence[str] = ('dismiss',), data: Optional[Dict] = None,
                     announce_event: Optional[str] = None,
                     fields: Sequence[Tuple[str, str]] = (),
-                    quiet_after_dismiss: bool = False) -> Optional[Dict[str, Any]]:
+                    quiet_after_dismiss: bool = False,
+                    announce_detail: Optional[str] = None,
+                    announce_summary: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Open an alert, or bump the open one with the same key. Never raises.
 
         `quiet_after_dismiss` is for conditions checked on a schedule — a gap
@@ -120,7 +142,15 @@ class AlertService:
                                       actions=actions, data=data)
             log.info('Alert opened: %s — %s', kind, title)
             if announce_event:
-                self._announce(announce_event, severity, title, message, fields)
+                topic, detail = HEADLINES.get(kind, (KINDS.get(kind, kind), ''))
+                # "Sync stopped by the safety check: Example Show — Season 04"
+                # reads right in the Notifications list. On Discord the
+                # headline already says what happened, so the title is what it
+                # happened to.
+                about = title.split(': ', 1)[1] if ': ' in title else title
+                self._announce(announce_event, severity, about,
+                               announce_summary or message, fields,
+                               headline(topic, announce_detail or detail))
             self._emit()
             return alert
         except Exception:  # noqa: BLE001 - raising an alert must never break a sync
@@ -128,18 +158,20 @@ class AlertService:
             return None
 
     def _announce(self, event_key: str, severity: str, title: str, message: str,
-                  fields: Sequence[Tuple[str, str]]) -> None:
+                  fields: Sequence[Tuple[str, str]], author: str) -> None:
         try:
             from services.connectors import notify
             from services.connectors.events import Event, Field
-            event_fields = [Field(name, value) for name, value in fields if value]
+            # A folder reads as a path, the way the sync messages show it.
+            event_fields = [Field(name, value, monospace=(name == 'Folder'))
+                            for name, value in fields if value]
             event_fields.append(Field('What to do',
                                       'Open DragonCP → Notifications to act on it.'))
             notify(Event(
                 key=event_key, severity=severity if severity in
                 ('info', 'success', 'warning', 'failure') else 'warning',
                 title=title, summary=message[:900] if message else '',
-                fields=tuple(event_fields), author='DragonCP Notifications',
+                fields=tuple(event_fields), author=author,
             ))
         except Exception:  # noqa: BLE001
             log.exception('Could not announce alert %s', title)
@@ -272,7 +304,7 @@ class AlertService:
             WARNING, dedupe_key=f"integration_down:{source}",
             link=f"/integrations/{source}", actions=('dismiss',),
             data={'source': source}, announce_event='integration.down',
-            quiet_after_dismiss=True)
+            quiet_after_dismiss=True, announce_detail=source)
 
     def integration_up(self, source: str) -> None:
         """A service answered again: close its open "not answering" alert."""
@@ -314,10 +346,14 @@ class AlertService:
     def sync_refused(self, run: Dict[str, Any], reason: str, detail: Dict[str, Any],
                      announce: bool = True) -> None:
         label = _run_label(run)
-        counts = (f"Media server: {detail.get('server_file_count', 0)} files · "
-                  f"this disk: {detail.get('local_file_count', 0)} · would delete "
-                  f"{detail.get('deleted_count', 0)} · would add "
-                  f"{detail.get('incoming_count', 0)}")
+
+        def files(n):
+            return f"{n} file{'s' if n != 1 else ''}"
+
+        remote, here = detail.get('server_file_count', 0), detail.get('local_file_count', 0)
+        delete, add = detail.get('deleted_count', 0), detail.get('incoming_count', 0)
+        counts = (f"Remote server: {files(remote)} · here: {here} · would delete "
+                  f"{delete} · would add {add}")
         self.raise_alert(
             'sync_refused', f"Sync stopped by the safety check: {label}",
             f"{reason}. Nothing was written. {counts}.",
@@ -328,8 +364,13 @@ class AlertService:
                               'folder': run.get('folder_name'),
                               'season': run.get('season_name')}},
             announce_event='autosync.blocked' if announce else None,
-            fields=(('Reason', reason), ('Folder', run.get('dest_path') or ''),
-                    ('File analysis', counts)))
+            # The fields say the reason and the counts, so the message above
+            # them does not say them again.
+            announce_summary='Nothing was copied or deleted.',
+            fields=(('Reason', reason),
+                    ('File analysis', f"Remote server: {files(remote)}\nHere: {files(here)}\n"
+                                      f"Would delete: {delete}\nWould add: {add}"),
+                    ('Folder', run.get('dest_path') or '')))
 
     def transfer_failed(self, run: Dict[str, Any], message: str) -> None:
         label = _run_label(run)

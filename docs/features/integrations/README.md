@@ -47,20 +47,30 @@ Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors
 
 ## What an operator sees
 
-**Integrations → Discord** has four tabs, in the order you are likely to need
+**Integrations → Discord** has five tabs, in the order you are likely to need
 them:
 
 - **Webhooks** — the list of destinations, and where the page opens. Each has a
   name you chose, and one of them is the default. Add takes a name and a
   Discord webhook URL; the URL is stored on the server and never shown again.
-  Each row has a Test button that sends a real message, and an "in service"
-  switch.
+  Each row has a Test button that sends a real message (pinging whoever that
+  webhook pings), an "in service" switch, and **Pings**: who every message
+  sent there pings unless a notification chooses others.
+- **Mentions** — who a message can ping: a Discord role, a person, `@here` or
+  `@everyone`, each under a name you choose ("Admins"). A role or a person
+  needs its Discord ID (Developer Mode, then right-click → Copy Role ID / Copy
+  User ID); the form explains where to find it and refuses a name typed in its
+  place. Each row has **Test ping** (to a webhook you pick), Edit and Remove.
+  Removing one takes it out of every webhook and notification that pinged it.
 - **Routing** — every announcement the app can make, one per row, each
   with a destination dropdown and an on/off switch. A row set to "Use default"
-  goes wherever the default webhook points. The sync engine added five rows in
-  2.3.0. Until 2026-10-05 this tab was called Notifications; it was renamed so
-  it is not confused with DragonCP's own **Notifications** page, the alerts
-  that need a person.
+  goes wherever the default webhook points. Under each, **when it pings**
+  (never, on warnings and failures, or on every message — the default is
+  marked) and **whom** (the webhook's pings, shown by name, or people you
+  pick). The sync engine added five rows in 2.3.0 and QoL v2 one more,
+  Waiting for a manual sync. Until 2026-10-05 this tab was called
+  Notifications; it was renamed so it is not confused with DragonCP's own
+  **Notifications** page, the alerts that need a person.
 - **Activity** — the last hundred messages this connector handled, including
   the ones it held back and why.
 - **Appearance** — the app URL a message links back to, the icon shown beside
@@ -76,7 +86,9 @@ them:
   the transfer history. Each card carries one state — **Out of sync**, **In
   sync**, **Not here**, **Unlisted** (the service no longer lists it; the files
   here are kept), **No files yet** — and one quiet counts line, "Sonarr 1 ·
-  here 7". Filter chips with counts (Out of sync first), a search, a sort
+  here 7". An out-of-sync title whose reason is a newer or different file on
+  the service also carries a sky **Upgrade** tag. Filter chips with counts
+  (Out of sync first, then **Upgrade**, which is always offered), a search, a sort
   (needs attention first, recently imported, title) and **Refresh**, which
   re-reads the service's catalogue. Out-of-sync titles come first. How the
   state is decided is in *The Library tab: in sync or not*, below.
@@ -109,8 +121,8 @@ them:
   Below it, the seasons: one row each with "1 not here" (amber) and "7 of 8
   here", opening to a row per episode with its number, title, air date, the
   file facts that explain its state, and the state as an icon and a word
-  (**Not here**, **Different**, **Here**, **Only here**, **Not downloaded**;
-  each explains itself on hover). Only Not here and Different are coloured.
+  (**Not here**, **Upgrade**, **Here**, **Only here**, **Not downloaded**;
+  each explains itself on hover). Only Not here and Upgrade are coloured.
   Seasons with something to fix open by themselves; a long one opens on just
   those episodes, with **Show all**. Episodes still to air fold into one line,
   "6 episodes still to air, the next on Oct 18", and Specials come last. A
@@ -167,6 +179,15 @@ Radarr and Jellyfin are reached with an address and an API key, so theirs is
 called **Connection** and carries a Test connection button that genuinely
 reaches the service.
 
+Test connection tests what is in the form, saved or not, and saves nothing. A
+stored API key the form still shows as hidden is used as saved. The answer
+appears under the fields; for values nobody has saved yet it says so ("not
+saved yet. Press Save to keep it."), and the saved connection's "last checked"
+line is left alone. **Unsaved changes** shows beside Save whenever the form
+differs from what is saved. Saving a new address or key tests it straight away.
+The page's On/Off switch saves only on/off and keeps whatever is typed in the
+form; switching a connector on with nothing saved to connect with says so.
+
 Discord has no such button. A connector declares `supports_check = False` when
 it has no endpoint to reach at that level, and the UI then offers nothing: a
 test that cannot fail is worse than no test, because it leaves a green badge on
@@ -213,6 +234,7 @@ announcement that cannot be seen cannot be turned off.
 | `rename.finished` | A rename run finished — whole, partial or failed |
 | `backup.retention_deleted` | The retention rule deleted stored versions |
 | `autosync.blocked` | An automatic sync's safety check stopped it, waiting for a person — not one a person started, or released with Sync or Go now |
+| `sync.held` | Automatic sync is off for the library, so a batch is waiting for someone to press Sync. Once per batch: webhooks that join it later send nothing (added in 2.4.0, issue #35) |
 | `sync.interrupted` | A restart may have left a sync undone, or lost the result of a copy |
 | `sync.stuck` | A season went ahead without a download stuck in Sonarr, or after waiting 30 minutes |
 | `scanner.found` | The auto-scanner started syncs, or cannot close a gap (a gap's alert, once dismissed, is not sent again for 24 hours) |
@@ -248,6 +270,34 @@ Resolution order, in `routing.py`:
 A destination taken out of service is **not** quietly redirected to the
 default. "Out of service" is a statement about that destination, and sending
 somewhere the operator did not choose is worse than not sending.
+
+### Pings
+
+Who a message pings is decided once it has somewhere to go
+(`routing.mentions_for`):
+
+1. **When.** The route's rule, else the notification's `default_ping`:
+   `never`; `attention`, which pings only a warning or a failure; or `always`.
+   Reports of something done — Sync finished, Rename finished, Old backups
+   deleted, Synced without a stuck download — default to never; everything
+   else to attention. So by default "Sync failed" pings and "Sync finished"
+   does not, and the auto-scanner pings when it cannot close a gap but not
+   when it starts syncs.
+2. **Whom.** The people the route picked; a route that picked nobody
+   explicitly pings nobody. A route that never chose uses the webhook's own
+   **Pings**, so "ping Admins for everything in the alerts channel" is set
+   once, on the webhook.
+
+Discord writes the pings in the message text above the card, because it never
+pings from inside one, and always sends `allowed_mentions` naming exactly who
+may be pinged. Nothing else in a message can ping anyone, so a title that
+happens to contain "@everyone" stays text. A role can only be pinged by a
+webhook if Discord allows it: if a test ping arrives as plain text, turn on
+"Allow anyone to @mention this role" for that role. The **Activity** tab
+shows who each delivered message pinged.
+
+Sending one notification to several webhooks at once is not supported; it is
+a recorded future improvement (operator, 2026-10-19).
 
 ### Delivering
 
@@ -448,13 +498,13 @@ absolute numbers). Each episode gets one state:
 | State | Meaning |
 | --- | --- |
 | In sync | Sonarr has a file, and an episode file here is the same size |
-| Different file | both have it, sizes differ — an upgrade over there, or another release |
+| Upgrade (different file) | both have it, sizes differ — an upgrade over there, or another release |
 | Missing here | Sonarr has a file and nothing is here: this needs syncing |
 | Only here | here, and Sonarr has no file — normal once the media server cleans up after a sync |
 | Not downloaded | neither has it, aired or not |
 
-A title is **out of sync exactly when an episode is Missing here or a Different
-file**. Specials are compared and shown, never counted. A film is the same
+A title is **out of sync exactly when an episode is Missing here or an
+Upgrade**. Specials are compared and shown, never counted. A film is the same
 comparison with one file: Radarr's file against the media file in its folder.
 
 **The list, cheaply.** The grid may not ask Sonarr about every title, so it
@@ -485,6 +535,15 @@ judges each one from three reads made once for the whole page:
    imports the same episode twice and the first file is gone.
 3. For a film, nothing extra at all: Radarr's catalogue carries each film's file
    size, so the card compares file against file.
+
+**Which reasons carry the Upgrade tag.** A newer file imported since the last
+sync (rule 2, when the episode is here at a different size) and a file that
+differs from the one here (a film by rule 3, or any title opened in the
+panel). Rule 1's "a file for season 1 that is not here" does not: from sizes
+alone it cannot tell an upgrade from a missing episode. So in the list a Sonarr
+upgrade is tagged for 14 days after Sonarr imported it, or once its title is
+opened; Explore's Upgrade filter has no such limit. A film's upgrade is tagged
+for as long as Radarr holds the file.
 
 Where this disk holds *more* than Sonarr and nothing new arrived, the title is
 **kept here**: shown as In sync, with "here 7" underlined and explained on

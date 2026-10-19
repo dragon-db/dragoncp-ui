@@ -61,7 +61,7 @@ import { RepairDialog } from "@/components/explore/repair-dialog";
 import { RestoreDialog } from "@/components/backups/restore-dialog";
 import { usePlanRestore, useRestoreCapture } from "@/hooks/useBackups";
 import type { RestorePlan } from "@/lib/backup-types";
-import { CountChips, StatusBadge } from "@/components/explore/explore-bits";
+import { CountChips, StatusBadge, UpgradeTag } from "@/components/explore/explore-bits";
 import { formatBytes, formatWhen } from "@/lib/explore-format";
 import type {
   ExploreBackupRun,
@@ -80,13 +80,27 @@ const LIBRARIES = [
   { id: "anime", label: "Anime", Icon: IconLayoutList },
 ] as const;
 
-const STATUS_FILTERS: Array<{ id: "all" | ExploreStatus; label: string }> = [
+// "Upgrade" is not a status: it picks every title with at least one newer
+// file on the remote, whatever else is going on with it.
+type StatusFilter = "all" | "UPGRADE" | ExploreStatus;
+
+const STATUS_FILTERS: Array<{ id: StatusFilter; label: string }> = [
   { id: "all", label: "All" },
   { id: "OUT_OF_SYNC", label: "Out of sync" },
   { id: "PARTIAL_SYNC", label: "Partial" },
+  { id: "UPGRADE", label: "Upgrade" },
   { id: "SYNCED", label: "Synced" },
   { id: "NO_INFO", label: "Not on remote" },
 ];
+
+function matchesFilter(
+  entry: { status: ExploreStatus; counts: { upgraded: number } },
+  filter: StatusFilter
+) {
+  if (filter === "all") return true;
+  if (filter === "UPGRADE") return entry.counts.upgraded > 0;
+  return entry.status === filter;
+}
 
 type Pane = "tree" | "table";
 
@@ -132,7 +146,7 @@ export function ExplorePage({
   const isMovies = mediaType === "movies";
 
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | ExploreStatus>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<"recent" | "name">("recent");
   const [view, setView] = useState<ViewMode>("list");
   const [expanded, setExpanded] = useState<Set<string>>(
@@ -232,7 +246,7 @@ export function ExplorePage({
     const needle = query.trim().toLowerCase();
     let list = series;
     if (needle) list = list.filter((s) => s.name.toLowerCase().includes(needle));
-    if (statusFilter !== "all") list = list.filter((s) => s.status === statusFilter);
+    if (statusFilter !== "all") list = list.filter((s) => matchesFilter(s, statusFilter));
     return [...list].sort((a, b) =>
       sort === "name" ? a.name.localeCompare(b.name) : b.remote_mtime - a.remote_mtime
     );
@@ -241,7 +255,7 @@ export function ExplorePage({
   const counts = useMemo(() => {
     const base: Record<string, number> = { all: series.length };
     for (const filter of STATUS_FILTERS.slice(1)) {
-      base[filter.id] = series.filter((s) => s.status === filter.id).length;
+      base[filter.id] = series.filter((s) => matchesFilter(s, filter.id)).length;
     }
     return base;
   }, [series]);
@@ -660,8 +674,11 @@ export function ExplorePage({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      {/* ---- toolbar ---- */}
-      <div className="flex flex-none items-center gap-2.5 overflow-x-auto border-b border-border px-4 py-[11px] [scrollbar-width:none] lg:overflow-hidden [&::-webkit-scrollbar]:hidden">
+      {/* ---- toolbar ----
+          Scrolls sideways on a phone. On a wider screen it wraps instead, so a
+          desktop too narrow for every filter puts Recent and Re-check sync on a
+          second line rather than cutting them off. */}
+      <div className="flex flex-none items-center gap-2.5 overflow-x-auto border-b border-border px-4 py-[11px] [scrollbar-width:none] lg:flex-wrap lg:overflow-visible [&::-webkit-scrollbar]:hidden">
         <div className="inline-flex flex-none gap-0.5 rounded-[10px] border border-border bg-well p-[3px]">
           {LIBRARIES.map(({ id, label, Icon }) => (
             <button
@@ -1284,7 +1301,10 @@ function Inspector({
               {picked.length && season ? ` · ${season.name}` : ""}
             </span>
           ) : (
-            <StatusBadge status={scope.status} />
+            <span className="flex flex-wrap items-center gap-1.5">
+              <StatusBadge status={scope.status} />
+              <UpgradeTag count={scope.counts.upgraded} />
+            </span>
           )}
         </div>
       </div>

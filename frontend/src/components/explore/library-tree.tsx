@@ -2,7 +2,7 @@ import { IconChevronRight, IconFolder, IconMovie, IconStack2 } from "@tabler/ico
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { StatusBadge } from "./explore-bits";
+import { StatusBadge, UpgradeTag } from "./explore-bits";
 import { formatAge, formatBytes } from "@/lib/explore-format";
 import type { ExploreSeriesSummary } from "@/lib/explore-types";
 
@@ -194,6 +194,7 @@ export function LibraryTree({
                         >
                           {entry.name}
                         </span>
+                        <UpgradeTag count={entry.counts.upgraded} />
                         <StatusBadge status={entry.status} />
                       </div>
                       <div className="flex items-baseline gap-2.5 font-mono text-[10px] text-foreground-3">
@@ -266,6 +267,7 @@ export function LibraryTree({
                                     >
                                       {season.name}
                                     </span>
+                                    <UpgradeTag count={season.counts.upgraded} />
                                     <StatusBadge status={season.status} />
                                   </div>
                                   <div className="flex items-baseline gap-2.5 font-mono text-[10px] text-foreground-3">

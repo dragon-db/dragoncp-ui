@@ -1,4 +1,10 @@
-import { IconAlertTriangle, IconCheck, IconCloudOff, IconStack2 } from "@tabler/icons-react";
+import {
+  IconAlertTriangle,
+  IconCheck,
+  IconCircleArrowUp,
+  IconCloudOff,
+  IconStack2,
+} from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 import type { ExploreCounts, ExploreLabel, ExploreStatus } from "@/lib/explore-types";
 
@@ -55,12 +61,44 @@ export function StatusBadge({ status, className }: { status: ExploreStatus; clas
   );
 }
 
+/**
+ * An upgrade waiting: the same episode on both sides, a different file on the
+ * remote. Sky, the colour the dry run already gives a file it would update,
+ * so "Upgrade" reads the same in the tree, on an episode and in the dry run.
+ * The Replace button keeps its name — it says what it does.
+ */
+const UPGRADE_TONE = "border-sky-500/40 bg-sky-500/15 text-sky-300";
+
 const LABEL_META: Record<ExploreLabel, { label: string; tone: string }> = {
   IN_SYNC: { label: "In sync", tone: "text-muted-foreground bg-muted/60" },
   MISSING: { label: "Download", tone: "text-amber-400 bg-amber-500/14" },
-  UPGRADED: { label: "Replace", tone: "text-brand-foreground bg-brand/20" },
+  UPGRADED: { label: "Upgrade", tone: "text-sky-300 bg-sky-500/15" },
   LOCAL_ONLY: { label: "Local only", tone: "text-rose-300 bg-rose-500/14" },
 };
+
+/**
+ * Beside a title's status: at least one of its files has a newer version on
+ * the remote. Its own tag rather than a fifth status, because a series can be
+ * missing one episode and have an upgrade for another — "Partial" alone could
+ * not say which.
+ */
+export function UpgradeTag({ count, className }: { count: number; className?: string }) {
+  if (count <= 0) return null;
+  return (
+    <span
+      title={`${count} file${count === 1 ? " has" : "s have"} a different, usually newer, version on the remote server`}
+      className={cn(
+        "inline-flex flex-none items-center gap-[5px] rounded-full border px-2 py-[2.5px]",
+        "text-[10px] font-bold tracking-[0.05em] whitespace-nowrap uppercase",
+        UPGRADE_TONE,
+        className
+      )}
+    >
+      <IconCircleArrowUp className="size-3" />
+      Upgrade
+    </span>
+  );
+}
 
 export function EpisodeLabel({ label }: { label: ExploreLabel }) {
   const meta = LABEL_META[label];
@@ -83,7 +121,7 @@ export function EpisodeLabel({ label }: { label: ExploreLabel }) {
 export function CountChips({ counts, className }: { counts: ExploreCounts; className?: string }) {
   const chips: Array<{ n: number; label: string; tone: string }> = [
     { n: counts.missing, label: "missing", tone: "text-amber-400" },
-    { n: counts.upgraded, label: "upgraded", tone: "text-brand-foreground" },
+    { n: counts.upgraded, label: "upgraded", tone: "text-sky-300" },
     { n: counts.local_only, label: "extra", tone: "text-rose-300" },
     { n: counts.in_sync, label: "in sync", tone: "text-muted-foreground" },
   ].filter((chip) => chip.n > 0);

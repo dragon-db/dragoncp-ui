@@ -1765,6 +1765,8 @@ Notes:
 - Omitting `enabled` leaves it alone; omitting a config key leaves that key alone.
 - A secret sent as `<redacted>` is not written. A secret sent as `""` is deleted.
 - A key the connector does not declare is a `400`, naming the key.
+- Changing the address or a key clears `last_check_*`: that result described the
+  old connection.
 
 ### POST `/connectors/<connector_id>/check`
 Reaches the service now and reports what happened.
@@ -1773,13 +1775,28 @@ Reaches the service now and reports what happened.
 endpoint to reach at this level, and answering `ok` would put a green
 "last checked" badge on something nothing checked. Test a webhook instead.
 
-Output JSON:
+Input JSON (optional): the settings form's values, in the same shape as a save.
+They are tested in place of the saved ones and saved nowhere. A secret sent as
+`<redacted>` means the saved one, so the stored key never has to reach the
+browser. Without a body, the saved settings are tested.
 ```json
-{"status": "success", "result": {"ok": true, "message": "Connected to Sonarr 4.0.0", "detail": {}}}
+{"config": {"base_url": "http://localhost:8989", "api_key": "<redacted>"}}
 ```
 
-The result is stored on the connector row, so the page can show when it was
-last checked and what it said.
+Output JSON:
+```json
+{"status": "success", "result": {"ok": true, "message": "Connected to Sonarr 4.0.0", "detail": {}, "unsaved": false}}
+```
+
+Notes:
+- `unsaved` is true when the address or a key tested differs from what is
+  saved. Other fields, such as the auto-scanner switch, do not count.
+- Only a test of the saved connection is stored on the connector row as
+  `last_check_*`, because that badge describes what is saved.
+- The activity log records the result's own message, for example
+  `Sonarr test failed: Not configured yet`, marked `(unsaved settings)` when it
+  tested the form.
+- A key the connector does not declare is a `400`, naming the key.
 
 ### POST `/connectors/<connector_id>/targets`
 Adds a destination. Only for connectors that can notify — `400` otherwise.
@@ -1800,6 +1817,11 @@ Notes:
 Renames, replaces the credential, takes one in or out of service, or makes it
 the default. Setting a new default clears the old one in the same transaction.
 
+`mention_ids` (a list of this connector's mention ids; `[]` for nobody) sets
+who every message sent here pings, unless a notification's route chooses
+others. `400` for an id not in the mention list, or a connector that cannot
+ping (`supports_mentions: false`).
+
 ### DELETE `/connectors/<connector_id>/targets/<target_id>`
 Removes a destination and its credential. If it was the default, the oldest
 remaining destination is promoted. Routes pointing at it are cleared to `null`
@@ -1809,7 +1831,8 @@ going silent.
 ### POST `/connectors/<connector_id>/targets/<target_id>/test`
 Sends a real message to one destination, now, ignoring routing entirely — the
 question being asked is "does this webhook work", not "where would a sync
-notification go".
+notification go". It pings whoever the webhook pings by default, and the
+`message` says so ("…, pinging Admins").
 
 Error behavior: `400` with the service's own explanation, redacted.
 
@@ -1826,14 +1849,23 @@ Output JSON:
       "label": "Sync failed",
       "description": "A transfer stopped without finishing, with the errors rsync reported.",
       "default_severity": "failure",
+      "default_ping": "attention",
       "routes": {
-        "discord": {"target_id": "tgt_abc123", "enabled": true, "using_default": false}
+        "discord": {"target_id": "tgt_abc123", "enabled": true, "using_default": false,
+                    "ping_when": null, "mention_ids": null}
       }
     }
   ],
-  "connectors": [{"id": "discord", "display_name": "Discord", "targets": []}]
+  "connectors": [{"id": "discord", "display_name": "Discord", "targets": [], "mentions": []}]
 }
 ```
+
+`default_ping` is when the notification pings until someone chooses otherwise:
+`never`, `attention` (only a warning or a failure) or `always`. Reports of
+something done (Sync finished, Rename finished, Old backups deleted, Synced
+without a stuck download) default to `never`; the rest to `attention`. In a
+route, `ping_when: null` means that default and `mention_ids: null` means
+whoever the webhook pings; `[]` is nobody.
 
 Every event appears whether or not it has been routed: a notification nobody
 can see is a notification nobody can turn off. `using_default` true means no
@@ -1855,8 +1887,47 @@ Input JSON:
 
 Notes:
 - `target_id: null` means "use the connector's default", the same as no row.
-- An unknown event key, an unknown connector, or a destination belonging to a
-  different connector is a `400` and nothing is saved for that row.
+- Optional per row: `ping_when` (`never` | `attention` | `always`, or `null`
+  for the notification's default) and `mention_ids` (a list, `[]` for nobody,
+  or `null` for whoever the webhook pings).
+- An unknown event key, an unknown connector, a destination belonging to a
+  different connector, an unknown ping rule or a mention not in the list is a
+  `400` and nothing is saved for that row.
+
+### POST `/connectors/<connector_id>/mentions`
+Adds someone a message can ping, under a name. Only for a connector with
+`supports_mentions` (Discord) — `400` otherwise.
+
+Input JSON:
+```json
+{"label": "Admins", "kind": "role", "value": "112233445566778899"}
+```
+
+Notes:
+- `kind` is one of the connector's `mention_kinds`: for Discord `role`,
+  `user`, `here` or `everyone`. A role or a user needs its Discord ID (digits
+  only); `here` and `everyone` need none, and a value sent with them is dropped.
+- `label` is unique per connector, case-insensitively.
+- Output: `mention_id` and the whole `mentions` list.
+
+### PATCH `/connectors/<connector_id>/mentions/<mention_id>`
+Changes the name, kind or ID. Every webhook and route that pings it follows,
+because they hold the id, not the Discord ID.
+
+### DELETE `/connectors/<connector_id>/mentions/<mention_id>`
+Removes it, and takes it out of every webhook's and route's list. A route that
+pinged only this one is left pinging nobody — it does not fall back to its
+webhook's pings, because someone chose who that route pings.
+
+### POST `/connectors/<connector_id>/mentions/<mention_id>/test`
+Sends a test message to one webhook (`{"target_id": "tgt_abc123"}`; without one,
+the default webhook) that pings only this mention, to prove the ping arrives.
+`400` with the service's explanation when the message is refused.
+
+How a ping is sent (Discord): the mentions go in the message text above the
+card, because Discord never pings from inside one, and `allowed_mentions` is
+always sent, naming exactly who may be pinged. Nothing else in a message — a
+title that happens to contain `@everyone` — can ping anyone.
 
 ### GET `/connectors/<connector_id>/deliveries`
 The last hundred announcements this connector handled, newest first. This is

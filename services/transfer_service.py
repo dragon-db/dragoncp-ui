@@ -595,11 +595,14 @@ class TransferService:
             # Check 1: Server should have at least as many files as local
             if server_file_count > 0 and local_file_count > 0:
                 if server_file_count < local_file_count:
-                    reasons.append(f"Server has fewer media files ({server_file_count}) than local ({local_file_count})")
+                    reasons.append(f"The remote server has fewer media files "
+                                   f"({server_file_count}) than here ({local_file_count})")
             
             # Check 2: Deleted files should not exceed incoming files
             if deleted_count > incoming_count:
-                reasons.append(f"Would delete {deleted_count} media files but only receive {incoming_count} new files")
+                reasons.append(
+                    f"Would delete {deleted_count} media file{'s' if deleted_count != 1 else ''} "
+                    f"but only receive {incoming_count} new file{'s' if incoming_count != 1 else ''}")
             
             safe_to_sync = len(reasons) == 0
             reason = "; ".join(reasons) if reasons else "All safety checks passed"

@@ -421,7 +421,9 @@ function Status({
       note = fileText(film.service_file);
     } else if (film.state === "different") {
       tone = "warn";
-      lines.push(`${displayName} has a different file for this film.`);
+      lines.push(
+        `${displayName} has an upgrade for this film: a different file from the one here.`
+      );
       note = `${displayName}: ${fileText(film.service_file)}. Here: ${fileText(film.local_file)}.`;
     } else if (film.state === "in_sync") {
       tone = "ok";
@@ -443,10 +445,12 @@ function Status({
       );
     }
     if (differentEpisodes.length === 1) {
-      lines.push(`${displayName} has a different file for ${differentEpisodes[0].code}.`);
+      lines.push(
+        `${displayName} has an upgrade for ${differentEpisodes[0].code}: a different file from the one here.`
+      );
     } else if (differentEpisodes.length > 1) {
       lines.push(
-        `${displayName} has different files for ${differentEpisodes.length} episodes: ${codesText(differentEpisodes)}.`
+        `${displayName} has upgrades for ${differentEpisodes.length} episodes: ${codesText(differentEpisodes)}.`
       );
     }
   } else if (detail.state === "in_sync" || detail.state === "kept_here") {
@@ -745,9 +749,13 @@ function SeasonBlock({
   const label = season.specials ? "Specials" : `Season ${season.season_number}`;
   const panelId = `season-${season.season_number}`;
 
-  const summary: Array<{ text: string; warn?: boolean }> = [];
+  const summary: Array<{ text: string; warn?: boolean; upgrade?: boolean }> = [];
   if (counts.missing_here) summary.push({ text: `${counts.missing_here} not here`, warn: true });
-  if (counts.different) summary.push({ text: `${counts.different} different`, warn: true });
+  if (counts.different)
+    summary.push({
+      text: `${counts.different} upgrade${counts.different === 1 ? "" : "s"}`,
+      upgrade: true,
+    });
   if (known > 0) summary.push({ text: `${here} of ${known} here` });
   const neither = counts.not_downloaded - upcoming.length;
   if (neither > 0 && known === 0) summary.push({ text: `${neither} not downloaded` });
@@ -777,7 +785,13 @@ function SeasonBlock({
           {summary.map((part) => (
             <span
               key={part.text}
-              className={part.warn ? "font-medium text-amber-400" : "text-muted-foreground"}
+              className={
+                part.upgrade
+                  ? "font-medium text-sky-300"
+                  : part.warn
+                    ? "font-medium text-amber-400"
+                    : "text-muted-foreground"
+              }
             >
               {part.text}
             </span>

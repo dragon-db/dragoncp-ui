@@ -470,7 +470,7 @@ class AutoScanner:
                   held: List[Dict[str, Any]]) -> None:
         try:
             from services.connectors import notify
-            from services.connectors.events import Event, Field
+            from services.connectors.events import Event, Field, headline
             lines = [f"• {d['find']['label']} — {d['find']['reasons'][0]}"
                      for d in started[:10] if d['find'].get('reasons')]
             if len(started) > 10:
@@ -483,7 +483,7 @@ class AutoScanner:
                 title=f"Auto-scanner found {len(started)} to sync in {source.title()}",
                 summary='These go through the normal pipeline; the usual finished or '
                         'failed message follows for each.',
-                fields=tuple(fields), author='Auto-scanner',
+                fields=tuple(fields), author=headline('Auto-scanner', 'syncs started'),
             ))
         except Exception:  # noqa: BLE001
             log.exception('Could not announce the scan')

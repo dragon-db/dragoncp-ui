@@ -302,7 +302,7 @@ build on. See [../features/sync-engine/README.md](../features/sync-engine/README
   **Sync anyway** on a run the queue then refuses reports failure and leaves the
   run `failed`.
 - **`FinishTests`** (19) - completion marks every webhook `completed` and is
-  announced once, as "Automated Sync"; finishing twice is harmless; a transfer
+  announced once, as "AUTO SYNC - SONARR"; finishing twice is harmless; a transfer
   is linked to its title in the title index, which learns the local folder from
   it; a failure
   marks the webhooks failed and opens a *Failed* alert offering **Retry**; a

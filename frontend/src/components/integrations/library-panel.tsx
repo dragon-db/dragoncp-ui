@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  IconCircleArrowUp,
   IconInbox,
   IconInfoCircle,
   IconPlugConnectedX,
@@ -20,11 +21,17 @@ import {
 import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
 import { FilterChips, ListSearch } from "@/components/layout/list-controls";
 import { type LibraryItem, useLibrary, useRefreshLibrary } from "@/hooks/useMediaLibrary";
-import { Notice, TitlePoster, TitleStateChip } from "@/components/integrations/library-bits";
+import {
+  Notice,
+  TitlePoster,
+  TitleStateChip,
+  ToneChip,
+} from "@/components/integrations/library-bits";
 import {
   LIBRARY_FILTERS,
   STATE_RANK,
   formatSize,
+  hasUpgrade,
   itemSentence,
   libraryError,
 } from "@/components/integrations/library-vocab";
@@ -45,6 +52,8 @@ import {
  */
 
 type SortKey = "attention" | "recent" | "title";
+
+const UPGRADE_FILTER = "upgrade";
 
 const SORTS: Array<{ value: SortKey; label: string }> = [
   { value: "attention", label: "Needs attention first" },
@@ -87,13 +96,26 @@ export function LibraryPanel({
       label: entry.label,
       count: items.filter((item) => entry.states.includes(item.sync_state)).length,
     })).filter((entry) => entry.count > 0 || entry.value === "out_of_sync");
-    return [...present, { value: "all", label: "All", count: items.length }];
+    // Upgrades are a kind of out of sync, picked out on their own. Always
+    // offered, like Out of sync, so "none waiting" is an answer too.
+    const upgrade = {
+      value: UPGRADE_FILTER,
+      label: "Upgrade",
+      count: items.filter(hasUpgrade).length,
+    };
+    return [
+      present[0],
+      upgrade,
+      ...present.slice(1),
+      { value: "all", label: "All", count: items.length },
+    ];
   }, [items]);
 
   const visible = useMemo(() => {
     const wanted = LIBRARY_FILTERS.find((entry) => entry.value === filter)?.states;
     const needle = query.trim().toLowerCase();
     const list = items
+      .filter((item) => (filter === UPGRADE_FILTER ? hasUpgrade(item) : true))
       .filter((item) => !wanted || wanted.includes(item.sync_state))
       .filter((item) => !needle || (item.title ?? "").toLowerCase().includes(needle));
     return [...list].sort((a, b) => {
@@ -250,6 +272,7 @@ function TitleCard({
 }) {
   const sentence = itemSentence(item, displayName);
   const outOfSync = item.sync_state === "out_of_sync";
+  const upgrade = hasUpgrade(item);
   return (
     <li className="min-w-0">
       <button
@@ -277,7 +300,10 @@ function TitleCard({
             <span className="font-normal text-muted-foreground"> ({item.year})</span>
           ) : null}
         </span>
-        <TitleStateChip state={item.sync_state} size="sm" className="self-start" />
+        <span className="flex flex-wrap items-center gap-1">
+          <TitleStateChip state={item.sync_state} size="sm" />
+          {upgrade && <ToneChip tone="info" icon={IconCircleArrowUp} label="Upgrade" size="sm" />}
+        </span>
         <CountsLine item={item} movie={movie} displayName={displayName} />
       </button>
     </li>

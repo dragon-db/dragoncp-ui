@@ -16,10 +16,12 @@ import { errorText } from "@/lib/api-error";
 import { DeliveryLog } from "@/components/integrations/delivery-log";
 import { RoutingPanel } from "@/components/integrations/routing-panel";
 import { TargetsPanel } from "@/components/integrations/targets-panel";
+import { MentionsPanel } from "@/components/integrations/mentions-panel";
 import { useConnector, useSaveConnector } from "@/hooks/useConnectors";
 import { useLibrary, useLibraryQueue } from "@/hooks/useMediaLibrary";
 import {
   IconAdjustmentsHorizontal,
+  IconAt,
   IconDownload,
   IconHistory,
   IconInbox,
@@ -28,7 +30,7 @@ import {
   IconRoute,
 } from "@tabler/icons-react";
 
-const NOTIFY_TABS = ["targets", "routing", "activity", "settings"];
+const NOTIFY_TABS = ["targets", "mentions", "routing", "activity", "settings"];
 const QUERY_TABS = ["library", "queue", "history", "settings"];
 
 /**
@@ -96,10 +98,22 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
 
   const toggleEnabled = async (enabled: boolean) => {
     try {
-      await save.mutateAsync({ enabled });
-      toast.success(
-        enabled ? `${connector.display_name} is on` : `${connector.display_name} is off`
-      );
+      const response = await save.mutateAsync({ enabled });
+      const name = connector.display_name;
+      // The switch saves only on/off. Say so when there is nothing saved to
+      // connect with, rather than "is on" over a form still waiting for Save.
+      if (enabled && response.connector && !response.connector.configured) {
+        toast.warning(
+          canNotify
+            ? `${name} is on, but it has no default webhook yet.`
+            : `${name} is on, but nothing is saved to connect with yet. Fill in ${connector.config_fields
+                .filter((field) => field.required)
+                .map((field) => field.label)
+                .join(" and ")} and press Save.`
+        );
+      } else {
+        toast.success(enabled ? `${name} is on` : `${name} is off`);
+      }
     } catch (error) {
       toast.error(errorText(error, "Could not change it"));
     }
@@ -171,6 +185,16 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
                 icon: IconInbox,
                 count: (connector.targets ?? []).length,
               },
+              ...(connector.supports_mentions
+                ? [
+                    {
+                      value: "mentions",
+                      label: "Mentions",
+                      icon: IconAt,
+                      count: (connector.mentions ?? []).length,
+                    },
+                  ]
+                : []),
               { value: "routing", label: "Routing", icon: IconRoute },
               { value: "activity", label: "Activity", icon: IconHistory },
               ...(hasSettings
@@ -189,6 +213,11 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
           <TabsContent value="targets" className="mt-4 space-y-4">
             <TargetsPanel connector={connector} />
           </TabsContent>
+          {connector.supports_mentions && (
+            <TabsContent value="mentions" className="mt-4 space-y-4">
+              <MentionsPanel connector={connector} />
+            </TabsContent>
+          )}
           <TabsContent value="routing" className="mt-4 space-y-4">
             <RoutingPanel connector={connector} />
           </TabsContent>

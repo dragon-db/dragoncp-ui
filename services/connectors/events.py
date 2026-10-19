@@ -36,6 +36,53 @@ ACCENT_BLOCKED = 'blocked'
 
 ACCENTS = (ACCENT_RENAME, ACCENT_BLOCKED)
 
+# --- headlines --------------------------------------------------------------
+#
+# The line above every message's title says what kind of message it is, in one
+# scheme: "TOPIC - DETAIL", upper case. A sync names how it started and where
+# from ("MANUAL SYNC - EXPLORE"); a failure says so in the topic ("AUTO SYNC
+# FAILED - SONARR"). Before 2.4.0 each sender wrote its own: "Automated Sync",
+# "Explore", "Manual Sync - FAILED ❌", "Manual Sync Alert ⚠️".
+
+def headline(topic: str, detail: str = '') -> str:
+    """A message's top line: "TOPIC - DETAIL", upper case."""
+    topic = ' '.join((topic or '').split()).upper()
+    detail = ' '.join((detail or '').split()).upper()
+    return f"{topic} - {detail}" if detail else topic
+
+
+#: How a sync started, for its headline.
+SYNC_AUTO = 'AUTO'
+SYNC_MANUAL = 'MANUAL'
+
+
+def sync_headline(mode: str, source: str = '', failed: bool = False) -> str:
+    """AUTO SYNC - SONARR, MANUAL SYNC - EXPLORE, AUTO SYNC FAILED - SCANNER."""
+    return headline(f"{mode} SYNC{' FAILED' if failed else ''}", source)
+
+
+# --- pings ------------------------------------------------------------------
+#
+# When a notification may ping someone (a Discord role, a user, @here). Who is
+# pinged is the route's or the webhook's choice; this is only *when*.
+
+PING_NEVER = 'never'
+#: Only a message that needs a person: a warning or a failure. "Sync finished"
+#: never pings under this rule; "Sync failed" always does.
+PING_ATTENTION = 'attention'
+PING_ALWAYS = 'always'
+
+PING_CHOICES = (PING_NEVER, PING_ATTENTION, PING_ALWAYS)
+
+
+def should_ping(when: str, severity: str) -> bool:
+    """Whether a message of `severity` pings under the rule `when`."""
+    if when == PING_ALWAYS:
+        return True
+    if when == PING_ATTENTION:
+        return severity in (WARNING, FAILURE)
+    return False
+
 
 @dataclass(frozen=True)
 class Field:
@@ -59,10 +106,10 @@ class Event:
     #: A sentence under the title. Optional; most events do not need one.
     summary: str = ''
     fields: Tuple[Field, ...] = ()
-    #: The small line above the title naming what produced this — "Manual
-    #: Sync", "File Rename", "Backup Retention".
+    #: The small line above the title: what this is, as "TOPIC - DETAIL" in
+    #: upper case — "AUTO SYNC - SONARR", "SAFETY CHECK - AUTO SYNC STOPPED".
+    #: Build it with `headline()`; every message uses the one scheme.
     author: str = ''
-    footer: str = ''
     thumbnail_url: Optional[str] = None
     #: Where to send someone who clicks the announcement. Usually this app.
     link_url: Optional[str] = None
@@ -96,6 +143,9 @@ class EventType:
     #: destination dropdown, so it says when this fires, not what code runs.
     description: str
     default_severity: str = INFO
+    #: When this pings until the operator says otherwise. Things that need a
+    #: person ping on a warning or a failure; reports of something done never.
+    default_ping: str = PING_ATTENTION
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -103,6 +153,7 @@ class EventType:
             'label': self.label,
             'description': self.description,
             'default_severity': self.default_severity,
+            'default_ping': self.default_ping,
         }
 
 
@@ -111,6 +162,7 @@ CATALOGUE: Tuple[EventType, ...] = (
         'transfer.completed', 'Sync finished',
         'A transfer finished successfully, with what moved and how fast.',
         SUCCESS,
+        default_ping=PING_NEVER,
     ),
     EventType(
         'transfer.failed', 'Sync failed',
@@ -121,16 +173,24 @@ CATALOGUE: Tuple[EventType, ...] = (
         'rename.finished', 'Rename finished',
         'A rename run finished — whole, partial, or failed — with the new names.',
         SUCCESS,
+        default_ping=PING_NEVER,
     ),
     EventType(
         'backup.retention_deleted', 'Old backups deleted',
         'The retention rule deleted stored versions. This cannot be undone, '
         'which is why it comes and finds you.',
         WARNING,
+        default_ping=PING_NEVER,
     ),
     EventType(
         'autosync.blocked', 'Automatic sync refused',
         'An automatic sync looked unsafe and stopped, waiting for a person.',
+        WARNING,
+    ),
+    EventType(
+        'sync.held', 'Waiting for a manual sync',
+        'Automatic sync is off for this library, so a batch is waiting for '
+        'someone to press Sync. Sent once per batch.',
         WARNING,
     ),
     EventType(
@@ -144,6 +204,7 @@ CATALOGUE: Tuple[EventType, ...] = (
         'A season synced while something for it was stuck in Sonarr, or after '
         'waiting the full 30 minutes for a slow download.',
         WARNING,
+        default_ping=PING_NEVER,
     ),
     EventType(
         'scanner.found', 'Auto-scanner found something',

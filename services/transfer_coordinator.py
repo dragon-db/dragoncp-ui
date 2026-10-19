@@ -28,8 +28,6 @@ from services.queue_manager import QueueManager
 from services.path_service import PathService
 from services.settings_service import SettingsService
 from services.remote_daemon import RemoteDaemonService
-from services.connectors import notify
-from services.connectors.events import ACCENT_BLOCKED, WARNING, Event, Field
 
 # The model owns the definition of "active"; importing it here keeps one list
 # rather than two that can drift.
@@ -1004,44 +1002,3 @@ class TransferCoordinator:
         
         self.series_webhook_model.update(notification_id, updates)
         print(f"⚠️  Marked {notification_id} for manual sync: {reason}")
-    
-    def send_manual_sync_discord_alert(self, notification: Dict, validation_result: Dict):
-        """Announce that an automatic sync refused and wants a person.
-
-        The most consequential message this app sends: something was going to
-        run by itself, looked wrong, and stopped. Nobody is watching the screen
-        when it happens, which is the entire reason it is pushed.
-        """
-        try:
-            media_type = notification['media_type']
-            series_title = notification['series_title']
-            season_number = notification['season_number']
-            season_path = notification['season_path']
-
-            notify(Event(
-                key='autosync.blocked',
-                severity=WARNING,
-                accent=ACCENT_BLOCKED,
-                title=f"**{series_title}** - Season {season_number}",
-                summary='Media Type: ' + media_type.upper(),
-                fields=(
-                    Field('Season Path', season_path, monospace=True),
-                    Field('Reason', validation_result['reason']),
-                    Field(
-                        'File Analysis',
-                        f"Server Files: {validation_result.get('server_file_count', 0)}\n"
-                        f"Local Files: {validation_result.get('local_file_count', 0)}\n"
-                        f"Would Delete: {validation_result.get('deleted_count', 0)} media files\n"
-                        f"Would Add: {validation_result.get('incoming_count', 0)} media files",
-                        monospace=True,
-                    ),
-                ),
-                author='Manual Sync Alert ⚠️',
-                footer='DRAGONCP Auto-Sync Safety Check',
-                context={'media_type': media_type},
-            ))
-
-        except Exception as e:
-            print(f"❌ Error announcing the manual sync alert: {e}")
-            import traceback
-            traceback.print_exc()

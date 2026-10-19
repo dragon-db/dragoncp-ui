@@ -21,7 +21,7 @@ take down a transfer.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, FrozenSet, Optional
+from typing import Any, Callable, Dict, FrozenSet, Optional, Sequence
 
 from services.connectors.events import Event
 
@@ -104,6 +104,25 @@ class Target:
             'is_default': self.is_default,
             'enabled': self.enabled,
         }
+
+
+@dataclass(frozen=True)
+class Mention:
+    """Someone a message may ping, under a name the operator chose.
+
+    `kind` is the service's own word for what is pinged — for Discord a role,
+    a user, `here` or `everyone` — and `value` its id ('' when the kind needs
+    none). The adapter decides how it is written into a message.
+    """
+
+    mention_id: str
+    label: str
+    kind: str
+    value: str = ''
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {'mention_id': self.mention_id, 'label': self.label,
+                'kind': self.kind, 'value': self.value}
 
 
 class ConfigField:
@@ -220,6 +239,11 @@ class NotifyingConnector(Connector):
     target_noun = 'webhook'
     #: The secret name a target's credential is stored under.
     target_secret_kind = 'url'
+    #: Whether a message can ping someone. When True, `deliver` takes a
+    #: `mentions` argument and `mention_kinds` lists what can be pinged.
+    supports_mentions = False
+    #: The kinds of mention, in the order the form offers them.
+    mention_kinds: Sequence[str] = ()
 
     def render(self, event: Event) -> Dict[str, Any]:
         """Turn a neutral event into this service's payload shape."""
@@ -229,6 +253,13 @@ class NotifyingConnector(Connector):
                 credential: str) -> DeliveryResult:
         """Send one rendered event to one destination."""
         raise NotImplementedError
+
+    def validate_mention(self, kind: str, value: str) -> Optional[str]:
+        """Reject a mention this service could not ping.
+
+        Returns an operator-facing reason, or None when it is acceptable.
+        """
+        return f"{self.display_name} messages cannot ping anyone"
 
     def validate_target(self, credential: str) -> Optional[str]:
         """Reject a bad destination credential before it is stored.

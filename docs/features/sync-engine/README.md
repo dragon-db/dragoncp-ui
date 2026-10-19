@@ -291,10 +291,11 @@ Backups page.
 
 ### 9. Tell — Discord and Notifications
 
-The outcome is announced on Discord with a label for the kind of sync
-("Automated Sync", "Manual Sync", "Auto-scanner", …). A Sonarr, Radarr or
-auto-scanner batch that a person released — Sync or Go now while it was held or
-waiting, or a restart that joined it — is announced as "Manual Sync".
+The outcome is announced on Discord with a headline naming how the sync
+started and where from ("AUTO SYNC - SONARR", "AUTO SYNC - SCANNER", "MANUAL
+SYNC - EXPLORE", …; see [notifications](../notifications/README.md)). A Sonarr,
+Radarr or auto-scanner batch that a person released — Sync or Go now while it
+was held or waiting, or a restart that joined it — is a MANUAL SYNC.
 Cancelled syncs, restores and simulations — restarted simulations included —
 are not announced, and the stage says why. Anything that needs a person opens
 an alert on the Notifications page.

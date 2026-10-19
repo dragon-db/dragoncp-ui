@@ -2,7 +2,7 @@
 """
 Connector rows: the store behind the connector layer.
 
-Five tables, one class. Every method here is about rows; nothing here knows
+Six tables, one class. Every method here is about rows; nothing here knows
 what a Discord webhook is or how an announcement is rendered.
 
 The one invariant worth stating: **secrets go out of this class only through
@@ -20,6 +20,21 @@ from typing import Any, Callable, Dict, List, Optional
 #: How many delivery rows to keep per connector. Enough to answer "why didn't
 #: I get told about that" for a normal week; small enough to never matter.
 DELIVERY_HISTORY_LIMIT = 100
+
+
+def _id_list(raw: Any) -> Optional[List[str]]:
+    """A stored JSON list of ids, or None when nothing is stored."""
+    if raw in (None, ''):
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return [str(item) for item in value] if isinstance(value, list) else None
+
+
+def _id_json(ids: Optional[List[str]]) -> Optional[str]:
+    return None if ids is None else json.dumps([str(i) for i in ids])
 
 
 class ConnectorStore:
@@ -95,6 +110,18 @@ class ConnectorStore:
             ''', (1 if ok else 0, message, connector_id))
             conn.commit()
 
+    def clear_check(self, connector_id: str) -> None:
+        """Forget the last check, once it describes a connection that changed."""
+        with self.db.get_connection() as conn:
+            conn.execute('''
+                UPDATE connector
+                   SET last_check_at = NULL,
+                       last_check_ok = NULL,
+                       last_check_message = NULL
+                 WHERE connector_id = ?
+            ''', (connector_id,))
+            conn.commit()
+
     def delete_connector(self, connector_id: str) -> None:
         """Remove a connector and everything belonging to it."""
         with self.db.get_connection() as conn:
@@ -102,6 +129,7 @@ class ConnectorStore:
             conn.execute('DELETE FROM connector_secret WHERE connector_id = ?', (connector_id,))
             conn.execute('DELETE FROM connector_target WHERE connector_id = ?', (connector_id,))
             conn.execute('DELETE FROM notification_route WHERE connector_id = ?', (connector_id,))
+            conn.execute('DELETE FROM connector_mention WHERE connector_id = ?', (connector_id,))
             conn.commit()
 
     # ---- secrets -----------------------------------------------------------
@@ -203,7 +231,9 @@ class ConnectorStore:
     def update_target(self, target_id: str, *, label: Optional[str] = None,
                       credential: Optional[str] = None,
                       enabled: Optional[bool] = None,
-                      make_default: Optional[bool] = None) -> bool:
+                      make_default: Optional[bool] = None,
+                      mention_ids: Optional[List[str]] = None) -> bool:
+        """Change what was supplied; `mention_ids=[]` clears the webhook's pings."""
         target = self.get_target(target_id)
         if not target:
             return False
@@ -232,6 +262,11 @@ class ConnectorStore:
                 conn.execute(
                     'UPDATE connector_target SET enabled = ? WHERE target_id = ?',
                     (1 if enabled else 0, target_id),
+                )
+            if mention_ids is not None:
+                conn.execute(
+                    'UPDATE connector_target SET mention_ids = ? WHERE target_id = ?',
+                    (_id_json(mention_ids), target_id),
                 )
             conn.commit()
         return True
@@ -304,17 +339,28 @@ class ConnectorStore:
         return self._route_row(row) if row else None
 
     def set_route(self, event_key: str, connector_id: str,
-                  target_id: Optional[str], enabled: bool = True) -> None:
+                  target_id: Optional[str], enabled: bool = True,
+                  ping_when: Optional[str] = None,
+                  mention_ids: Optional[List[str]] = None) -> None:
+        """Where one notification goes, and when and whom it pings.
+
+        `ping_when=None` is the catalogue's default; `mention_ids=None` is the
+        webhook's own pings, and `[]` is nobody.
+        """
         with self.db.get_connection() as conn:
             conn.execute('''
                 INSERT INTO notification_route
-                    (event_key, connector_id, target_id, enabled, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    (event_key, connector_id, target_id, enabled, ping_when,
+                     mention_ids, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(event_key, connector_id) DO UPDATE SET
                     target_id = excluded.target_id,
                     enabled = excluded.enabled,
+                    ping_when = excluded.ping_when,
+                    mention_ids = excluded.mention_ids,
                     updated_at = CURRENT_TIMESTAMP
-            ''', (event_key, connector_id, target_id, 1 if enabled else 0))
+            ''', (event_key, connector_id, target_id, 1 if enabled else 0,
+                  ping_when, _id_json(mention_ids)))
             conn.commit()
 
     def clear_route(self, event_key: str, connector_id: str) -> None:
@@ -324,6 +370,93 @@ class ConnectorStore:
                 (event_key, connector_id),
             )
             conn.commit()
+
+    # ---- mentions ----------------------------------------------------------
+
+    def list_mentions(self, connector_id: str) -> List[Dict[str, Any]]:
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                'SELECT * FROM connector_mention WHERE connector_id = ? '
+                'ORDER BY created_at ASC, id ASC',
+                (connector_id,),
+            ).fetchall()
+        return [self._mention_row(row) for row in rows]
+
+    def get_mention(self, mention_id: str) -> Optional[Dict[str, Any]]:
+        with self.db.get_connection() as conn:
+            row = conn.execute(
+                'SELECT * FROM connector_mention WHERE mention_id = ?', (mention_id,)
+            ).fetchone()
+        return self._mention_row(row) if row else None
+
+    def mentions_by_ids(self, connector_id: str,
+                        mention_ids: Optional[List[str]]) -> List[Dict[str, Any]]:
+        """These mentions, in the order given. Ids that no longer exist are
+        skipped: a deleted mention pings nobody rather than failing a message."""
+        if not mention_ids:
+            return []
+        known = {m['mention_id']: m for m in self.list_mentions(connector_id)}
+        seen, out = set(), []
+        for mention_id in mention_ids:
+            if mention_id in known and mention_id not in seen:
+                seen.add(mention_id)
+                out.append(known[mention_id])
+        return out
+
+    def create_mention(self, connector_id: str, label: str, kind: str,
+                       value: str = '') -> str:
+        mention_id = f"men_{uuid.uuid4().hex[:12]}"
+        with self.db.get_connection() as conn:
+            conn.execute('''
+                INSERT INTO connector_mention (mention_id, connector_id, label, kind, value)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (mention_id, connector_id, label, kind, value or ''))
+            conn.commit()
+        return mention_id
+
+    def update_mention(self, mention_id: str, *, label: Optional[str] = None,
+                       kind: Optional[str] = None, value: Optional[str] = None) -> bool:
+        if not self.get_mention(mention_id):
+            return False
+        with self.db.get_connection() as conn:
+            for column, new in (('label', label), ('kind', kind), ('value', value)):
+                if new is not None:
+                    conn.execute(
+                        f'UPDATE connector_mention SET {column} = ? WHERE mention_id = ?',
+                        (new, mention_id),
+                    )
+            conn.commit()
+        return True
+
+    def delete_mention(self, mention_id: str) -> bool:
+        """Remove a mention, and take it out of every webhook and route.
+
+        A route that pinged only this one is left pinging nobody rather than
+        falling back to its webhook's pings: someone chose who that route
+        pings, and quietly choosing others would be worse.
+        """
+        mention = self.get_mention(mention_id)
+        if not mention:
+            return False
+        connector_id = mention['connector_id']
+        with self.db.get_connection() as conn:
+            conn.execute('DELETE FROM connector_mention WHERE mention_id = ?', (mention_id,))
+            for table, key in (('connector_target', 'target_id'),
+                               ('notification_route', 'rowid')):
+                rows = conn.execute(
+                    f'SELECT {key}, mention_ids FROM {table} '
+                    f'WHERE connector_id = ? AND mention_ids IS NOT NULL',
+                    (connector_id,),
+                ).fetchall()
+                for row in rows:
+                    ids = _id_list(row[1]) or []
+                    if mention_id in ids:
+                        conn.execute(
+                            f'UPDATE {table} SET mention_ids = ? WHERE {key} = ?',
+                            (_id_json([i for i in ids if i != mention_id]), row[0]),
+                        )
+            conn.commit()
+        return True
 
     # ---- deliveries --------------------------------------------------------
 
@@ -335,15 +468,18 @@ class ConnectorStore:
                         skipped_reason: Optional[str] = None,
                         status_code: Optional[int] = None,
                         error: Optional[str] = None,
-                        duration_ms: int = 0) -> None:
+                        duration_ms: int = 0,
+                        mentions: Optional[str] = None) -> None:
+        """`mentions` is who the message pinged, by name, for the log."""
         with self.db.get_connection() as conn:
             conn.execute('''
                 INSERT INTO connector_delivery
                     (connector_id, target_id, target_label, event_key, title,
-                     ok, skipped_reason, status_code, error, duration_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ok, skipped_reason, status_code, error, duration_ms, mentions)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (connector_id, target_id, target_label, event_key, title,
-                  1 if ok else 0, skipped_reason, status_code, error, duration_ms))
+                  1 if ok else 0, skipped_reason, status_code, error, duration_ms,
+                  mentions or None))
             # Trimmed on write rather than by a sweep, so the table cannot grow
             # between sweeps and there is no second thing to schedule.
             conn.execute('''
@@ -388,10 +524,18 @@ class ConnectorStore:
         data['enabled'] = bool(data.get('enabled'))
         if data.get('last_send_ok') is not None:
             data['last_send_ok'] = bool(data['last_send_ok'])
+        data['mention_ids'] = _id_list(data.get('mention_ids')) or []
         return data
 
     @staticmethod
     def _route_row(row) -> Dict[str, Any]:
         data = dict(row)
         data['enabled'] = bool(data.get('enabled'))
+        data['mention_ids'] = _id_list(data.get('mention_ids'))
+        return data
+
+    @staticmethod
+    def _mention_row(row) -> Dict[str, Any]:
+        data = dict(row)
+        data.pop('id', None)
         return data

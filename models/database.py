@@ -1097,6 +1097,33 @@ class DatabaseManager:
             conn.execute('CREATE INDEX IF NOT EXISTS idx_explore_plan_expiry ON explore_plan(expires_at)')
             conn.execute('CREATE INDEX IF NOT EXISTS idx_admin_account_active ON admin_account(is_active)')
 
+            # Who a message may ping: a Discord role, a user, @here or
+            # @everyone, under a name the operator chose. Webhooks and routes
+            # refer to these by id (JSON lists), so renaming one or fixing its
+            # id changes every place it is used.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS connector_mention (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mention_id TEXT UNIQUE NOT NULL,
+                    connector_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    value TEXT NOT NULL DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (connector_id, label)
+                )
+            ''')
+            # A webhook's own pings, used for every message sent to it unless
+            # the notification chooses others. NULL is nobody.
+            self._ensure_column(conn, 'connector_target', 'mention_ids', "TEXT")
+            # When a notification pings (never / warnings and failures /
+            # always; NULL is the catalogue's default) and whom (NULL is the
+            # webhook's own pings).
+            self._ensure_column(conn, 'notification_route', 'ping_when', "TEXT")
+            self._ensure_column(conn, 'notification_route', 'mention_ids', "TEXT")
+            # Who a delivered message pinged, by name, for the delivery log.
+            self._ensure_column(conn, 'connector_delivery', 'mentions', "TEXT")
+
             conn.execute('CREATE INDEX IF NOT EXISTS idx_connector_target_owner ON connector_target(connector_id)')
             conn.execute(
                 'CREATE INDEX IF NOT EXISTS idx_connector_delivery_recent '

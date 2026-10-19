@@ -6,6 +6,8 @@
  * Status follows the app's four notes and nothing else: emerald for in sync or
  * finished, brand for something moving, amber for something a person may need
  * to look at, rose for a failure; muted for a fact that is no verdict at all.
+ * One addition: sky for an upgrade waiting, the colour the dry run and Explore
+ * give a file with a newer version on the other side.
  * Every state carries an icon and a word beside its colour.
  */
 
@@ -13,7 +15,7 @@ import type { ComponentType } from "react";
 import {
   IconAlertTriangle,
   IconArchive,
-  IconArrowsDiff,
+  IconCircleArrowUp,
   IconCircleCheck,
   IconCircleDashed,
   IconCircleX,
@@ -36,13 +38,14 @@ import type {
 
 type Icon = ComponentType<{ className?: string }>;
 
-export type Tone = "ok" | "warn" | "crit" | "brand" | "muted";
+export type Tone = "ok" | "warn" | "crit" | "brand" | "info" | "muted";
 
 export const TONE_CHIP: Record<Tone, string> = {
   ok: "border-emerald-500/40 bg-emerald-500/15 text-emerald-300",
   warn: "border-amber-500/40 bg-amber-500/15 text-amber-400",
   crit: "border-rose-500/40 bg-rose-500/15 text-rose-400",
   brand: "border-brand/40 bg-brand/15 text-brand-foreground",
+  info: "border-sky-500/40 bg-sky-500/15 text-sky-300",
   muted: "border-border bg-muted/40 text-muted-foreground",
 };
 
@@ -51,6 +54,7 @@ export const TONE_TEXT: Record<Tone, string> = {
   warn: "text-amber-400",
   crit: "text-rose-400",
   brand: "text-brand-hover",
+  info: "text-sky-300",
   muted: "text-muted-foreground",
 };
 
@@ -60,6 +64,7 @@ export const TONE_BAR: Record<Tone, string> = {
   warn: "bg-amber-500/75",
   crit: "bg-rose-500/75",
   brand: "bg-brand-gradient-x",
+  info: "bg-sky-500/70",
   muted: "bg-muted-foreground/40",
 };
 
@@ -100,6 +105,20 @@ export const STATE_RANK: Record<LibraryState, number> = {
   no_files: 5,
 };
 
+/**
+ * The reasons that mean an upgrade is waiting: a newer file imported since the
+ * last sync, or the service's file differing from the one here.
+ */
+const UPGRADE_KINDS = new Set(["new_file", "different"]);
+
+/** Whether this title has an upgrade waiting to be synced. */
+export function hasUpgrade(item: LibraryItem): boolean {
+  return (
+    item.sync_state === "out_of_sync" &&
+    (item.attention ?? []).some((entry) => UPGRADE_KINDS.has(entry.kind))
+  );
+}
+
 /** The Library's filter chips, out of sync first. */
 export const LIBRARY_FILTERS: Array<{ value: string; label: string; states: LibraryState[] }> = [
   { value: "out_of_sync", label: "Out of sync", states: ["out_of_sync"] },
@@ -125,10 +144,10 @@ export const EPISODE_STATE: Record<EpisodeState, StateInfo> = {
     hint: "The service has this file and this disk does not.",
   },
   different: {
-    label: "Different",
-    tone: "warn",
-    icon: IconArrowsDiff,
-    hint: "Both have this episode, but the files differ: a newer release there, or another one.",
+    label: "Upgrade",
+    tone: "info",
+    icon: IconCircleArrowUp,
+    hint: "Both have this episode, but the service holds a different file — usually an upgrade.",
   },
   in_sync: {
     label: "Here",
@@ -275,8 +294,8 @@ export function attentionText(entry: LibraryAttention, service: string): string 
       return `${plural(entry.count, "episode")} on ${service} not here yet: ${codes(entry.episodes)}`;
     case "different":
       return entry.episodes?.length
-        ? `${plural(entry.count, "episode")} with a different file on ${service}: ${codes(entry.episodes)}`
-        : `${service} holds a different file${
+        ? `${entry.count === 1 ? "An upgrade" : `${entry.count} upgrades`} on ${service}: ${codes(entry.episodes)}`
+        : `An upgrade on ${service}: a different file${
             entry.quality ? ` (${entry.quality}, ${formatSize(entry.size)})` : ""
           }`;
     default:

@@ -47,6 +47,13 @@ badge, count and action on the page comes from those four labels.
 5. **Roll-up**: a season with nothing missing and nothing upgraded is Synced;
    some present is Partial; none present is Out of sync. **A series' status
    covers all its seasons**, not just the newest.
+6. **Upgrade is a tag, not a status.** A series, season or film with at least
+   one upgraded file carries a sky **Upgrade** tag beside its status, and the
+   episode's own label reads **Upgrade** (the action that fetches it is still
+   called Replace). It is a tag because one series can be missing an episode
+   and have an upgrade for another; "Partial" alone could not say which. The
+   **Upgrade** filter lists every title with one, however old — as of the last
+   Re-check sync.
 
 ### "Not on remote" is an answer, not a gap
 
@@ -130,8 +137,8 @@ these read "The Explore plan was judged safe before it was approved" and
 takes in webhooks, because a plan is an exact file list, and it skips the ready
 check. The queue still holds it behind anything writing to the same folder —
 and, since 2.3.0, behind a copy of the whole series that folder belongs to. Its
-finished or failed message on Discord is labelled **Explore**; before 2.3.0 it
-read "Manual Sync".
+finished or failed message on Discord is headed **MANUAL SYNC - EXPLORE**
+(2.4.0); 2.3.x said "Explore", and before that "Manual Sync".
 
 **Season folders that Sonarr would have named differently are flagged, not
 blocked.** Sonarr writes `Season {season:00}`, so `Season 01` and `Specials`.
