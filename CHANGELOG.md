@@ -11,6 +11,63 @@ Newest first.
 
 ---
 
+## 2.4.0
+
+Quality of life, round two: connection tests that test what you typed,
+upgrades you can find, Discord pings, and Discord messages that say what was
+synced and how.
+
+### Integrations
+
+- **Test connection tests what is in the form** (issue #63). Sonarr, Radarr
+  and Jellyfin used to test only the saved settings, so a freshly typed address
+  and key answered "Not configured yet". The test now uses the form's values,
+  saved or not, saves nothing, and shows its answer under the fields — "not
+  saved yet" when it tested unsaved values. **Unsaved changes** shows beside
+  Save. Saving a new address or key tests it straight away.
+- **The On/Off switch no longer wipes what you typed**, and switching a
+  connector on with nothing saved says so.
+- **Clicking through a saved API key no longer deletes it on Save.**
+- The activity log gives a failed test's real reason ("Sonarr test failed:
+  Not configured yet") instead of always "Could not reach Sonarr".
+
+### Upgrades
+
+- **An Upgrade tag** (issue #25) marks a show, season or film whose remote
+  file is newer than the one here — in Explore's list and on the Sonarr and
+  Radarr Library tabs, each with an **Upgrade** filter. The episode label reads
+  **Upgrade** instead of "Replace" (Explore) or "Different" (Library tab); the
+  Replace button keeps its name. Explore's filters wrap onto a second line on a
+  narrower desktop instead of hiding **Re-check sync**.
+
+### Discord
+
+- **Pings** (issue #35). A new **Mentions** tab holds who a message can ping —
+  a Discord role, a person, @here or @everyone — each with a Test ping. Each
+  webhook can ping people by default, and each notification on the Routing tab
+  chooses when it pings (never, on warnings and failures, or always) and whom.
+  By default failures, refusals and anything needing a person ping; "Sync
+  finished" and other reports do not. Only the chosen people can be pinged: a
+  title containing "@everyone" never pings anyone.
+- **New: Waiting for a manual sync.** With automatic sync off, a batch waiting
+  for someone to press Sync is announced once.
+- **Sync messages say what was synced and how**: one line per episode copied
+  (with "upgrade to …" when it replaced an older file), the route — ⚡ FAST,
+  SSH or SSH FALLBACK — and size and speed.
+- **One look for every message.** The line above the title names what
+  happened in one upper-case scheme — AUTO SYNC - SONARR, MANUAL SYNC -
+  EXPLORE, AUTO SYNC FAILED - SCANNER, SAFETY CHECK - AUTO SYNC STOPPED — and
+  every message carries the same footer, `DragonCP v2.4.0`. The safety-check
+  message no longer repeats its reason and counts.
+
+### Upgrading
+
+- The database gains one table and four columns on first start; nothing to
+  run by hand.
+- Nobody is pinged until someone is added on Discord's Mentions tab.
+
+---
+
 ## 2.3.1
 
 Fast transfers work again, and can no longer fail a copy on their own.
