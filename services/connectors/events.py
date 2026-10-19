@@ -41,7 +41,7 @@ ACCENTS = (ACCENT_RENAME, ACCENT_BLOCKED)
 # The line above every message's title says what kind of message it is, in one
 # scheme: "TOPIC - DETAIL", upper case. A sync names how it started and where
 # from ("MANUAL SYNC - EXPLORE"); a failure says so in the topic ("AUTO SYNC
-# FAILED - SONARR"). Before 2.4.0 each sender wrote its own: "Automated Sync",
+# FAILED - SONARR"). Before 2.3.2 each sender wrote its own: "Automated Sync",
 # "Explore", "Manual Sync - FAILED ❌", "Manual Sync Alert ⚠️".
 
 def headline(topic: str, detail: str = '') -> str:

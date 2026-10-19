@@ -234,7 +234,7 @@ announcement that cannot be seen cannot be turned off.
 | `rename.finished` | A rename run finished — whole, partial or failed |
 | `backup.retention_deleted` | The retention rule deleted stored versions |
 | `autosync.blocked` | An automatic sync's safety check stopped it, waiting for a person — not one a person started, or released with Sync or Go now |
-| `sync.held` | Automatic sync is off for the library, so a batch is waiting for someone to press Sync. Once per batch: webhooks that join it later send nothing (added in 2.4.0, issue #35) |
+| `sync.held` | Automatic sync is off for the library, so a batch is waiting for someone to press Sync. Once per batch: webhooks that join it later send nothing (added in 2.3.2, issue #35) |
 | `sync.interrupted` | A restart may have left a sync undone, or lost the result of a copy |
 | `sync.stuck` | A season went ahead without a download stuck in Sonarr, or after waiting 30 minutes |
 | `scanner.found` | The auto-scanner started syncs, or cannot close a gap (a gap's alert, once dismissed, is not sent again for 24 hours) |

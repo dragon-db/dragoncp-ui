@@ -138,7 +138,7 @@ takes in webhooks, because a plan is an exact file list, and it skips the ready
 check. The queue still holds it behind anything writing to the same folder —
 and, since 2.3.0, behind a copy of the whole series that folder belongs to. Its
 finished or failed message on Discord is headed **MANUAL SYNC - EXPLORE**
-(2.4.0); 2.3.x said "Explore", and before that "Manual Sync".
+(2.3.2); 2.3.x said "Explore", and before that "Manual Sync".
 
 **Season folders that Sonarr would have named differently are flagged, not
 blocked.** Sonarr writes `Season {season:00}`, so `Season 01` and `Specials`.

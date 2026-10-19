@@ -11,7 +11,7 @@ Newest first.
 
 ---
 
-## 2.4.0
+## 2.3.2
 
 Quality of life, round two: connection tests that test what you typed,
 upgrades you can find, Discord pings, and Discord messages that say what was
@@ -57,7 +57,7 @@ synced and how.
 - **One look for every message.** The line above the title names what
   happened in one upper-case scheme — AUTO SYNC - SONARR, MANUAL SYNC -
   EXPLORE, AUTO SYNC FAILED - SCANNER, SAFETY CHECK - AUTO SYNC STOPPED — and
-  every message carries the same footer, `DragonCP v2.4.0`. The safety-check
+  every message carries the same footer, `DragonCP v2.3.2`. The safety-check
   message no longer repeats its reason and counts.
 
 ### Upgrading

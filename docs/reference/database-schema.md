@@ -675,7 +675,7 @@ CREATE TABLE connector_target (
 
 **Column Descriptions:**
 - `label` - the operator's own name for it, unique per connector, offered by name in the routing table
-- `mention_ids` - JSON list of `connector_mention.mention_id`: who every message sent here pings unless the route chooses others. NULL or `[]` is nobody. Added in 2.4.0.
+- `mention_ids` - JSON list of `connector_mention.mention_id`: who every message sent here pings unless the route chooses others. NULL or `[]` is nobody. Added in 2.3.2.
 - `secret_ref` - key into `connector_secret` holding the actual URL
 - `is_default` - exactly one per connector; enforced in `update_target` / `create_target`, not by a constraint
 - `enabled` - "out of service": messages routed here are held, **not** redirected
@@ -704,8 +704,8 @@ CREATE TABLE notification_route (
 
 **Column Descriptions:**
 - `event_key` - one of the keys in `services/connectors/events.py`
-- `ping_when` - `never`, `attention` (a warning or a failure) or `always`. NULL is the event's `default_ping`. Added in 2.4.0.
-- `mention_ids` - JSON list of who it pings. **NULL means whoever the webhook pings**; `[]` is nobody. Added in 2.4.0.
+- `ping_when` - `never`, `attention` (a warning or a failure) or `always`. NULL is the event's `default_ping`. Added in 2.3.2.
+- `mention_ids` - JSON list of who it pings. **NULL means whoever the webhook pings**; `[]` is nobody. Added in 2.3.2.
 - `target_id` - **NULL means "use the connector's default"**, which is also what a missing row means. That is the rule that keeps a notification added in a later version from shipping silent.
 - `enabled` - off means this announcement is not made at all
 
@@ -744,7 +744,7 @@ CREATE TABLE connector_mention (
 Deleting one removes its id from every `connector_target.mention_ids` and
 `notification_route.mention_ids`.
 
-**Added in 2.4.0.**
+**Added in 2.3.2.**
 
 ---
 
@@ -775,7 +775,7 @@ CREATE TABLE connector_delivery (
 
 **Column Descriptions:**
 - `skipped_reason` - set when the message was held back deliberately (switched off, destination out of service, no default)
-- `mentions` - who the message pinged, by name, comma separated. Added in 2.4.0.
+- `mentions` - who the message pinged, by name, comma separated. Added in 2.3.2.
 - `error` - set when it was attempted and failed. Already redacted; never contains a credential.
 
 Trimmed to the last 100 rows per connector on every write, so there is no sweep
