@@ -273,7 +273,7 @@ The resolved actor is written to the stored activity trail and to ownership fiel
 | Actor vocabulary | `actor.py` |
 | Live-connection re-checks | `websocket.py` |
 | Browser session state | `frontend/src/stores/auth.ts` |
-| Password screens | `frontend/src/components/auth/`, `frontend/src/components/settings/account-panel.tsx` |
+| Password screens | `frontend/src/components/auth/`, `frontend/src/components/settings/account-tab.tsx` |
 
 ## See also
 

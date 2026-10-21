@@ -71,10 +71,11 @@ export function AutoSyncControl() {
     <Popover>
       <PopoverTrigger
         render={(props) => (
-          <Button {...props} variant="outline" className="gap-2">
+          <Button {...props} variant="outline" className="gap-2" aria-label="Auto-sync">
             <IconBolt className={cn("size-4", enabled.length > 0 && "text-brand-hover")} />
-            Auto-sync
-            <span className="flex items-center gap-1">
+            {/* On a phone the bolt and "2/3" say it, beside the page title. */}
+            <span className="hidden sm:inline">Auto-sync</span>
+            <span className="hidden items-center gap-1 sm:flex">
               {LIBRARIES.map((library) => (
                 <span
                   key={library.key}

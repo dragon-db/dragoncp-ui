@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
 from .compare import (
-    IN_SYNC, LOCAL_ONLY, MISSING, UPGRADED,
+    IN_SYNC, LOCAL_ONLY, MISSING, NESTED, UPGRADED,
     EpisodeDiff, SeasonDiff, SeriesDiff,
 )
 
@@ -128,6 +128,9 @@ class Plan:
     # One per season. A season-scoped plan has exactly one; a series plan has
     # one for every season it touches, and each becomes its own transfer.
     units: List[PlanUnit] = field(default_factory=list)
+    # Local media files in the scope that sit in a nested folder. A plan never
+    # moves them — Repair does — but an empty plan has to say why it is empty.
+    nested_files: int = 0
 
     # ---- derived ----------------------------------------------------------
 
@@ -198,6 +201,11 @@ class Plan:
 
     def verdict(self) -> str:
         """One sentence, in the terms you care about."""
+        if self.is_empty and self.nested_files:
+            return (f"Nothing to download — but {self.nested_files} "
+                    f"file{'' if self.nested_files == 1 else 's'} here "
+                    f"{'is' if self.nested_files == 1 else 'are'} inside a nested folder. "
+                    f"Repair moves {'it' if self.nested_files == 1 else 'them'} into place.")
         if self.is_empty:
             return 'Nothing to do — the local copy already matches the remote.'
         parts = []
@@ -223,6 +231,7 @@ class Plan:
             'safe': self.safe,
             'is_destructive': self.is_destructive,
             'is_empty': self.is_empty,
+            'nested_files': self.nested_files,
             'verdict': self.verdict(),
             'counts': {
                 'fetch': len(self.fetches),
@@ -291,10 +300,13 @@ def _episode_actions(season: SeasonDiff, prefix: str,
                 local_size=episode.local.size,
                 reason='A different file for this episode is on the remote',
             ))
-        elif episode.label == IN_SYNC and IN_SYNC in labels and episode.remote:
+        elif episode.label in (IN_SYNC, NESTED) and episode.label in labels and episode.remote:
             # Only reachable by ticking a file that already matches and asking
             # for a replacement — "my copy is damaged, fetch it again". Never
             # produced by a sync, which has nothing to do with a matching file.
+            # A NESTED file is the same content in the wrong folder: a sync
+            # leaves it to Repair, but replacing it is allowed — the stranded
+            # copy goes to backup and the remote one lands where it belongs.
             actions.append(PlanAction(
                 action=SUPERSEDE,
                 rel=_join(prefix, episode.remote.name),
@@ -305,7 +317,9 @@ def _episode_actions(season: SeasonDiff, prefix: str,
                 local_rel=(_local_rel(prefix, dest_folder, episode.local)
                            if episode.local else None),
                 local_size=episode.local.size if episode.local else 0,
-                reason='Asked for again, though the local copy already matches',
+                reason=('Asked for again; the local copy sits in a nested folder'
+                        if episode.label == NESTED
+                        else 'Asked for again, though the local copy already matches'),
             ))
         # Removal is gated on include_removals alone. `labels` narrows which
         # *arrivals* a selection-based operation may produce; download and
@@ -382,7 +396,7 @@ def _build_unit(series: str, season: SeasonDiff, remote_root: str, local_root: s
 
 def _single_unit_plan(operation: str, media_type: str, series_diff: SeriesDiff,
                       unit: PlanUnit, include_removals: bool,
-                      season_label: Optional[str]) -> Plan:
+                      season_label: Optional[str], nested_files: int = 0) -> Plan:
     plan = Plan(
         media_type=media_type,
         operation=operation,
@@ -392,6 +406,7 @@ def _single_unit_plan(operation: str, media_type: str, series_diff: SeriesDiff,
         dest_root=unit.dest_root,
         include_removals=include_removals,
         units=[unit],
+        nested_files=nested_files,
     )
     plan.actions = unit.actions
     return plan
@@ -403,7 +418,8 @@ def plan_season_sync(media_type: str, series_diff: SeriesDiff, season: SeasonDif
     """Reconcile one season: download what is missing, replace what changed."""
     unit = _build_unit(series_diff.series, season, remote_root, local_root, include_removals)
     return _single_unit_plan(SYNC_SEASON, media_type, series_diff, unit,
-                             include_removals, season.display_name)
+                             include_removals, season.display_name,
+                             season.counts.nested_files)
 
 
 def plan_series_sync(media_type: str, series_diff: SeriesDiff,
@@ -460,6 +476,7 @@ def _multi_season_plan(operation: str, media_type: str, series_diff: SeriesDiff,
         source_root=os.path.join(remote_root, series_diff.series),
         dest_root=os.path.join(local_root, series_diff.series),
         include_removals=include_removals,
+        nested_files=sum(season.counts.nested_files for season in seasons),
     )
 
     for season in seasons:
@@ -486,7 +503,7 @@ def plan_movie_sync(media_type: str, series_diff: SeriesDiff,
     for season in series_diff.seasons:
         unit.actions.extend(_episode_actions(season, '', include_removals))
     return _single_unit_plan(SYNC_SEASON, media_type, series_diff, unit,
-                             include_removals, None)
+                             include_removals, None, series_diff.counts.nested_files)
 
 
 def plan_download(media_type: str, series_diff: SeriesDiff, season: SeasonDiff,
@@ -500,8 +517,11 @@ def plan_download(media_type: str, series_diff: SeriesDiff, season: SeasonDiff,
     # local counterpart moved aside first, which is the replace operation.
     unit = _build_unit(series_diff.series, season, remote_root, local_root, False,
                        only_codes=codes, labels=(MISSING,))
+    # A download's scope is the episodes asked for, so only those count.
+    nested = sum(1 for episode in season.episodes
+                 if episode.code in codes and episode.label == NESTED)
     return _single_unit_plan(DOWNLOAD, media_type, series_diff, unit,
-                             False, season.display_name)
+                             False, season.display_name, nested)
 
 
 def plan_replace(media_type: str, series_diff: SeriesDiff, season: SeasonDiff,
@@ -512,7 +532,7 @@ def plan_replace(media_type: str, series_diff: SeriesDiff, season: SeasonDiff,
     Nothing else in the season is touched.
     """
     unit = _build_unit(series_diff.series, season, remote_root, local_root, False,
-                       only_codes=codes, labels=(MISSING, UPGRADED, IN_SYNC))
+                       only_codes=codes, labels=(MISSING, UPGRADED, IN_SYNC, NESTED))
     return _single_unit_plan(REPLACE, media_type, series_diff, unit,
                              False, season.display_name)
 

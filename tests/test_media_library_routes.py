@@ -290,6 +290,55 @@ class MediaLibraryRouteTests(unittest.TestCase):
                        if s['counts_towards_state'] and not s['synced_here']]
         self.assertEqual(outstanding, [2], 'the scanner reads these fields; unchanged')
 
+    def test_an_episode_one_folder_too_deep_reads_as_needs_repair(self):
+        """Here, but where a media server cannot see it: Explore's Nested.
+
+        Not "a file for season 2 that is not here" — copying it again would
+        not make it visible — and not in sync either.
+        """
+        library = os.path.join(self.tmpdir, 'tv3')
+        show = os.path.join(library, 'Example Show (2021)')
+        for season in (1, 2):
+            folder = os.path.join(show, f'Season {season:02d}')
+            os.makedirs(folder, exist_ok=True)
+            for n in range(1, 11 if season == 1 else 10):
+                open(os.path.join(folder, f'Example Show - S{season:02d}E{n:02d}.mkv'), 'w').close()
+        name = 'Example Show - S02E10.mkv'
+        os.makedirs(os.path.join(show, 'Season 02', name))
+        with open(os.path.join(show, 'Season 02', name, name), 'wb') as handle:
+            handle.write(b'\0' * 64)
+
+        self.index.local.config = _Config({'TVSHOW_DEST_PATH': library})
+        self.index.local.scan(force=True)
+
+        with patch('services.connectors.transport.requests.request', side_effect=_answer):
+            item = self.client.get('/api/library/sonarr').get_json()['items'][0]
+        self.assertEqual(item['sync_state'], 'needs_repair')
+        self.assertEqual([a['kind'] for a in item['attention']], ['nested'])
+        self.assertEqual(item['attention'][0]['episodes'], ['S02E10'])
+        self.assertIn('S02E10 is here, but inside a nested folder', item['state_reason'])
+        season2 = next(s for s in item['seasons'] if s['season_number'] == 2)
+        self.assertEqual(season2['files_here'], 9, 'the scanner reads these fields; unchanged')
+        self.assertEqual(season2['episodes_here'], 9)
+
+        found = self.index.local.files_of(self.index.local.find('Example Show', 2021))
+        stranded = [f for f in found['files'] if f.get('nested')]
+        self.assertEqual([f['relative_path'] for f in stranded], [f'Season 02/{name}/{name}'])
+        self.assertEqual(stranded[0]['size'], 64)
+
+    def test_a_film_one_folder_too_deep_is_found(self):
+        library = os.path.join(self.tmpdir, 'movies')
+        name = 'Example Film (2024) WEBDL-1080p.mkv'
+        os.makedirs(os.path.join(library, 'Example Film (2024)', name))
+        with open(os.path.join(library, 'Example Film (2024)', name, name), 'wb') as handle:
+            handle.write(b'\0' * 32)
+        self.index.local.config = _Config({'MOVIE_DEST_PATH': library})
+        record = self.index.local.scan(force=True)
+        film = next(iter(record.values()))
+        self.assertEqual(film['file_count'], 0, 'nothing a media server can see')
+        self.assertEqual([f['relative_path'] for f in film['nested_loose']], [f'{name}/{name}'])
+        self.assertEqual(self.index.local.files_of(film)['nested_loose'][0]['size'], 32)
+
     def test_the_poster_is_carried_through(self):
         with patch('services.connectors.transport.requests.request', side_effect=_answer):
             item = self.client.get('/api/library/sonarr').get_json()['items'][0]

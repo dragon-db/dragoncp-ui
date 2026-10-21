@@ -1470,7 +1470,7 @@ CREATE TABLE alert (
 - `alert_id` - `alert_<12 hex>`
 - `kind` - `restart_unfinished`, `transfer_unknown`, `stuck_download`,
   `ready_timeout`, `sync_refused`, `transfer_failed`, `scanner_gap`,
-  `integration_down`, `job_failing`. Labels and wording are in
+  `missed_sync`, `integration_down`, `job_failing`, `fast_route_failed`. Labels and wording are in
   `services/alert_service.py` (`KINDS` and one method per kind)
 - `severity` - `warning`, or `failure` for a failed transfer. `info` is defined
   but no kind uses it

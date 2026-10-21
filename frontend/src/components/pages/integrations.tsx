@@ -33,6 +33,12 @@ import {
 const NOTIFY_TABS = ["targets", "mentions", "routing", "activity", "settings"];
 const QUERY_TABS = ["library", "queue", "history", "settings"];
 
+/** The saved "Look back (days)", read the way the server reads it: 1 to 30, 7 when empty. */
+function lookbackDays(value: string | undefined): number {
+  const days = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(days) ? Math.min(30, Math.max(1, days)) : 7;
+}
+
 /**
  * One connector, as its own small application.
  *
@@ -121,7 +127,11 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
 
   return (
     <div className="space-y-6">
-      <PageHeader title={connector.display_name} description={connector.description}>
+      {/* No description under the name: "Film library manager. Already sends
+          notifications here…" told an operator what they already knew, and
+          on a phone it took three lines above the tabs (operator,
+          2026-10-20). The API still carries it. */}
+      <PageHeader title={connector.display_name}>
         <div className="flex items-center gap-2.5 rounded-xl border border-border/70 bg-card/80 px-3.5 py-2">
           <Switch
             checked={connector.enabled}
@@ -146,8 +156,8 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
         A panel promising the connector was only ever read from. True, and
         enforced in the adapter, but a reassurance nobody asked for is still a
         paragraph between the operator and the thing they came to look at. It
-        belongs where somebody goes looking for it — the connector's own
-        description, and the documentation — not above the content, forever.
+        belongs where somebody goes looking for it — the documentation — not
+        above the content, forever.
 
         What is left is the one line that changes what you can expect from the
         page in front of you.
@@ -307,6 +317,8 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
                   source={connector.id}
                   displayName={connector.display_name}
                   connectorEnabled={connector.enabled}
+                  mode={connector.config.auto_scanner_mode === "sync" ? "sync" : "alert"}
+                  lookbackDays={lookbackDays(connector.config.auto_scanner_lookback_days)}
                 />
               </>
             ) : (

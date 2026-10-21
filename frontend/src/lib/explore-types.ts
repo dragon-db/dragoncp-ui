@@ -1,18 +1,24 @@
 /**
  * Shapes returned by the Explore endpoints.
  *
- * The four labels are the whole vocabulary: every badge, count and action on
+ * The five labels are the whole vocabulary: every badge, count and action on
  * the page is derived from them.
  */
 
-export type ExploreLabel = "IN_SYNC" | "MISSING" | "UPGRADED" | "LOCAL_ONLY";
-export type ExploreStatus = "SYNCED" | "PARTIAL_SYNC" | "OUT_OF_SYNC" | "NO_INFO";
+/** NESTED: the same file as the remote, inside an extra folder the media server cannot see. */
+export type ExploreLabel = "IN_SYNC" | "NESTED" | "MISSING" | "UPGRADED" | "LOCAL_ONLY";
+/** NEEDS_REPAIR: would be Synced, but a local file sits in a nested folder. */
+export type ExploreStatus = "SYNCED" | "NEEDS_REPAIR" | "PARTIAL_SYNC" | "OUT_OF_SYNC" | "NO_INFO";
 
 export interface ExploreCounts {
   in_sync: number;
+  /** Absent from a result saved before nested files were counted. */
+  nested?: number;
   missing: number;
   upgraded: number;
   local_only: number;
+  /** Local media files in a nested folder, whatever their label. */
+  nested_files?: number;
   remote_total: number;
   incoming_bytes: number;
   removable_bytes: number;
@@ -70,6 +76,8 @@ export interface ExploreEpisode {
   local_size: number | null;
   local_mtime: number | null;
   local_path: string | null;
+  /** The local copy sits in a nested folder, whatever the label says. */
+  local_nested?: boolean;
   absolute_number: number | null;
 }
 
@@ -77,11 +85,32 @@ export interface ExploreSeries extends ExploreSeriesSummary {
   seasons: ExploreSeason[];
 }
 
+/** The SSH session to the remote server, as Explore sees it. */
+export interface ExploreSession {
+  connected: boolean;
+  auto_connect: boolean;
+  host?: string;
+  last_error?: string;
+  last_error_kind?: "auth" | "host_key" | "network" | null;
+  /** A refused login or host-key mismatch: no automatic attempts until a person connects. */
+  paused?: boolean;
+  /** When it tries again by itself. */
+  retry_at?: string | null;
+  /** When Connect may be pressed again — spaced so the server never bans this address. */
+  manual_retry_at?: string | null;
+}
+
 export interface ExploreTree {
   media_type: string;
   series: ExploreSeriesSummary[];
   checked_at: string | null;
+  /** From the saved result rather than this request's own check. */
   stale: boolean;
+  /** Whether this request read the remote library (false: a recent walk answered). */
+  walked?: boolean;
+  /** Why the remote could not be read; the saved result is shown instead. */
+  remote_error?: string | null;
+  session?: ExploreSession;
 }
 
 export interface ExplorePlanAction {
@@ -126,6 +155,8 @@ export interface ExplorePlan {
   safe: boolean;
   is_destructive: boolean;
   is_empty: boolean;
+  /** Local files in the plan's scope sitting in a nested folder; a plan never moves them. */
+  nested_files?: number;
   requires_override: boolean;
   verdict: string;
   counts: {

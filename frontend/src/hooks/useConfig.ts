@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import api from "@/lib/api";
+import type { ExploreSession } from "@/lib/explore-types";
 import { isOutdated } from "@/lib/version";
 import type {
   SettingsResponse,
@@ -248,6 +249,23 @@ export function useSSHConnect() {
       queryClient.invalidateQueries({ queryKey: ["media"] });
       queryClient.invalidateQueries({ queryKey: ["runtime", "status"] });
     },
+  });
+}
+
+/**
+ * How the SSH session to the remote server stands: connected, the last failure,
+ * and when it may try again. Reading it asks nothing of the remote server.
+ */
+export function useRemoteSession() {
+  return useQuery({
+    queryKey: ["ssh", "session"],
+    queryFn: async () => {
+      const response = await api.get<{ status: string; session: ExploreSession }>(
+        "/explore/session"
+      );
+      return response.data.session;
+    },
+    refetchInterval: 15_000,
   });
 }
 

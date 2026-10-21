@@ -24,10 +24,7 @@ export function NotificationsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Notifications"
-        description="What needs a person: syncs the safety check stopped, failures, stuck downloads, and anything a restart interrupted."
-      />
+      <PageHeader title="Notifications" />
 
       <Tabs value={view} onValueChange={(value) => setView(value as AlertView)} className="gap-5">
         <PageTabsList

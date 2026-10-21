@@ -332,6 +332,53 @@ class ExploreServiceTests(unittest.TestCase):
         remaining = os.listdir(os.path.join(self.local_root, self.SERIES, 'Season 01'))
         self.assertEqual(len(remaining), 22)   # the 22 untouched episodes
 
+    def test_replacing_a_nested_copy_clears_the_folder_it_was_stranded_in(self):
+        # The remote file lands under the very name the wrapper folder had, so
+        # the folder has to be gone before the copy starts.
+        name = os.path.basename(ep(self.SERIES, 'Season 01', 'S01E14'))
+        season_dir = os.path.join(self.local_root, self.SERIES, 'Season 01')
+        self.write_local(f'{self.SERIES}/Season 01/{name}/{name}')
+        self.write_local(ep(self.SERIES, 'Season 01', 'S01E13'))
+
+        service = self.service([(f'{self.SERIES}/Season 01/{name}', 10 * MB, 100)])
+        tree = service.tree('tvshows', refresh=True)
+        self.assertEqual(tree['series'][0]['status'], 'NEEDS_REPAIR')
+
+        plan = service.plan('tvshows', 'replace', self.SERIES,
+                            season_label='Season 01', codes=['S01E14'])
+        self.assertEqual(plan['counts']['supersede'], 1)
+        service.execute(plan['plan_id'])
+
+        self.assertFalse(os.path.exists(os.path.join(season_dir, name)),
+                         'the wrapper folder is gone')
+        self.assertTrue(os.path.isdir(season_dir), 'the season folder stays')
+        self.assertEqual(len(os.listdir(season_dir)), 1)   # S01E13, untouched
+
+    def test_a_wrapper_holding_anything_else_is_left_in_place(self):
+        name = os.path.basename(ep(self.SERIES, 'Season 01', 'S01E14'))
+        self.write_local(f'{self.SERIES}/Season 01/{name}/{name}')
+        keep = self.write_local(f'{self.SERIES}/Season 01/{name}/notes.nfo', size=10)
+
+        service = self.service([(f'{self.SERIES}/Season 01/{name}', 10 * MB, 100)])
+        plan = service.plan('tvshows', 'replace', self.SERIES,
+                            season_label='Season 01', codes=['S01E14'])
+        service.execute(plan['plan_id'])
+
+        self.assertTrue(os.path.exists(keep))
+
+    def test_a_failed_start_puts_a_nested_copy_back_where_it_was(self):
+        name = os.path.basename(ep(self.SERIES, 'Season 01', 'S01E14'))
+        stranded = self.write_local(f'{self.SERIES}/Season 01/{name}/{name}')
+
+        self.coordinator.succeed = False
+        service = self.service([(f'{self.SERIES}/Season 01/{name}', 10 * MB, 100)])
+        plan = service.plan('tvshows', 'replace', self.SERIES,
+                            season_label='Season 01', codes=['S01E14'])
+        with self.assertRaises(ExploreError):
+            service.execute(plan['plan_id'])
+
+        self.assertTrue(os.path.isfile(stranded))
+
     # ---- the plan gate ----------------------------------------------------
 
     def test_a_plan_can_only_be_executed_once(self):
@@ -416,6 +463,178 @@ class ExploreServiceTests(unittest.TestCase):
         self.assertTrue(all(f['action'] == 'fetch' for f in files))
 
 
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+class _Session:
+    """Stands in for RemoteSession: hands out a manager, can lose it, counts reconnects."""
+
+    def __init__(self, manager, auto=True):
+        self.manager = manager
+        self.auto = auto
+        self.reconnects = 0
+        self.next_manager = None
+
+    def alive(self):
+        return bool(self.manager and self.manager.connected)
+
+    def ensure(self):
+        from services.remote_session import SessionUnavailable
+        if self.alive():
+            return self.manager
+        if not self.auto:
+            raise SessionUnavailable('Not connected. Auto-connect is off.', 'off')
+        if self.next_manager is None:
+            raise SessionUnavailable('Could not reach the remote server (timed out).', 'waiting')
+        self.reconnects += 1
+        self.manager, self.next_manager = self.next_manager, None
+        return self.manager
+
+    def status(self):
+        return {'connected': self.alive(), 'auto_connect': self.auto}
+
+
+class FreshnessTests(unittest.TestCase):
+    """Opening Explore checks the remote, without walking it on every open (2026-10-20)."""
+
+    SERIES = ExploreServiceTests.SERIES
+    setUp = ExploreServiceTests.setUp
+    write_local = ExploreServiceTests.write_local
+
+    def walks(self):
+        return len([c for c in self.ssh.commands if c.startswith('find ')])
+
+    def fresh_service(self, remote_rows):
+        from services.explore.service import ExploreService as Service
+        self.ssh = FakeSSH(remote_rows)
+        self.session = _Session(self.ssh)
+        self.clock = _Clock()
+        return Service(self.config, self.db, self.coordinator, session=self.session,
+                       clock=self.clock)
+
+    def remote(self, count=3):
+        return [(ep(self.SERIES, 'Season 01', f'S01E{i:02d}'), 10 * MB, 100)
+                for i in range(1, count + 1)]
+
+    def import_webhook(self, nid='n1'):
+        with self.db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO sonarr_webhook (notification_id, media_type, series_title, "
+                "series_path, season_path) VALUES (?, 'tvshows', 'x', '/r/x', '/r/x/S1')", (nid,))
+            conn.commit()
+
+    def test_an_open_within_two_minutes_reuses_the_last_walk(self):
+        from services.explore.service import FRESH_FOR
+        service = self.fresh_service(self.remote())
+        self.assertTrue(service.tree('tvshows', check='auto')['walked'])
+        self.clock.now += FRESH_FOR - 1
+        again = service.tree('tvshows', check='auto')
+        self.assertFalse(again['walked'])
+        self.assertFalse(again['stale'])
+        self.assertEqual(self.walks(), 1)
+        self.clock.now += 2
+        self.assertTrue(service.tree('tvshows', check='auto')['walked'])
+        self.assertEqual(self.walks(), 2)
+
+    def test_an_import_since_the_walk_means_walk_again(self):
+        from services.explore.service import MIN_WALK_GAP
+        service = self.fresh_service(self.remote())
+        service.tree('tvshows', check='auto')
+        self.import_webhook()
+        self.clock.now += MIN_WALK_GAP - 1
+        self.assertFalse(service.tree('tvshows', check='auto')['walked'],
+                         'a burst of webhooks does not turn every click into a walk')
+        self.clock.now += 2
+        self.assertTrue(service.tree('tvshows', check='auto')['walked'])
+
+    def test_an_anime_import_does_not_mark_tv_as_changed(self):
+        from services.explore.service import MIN_WALK_GAP
+        service = self.fresh_service(self.remote())
+        service.tree('tvshows', check='auto')
+        with self.db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO sonarr_webhook (notification_id, media_type, series_title, "
+                "series_path, season_path) VALUES ('a1', 'anime', 'x', '/r/x', '/r/x/S1')")
+            conn.commit()
+        self.clock.now += MIN_WALK_GAP + 1
+        self.assertFalse(service.tree('tvshows', check='auto')['walked'])
+
+    def test_recheck_walks_unless_one_just_finished(self):
+        from services.explore.service import RECHECK_REUSE
+        service = self.fresh_service(self.remote())
+        service.tree('tvshows', check='auto')
+        self.clock.now += RECHECK_REUSE - 1
+        self.assertFalse(service.tree('tvshows', refresh=True)['walked'])
+        self.clock.now += 2
+        self.assertTrue(service.tree('tvshows', refresh=True)['walked'])
+
+    def test_a_season_view_uses_the_walk_and_reads_this_disk_again(self):
+        service = self.fresh_service(self.remote())
+        service.tree('tvshows', check='auto')
+        before = service.season('tvshows', self.SERIES, 'Season 01')
+        self.write_local(ep(self.SERIES, 'Season 01', 'S01E01'))
+        after = service.season('tvshows', self.SERIES, 'Season 01')
+        self.assertEqual(self.walks(), 1, 'a season view does not walk the remote again')
+        self.assertEqual(before['counts']['in_sync'], 0)
+        self.assertEqual(after['counts']['in_sync'], 1, 'a finished copy shows at once')
+        self.assertIn('checked_at', after)
+
+    def test_a_plan_always_walks(self):
+        service = self.fresh_service(self.remote())
+        service.tree('tvshows', check='auto')
+        service.plan('tvshows', 'sync_season', self.SERIES, 'Season 01')
+        self.assertEqual(self.walks(), 2)
+
+    def test_unreachable_remote_shows_the_saved_result_and_why(self):
+        from services.explore.service import FRESH_FOR
+        service = self.fresh_service(self.remote())
+        first = service.tree('tvshows', check='auto')
+        self.ssh.connected = False
+        self.clock.now += FRESH_FOR + 1
+        offline = service.tree('tvshows', check='auto')
+        self.assertTrue(offline['stale'])
+        self.assertIn('Could not reach', offline['remote_error'])
+        self.assertEqual(len(offline['series']), len(first['series']))
+
+    def test_unreachable_with_nothing_saved_is_an_error(self):
+        service = self.fresh_service(self.remote())
+        self.ssh.connected = False
+        with self.assertRaises(ExploreError) as caught:
+            service.tree('tvshows', check='auto')
+        self.assertEqual(caught.exception.status, 409)
+
+    def test_a_session_that_dies_under_the_walk_is_reopened_once(self):
+        service = self.fresh_service(self.remote())
+
+        class Dropping(FakeSSH):
+            def execute_command(inner, command):
+                inner.commands.append(command)
+                inner.connected = False
+                return 1, '', 'Socket exception: Connection reset by peer (104)'
+
+        dead = Dropping([])
+        self.session.manager = dead
+        self.session.next_manager = self.ssh
+        tree = service.tree('tvshows', check='auto')
+        self.assertTrue(tree['walked'])
+        self.assertEqual(self.session.reconnects, 1)
+        self.assertEqual(len(tree['series']), 1)
+
+    def test_auto_connect_off_says_so(self):
+        service = self.fresh_service(self.remote())
+        self.ssh.connected = False
+        self.session.auto = False
+        with self.assertRaises(ExploreError) as caught:
+            service.season('tvshows', self.SERIES, 'Season 01')
+        self.assertEqual(caught.exception.status, 409)
+        self.assertIn('Auto-connect is off', caught.exception.message)
 
 
 class PlanHousekeepingTests(unittest.TestCase):

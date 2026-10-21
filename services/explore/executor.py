@@ -168,6 +168,10 @@ class ExploreExecutor:
             self._rollback(moved)
             return False, f"Could not move files to backup: {error}", None
 
+        # Before anything is copied: the file arriving usually has the very
+        # name of the wrapper folder it is replacing.
+        self._clear_emptied_folders(moved, dest_root)
+
         # --- 2. the list rsync is held to -----------------------------------
         rels = unit.get('transfers', [])
         work_dir = self._work_dir(transfer_id)
@@ -340,6 +344,28 @@ class ExploreExecutor:
                 backups.sort_after_transfer(transfer_id, reason='explore_prune')
             except Exception as error:  # noqa: BLE001
                 print(f"⚠️  Could not index the backup for {transfer_id}: {error}")
+
+    @staticmethod
+    def _clear_emptied_folders(moved: List[Tuple[str, str]], dest_root: str) -> None:
+        """
+        Remove folders a move to backup left empty, below the season folder.
+
+        A file stranded in a nested folder (`Season 01/ep.mkv/ep.mkv`) that a
+        sync supersedes or removes leaves its wrapper behind, and an empty
+        folder named like an episode is not a clean library. Only empty
+        folders go (`rmdir` refuses anything else), and never the season
+        folder itself or anything above it. A rollback recreates them: it
+        makes each file's folder again before moving the file back.
+        """
+        root = os.path.realpath(dest_root)
+        for source, _target in moved:
+            folder = os.path.realpath(os.path.dirname(source))
+            while folder != root and folder.startswith(root + os.sep):
+                try:
+                    os.rmdir(folder)
+                except OSError:
+                    break
+                folder = os.path.dirname(folder)
 
     def _rollback(self, moved: List[Tuple[str, str]]) -> None:
         """Put back anything we moved, so a failed start changes nothing."""

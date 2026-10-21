@@ -135,14 +135,25 @@ class ConfigField:
 
     def __init__(self, name: str, label: str, description: str = '',
                  kind: str = 'text', secret: bool = False,
-                 required: bool = False, placeholder: str = ''):
+                 required: bool = False, placeholder: str = '',
+                 choices: Sequence[Sequence[str]] = (), default: str = ''):
         self.name = name
         self.label = label
         self.description = description
-        self.kind = kind            # text | password | url | boolean | number
+        self.kind = kind            # text | password | url | boolean | number | choice
         self.secret = secret        # stored in connector_secret, never returned
         self.required = required
         self.placeholder = placeholder
+        #: For `choice`: (value, label) pairs, in the order the form offers them.
+        self.choices = tuple((str(value), str(text)) for value, text in choices)
+        #: What an unset field means, so the form can show it selected.
+        self.default = default
+
+    def accepts(self, value: str) -> bool:
+        """Whether a submitted value fits. Only a `choice` is checked; unset is fine."""
+        if self.kind != 'choice' or value == '':
+            return True
+        return value in {v for v, _ in self.choices}
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -153,6 +164,8 @@ class ConfigField:
             'secret': self.secret,
             'required': self.required,
             'placeholder': self.placeholder,
+            'choices': [{'value': v, 'label': t} for v, t in self.choices],
+            'default': self.default,
         }
 
 

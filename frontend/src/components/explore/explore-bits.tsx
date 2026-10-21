@@ -3,7 +3,9 @@ import {
   IconCheck,
   IconCircleArrowUp,
   IconCloudOff,
+  IconFolderExclamation,
   IconStack2,
+  IconTool,
 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 import type { ExploreCounts, ExploreLabel, ExploreStatus } from "@/lib/explore-types";
@@ -24,6 +26,11 @@ const STATUS_META: Record<ExploreStatus, { label: string; tone: string; Icon: ty
       label: "Synced",
       tone: "border-emerald-500/35 bg-emerald-500/12 text-emerald-300",
       Icon: IconCheck,
+    },
+    NEEDS_REPAIR: {
+      label: "Needs repair",
+      tone: "border-amber-500/38 bg-amber-500/12 text-amber-400",
+      Icon: IconTool,
     },
     OUT_OF_SYNC: {
       label: "Out of sync",
@@ -69,8 +76,16 @@ export function StatusBadge({ status, className }: { status: ExploreStatus; clas
  */
 const UPGRADE_TONE = "border-sky-500/40 bg-sky-500/15 text-sky-300";
 
+/**
+ * A file inside an extra folder (`Season 04/ep.mkv/ep.mkv`), where the media
+ * server cannot see it. Amber: it needs a person, and Repair is the fix.
+ */
+const NESTED_TONE = "border-amber-500/40 bg-amber-500/15 text-amber-300";
+const NESTED_LABEL_TONE = "text-amber-300 bg-amber-500/15 ring-1 ring-inset ring-amber-500/40";
+
 const LABEL_META: Record<ExploreLabel, { label: string; tone: string }> = {
   IN_SYNC: { label: "In sync", tone: "text-muted-foreground bg-muted/60" },
+  NESTED: { label: "Nested", tone: NESTED_LABEL_TONE },
   MISSING: { label: "Download", tone: "text-amber-400 bg-amber-500/14" },
   UPGRADED: { label: "Upgrade", tone: "text-sky-300 bg-sky-500/15" },
   LOCAL_ONLY: { label: "Local only", tone: "text-rose-300 bg-rose-500/14" },
@@ -100,10 +115,42 @@ export function UpgradeTag({ count, className }: { count: number; className?: st
   );
 }
 
-export function EpisodeLabel({ label }: { label: ExploreLabel }) {
-  const meta = LABEL_META[label];
+/**
+ * Beside a title's or season's status: some of its local files sit in a
+ * nested folder. Hidden when the status already says "Needs repair", so the
+ * row does not say the same thing twice.
+ */
+export function NestedTag({
+  count,
+  status,
+  className,
+}: {
+  count?: number;
+  status?: ExploreStatus;
+  className?: string;
+}) {
+  if (!count || status === "NEEDS_REPAIR") return null;
   return (
     <span
+      title={`${count} file${count === 1 ? " is" : "s are"} inside a nested folder, where the media server cannot see ${count === 1 ? "it" : "them"}. Repair moves ${count === 1 ? "it" : "them"} into place.`}
+      className={cn(
+        "inline-flex flex-none items-center gap-[5px] rounded-full border px-2 py-[2.5px]",
+        "text-[10px] font-bold tracking-[0.05em] whitespace-nowrap uppercase",
+        NESTED_TONE,
+        className
+      )}
+    >
+      <IconFolderExclamation className="size-3" />
+      Nested
+    </span>
+  );
+}
+
+export function EpisodeLabel({ label, title }: { label: ExploreLabel; title?: string }) {
+  const meta = LABEL_META[label] ?? LABEL_META.IN_SYNC;
+  return (
+    <span
+      title={title}
       className={cn(
         "flex-none rounded px-1.5 py-px font-mono text-[9.5px] font-semibold tracking-[0.06em]",
         meta.tone
@@ -122,6 +169,7 @@ export function CountChips({ counts, className }: { counts: ExploreCounts; class
   const chips: Array<{ n: number; label: string; tone: string }> = [
     { n: counts.missing, label: "missing", tone: "text-amber-400" },
     { n: counts.upgraded, label: "upgraded", tone: "text-sky-300" },
+    { n: counts.nested_files ?? 0, label: "nested", tone: "text-amber-300" },
     { n: counts.local_only, label: "extra", tone: "text-rose-300" },
     { n: counts.in_sync, label: "in sync", tone: "text-muted-foreground" },
   ].filter((chip) => chip.n > 0);

@@ -100,7 +100,7 @@ frontend/
 │   │   │                   #   pipeline-run, notifications, explore, backups,
 │   │   │                   #   activity, integrations, settings
 │   │   ├── pipeline/       # pipeline-bits, stage-flow, stage-detail, run-stages, sync-row, sync-sheet, alert-card
-│   │   ├── settings/       # generated settings, account and backend logs
+│   │   ├── settings/       # the four Settings tabs, their shared rows, fast transfers, backend log
 │   │   ├── transfers/      # transfer-bits, transfer-detail, transfer-logs,
 │   │   │                   #   simulation-panel, confirm-dialog
 │   │   ├── webhooks/       # webhook-bits, episode-details, auto-sync-panel,
@@ -326,7 +326,7 @@ store says the backend is unreachable, with a retry that refetches.
 | `app-navbar.tsx` | Breadcrumb from a prefix path table, the live metrics pill (realtime status, Active, Queued), the bell and settings links, and a version badge. The bell links to Notifications and shows a dot while any alert is open; until 2026-10-05 it linked to Webhooks and lit for pending webhooks |
 | `mobile-nav.tsx` | Bottom bar below `md`: Home, Transfers, Webhooks and a Menu button that opens the sidebar sheet, which is where Notifications is on a phone; counts come from active transfers and pending notifications |
 | `realtime-status.tsx` | The connection popover — state, session minutes, active WebSocket count, and enable/extend/disable/reconnect |
-| `page-header.tsx` | Page title, optional description, optional action buttons |
+| `page-header.tsx` | Page title, optional description, optional controls. The controls sit on the title's row at every width, phone included; the description goes under both. `PageHeaderMenu` is the phone-only "⋯" for a header's less frequent actions, in words (since 2.3.2: on a phone, Transfers' Remove duplicates and Backups' Retention and Rebuild index live there, Refresh and Webhooks' Auto-sync show as icons) |
 | `page-tabs.tsx` | `PageTabsList` — the in-page section switcher |
 | `section-card.tsx` | `SectionCard` (bordered card with a label row, optional toolbar) and `SectionEmpty` |
 | `stat-tiles.tsx` | `StatTiles` — the four-numbers row a page opens with |

@@ -40,6 +40,18 @@ logger = logging.getLogger(__name__)
 # The paramiko (browsing) and rsync (transfer) paths share these helpers so both
 # consult/persist the SAME known_hosts file and agree on the policy.
 
+#: Seconds between keepalive packets on an open session. A packet on a session
+#: already open is not a login, so it cannot count towards a ban; it stops a
+#: router or the remote server dropping a session that sat idle.
+KEEPALIVE_SECONDS = 30
+
+#: Why the last connect failed: a refused login, a host key that does not
+#: match, or the server not being reachable at all. The first two are the
+#: ones repeated attempts can get this address banned for.
+FAILED_AUTH = "auth"
+FAILED_HOST_KEY = "host_key"
+FAILED_NETWORK = "network"
+
 DEFAULT_KNOWN_HOSTS_FILENAME = "dragoncp_known_hosts"
 VALID_HOST_KEY_POLICIES = ("strict", "accept-new", "no")
 
@@ -102,6 +114,32 @@ class SSHManager:
         self.known_hosts_file = resolve_known_hosts_file(known_hosts_file)
         self.client = None
         self.connected = False
+        #: Set when connect() fails: one of the FAILED_* kinds, and what happened.
+        self.last_error_kind: Optional[str] = None
+        self.last_error: str = ""
+
+    def is_alive(self) -> bool:
+        """Whether the session is open right now, not just whether it once was.
+
+        `connected` is set on connect and never revisited, so a session the
+        server reset still read as connected and every command on it failed.
+        This asks the transport itself. Local only: nothing is sent.
+        """
+        if not self.connected or self.client is None:
+            return False
+        transport = self.client.get_transport()
+        return bool(transport is not None and transport.is_active())
+
+    def _failed(self, kind: str, message: str) -> bool:
+        self.connected = False
+        self.last_error_kind = kind
+        self.last_error = message
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return False
 
     def _apply_host_key_policy(self):
         """
@@ -167,8 +205,18 @@ class SSHManager:
                     timeout=10
                 )
             
+            transport = self.client.get_transport()
+            if transport is not None:
+                transport.set_keepalive(KEEPALIVE_SECONDS)
             self.connected = True
+            self.last_error_kind = None
+            self.last_error = ""
             return True
+        except paramiko.AuthenticationException as e:
+            # Before SSHException, which it is a kind of. A refused login is
+            # what a server counts towards banning an address.
+            logger.error("SSH: login refused by %s: %s", self.host, e)
+            return self._failed(FAILED_AUTH, f"Login refused: {e}")
         except paramiko.BadHostKeyException as e:
             # SECURITY (SEC-07): the server presented a key that does NOT match
             # the one recorded in known_hosts — a strong MITM indicator.
@@ -179,8 +227,8 @@ class SSHManager:
             print(f"SSH connection failed: host key verification FAILED for {self.host} "
                   f"(possible MITM). Remove the stale entry from '{self.known_hosts_file}' "
                   f"only if you trust the new key.")
-            self.connected = False
-            return False
+            return self._failed(FAILED_HOST_KEY, "The server's host key does not match the "
+                                                 "one on record")
         except paramiko.SSHException as e:
             # RejectPolicy raises SSHException ("Server ... not found in known_hosts")
             # under strict mode for an unknown host.
@@ -192,14 +240,12 @@ class SSHManager:
                 )
                 print(f"SSH connection failed: host {self.host} not in known_hosts "
                       f"(strict mode). Provision its key in '{self.known_hosts_file}'.")
-            else:
-                print(f"SSH connection failed: {e}")
-            self.connected = False
-            return False
+                return self._failed(FAILED_HOST_KEY, "The server is not in known_hosts")
+            print(f"SSH connection failed: {e}")
+            return self._failed(FAILED_NETWORK, str(e) or type(e).__name__)
         except Exception as e:
             print(f"SSH connection failed: {e}")
-            self.connected = False
-            return False
+            return self._failed(FAILED_NETWORK, str(e) or type(e).__name__)
 
     def disconnect(self):
         """Close SSH connection"""

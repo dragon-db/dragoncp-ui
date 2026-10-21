@@ -213,6 +213,13 @@ CATALOGUE: Tuple[EventType, ...] = (
         INFO,
     ),
     EventType(
+        'scanner.missed', 'Missed auto-sync',
+        'The auto-scanner, set to Alert only, found an import nothing has synced '
+        '— a webhook that never arrived, or a sync that was skipped or cancelled. '
+        'Nothing was copied; sync it by hand from Explore. One message per scan.',
+        WARNING,
+    ),
+    EventType(
         'integration.down', 'Sonarr or Radarr not answering',
         'A connected service stopped answering, so automatic sync fell back to '
         'the fixed timer. Sent once until it answers again.',

@@ -640,7 +640,8 @@ class DetailTests(LibraryTestCase):
         self.real_case()
         view = self.detail().get_json()
         self.assertEqual(view['actions']['explore'], {
-            'media_type': 'tvshows', 'series': SHOW_FOLDER, 'season': 'Season 01'})
+            'media_type': 'tvshows', 'series': SHOW_FOLDER, 'season': 'Season 01',
+            'nested_season': None})
         self.assertFalse(view['actions']['sync']['offered'])
         self.assertIn('kept only here', view['actions']['sync']['reason'])
 

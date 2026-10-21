@@ -118,16 +118,33 @@ class ArrConnector(Connector):
         ConfigField(
             'auto_scanner_enabled', 'Scheduled auto-scanner',
             'Every few minutes, ask this service what it imported — new episodes, '
-            'new titles, upgrades — and sync anything this disk does not have yet, '
-            'through the same pipeline and safety checks as a webhook. Also fills '
-            'in missing episodes of seasons this disk already keeps. This is what '
-            'catches a webhook that never arrived. Off by default.',
+            'new titles, upgrades — and find anything nothing has synced: a webhook '
+            'that never arrived, or a sync that was skipped or cancelled. Also '
+            'finds missing episodes of seasons this disk already keeps. Off by '
+            'default.',
             kind='boolean',
         ),
         ConfigField(
+            'auto_scanner_mode', 'When it finds something',
+            'Alert only: say so in Notifications and on Discord, and copy nothing — '
+            'sync it by hand from Explore when it is ready. Sync it: start the sync, '
+            'through the same pipeline and safety checks as a webhook.',
+            kind='choice', choices=(('alert', 'Alert only'), ('sync', 'Sync it')),
+            default='alert',
+        ),
+        ConfigField(
             'auto_scanner_interval_minutes', 'Scan every (minutes)',
-            'Between 5 and 360. Each scan is a few read-only requests to the service.',
+            'How often it asks: 60 is once an hour. Between 5 and 360; 15 when '
+            'empty. Each scan is a few read-only requests to the service.',
             kind='number', placeholder='15',
+        ),
+        ConfigField(
+            'auto_scanner_lookback_days', 'Look back (days)',
+            'Alert only: how much of the import history every scan reads, so a '
+            'sync skipped or cancelled within this many days is still found. '
+            'Between 1 and 30; 7 when empty. Sync it reads only what arrived '
+            'since its last scan.',
+            kind='number', placeholder='7',
         ),
     )
 
@@ -144,6 +161,16 @@ class ArrConnector(Connector):
         """
         return _truthy(self.setting('auto_scanner_enabled'))
 
+    def auto_scanner_mode(self) -> str:
+        """'alert' or 'sync'. Anything but an explicit 'sync' is Alert only.
+
+        Alert only is the default (decided 2026-10-19): a download that is not
+        ready to sync is stopped by hand, and a scanner that synced it anyway
+        would undo that.
+        """
+        return 'sync' if (self.setting('auto_scanner_mode') or '').strip() == 'sync' \
+            else 'alert'
+
     def auto_scanner_interval_minutes(self) -> int:
         raw = self.setting('auto_scanner_interval_minutes') or 15
         try:
@@ -151,6 +178,14 @@ class ArrConnector(Connector):
         except (TypeError, ValueError):
             return 15
         return max(5, min(360, value))
+
+    def auto_scanner_lookback_days(self) -> int:
+        raw = self.setting('auto_scanner_lookback_days') or 7
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return 7
+        return max(1, min(30, value))
 
     def season_folder(self, series_id: Any, season_number: int) -> Optional[str]:
         """What this season's folder is actually called on the media server.

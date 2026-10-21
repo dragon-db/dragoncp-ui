@@ -254,6 +254,26 @@ class ConnectorRouteTests(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertEqual(result['message'], 'Not configured yet')
 
+    def test_the_scanner_mode_saves_and_refuses_anything_else(self):
+        fields = {f['name']: f for f in self.client.get('/api/connectors/sonarr')
+                  .get_json()['connector']['config_fields']}
+        mode = fields['auto_scanner_mode']
+        self.assertEqual(mode['kind'], 'choice')
+        self.assertEqual(mode['default'], 'alert')
+        self.assertEqual([c['value'] for c in mode['choices']], ['alert', 'sync'])
+
+        response = self.client.post('/api/connectors/sonarr',
+                                    json={'config': {'auto_scanner_mode': 'sync'}})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.store.get_connector('sonarr')['config']['auto_scanner_mode'],
+                         'sync')
+        response = self.client.post('/api/connectors/sonarr',
+                                    json={'config': {'auto_scanner_mode': 'always'}})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('alert, sync', response.get_json()['message'])
+        self.assertEqual(self.store.get_connector('sonarr')['config']['auto_scanner_mode'],
+                         'sync')
+
     def test_a_check_refuses_a_setting_the_connector_does_not_have(self):
         response = self.client.post('/api/connectors/sonarr/check',
                                     json={'config': {'sudo_password': 'x'}})

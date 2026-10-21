@@ -206,13 +206,25 @@ class LocalLibrary:
         episode_files: Dict[Tuple[int, int], List[str]] = {}
         loose_files = 0
         loose_media: List[Dict[str, Any]] = []
+        nested: Dict[int, List[Dict[str, Any]]] = {}
+        nested_loose: List[Dict[str, Any]] = []
         try:
             for child in os.scandir(entry.path):
                 if child.is_dir():
                     number = season_of_folder(child.name)
                     if number is None:
+                        # A film keeps its file in its own folder; one in a
+                        # folder below that is stranded, like an episode.
+                        if media_type == 'movies':
+                            nested_loose.extend(_media_below(child.path, child.name))
                         continue
-                    names = self._media_names(child.path)
+                    names, below = self._season_media(child.path)
+                    if below:
+                        stranded = nested.setdefault(number, [])
+                        for found in below:
+                            found['relative_path'] = f"{child.name}/{found['relative_path']}"
+                            found['keys'] = list(episode_keys(found['name'], number))
+                            stranded.append(found)
                     if season_number(child.name) is not None:
                         seasons[number] = len(names)
                     # Two folders for one season ("Season 1" beside "Season 01")
@@ -255,7 +267,29 @@ class LocalLibrary:
             'episodes_here': episodes_here,
             'episode_files': episode_files,
             'loose_media': loose_media,
+            # Media files a folder too deep, where a media server cannot see
+            # them (`Season 01/ep.mkv/ep.mkv`). Kept apart: `seasons`,
+            # `file_count` and `episodes_here` count what is visible, and the
+            # auto-scanner decides from them.
+            'nested_files': nested,
+            'nested_loose': nested_loose,
         }
+
+    @staticmethod
+    def _season_media(path: str) -> Tuple[List[str], List[Dict[str, Any]]]:
+        """A season folder in one pass: its media file names, and any media
+        file in a folder below it."""
+        names: List[str] = []
+        below: List[Dict[str, Any]] = []
+        try:
+            for child in os.scandir(path):
+                if child.is_file() and _is_media(child.name):
+                    names.append(child.name)
+                elif child.is_dir():
+                    below.extend(_media_below(child.path, child.name))
+        except OSError:
+            pass
+        return names, below
 
     @staticmethod
     def _media_names(path: str) -> List[str]:
@@ -289,15 +323,32 @@ class LocalLibrary:
 
         files: List[Dict[str, Any]] = []
         loose: List[Dict[str, Any]] = []
+        nested_loose: List[Dict[str, Any]] = []
         season_folders: Dict[int, List[str]] = {}
         for child in sorted(children, key=lambda c: c.name):
             try:
                 if child.is_dir():
                     number = season_of_folder(child.name)
                     if number is None:
+                        if record.get('media_type') == 'movies':
+                            for found in _media_below(child.path, child.name):
+                                nested_loose.append(dict(found, nested=True))
                         continue
                     season_folders.setdefault(number, []).append(child.name)
                     for item in sorted(os.scandir(child.path), key=lambda c: c.name):
+                        if item.is_dir():
+                            for found in _media_below(item.path, item.name):
+                                files.append({
+                                    'name': found['name'],
+                                    'relative_path': f"{child.name}/{found['relative_path']}",
+                                    'folder': child.name,
+                                    'folder_season': number,
+                                    'size': found['size'],
+                                    'keys': list(episode_keys(found['name'], number)),
+                                    'coded': has_episode_code(found['name']),
+                                    'nested': True,
+                                })
+                            continue
                         if not item.is_file() or not _is_media(item.name):
                             continue
                         files.append({
@@ -322,6 +373,9 @@ class LocalLibrary:
             'season_folders': season_folders,
             'files': files,
             'loose': loose,
+            # A film's media file in a folder below its own: here, but not
+            # where a media server looks.
+            'nested_loose': nested_loose,
         }
 
     def find(self, title: str, year: Optional[int] = None,
@@ -345,6 +399,28 @@ class LocalLibrary:
         if year and record.get('year') and int(record['year']) != int(year):
             return None
         return record
+
+
+def _media_below(path: str, prefix: str) -> List[Dict[str, Any]]:
+    """Every media file anywhere under `path`, named relative to its parent.
+
+    For folders that should hold no media at all: inside a season folder, or
+    inside a film's folder. Only reached when such a folder exists, which in a
+    tidy library is never.
+    """
+    found: List[Dict[str, Any]] = []
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for name in sorted(filenames):
+            if not _is_media(name):
+                continue
+            full = os.path.join(dirpath, name)
+            try:
+                size = int(os.stat(full).st_size)
+            except OSError:
+                size = 0
+            relative = os.path.relpath(full, path).replace(os.sep, '/')
+            found.append({'name': name, 'relative_path': f"{prefix}/{relative}", 'size': size})
+    return found
 
 
 def _is_media(name: str) -> bool:

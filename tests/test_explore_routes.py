@@ -39,8 +39,8 @@ class FakeService:
     def libraries(self):
         return [{'id': 'tvshows', 'label': 'TV Shows'}]
 
-    def tree(self, media_type, refresh=False):
-        self.calls.append(('tree', media_type, refresh))
+    def tree(self, media_type, refresh=False, check=None):
+        self.calls.append(('tree', media_type, check))
         if media_type == 'podcasts':
             raise ExploreError("Unknown library 'podcasts'", 404)
         return {'media_type': media_type, 'series': [], 'checked_at': None, 'stale': False}
@@ -53,6 +53,16 @@ class FakeService:
 
     def history(self, media_type, folder, season=None):
         return []
+
+    connect_ok = False
+
+    def connect(self):
+        session = {'connected': self.connect_ok, 'host': 'remote.example'}
+        message = 'Connected' if self.connect_ok else 'Login refused. Next try at 12:01:00.'
+        return {'ok': self.connect_ok, 'message': message, 'session': session}
+
+    def session_status(self):
+        return {'connected': False, 'auto_connect': True, 'retry_at': None}
 
     def plan(self, **kwargs):
         self.calls.append(('plan', kwargs))
@@ -124,6 +134,32 @@ class ExploreRouteTests(unittest.TestCase):
 
         # Reading the cached comparison costs the media server nothing.
         self.assertEqual(self.client.get('/api/explore/tree/tvshows').status_code, 200)
+
+    def test_opening_the_page_and_its_seasons_are_not_rate_limited(self):
+        """The service reuses one walk for two minutes, so these rarely reach the remote."""
+        for _ in range(explore_routes._MAX_COMPARISONS + 3):
+            self.assertEqual(self.client.get('/api/explore/tree/tvshows?check=auto').status_code,
+                             200)
+            self.assertEqual(
+                self.client.get('/api/explore/season/tvshows/Show/Season 01').status_code, 200)
+        self.assertIn(('tree', 'tvshows', 'auto'), self.service.calls)
+
+    def test_an_unknown_check_is_refused(self):
+        self.assertEqual(self.client.get('/api/explore/tree/tvshows?check=always').status_code,
+                         400)
+
+    def test_a_409_says_how_the_session_stands(self):
+        body = self.client.get('/api/explore/series/tvshows/Show').get_json()
+        self.assertEqual(body['session']['auto_connect'], True)
+
+    def test_connect_from_the_page(self):
+        refused = self.client.post('/api/explore/connect')
+        self.assertEqual(refused.status_code, 409)
+        self.assertIn('Next try', refused.get_json()['message'])
+        self.service.connect_ok = True
+        ok = self.client.post('/api/explore/connect')
+        self.assertEqual(ok.status_code, 200)
+        self.assertTrue(ok.get_json()['session']['connected'])
 
     def test_plan_passes_the_request_through_and_returns_an_id(self):
         response = self.client.post('/api/explore/plan', json={

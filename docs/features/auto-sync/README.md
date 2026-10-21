@@ -50,8 +50,8 @@ starts **Fallback wait** seconds after the first webhook (default 60, allowed
 minutes after the first. There is no switch for asking Sonarr — whether it
 answers decides.
 
-The screens say the same. Settings → Automation labels the field **Fallback
-wait (seconds)** and explains it is used only when Sonarr cannot be asked, and
+The screens say the same. Settings → Syncing labels the field **Fallback
+wait** and explains it is used only when Sonarr cannot be asked, and
 the Auto-sync popover on the Webhooks page reads "TV & anime start once Sonarr
 has nothing more for the season; if Sonarr cannot be asked, Ns after the last
 episode." Until 2026-10-05 both still described the old fixed wait.

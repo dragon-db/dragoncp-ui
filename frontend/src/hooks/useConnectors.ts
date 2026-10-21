@@ -15,12 +15,16 @@ export interface ConnectorField {
   name: string;
   label: string;
   description: string;
-  /** text | password | url | boolean | number */
+  /** text | password | url | boolean | number | choice */
   kind: string;
   /** Stored out of reach; the client is never sent its value. */
   secret: boolean;
   required: boolean;
   placeholder: string;
+  /** For `choice`: what can be picked, in order. */
+  choices?: { value: string; label: string }[];
+  /** What an unset field means. A `choice` shows it selected. */
+  default?: string;
 }
 
 /** A place announcements can be sent — a named Discord webhook. */

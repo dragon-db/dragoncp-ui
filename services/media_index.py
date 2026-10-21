@@ -551,6 +551,17 @@ class MediaIndex:
             theirs = movie.get('service_file') or {}
             attention.append({'kind': 'different', 'season_number': None, 'count': 1,
                               'quality': theirs.get('quality'), 'size': theirs.get('size')})
+        # After every other reason, as the list orders them.
+        for season in result.get('seasons') or []:
+            paths = season.get('nested_here') or []
+            if season['counts_towards_state'] and paths:
+                codes = [row['code'] for row in season['episodes']
+                         if row['state'] == cmp.NESTED]
+                attention.append({'kind': 'nested', 'season_number': season['season_number'],
+                                  'count': len(paths), 'episodes': codes, 'paths': paths})
+        if movie and result.get('nested_files'):
+            attention.append({'kind': 'nested', 'season_number': None,
+                              'count': result['nested_files'], 'episodes': [], 'paths': []})
         now = self.clock()
         with self._lock:
             for key in [k for k, v in self._exact.items() if now - v['at'] > EXACT_TTL_SECONDS]:
@@ -640,6 +651,7 @@ class MediaIndex:
         series_folder = (folder or {}).get('folder') or os.path.basename(
             str(row.get('path') or '').rstrip('/'))
         first_needing = None
+        first_nested = None
         # The title's own "last synced" is its latest, whether that was the
         # whole folder or one season of it.
         moment = last_sync(None)
@@ -654,6 +666,10 @@ class MediaIndex:
             needs = season['counts'][cmp.MISSING_HERE] or season['counts'][cmp.DIFFERENT]
             if needs and season['counts_towards_state'] and first_needing is None:
                 first_needing = season['explore_season']
+            # Repair works on the folder here, so the link names it.
+            if season.get('nested_here') and season['counts_towards_state'] \
+                    and first_nested is None:
+                first_nested = season['folder_here'] or season['explore_season']
 
         out.update({
             'live': True,
@@ -672,8 +688,11 @@ class MediaIndex:
                     'media_type': media_type,
                     'series': series_folder or None,
                     'season': first_needing if source == SOURCE_SONARR else None,
+                    # Where Repair is needed: what "Repair in Explore" opens.
+                    'nested_season': first_nested if source == SOURCE_SONARR else None,
                 },
             },
+            'nested_files': result.get('nested_files') or 0,
             'computed_at': _now_iso(),
         })
         # The same summary the list shows for a title, so a card can be
@@ -1419,6 +1438,18 @@ def _poster(row: Optional[Dict[str, Any]]) -> str:
     return ''
 
 
+def _nested_reason(first: Dict[str, Any]) -> str:
+    """The list's words for a "nested" reason, without the full stop."""
+    codes = first.get('episodes') or []
+    where = 'inside a nested folder your media server cannot see'
+    if len(codes) == 1 and first.get('count') == 1:
+        return f"{codes[0]} is here, but {where}"
+    if first.get('season_number') is None:
+        return f"The film is here, but {where}"
+    count = first.get('count') or 0
+    return (f"{cmp.plural(count, 'file')} in season {first['season_number']} "
+            f"{'is' if count == 1 else 'are'} {where}")
+
 def _when(moment: Optional[datetime]) -> str:
     return moment.astimezone().strftime('%Y-%m-%d %H:%M') if moment else ''
 
@@ -1633,6 +1664,13 @@ def _judge(entry: Dict[str, Any], source: str, service: Optional[Dict[str, Any]]
     kept = 0
     exactly = False
 
+    nested = (folder or {}).get('nested_files') or {}
+    # Episodes only a nested copy holds. They are here — a folder too deep —
+    # so they are neither missing nor a newer import; the "nested" reason
+    # below says what they are.
+    stranded_keys = {tuple(key) for entries in nested.values()
+                     for found in entries for key in found.get('keys') or []}
+
     if state is None and source == SOURCE_SONARR:
         here = (folder or {}).get('episodes_here') or {}
         files = (folder or {}).get('episode_files') or {}
@@ -1643,7 +1681,9 @@ def _judge(entry: Dict[str, Any], source: str, service: Optional[Dict[str, Any]]
             if number <= 0:
                 continue
             theirs = season['episode_file_count'] or 0
-            ours = here.get(number, 0)
+            visible = here.get(number, 0)
+            ours = visible + len({episode for (season_no, episode) in stranded_keys
+                                  if season_no == number and (number, episode) not in files})
             if theirs > ours:
                 attention.append({
                     'kind': 'short' if ours else 'season_not_here',
@@ -1656,7 +1696,8 @@ def _judge(entry: Dict[str, Any], source: str, service: Optional[Dict[str, Any]]
             # tell those apart — "1 there, 7 here" is both — but sizes can.
             folder_name = season.get('folder_here')
             if theirs and folder and folder_name:
-                sizes = media_sizes_in(os.path.join(folder['path'], folder_name))
+                sizes = (media_sizes_in(os.path.join(folder['path'], folder_name)) or []) + [
+                    found.get('size') or 0 for found in nested.get(number) or []]
                 if cmp.holds_files_of_size(sizes or [], theirs,
                                            season.get('size_on_disk') or 0) is False:
                     attention.append({
@@ -1664,7 +1705,7 @@ def _judge(entry: Dict[str, Any], source: str, service: Optional[Dict[str, Any]]
                         'theirs': theirs, 'ours': ours,
                     })
                     continue
-            kept += ours - theirs
+            kept += max(0, visible - theirs)
         kept += sum(count for number, count in here.items()
                     if number > 0 and number not in listed)
 
@@ -1687,7 +1728,8 @@ def _judge(entry: Dict[str, Any], source: str, service: Optional[Dict[str, Any]]
                     continue
                 paths = files.get((season, number)) or []
                 if not paths:
-                    missing[number] = row['at']
+                    if (season, number) not in stranded_keys:
+                        missing[number] = row['at']
                     continue
                 # The episode is here. If it is the very file imported — same
                 # size — something other than a recorded sync put it here.
@@ -1713,14 +1755,18 @@ def _judge(entry: Dict[str, Any], source: str, service: Optional[Dict[str, Any]]
 
     elif state is None:
         loose = (folder or {}).get('loose_media') or []
-        result = cmp.compare_movie(service or {}, {'loose': loose}, name)
+        nested_loose = (folder or {}).get('nested_loose') or []
+        result = cmp.compare_movie(service or {}, {'loose': loose, 'nested_loose': nested_loose},
+                                   name)
         movie = result['movie']
         theirs = movie['service_file'] or {}
-        if theirs.get('size') and any(f.get('size') for f in loose):
+        if theirs.get('size') and any(f.get('size') for f in loose + nested_loose):
             exactly = True
             if movie['state'] == cmp.DIFFERENT:
                 attention.append({'kind': 'different', 'season_number': None, 'count': 1,
                                   'quality': theirs.get('quality'), 'size': theirs.get('size')})
+        elif nested_loose:
+            pass  # the film is here, stranded; the "nested" reason below says so
         else:
             # No size to compare: fall back to the import rule.
             since = last_sync(None)
@@ -1730,6 +1776,16 @@ def _judge(entry: Dict[str, Any], source: str, service: Optional[Dict[str, Any]]
                                   'episodes': [],
                                   'imported_at': max(r['at'] for r in newer).isoformat()})
         state = cmp.OUT_OF_SYNC if attention else cmp.TITLE_IN_SYNC
+
+    # Media files a folder too deep, where the media server cannot see them —
+    # Explore's "Nested". Its own reason, after any other: something missing
+    # is still out of sync, and only nothing else wrong reads Needs repair.
+    stranded = _nested_attention(folder, source)
+    if stranded and state in (cmp.OUT_OF_SYNC, cmp.TITLE_IN_SYNC, cmp.KEPT_HERE,
+                              cmp.NEVER, cmp.NO_FILES):
+        attention.extend(stranded)
+        if state != cmp.OUT_OF_SYNC:
+            state = cmp.NEEDS_REPAIR
 
     used_exact = False
     if exact and state not in (cmp.ORPHAN, cmp.UNKNOWN) and (
@@ -1745,6 +1801,30 @@ def _judge(entry: Dict[str, Any], source: str, service: Optional[Dict[str, Any]]
     entry['state_exact'] = exactly
     entry['state_reason'] = (exact['summary'] if used_exact
                              else _reason(state, attention, kept, entry, name))
+
+
+def _nested_attention(folder: Optional[Dict[str, Any]], source: str) -> List[Dict[str, Any]]:
+    """One "nested" reason per season (or film) with a file a folder too deep.
+
+    Specials are left out, as they are out of every other judgement here.
+    """
+    if not folder:
+        return []
+    if source != SOURCE_SONARR:
+        found = folder.get('nested_loose') or []
+        return ([{'kind': 'nested', 'season_number': None, 'count': len(found),
+                  'episodes': [], 'paths': [f['relative_path'] for f in found]}]
+                if found else [])
+    out = []
+    for number in sorted(folder.get('nested_files') or {}):
+        entries = folder['nested_files'][number]
+        if number <= 0 or not entries:
+            continue
+        codes = sorted({cmp.episode_code(*key) for found in entries
+                        for key in (tuple(k) for k in found.get('keys') or [])})
+        out.append({'kind': 'nested', 'season_number': number, 'count': len(entries),
+                    'episodes': codes, 'paths': [f['relative_path'] for f in entries]})
+    return out
 
 
 def _reason(state: str, attention: List[Dict[str, Any]], kept: int,
@@ -1774,10 +1854,14 @@ def _reason(state: str, attention: List[Dict[str, Any]], kept: int,
                     f"Not all of {name}'s {first['theirs']} files for season {season} are here")
         elif kind == 'missing':
             text = f"{cmp.plural(count, 'episode')} on {name} not here yet ({codes})"
+        elif kind == 'nested':
+            text = _nested_reason(first)
         else:
             text = f"{name} holds a different file"
         more = len(attention) - 1
         return text + (f" — and {more} more" if more > 0 else '') + '.'
+    if state == cmp.NEEDS_REPAIR and attention:
+        return _nested_reason(attention[0]) + '. Repair it in Explore.'
     if state == cmp.TITLE_IN_SYNC:
         return f"Everything {name} holds is here."
     if state == cmp.KEPT_HERE:

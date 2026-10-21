@@ -214,6 +214,11 @@ _DB_SETTINGS: List[Setting] = [
     # point is that it can be switched from the panel, without editing a file on
     # the server and restarting, at the moment transfers have already dropped
     # back to the slow route.
+    Setting('SSH_AUTO_CONNECT', DB, 'remote_session', 'Auto-connect',
+            'Open the SSH session to the remote server by itself whenever Explore '
+            'needs it, and reopen it when it drops. Off: connect by hand.',
+            kind='boolean', default='true'),
+
     Setting('FAST_TRANSPORT_ENABLED', DB, 'fast_transport', 'Use the fast route',
             'Pull media over the transfer server instead of SSH when it is available. '
             'Transfers fall back to SSH on their own whenever it is not.',
@@ -242,6 +247,8 @@ ENV_ONLY_KEYS: Tuple[str, ...] = tuple(s.key for s in SETTINGS if not s.editable
 
 GROUPS: Tuple[Tuple[str, str], ...] = (
     ('remote', 'Remote host'),
+    # Shown on Settings → Connection beside Connect, not on the Config tab.
+    ('remote_session', 'Remote session'),
     ('fast_transport', 'Fast transfers'),
     ('library', 'Media directories'),
     ('disks', 'Disk reporting'),

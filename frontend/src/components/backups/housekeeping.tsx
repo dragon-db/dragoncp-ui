@@ -9,6 +9,7 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { Button } from "@/components/ui/button";
+import { PageHeaderMenu } from "@/components/layout/page-header";
 import {
   Dialog,
   DialogContent,
@@ -429,21 +430,70 @@ export function MigrationDialog({
   );
 }
 
-export function HousekeepingBar({
-  legacyFolders,
-  unsortedCount,
+/**
+ * The Backups page's two standing actions, on the title's row: as buttons
+ * from `sm` up, in a "⋯" menu on a phone, so the title and its controls share
+ * one line there (operator, 2026-10-20).
+ */
+export function HousekeepingActions({
   onOpenRetention,
-  onOpenMigration,
   onRebuild,
   rebuilding,
 }: {
-  legacyFolders: number;
-  unsortedCount: number;
   onOpenRetention: () => void;
-  onOpenMigration: () => void;
   onRebuild: () => void;
   rebuilding: boolean;
 }) {
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onOpenRetention}
+        className="hidden sm:inline-flex"
+      >
+        <IconTrash className="size-4" />
+        Retention
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onRebuild}
+        disabled={rebuilding}
+        className="hidden sm:inline-flex"
+      >
+        <IconDatabaseCog className="size-4" />
+        {rebuilding ? "Rebuilding…" : "Rebuild index"}
+      </Button>
+      <PageHeaderMenu
+        items={[
+          { label: "Retention", icon: IconTrash, onSelect: onOpenRetention },
+          {
+            label: rebuilding ? "Rebuilding…" : "Rebuild index",
+            icon: IconDatabaseCog,
+            onSelect: onRebuild,
+            disabled: rebuilding,
+          },
+        ]}
+      />
+    </div>
+  );
+}
+
+/**
+ * What needs doing once, under the page's description: old folders to adopt,
+ * and backups nobody could identify. Nothing when there is neither.
+ */
+export function HousekeepingNotices({
+  legacyFolders,
+  unsortedCount,
+  onOpenMigration,
+}: {
+  legacyFolders: number;
+  unsortedCount: number;
+  onOpenMigration: () => void;
+}) {
+  if (legacyFolders <= 0 && unsortedCount <= 0) return null;
   return (
     <div className="flex flex-wrap items-center gap-2">
       {legacyFolders > 0 && (
@@ -458,14 +508,6 @@ export function HousekeepingBar({
           {unsortedCount} unidentified
         </span>
       )}
-      <Button variant="outline" size="sm" onClick={onOpenRetention}>
-        <IconTrash className="size-4" />
-        Retention
-      </Button>
-      <Button variant="outline" size="sm" onClick={onRebuild} disabled={rebuilding}>
-        <IconDatabaseCog className="size-4" />
-        {rebuilding ? "Rebuilding…" : "Rebuild index"}
-      </Button>
     </div>
   );
 }

@@ -22,10 +22,12 @@ import {
   IconCloudDownload,
   IconDownload,
   IconEyeOff,
+  IconFolderExclamation,
   IconFolderOff,
   IconFolderQuestion,
   IconHelpCircle,
   IconPencil,
+  IconTool,
   IconTrash,
 } from "@tabler/icons-react";
 import type {
@@ -80,6 +82,14 @@ export interface StateInfo {
 
 export const TITLE_STATE: Record<LibraryState, StateInfo> = {
   out_of_sync: { label: "Out of sync", tone: "warn", icon: IconAlertTriangle },
+  // Explore's word for the same thing: everything is here, but a file sits in
+  // a nested folder the media server cannot see.
+  needs_repair: {
+    label: "Needs repair",
+    tone: "warn",
+    icon: IconTool,
+    hint: "Everything is here, but a file sits inside a nested folder your media server cannot see. Repair it in Explore.",
+  },
   in_sync: { label: "In sync", tone: "ok", icon: IconCircleCheck },
   // Kept-here is the media server having cleaned up after a sync: in sync, on
   // purpose, with only a quiet note that more is kept here.
@@ -97,6 +107,7 @@ export function titleState(state: string | undefined): StateInfo {
 /** The order "needs attention first" sorts by. */
 export const STATE_RANK: Record<LibraryState, number> = {
   out_of_sync: 0,
+  needs_repair: 0,
   in_sync: 1,
   kept_here: 1,
   never: 2,
@@ -117,6 +128,11 @@ export function hasUpgrade(item: LibraryItem): boolean {
     item.sync_state === "out_of_sync" &&
     (item.attention ?? []).some((entry) => UPGRADE_KINDS.has(entry.kind))
   );
+}
+
+/** Whether some of this title's files sit in a nested folder, whatever its state. */
+export function hasNested(item: LibraryItem): boolean {
+  return (item.attention ?? []).some((entry) => entry.kind === "nested");
 }
 
 /** The Library's filter chips, out of sync first. */
@@ -148,6 +164,12 @@ export const EPISODE_STATE: Record<EpisodeState, StateInfo> = {
     tone: "info",
     icon: IconCircleArrowUp,
     hint: "Both have this episode, but the service holds a different file — usually an upgrade.",
+  },
+  nested: {
+    label: "Nested",
+    tone: "warn",
+    icon: IconFolderExclamation,
+    hint: "Here, but inside a nested folder your media server cannot see. Repair it in Explore; copying it again would not help.",
   },
   in_sync: {
     label: "Here",
@@ -292,6 +314,13 @@ export function attentionText(entry: LibraryAttention, service: string): string 
         : `Not all of ${service}'s ${entry.theirs} files for ${seasonWord} are here`;
     case "missing":
       return `${plural(entry.count, "episode")} on ${service} not here yet: ${codes(entry.episodes)}`;
+    case "nested":
+      if (entry.episodes?.length === 1 && entry.count === 1) {
+        return `${entry.episodes[0]} is here, but inside a nested folder`;
+      }
+      return entry.season_number === null
+        ? "The film is here, but inside a nested folder"
+        : `${plural(entry.count, "file")} in ${seasonWord} ${entry.count === 1 ? "is" : "are"} inside a nested folder`;
     case "different":
       return entry.episodes?.length
         ? `${entry.count === 1 ? "An upgrade" : `${entry.count} upgrades`} on ${service}: ${codes(entry.episodes)}`
@@ -305,7 +334,10 @@ export function attentionText(entry: LibraryAttention, service: string): string 
 
 /** The card's tooltip and the panel's fallback: why a title reads as it does. */
 export function itemSentence(item: LibraryItem, service: string): string {
-  if (item.sync_state === "out_of_sync" && item.attention?.length) {
+  if (
+    (item.sync_state === "out_of_sync" || item.sync_state === "needs_repair") &&
+    item.attention?.length
+  ) {
     const first = attentionText(item.attention[0], service);
     const more = item.attention.length - 1;
     return more > 0 ? `${first}, and ${more} more` : first;

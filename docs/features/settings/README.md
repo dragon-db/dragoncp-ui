@@ -1,106 +1,206 @@
 # Settings Screen
 
-Last updated: 2026-10-05
-Primary files: `settings_registry.py`, `services/settings_service.py`, `frontend/src/components/settings/settings-panel.tsx`, `frontend/src/components/settings/backend-log-panel.tsx`, `frontend/src/components/settings/remote-transfer-panel.tsx`, `frontend/src/components/pages/settings.tsx`, `frontend/src/hooks/useConfig.ts`, `app.py`, `config.py`, `routes/webhooks.py`, `routes/logs.py`, `models/settings.py`, `websocket.py`
+Last updated: 2026-10-21
+Primary files: `frontend/src/components/pages/settings.tsx`, `frontend/src/components/settings/` (`remote-server-tab.tsx`, `syncing-tab.tsx`, `account-tab.tsx`, `system-tab.tsx`, `remote-transfer-panel.tsx`, `backend-log-panel.tsx`, `settings-bits.tsx`, `settings-model.ts`), `frontend/src/routes/_authenticated/settings.tsx`, `settings_registry.py`, `services/settings_service.py`, `frontend/src/hooks/useConfig.ts`, `app.py`, `config.py`, `routes/webhooks.py`, `routes/logs.py`, `models/settings.py`, `websocket.py`
 
 ## Where a setting lives
 
 Two stores, and only two — see
 [`../../reference/configuration.md`](../../reference/configuration.md#where-a-setting-lives).
-
-The **Config** tab is now generated from `settings_registry.py`. Environment
-settings render read-only, with a note saying they come from
-`dragoncp_env.env`; database settings are editable and take effect immediately.
-A save that includes an environment key refuses it **by name** rather than
-ignoring it.
-
-The **Automation** tab keeps its purpose-built controls for auto-sync. Those are
-database settings too, written through the same resolver, so the two tabs cannot
-disagree. Discord left this screen for Integrations in 2.3.0; the tab links there.
-
-**The old warning on this page no longer applies.** The two tabs used to save to
-different places — Core Config to a per-browser Flask session that background
-threads never read, Automation to the database. That session store is gone.
-Everything writable now goes to one place.
+Values from the environment file are shown with a lock and cannot be changed
+here; values in the database have a control and save from this screen.
 
 The retired UI's flat `GET /api/config` shape, `/api/config/env-only`, and
 `/api/config/reset` remain as deprecated compatibility contracts for one React
 cutover soak. New clients use only the grouped configuration payload.
 
-
 ## Purpose
 
-The Settings screen is where an operator sees how DragonCP is configured, turns webhook
-auto-sync on or off, sets the fallback wait for TV and anime, reaches the SSH connection
-controls and the fast transfer route, and reads the WebSocket diagnostics and the backend
-log. Discord, and the Sonarr and Radarr auto-scanners, are configured under Integrations
-instead — see [Integrations](../integrations/README.md).
-
-The most important thing to understand about this screen is that **not everything on it
-is editable**, and the screen says which is which. Where the media lives and how to
-reach the remote come from the environment file on the server; automation, retention,
-the fast route and the realtime timeout come from the database and can be changed here.
+Where an operator checks how DragonCP is set up and changes the few things that
+can be changed from a browser: the SSH session to the remote server and the
+fast transfer route, automatic sync and backup retention, their own password,
+and the realtime timeout; and where they read the backend log. Discord and the
+Sonarr and Radarr auto-scanners are configured under
+[Integrations](../integrations/README.md) instead.
 
 ## Layout
 
-### Header
+Rebuilt on 2026-10-21 (2.3.2, TASK-026) so it looks like the rest of the app —
+the underlined page tabs, bordered section cards and status colours of
+[the design system](../../reference/design-system.md) — and so each topic lives
+in one place. It used to be five tabs by mechanism (Core Config, Connections,
+Automation, Account, Diagnostics): the remote login sat on one tab and Connect
+on another, the fast-transfer options appeared twice, and every value the
+environment file sets was drawn as a greyed-out input.
 
-Title "Settings", description "Connection, media paths, and automation". No buttons.
+**Header:** the title only. No buttons, no description.
 
-There is no page-level save. Each tab saves its own settings, because a single "save
-everything" button spanning two stores could only ever claim to have written things it
-had not. There is no `Reset to Env` either: a setting now either comes from the
-environment file, in which case it is read-only, or from the database, where the stored
-value is the only value there is.
+**Tabs**, each a stack of section cards. The tab is in the address
+(`/settings?tab=remote|syncing|account|system`; anything else opens Remote
+server), so other pages can link to one. On a phone the first reads **Remote**
+so all four fit.
 
-### Summary tiles
-
-Two read-only tiles across the top:
-
-| Tile | Shows |
+| Tab | Sections |
 | --- | --- |
-| SSH | `Connected` / `Disconnected`, from the runtime status poll |
-| WebSockets | active WebSocket connections reported by `GET /api/websocket/status` |
+| Remote server | Connection, Fast transfers |
+| Syncing | Automatic sync, Library folders, Backup retention |
+| Account | Signed in as, Password, Administrators, Sign-in and access |
+| System | Runtime, Live connections, Disk usage, Backend log, Other settings |
 
-The SSH tile polls `GET /api/runtime/status` every 5 seconds. If that endpoint returns
-404 (older backend), the frontend falls back to `GET /api/debug` and slows the poll to
-30 seconds.
+**Rows.** A setting is a row: name and what it does on the left, its control or
+value on the right (under it on a phone, except switches and short values, which
+stay on the right). A value from the environment file reads as text with a lock,
+or *Not set*; the section says once, at its foot, that locked values come from
+`dragoncp_env.env` and need a restart. Values that need no explaining (the
+remote login, the disk paths) are a compact two-column list instead of rows.
 
-### Tabs
+**Coloured icons mean a state**, in the app's four-note vocabulary: green
+healthy, amber needs a look, rose broken, brand on, grey off — the connection,
+the fast transfer server, each library's auto-sync, test mode.
 
-`Core Config`, `Connections`, `Automation`, `Account`, `Diagnostics`.
+**One save model.** A switch or a choice saves the moment it changes, with a
+toast that says what changed. A number saves on Enter or when the field loses
+focus; Escape puts it back. A number outside the setting's range is refused on
+the page ("Use a number from 30 to 900") and not sent. There is no page-level
+save and no Reset to Env.
 
-Connections holds the SSH connection controls and the **Fast transfers** panel
-(see [fast transfers](../fast-transfers/README.md)). The Account tab shows the
-signed-in identity and supports self-service password changes. Diagnostics
-contains the Socket.IO state plus the backend log viewer, with level/search
-filters, manual or automatic refresh, and an authenticated full-log download.
+**Other settings.** Any setting the server describes that no tab places
+(`PLACED_KEYS` in `settings-model.ts`) appears on System under **Other
+settings**, so a key added to the registry later is never invisible. Nothing
+lands there today, and the section is then hidden.
 
-## Core Config tab
+**Secrets are never shown.** Environment secrets (`SECRET_KEY`,
+`JWT_SECRET_KEY`, `REMOTE_PASSWORD`, `DRAGONCP_PASSWORD`,
+`DRAGONCP_PASSWORD_HASH`, `WEBHOOK_SECRET`, `DISK_API_TOKEN`,
+`RSYNC_DAEMON_ALLOWED_IP`) are omitted from the response entirely.
 
-Generated from `settings_registry.py` — the panel walks the groups `GET /api/config`
-returns rather than holding its own list of fields, so adding a setting to the registry
-adds it here. The one group it skips is `automation`, which the Automation tab draws with
-its own controls and labels.
+## Remote server tab
 
-Each setting renders with its group, label and description, and with a badge saying
-which store it came from:
+**Connection** — the SSH session Explore reads the remote server through.
 
-- **Environment file** — read-only. The value is shown where it is safe to show; secrets
-  are not sent to the browser at all. Change these in `dragoncp_env.env` on the server
-  and restart.
-- **Application setting** — editable, saved to the database, effective immediately and
-  shared by every operator and every background job.
+- At the top, what state it is in, as a coloured icon and a sentence:
+  *Connected to <server>*; *Not connected* (with whether Explore will connect
+  by itself); *Cannot reach <server>* with the reason and when it tries again;
+  or *The remote server refused the login*, in rose, when automatic connecting
+  is paused (see [Explore → The SSH session](../explore/README.md#the-ssh-session)).
+  Read from `GET /api/explore/session` every 15 seconds; that asks nothing of
+  the remote server.
+- **Connect** (`GET /api/auto-connect`) or **Disconnect**
+  (`POST /api/disconnect`), whichever applies. Connect is greyed out with
+  "Connect at 14:03:00" while a refused login's 60-second spacing runs.
+- **Auto-connect** switch (`SSH_AUTO_CONNECT`, on by default): Explore opens the
+  session by itself whenever it needs it. Off: nobody connects but a person.
+- Locked: Server, User, SSH key (*Not set* means the password is used),
+  Host-key checking (with what the policy means; `no` is flagged unsafe in
+  amber), Known hosts file (*Not set* means `dragoncp_known_hosts` in the app
+  folder).
 
-The media paths, the remote connection details and the secrets are all environment
-settings. That is deliberate: the seven media paths are the path-traversal boundary that
-every file operation is validated against, and widening it from a browser is not
-something this application allows.
+The SSH session is a single process-wide connection, not one per operator.
+Disconnecting here disconnects browsing for everyone using the installation.
+Transfers open their own connections and are not affected.
 
-A save sends only the editable fields. If a request does contain an environment key —
-an older client, or a hand-made request — the server refuses it **by name** and the
-response lists which, so the UI can say what did not change instead of reporting a
-success that half happened.
+**Fast transfers** — the transfer server on the remote server; see
+[fast transfers](../fast-transfers/README.md). Its state as a coloured icon and
+sentence, the warnings (address changed, not configured), the actions (Install
+or Reinstall, Start, Stop, New password, Remove — pressed twice), the three
+choices (Use it for transfers, Who may connect, When it runs; each saves on
+change), the facts (installed, running, answering, settings match, address
+matches, port, libraries published, stored password problems), and **Which
+address do we connect from?** Its status light no longer pulses.
+
+## Syncing tab
+
+**Automatic sync** — one switch per library (Movies, TV shows, Anime), the icon
+in brand when on, and **Fallback wait**. These are the same settings as the
+Auto-sync popover on the Webhooks page, saved through the same request; see
+[auto-sync](../auto-sync/README.md) for what they drive.
+
+**Library folders** — each library as a pair: where it is on the remote server,
+an arrow, where it lands on this machine; then the Backups folder. All locked:
+the seven media paths are the path-traversal boundary every file operation is
+checked against, and widening it from a browser is not something this
+application allows.
+
+**Backup retention** — **Delete old versions** (switch), **Versions to keep**
+(1-50) and **Grace period** (0-720 hours). The two numbers are greyed out while
+the switch is off. See [backups](../backups/README.md) for what protects a
+version.
+
+Behaviours that belong to this screen rather than to those features:
+
+**The wait time is a fallback now.** Since 2.3.0 it decides when a TV or anime season
+starts only when Sonarr cannot be asked — the Sonarr connector is off or has no address
+or key, Sonarr does not answer (or stops answering partway through the wait), or the
+series carries no TVDB id. When Sonarr answers,
+its own "time left" decides, for at most 30 minutes; see
+[the sync engine](../sync-engine/README.md). As a fallback the timer runs from the first
+webhook of a batch, each later webhook adds the same again, and it never runs past
+15 minutes after the first. The deadline is stored on the batch and re-read at every
+step, so a later webhook really does extend it.
+
+**The screen says so.** The field reads **Fallback wait**, "Only used when Sonarr
+can't be asked: how long a season waits for more episodes before it syncs, up to 15
+minutes in all." The auto-sync popover on the Webhooks page says "TV & anime start once
+Sonarr has nothing more for the season; if Sonarr cannot be asked, Ns after the last
+episode." Both used to describe the old fixed wait. The sentence is written into the
+tab rather than read from the registry, so nothing keeps the two in step.
+
+**The wait's range is checked on the page too.** Since 2026-10-21 the field refuses a
+number outside the registry's 30-900 seconds and says so, instead of sending it. The
+registry still clamps to 30-900 wherever the value is written, so another client
+sending `5` stores `30`.
+
+**There is no switch for asking Sonarr.** Pre-release builds of 2.3.0 had one,
+`AUTOSYNC_GATE_ENABLED` ("Wait for the download instead of the clock"), with
+`AUTOSYNC_GATE_POLL_SECONDS` and `AUTOSYNC_GATE_SETTLE_SECONDS` beside it. All three are
+gone from the registry and nothing reads them: whether Sonarr's API answers decides, the
+pause before the first question is a fixed 10 seconds, and the next question follows
+Sonarr's own estimate. A value one of those builds saved stays in `app_settings`, unread.
+
+**Turning auto-sync on does not release what is already held.** With a switch off, each
+webhook still opens a batch, held for a person. Switching it on leaves those batches held
+until another webhook for the same folder arrives — that webhook sets its batch going — or
+someone presses Sync.
+
+**Discord is not configured here any more.** It became a connector in 2.3.0, with named
+webhooks and a choice of destination per notification, and it lives under Integrations →
+Discord in the sidebar. Until 2026-10-21 this screen carried a card that only linked
+there; it was removed.
+
+**Neither is the auto-scanner.** Its switch and interval are per service, on the Sonarr
+and Radarr Connection tabs under Integrations, where an Auto-scanner card shows its next
+scan and what the last one found.
+
+## Account tab
+
+- **Signed in as** — an initial tile, the username, and *Administrator, account #N* or
+  *Fallback sign-in from the server's environment file*.
+- **Password** — change your own; see [auth](../auth/README.md).
+- **Administrators** — why there is no screen for it, and the
+  `scripts/manage_admins.py` commands; see [admin accounts](../../operations/admin-accounts.md).
+- **Sign-in and access**, locked: Sign-in lasts (`JWT_EXPIRY_HOURS`), Fallback
+  username (`DRAGONCP_USERNAME`, used only while no account exists), Webhook senders
+  (`WEBHOOK_ALLOWED_IPS`, with what happens when it and the webhook secret are set or
+  not), Allowed origins (`CORS_ORIGINS`).
+
+## System tab
+
+- **Runtime** — **Test mode** (on: amber icon, "transfers are rehearsed and nothing is
+  written", and the Backups page caveat; from the runtime status, which reads
+  `TEST_MODE` at start-up) and **Live updates time out after** (`WEBSOCKET_TIMEOUT_MINUTES`,
+  5-60 minutes).
+- **Live connections** — one row per browser holding a realtime connection: its
+  shortened session id, when it connected, when it was last active, and how long it may
+  idle. Polled every 5 seconds from `GET /api/websocket/status`. With none: "No browser
+  is connected live". Until 2026-10-21 this was a raw JSON dump.
+- **Disk usage** — the three disk paths and the remote server's disk API address, as a
+  compact list.
+- **Backend log** — level (Errors, Warnings and errors, Info only, Debug only,
+  Everything; as `routes/logs.py` filters them), search, Keep refreshing, Refresh and
+  Download. Error lines are rose, warnings amber, the rest quiet.
+- **Other settings** — only when a setting has no other place (see Layout).
+
+## Saving
 
 ### Saving is all-or-nothing
 
@@ -108,8 +208,9 @@ The whole payload is validated before any of it is written. A single bad value f
 request with a 400 and changes nothing, so a failed save always means the settings are
 exactly as they were.
 
-Numbers are clamped rather than rejected: typing `999` into a field that tops out at 60
-saves 60, because that plainly meant "as high as it goes".
+On the server, numbers are clamped rather than rejected: a request carrying `999` for a
+field that tops out at 60 saves 60. This page never sends one: since 2026-10-21 it
+refuses an out-of-range number before saving and says the range.
 
 ### Masked fields
 
@@ -139,85 +240,20 @@ connection rather than the one currently open.
 It used to be read from the browser session, which meant the value an operator saved was
 invisible to the server's own stale-connection reaper.
 
-## Automation tab
-
-Two cards. Neither is documented in depth here.
-
-- **Webhook Auto-Sync** - Auto-sync Movies, Auto-sync TV Shows, Auto-sync Anime, and
-  **Fallback wait (seconds)**. See [auto-sync](../auto-sync/README.md) for what
-  these actually drive.
-- **Notifications** - a pointer, not a form: Discord moved to Integrations → Discord, and
-  **Open Discord settings** goes there. See [notifications](../notifications/README.md).
-
-Behaviours that belong to this screen rather than to those features:
-
-**The wait time is a fallback now.** Since 2.3.0 it decides when a TV or anime season
-starts only when Sonarr cannot be asked — the Sonarr connector is off or has no address
-or key, Sonarr does not answer (or stops answering partway through the wait), or the
-series carries no TVDB id. When Sonarr answers,
-its own "time left" decides, for at most 30 minutes; see
-[the sync engine](../sync-engine/README.md). As a fallback the timer runs from the first
-webhook of a batch, each later webhook adds the same again, and it never runs past
-15 minutes after the first. The deadline is stored on the batch and re-read at every
-step, so a later webhook really does extend it.
-
-**The screen says so.** Since 2026-10-05 the field reads **Fallback wait (seconds)**,
-with the sentence "Used only when Sonarr cannot be asked: how long a TV or anime season
-waits for more episodes before syncing, plus this again for each later episode, never
-more than 15 minutes. When Sonarr answers, it decides instead." The auto-sync popover on
-the Webhooks page says "TV & anime start once Sonarr has nothing more for the season; if
-Sonarr cannot be asked, Ns after the last episode." Both used to describe the old fixed
-wait — the field was *Series/Anime Wait Time (seconds)* and the popover read "TV & anime
-wait Ns after the last episode." The label and sentence are written into this tab rather
-than read from the registry. Today the label is the registry's and the sentence says
-what its description says, in slightly different words, but nothing keeps the two in
-step: the Core Config tab leaves the automation group to this tab, so the
-registry's own label and description reach only the grouped configuration payload. The
-card's own description is unchanged: "Control movie/series/anime auto-sync behavior and
-wait window".
-
-**Wait time is clamped differently at each end.** The page only guards against zero and
-non-numbers (minimum 1). The registry clamps to 30-900 seconds wherever it is written.
-Type `5`, save, and the stored value is `30`; the field corrects itself after the page
-refetches. The bounds used to be enforced in one route only, so the same value written
-through another path was accepted unclamped.
-
-**There is no switch for asking Sonarr.** Pre-release builds of 2.3.0 had one,
-`AUTOSYNC_GATE_ENABLED` ("Wait for the download instead of the clock"), with
-`AUTOSYNC_GATE_POLL_SECONDS` and `AUTOSYNC_GATE_SETTLE_SECONDS` beside it. All three are
-gone from the registry and nothing reads them: whether Sonarr's API answers decides, the
-pause before the first question is a fixed 10 seconds, and the next question follows
-Sonarr's own estimate. A value one of those builds saved stays in `app_settings`, unread.
-
-**Turning auto-sync on does not release what is already held.** With a switch off, each
-webhook still opens a batch, held for a person. Switching it on leaves those batches held
-until another webhook for the same folder arrives — that webhook sets its batch going — or
-someone presses Sync.
-
-**Discord is not configured here any more.** It became a connector in 2.3.0, with named
-webhooks and a choice of destination per notification, and it lives under Integrations →
-Discord in the sidebar. The Automation tab links to it. Each webhook has its own Test
-button that sends to *that* webhook, which is the question the old single Test button
-could not answer once there was more than one destination.
-
-**Neither is the auto-scanner.** Its switch and interval are per service, on the Sonarr
-and Radarr Connection tabs under Integrations, where an Auto-scanner card shows its next
-scan and what the last one found.
-
 ## Where a save goes
 
-Each tab writes its own settings, through the same resolver, into the same database:
+Every save goes through the same resolver into the same database:
 
-| Tab | Request | Keys |
+| Section | Request | Keys |
 | --- | --- | --- |
-| Core Config | `POST /api/config` | every editable key in the registry |
-| Automation | `POST /api/webhook/settings` | the three auto-sync toggles and the wait time |
+| Automatic sync | `POST /api/webhook/settings` | the three auto-sync toggles and the fallback wait (the Webhooks page's popover uses the same request) |
+| Everything else editable | `POST /api/config` | one key per save: `SSH_AUTO_CONNECT`, the three `FAST_TRANSPORT_*`, the three `BACKUP_RETENTION_*`, `WEBSOCKET_TIMEOUT_MINUTES` |
 
 Connectors write elsewhere — `POST /api/connectors/<id>` and the destination routes,
 into the `connector` tables rather than `app_settings`. That includes Discord and the
 Sonarr and Radarr auto-scanner switches. See [Integrations](../integrations/README.md).
 
-Both tabs' settings land in the `app_settings` table. They are global — one value for the
+They all land in the `app_settings` table. They are global — one value for the
 whole installation, visible to every operator — and they survive a restart.
 
 They are read at the moment they are needed rather than cached: the auto-sync flags when
@@ -245,48 +281,24 @@ a deliberate choice — that is how a value is cleared — and is left alone.
 ## What needs a reconnect
 
 Only `WEBSOCKET_TIMEOUT_MINUTES`, and only because the value is read when a realtime
-connection opens. Saving it switches the realtime indicator in the app header to the
-config-changed state, where its button reads **Apply settings**.
+connection opens, so a change applies from the next live connection; the field says
+so. Nothing on screen prompts for it. (This page used to say saving it switched the
+header's realtime indicator to **Apply settings**; checked 2026-10-21, nothing in the
+frontend sets that state.)
 
 The SSH connection details are environment settings and cannot be changed from a
 browser, so nothing on this screen can invalidate the SSH session. Editing
-`dragoncp_env.env` and restarting is what changes them; **Auto Connect** on the
-Connections tab rebuilds the session from the current values.
-
-## Connections tab
-
-**Connection Controls**
-
-- **Auto Connect** (`GET /api/auto-connect`) opens an SSH session using `REMOTE_IP`,
-  `REMOTE_USER`, `REMOTE_PASSWORD` and `SSH_KEY_PATH` as they are in the environment
-  file. It fails if host or user is empty.
-- **Disconnect** (`POST /api/disconnect`) closes it.
-- A status line repeats SSH state and active WebSocket session count.
-
-The SSH session is a single process-wide connection, not one per operator. Disconnecting
-here disconnects browsing and any SSH-dependent work for everyone using the installation.
-
-Below it, the **Fast transfers** panel shows the transfer server on the media host; see
-[fast transfers](../fast-transfers/README.md).
-
-## Diagnostics tab
-
-**WebSocket Diagnostics**
-
-A read-only JSON dump of `GET /api/websocket/status`, refreshed automatically every 5
-seconds and on demand with **Refresh Status**. It reports active connection count, the
-server default and maximum timeout in minutes, per-connection detail (truncated session
-id, minutes since connect, minutes since last activity, that connection's timeout,
-transport), Socket.IO runtime info, whether the cleanup thread is alive, and a timestamp.
-It shows `{"status": "no data"}` before the first successful response.
+`dragoncp_env.env` and restarting is what changes them; **Connect** on the Remote
+server tab rebuilds the session from the current values.
 
 ## Quick reference
 
 | Change | Where it is stored | Scope | When it takes effect |
 | --- | --- | --- | --- |
 | Source, destination, disk and disk-API paths | `dragoncp_env.env` | whole installation | after editing the file on the server and restarting |
-| `REMOTE_IP`, `REMOTE_USER`, `REMOTE_PASSWORD`, `SSH_KEY_PATH` | `dragoncp_env.env` | whole installation | after a restart, then Auto Connect on the Connections tab |
-| `WEBSOCKET_TIMEOUT_MINUTES` | `app_settings` table | whole installation | on the next realtime connection (Apply settings) |
+| `REMOTE_IP`, `REMOTE_USER`, `REMOTE_PASSWORD`, `SSH_KEY_PATH` | `dragoncp_env.env` | whole installation | after a restart, then Connect on the Remote server tab (or the next Explore read, with Auto-connect on) |
+| `WEBSOCKET_TIMEOUT_MINUTES` | `app_settings` table | whole installation | on the next realtime connection |
+| `SSH_AUTO_CONNECT` | `app_settings` table | whole installation | the next time Explore needs the remote server |
 | Auto-sync toggles | `app_settings` table | whole installation | next webhook; a batch already held stays held until another webhook for its folder or a press of Sync |
 | Fallback wait (`SERIES_ANIME_SYNC_WAIT_TIME`) | `app_settings` table | whole installation | the next batch, or the next webhook joining one; used only when Sonarr cannot be asked |
 | Discord destinations and routing | connector tables (Integrations → Discord) | whole installation | next announcement |
@@ -298,6 +310,7 @@ It shows `{"status": "no data"}` before the first successful response.
 - [Auto-sync](../auto-sync/README.md)
 - [Sync engine](../sync-engine/README.md) — when the fallback wait applies
 - [Integrations](../integrations/README.md) — Discord and the auto-scanner
+- [Design system](../../reference/design-system.md) — the cards, tabs and colours this screen uses
 - [Discord notifications](../notifications/README.md)
 - [Configuration reference](../../reference/configuration.md)
 - [API reference](../../reference/api.md)

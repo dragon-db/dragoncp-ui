@@ -89,8 +89,8 @@ ACTIONS = {
     'connector.mention_delete': 'Removed someone notifications can ping',
     'connector.mention_test': 'Sent a test ping',
     'connector.routes_update': 'Changed where notifications are sent',
-    'ssh.connect': 'Connected to the media server',
-    'ssh.disconnect': 'Disconnected from the media server',
+    'ssh.connect': 'Connected to the remote server',
+    'ssh.disconnect': 'Disconnected from the remote server',
     # the transfer server on the remote host
     'remote_transfer.install': 'Installed the remote transfer server',
     'remote_transfer.uninstall': 'Removed the remote transfer server',

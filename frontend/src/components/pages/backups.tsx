@@ -67,7 +67,8 @@ import {
 } from "@/components/backups/delete-dialog";
 import {
   DiskBar,
-  HousekeepingBar,
+  HousekeepingActions,
+  HousekeepingNotices,
   MigrationDialog,
   RetentionDialog,
 } from "@/components/backups/housekeeping";
@@ -341,26 +342,28 @@ export function BackupsPage() {
         pickedSlots.size > 0 && "pb-20 lg:pb-4"
       )}
     >
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
+      <header className="flex flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-3">
           <h1 className="font-display text-xl font-semibold">Backups</h1>
-          <p className="text-[12.5px] text-muted-foreground">
-            Every movie and episode a sync has replaced, newest first. Restoring puts one back and
-            keeps what it replaced.
-          </p>
+          <HousekeepingActions
+            onOpenRetention={() => setShowRetention(true)}
+            rebuilding={rebuild.isPending}
+            onRebuild={() =>
+              rebuild.mutate(undefined, {
+                onSuccess: (result) => toast.success(result.message),
+                onError: () => toast.error("Could not rebuild the index"),
+              })
+            }
+          />
         </div>
-        <HousekeepingBar
+        <p className="text-[12.5px] text-muted-foreground">
+          Every movie and episode a sync has replaced, newest first. Restoring puts one back and
+          keeps what it replaced.
+        </p>
+        <HousekeepingNotices
           legacyFolders={overview.data?.legacy_folders ?? 0}
           unsortedCount={overview.data?.totals.unsorted_count ?? 0}
-          onOpenRetention={() => setShowRetention(true)}
           onOpenMigration={() => setShowMigration(true)}
-          rebuilding={rebuild.isPending}
-          onRebuild={() =>
-            rebuild.mutate(undefined, {
-              onSuccess: (result) => toast.success(result.message),
-              onError: () => toast.error("Could not rebuild the index"),
-            })
-          }
         />
       </header>
 

@@ -195,6 +195,9 @@ def api_connector_save(connector_id):
                     secrets[name] = '' if value is None else str(value)
             else:
                 plain[name] = '' if value is None else str(value)
+                if not field.accepts(plain[name]):
+                    allowed = ', '.join(v for v, _ in field.choices)
+                    return _fail(f"{field.label} must be one of: {allowed}")
 
         if unknown:
             return _fail(f"Not a setting of this connector: {', '.join(sorted(unknown))}")

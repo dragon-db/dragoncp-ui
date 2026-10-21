@@ -9,38 +9,73 @@ import type {
   ExploreRepairResult,
   RepairDecision,
   ExploreSeason,
+  ExploreSession,
   ExploreTree,
 } from "@/lib/explore-types";
 
 /**
- * Explore reads a cached comparison so the page paints instantly and can say
- * when it last checked. `refresh` forces a fresh pass over the remote library —
- * that is the only call that costs the media server anything, which is why it
- * is an explicit action rather than something that happens on focus.
+ * Explore paints the saved comparison at once, then checks the remote: on
+ * opening the page (`useExploreCheck`) and on Re-check (`useExploreRefresh`).
+ * The server decides whether a check walks the remote — a walk from the last
+ * two minutes answers unless something was imported since — so neither is
+ * something to fire on focus or on a timer.
  */
-export function useExploreTree(mediaType: string, enabled = true) {
+export function useExploreTree(mediaType: string) {
   return useQuery({
     queryKey: ["explore", "tree", mediaType],
     queryFn: async () => {
       const response = await api.get<ExploreTree>(`/explore/tree/${mediaType}`);
       return response.data;
     },
-    enabled: enabled && !!mediaType,
+    enabled: !!mediaType,
     staleTime: 60_000,
   });
 }
 
-export function useExploreRefresh(mediaType: string) {
+function useTreeCheck(mediaType: string, check: "auto" | "refresh") {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async () => {
-      const response = await api.get<ExploreTree>(`/explore/tree/${mediaType}?refresh=1`);
+      const response = await api.get<ExploreTree>(`/explore/tree/${mediaType}?check=${check}`);
       return response.data;
     },
     onSuccess: (data) => {
       queryClient.setQueryData(["explore", "tree", mediaType], data);
-      queryClient.invalidateQueries({ queryKey: ["explore", "series", mediaType] });
-      queryClient.invalidateQueries({ queryKey: ["explore", "season", mediaType] });
+      if (data.walked) {
+        queryClient.invalidateQueries({ queryKey: ["explore", "series", mediaType] });
+        queryClient.invalidateQueries({ queryKey: ["explore", "season", mediaType] });
+      }
+      queryClient.invalidateQueries({ queryKey: ["runtime", "status"] });
+    },
+  });
+}
+
+/** Opening the page: brings the comparison up to date, connecting if it may. */
+export function useExploreCheck(mediaType: string) {
+  return useTreeCheck(mediaType, "auto");
+}
+
+/** Re-check: reads the remote again unless a walk finished seconds ago. */
+export function useExploreRefresh(mediaType: string) {
+  return useTreeCheck(mediaType, "refresh");
+}
+
+/** Connect from the Explore page. The server spaces attempts; a refusal says until when. */
+export function useExploreConnect() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const response = await api.post<{ ok: boolean; message: string; session: ExploreSession }>(
+        "/explore/connect"
+      );
+      return response.data;
+    },
+    onSuccess: () => {
+      // A season that failed while disconnected loads again.
+      queryClient.invalidateQueries({ queryKey: ["explore", "season"] });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["runtime", "status"] });
     },
   });
 }

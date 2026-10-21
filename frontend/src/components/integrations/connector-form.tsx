@@ -4,6 +4,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { SectionCard } from "@/components/layout/section-card";
 import { errorText } from "@/lib/api-error";
 import {
@@ -39,7 +47,7 @@ function savedValues(connector: Connector): Record<string, string> {
       ? connector.secrets_set[field.name]
         ? REDACTED
         : ""
-      : (connector.config[field.name] ?? "");
+      : connector.config[field.name] || (field.kind === "choice" ? (field.default ?? "") : "");
   }
   return values;
 }
@@ -144,7 +152,8 @@ export function ConnectorForm({ connector }: { connector: Connector }) {
           The adapter says what kind each field is; this renders it. `boolean`
           and `number` were declared on the contract from the start and only
           ever drawn as text boxes, so a switch arrived as the word "true" in an
-          input and a interval as a string somebody could type "soon" into.
+          input and a interval as a string somebody could type "soon" into. A
+          `choice` is a dropdown of the values the server accepts.
         */}
         {connector.config_fields.map((field) => {
           const inputId = `${connector.id}-${field.name}`;
@@ -166,6 +175,38 @@ export function ConnectorForm({ connector }: { connector: Connector }) {
                     setDraft((previous) => ({ ...previous, [field.name]: next ? "true" : "false" }))
                   }
                 />
+              </div>
+            );
+          }
+
+          if (field.kind === "choice") {
+            const items = field.choices ?? [];
+            return (
+              <div key={field.name} className="grid gap-1.5">
+                <Label htmlFor={inputId}>{field.label}</Label>
+                <Select
+                  items={items}
+                  value={draft[field.name] || field.default || ""}
+                  onValueChange={(value) =>
+                    setDraft((previous) => ({ ...previous, [field.name]: String(value ?? "") }))
+                  }
+                >
+                  <SelectTrigger id={inputId} className="w-full sm:w-56">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {items.map((item) => (
+                        <SelectItem key={item.value} value={item.value}>
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                {field.description && (
+                  <p className="text-xs text-muted-foreground">{field.description}</p>
+                )}
               </div>
             );
           }

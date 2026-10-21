@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { useBackendLogs, useDownloadBackendLogs, type BackendLogLevel } from "@/hooks/useConfig";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { SectionCard } from "@/components/layout/section-card";
+import { TAP_SM } from "./settings-model";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -15,16 +15,26 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import { IconDownload, IconRefresh, IconSearch, IconTerminal2 } from "@tabler/icons-react";
+import { IconDownload, IconRefresh, IconSearch } from "@tabler/icons-react";
 
 const LEVELS: BackendLogLevel[] = ["ERROR", "WARNING", "INFO", "DEBUG", "ALL"];
 
+/** The page's status vocabulary: rose broken, amber attention, quiet otherwise. */
 const levelTone: Record<string, string> = {
-  CRITICAL: "border-red-500/40 text-red-300",
-  ERROR: "border-red-500/40 text-red-300",
-  WARNING: "border-amber-500/40 text-amber-300",
-  INFO: "border-sky-500/40 text-sky-300",
-  DEBUG: "border-neutral-700 text-neutral-400",
+  CRITICAL: "text-rose-300",
+  ERROR: "text-rose-300",
+  WARNING: "text-amber-300",
+  INFO: "text-muted-foreground",
+  DEBUG: "text-muted-foreground/80",
+};
+
+/** What each choice shows, as the server filters it (`routes/logs.py`). */
+const LEVEL_LABEL: Record<BackendLogLevel, string> = {
+  ERROR: "Errors",
+  WARNING: "Warnings and errors",
+  INFO: "Info only",
+  DEBUG: "Debug only",
+  ALL: "Everything",
 };
 
 export function BackendLogPanel() {
@@ -44,104 +54,111 @@ export function BackendLogPanel() {
   };
 
   return (
-    <Card className="border-neutral-800 bg-neutral-900/50">
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <CardTitle className="flex items-center gap-2 text-white">
-              <IconTerminal2 className="size-4" />
-              Backend logs
-            </CardTitle>
-            <CardDescription className="text-neutral-400">
-              Search recent application records or download the complete log file
-            </CardDescription>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => logsQuery.refetch()}
-              disabled={logsQuery.isFetching}
-            >
-              <IconRefresh className={cn("size-4", logsQuery.isFetching && "animate-spin")} />
-              Refresh
-            </Button>
-            <Button variant="outline" size="sm" onClick={runDownload} disabled={download.isPending}>
-              <IconDownload className="size-4" />
-              Download
-            </Button>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Select value={level} onValueChange={(value) => setLevel(value as BackendLogLevel)}>
-            <SelectTrigger className="w-36">
+    <SectionCard
+      label="Backend log"
+      description="Recent records from the application log. Download it for the whole file."
+      actions={
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            className={TAP_SM}
+            onClick={() => logsQuery.refetch()}
+            disabled={logsQuery.isFetching}
+          >
+            <IconRefresh className={cn("size-4", logsQuery.isFetching && "animate-spin")} />
+            Refresh
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className={TAP_SM}
+            onClick={runDownload}
+            disabled={download.isPending}
+          >
+            <IconDownload className="size-4" />
+            Download
+          </Button>
+        </>
+      }
+      toolbar={
+        <>
+          <Select
+            items={LEVELS.map((item) => ({ value: item, label: LEVEL_LABEL[item] }))}
+            value={level}
+            onValueChange={(value) => setLevel(value as BackendLogLevel)}
+          >
+            <SelectTrigger className={cn("w-40", TAP_SM)} aria-label="Which records">
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="start">
               {LEVELS.map((item) => (
                 <SelectItem key={item} value={item}>
-                  {item === "ERROR" ? "Error + Critical" : item}
+                  {LEVEL_LABEL[item]}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
-          <div className="relative min-w-56 flex-1">
+          <div className="relative order-last w-full sm:order-none sm:w-auto sm:min-w-56 sm:flex-1">
             <IconSearch className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search log records"
-              className="pl-9"
+              placeholder="Search the log"
+              aria-label="Search the log"
+              className="pl-9 max-sm:h-11"
             />
           </div>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} size="sm" />
-            Auto-refresh
+          <label className="flex min-h-11 items-center gap-2 text-[12.5px] text-muted-foreground sm:min-h-9">
+            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
+            Keep refreshing
           </label>
-        </div>
-
-        <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-          <span>{logsQuery.data?.log_file ?? "Backend log"}</span>
-          <span>·</span>
-          <span>{logsQuery.data?.line_count ?? 0} record(s)</span>
-          {logsQuery.data?.last_modified && (
-            <>
-              <span>·</span>
-              <span>updated {new Date(logsQuery.data.last_modified).toLocaleString()}</span>
-            </>
+        </>
+      }
+    >
+      <p className="flex flex-wrap gap-x-2 px-4 pt-2.5 text-[11.5px] text-muted-foreground">
+        <span className="font-mono">{logsQuery.data?.log_file ?? "Backend log"}</span>
+        <span>
+          {logsQuery.data?.line_count ?? 0} record{logsQuery.data?.line_count === 1 ? "" : "s"}
+        </span>
+        {logsQuery.data?.last_modified && (
+          <span>updated {new Date(logsQuery.data.last_modified).toLocaleString()}</span>
+        )}
+      </p>
+      <ScrollArea className="m-3 mt-2 h-[360px] rounded-lg border border-border bg-black/30">
+        <div className="space-y-2 p-3 font-mono text-[11.5px] leading-relaxed">
+          {logsQuery.isError ? (
+            <p className="text-rose-300">
+              Could not read the backend log. Press Refresh to try again.
+            </p>
+          ) : logsQuery.isLoading ? (
+            <p className="text-muted-foreground">Reading the backend log…</p>
+          ) : logsQuery.data?.lines.length ? (
+            logsQuery.data.lines.map((entry, index) => (
+              <div key={`${index}-${entry.text.slice(0, 24)}`} className="flex items-start gap-2">
+                <span
+                  className={cn(
+                    "mt-px w-[4.5rem] shrink-0 text-[10px] font-semibold",
+                    levelTone[entry.level] ?? "text-muted-foreground"
+                  )}
+                >
+                  {entry.level}
+                </span>
+                <pre className="min-w-0 flex-1 whitespace-pre-wrap text-foreground/85">
+                  {entry.text}
+                </pre>
+              </div>
+            ))
+          ) : (
+            <p className="text-muted-foreground">
+              {logsQuery.data?.message ??
+                (search.trim()
+                  ? "Nothing in the log matches that search."
+                  : "No records at this level. Pick a wider one to see more.")}
+            </p>
           )}
         </div>
-
-        <ScrollArea className="h-[360px] rounded-lg border border-neutral-800 bg-neutral-950">
-          <div className="space-y-3 p-3 font-mono text-[11px] leading-relaxed">
-            {logsQuery.isError ? (
-              <p className="text-red-300">Could not load backend logs.</p>
-            ) : logsQuery.isLoading ? (
-              <p className="text-muted-foreground">Loading backend logs…</p>
-            ) : logsQuery.data?.lines.length ? (
-              logsQuery.data.lines.map((entry, index) => (
-                <div key={`${index}-${entry.text.slice(0, 24)}`} className="flex items-start gap-2">
-                  <Badge
-                    variant="outline"
-                    className={cn("mt-0.5 w-16 justify-center text-[9px]", levelTone[entry.level])}
-                  >
-                    {entry.level}
-                  </Badge>
-                  <pre className="min-w-0 flex-1 whitespace-pre-wrap text-neutral-300">
-                    {entry.text}
-                  </pre>
-                </div>
-              ))
-            ) : (
-              <p className="text-muted-foreground">
-                {logsQuery.data?.message ?? "No matching log records."}
-              </p>
-            )}
-          </div>
-        </ScrollArea>
-      </CardContent>
-    </Card>
+      </ScrollArea>
+    </SectionCard>
   );
 }

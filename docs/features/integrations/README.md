@@ -12,11 +12,13 @@ under Integrations in the sidebar.
   anything for that season is still downloading. The answer decides when the
   season syncs.
 - **Sonarr and Radarr** each have a **scheduled auto-scanner**, off by default,
-  that finds imports whose webhook never arrived and syncs them, and pages that
-  show the service's library, download queue and history against this disk.
+  that finds imports nothing has synced — a webhook that never arrived, or a
+  sync that was skipped — and alerts on them (the default, **Alert only**) or
+  syncs them, and pages that show the service's library, download queue and
+  history against this disk.
 - **Jellyfin** can be connected and tested, but nothing reads it yet.
 
-Last updated: 2026-10-06
+Last updated: 2026-10-19
 Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors.py`,
 `services/auto_scanner.py`, `services/scheduler.py`, `services/media_index.py`,
 `services/library_compare.py`, `services/local_library.py`,
@@ -46,6 +48,11 @@ Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors
 | UI | `frontend/src/components/pages/integrations.tsx`, `frontend/src/components/integrations/` (the auto-scanner card is `scanner-status.tsx`; the Library, Queue and History tabs are `library-panel.tsx`, `queue-panel.tsx`, `history-panel.tsx`, the series pop-up `title-dialog.tsx`, their shared pieces `library-bits.tsx` and words `library-vocab.ts`), `frontend/src/hooks/useConnectors.ts`, `frontend/src/hooks/useMediaLibrary.ts`, `frontend/src/hooks/useSync.ts` (`useSchedulerJobs`, `useRunJob`) |
 
 ## What an operator sees
+
+Each page opens with the service's name and its On/Off switch, and nothing
+under the name: the one-line description of the service ("Film library
+manager…") was removed in 2.3.2 to give the tabs the space. The API still
+returns it as `description`.
 
 **Integrations → Discord** has five tabs, in the order you are likely to need
 them:
@@ -83,12 +90,15 @@ them:
 
 - **Library** — every title the service lists, as a grid of small posters
   against what is actually on this disk, read from the filesystem rather than
-  the transfer history. Each card carries one state — **Out of sync**, **In
-  sync**, **Not here**, **Unlisted** (the service no longer lists it; the files
-  here are kept), **No files yet** — and one quiet counts line, "Sonarr 1 ·
-  here 7". An out-of-sync title whose reason is a newer or different file on
-  the service also carries a sky **Upgrade** tag. Filter chips with counts
-  (Out of sync first, then **Upgrade**, which is always offered), a search, a sort
+  the transfer history. Each card carries one state — **Out of sync**,
+  **Needs repair** (everything is here, but a file sits in a nested folder —
+  Explore's word), **In sync**, **Not here**, **Unlisted** (the service no
+  longer lists it; the files here are kept), **No files yet** — and one quiet
+  counts line, "Sonarr 1 · here 7". An out-of-sync title whose reason is a
+  newer or different file on the service also carries a sky **Upgrade** tag;
+  one that also has a nested file carries an amber **Nested** tag. Filter
+  chips with counts (Out of sync first, then **Upgrade**, which is always
+  offered, then **Nested** when any title has one), a search, a sort
   (needs attention first, recently imported, title) and **Refresh**, which
   re-reads the service's catalogue. Out-of-sync titles come first. How the
   state is decided is in *The Library tab: in sync or not*, below.
@@ -98,31 +108,55 @@ them:
   behind is untouched. The address carries it
   (`?tab=library&title=<tvdb or tmdb id>`). It has two tabs, **Episodes** (a
   film's is called **File**) and **History**. Episodes leads with one sentence
-  and one action:
+  and its actions. One action leads, filled; the rest are outlined, and
+  **Open in Explore** is an outlined brand button beside them rather than a
+  quiet link (2.3.2, operator, 2026-10-21). Which leads follows the state:
+  a nested file → **Repair in Explore**; else something missing → **Get**;
+  else an upgrade → **Replace**; else nothing here → **Copy the series**;
+  else, with something wrong and nothing this pop-up can do → **Open in
+  Explore**.
+  - "S01E38 is here, but inside a nested folder your media server cannot
+    see", with where it is now, and **Repair in Explore**, which opens
+    Explore on the season holding it — where the strip above the list has
+    **Repair**. There is no Get for it: copying it again would not make it
+    visible. A film reads the same way.
   - "S01E08 is on Sonarr but not here yet", the episode's title and Sonarr's
-    file under it, and **Get S01E08** (or **Get 3 episodes**). Get asks
-    Explore for a download plan of exactly those episodes, season by season,
-    and shows what it would do in one line, "Copy 1 file (1.6 GB) from the
-    media server into Season 01. Nothing here is replaced or removed.", with
-    **Copy now** and **Cancel**. Copy now runs the plan; it copies the files
-    and touches nothing else, so the episodes kept only here stay. When the
-    app has no browse session to the media server (a restart drops it), Get
-    connects with the saved credentials, as Settings' auto-connect does, and
-    asks again; only if that fails does it say so. A plan Explore's checks
-    stop, or one that finds nothing to copy, says why and offers **Open in
-    Explore** instead.
+    file under it, and **Get S01E08** (or **Get 3 episodes**). Get never
+    copies on its own: it asks Explore for a download plan of exactly those
+    episodes, season by season (Explore reads the remote server fresh), and
+    shows what it would do in one line, "Copy 1 file (1.6 GB) from the
+    remote server into Season 01. Nothing here is replaced or removed.",
+    with **Copy now** and **Cancel**. Copy now runs the plan; it copies the
+    files and touches nothing else, so the episodes kept only here stay. No
+    rsync dry run is involved. When the app has no browse session to the
+    remote server (a restart drops it), Get connects with the saved
+    credentials, as Settings' Connect does, and asks again; only if that
+    fails does it say so. A plan Explore's checks stop, or one that finds
+    nothing to copy, says why and offers **Open in Explore** — filled, as it
+    is then the only way on (**Repair in Explore** when the episode turned
+    out to be nested).
   - A file that differs gets **Replace S01E05** the same way: Explore's
     replace, which keeps the file here in Backups first.
   - A title with nothing here at all gets **Copy the series** (or **Copy the
     film**), the whole-folder sync, offered only where it removes nothing.
+    Like Get it asks first (2.3.2, operator, 2026-10-21): "Copy seasons 1
+    and 2: 18 files, about 24.0 GB, from the remote server. Nothing of it is
+    here yet, so nothing here is replaced." — or "Copy the film
+    (WEBDL-1080p, 2.8 GB) …" — with **Copy now** and **Cancel**. The numbers
+    are the service's own (a double-episode file counted once; Specials are
+    not fetched); the sync then runs its own dry-run safety check. It is
+    never offered for a title with a nested file: that title reads Needs
+    repair, not Not here.
   - Otherwise one quiet line: "Everything Sonarr has for this series is
     here."
 
   Below it, the seasons: one row each with "1 not here" (amber) and "7 of 8
   here", opening to a row per episode with its number, title, air date, the
   file facts that explain its state, and the state as an icon and a word
-  (**Not here**, **Upgrade**, **Here**, **Only here**, **Not downloaded**;
-  each explains itself on hover). Only Not here and Upgrade are coloured.
+  (**Not here**, **Upgrade**, **Nested**, **Here**, **Only here**, **Not
+  downloaded**; each explains itself on hover). Only Not here, Upgrade and
+  Nested are coloured; a nested episode's facts give the path it is at, and a
+  season with one says "1 nested".
   Seasons with something to fix open by themselves; a long one opens on just
   those episodes, with **Show all**. Episodes still to air fold into one line,
   "6 episodes still to air, the next on Oct 18", and Specials come last. A
@@ -160,7 +194,8 @@ them:
   title. **Unknown here** marks an import for a title DragonCP has never heard
   of, which is what a lost webhook leaves behind.
 - **Connection** — the address, the API key, the **Scheduled auto-scanner**
-  switch and **Scan every (minutes)**, and a Test connection button. Below
+  switch, **When it finds something** (Alert only or Sync it) and **Scan every
+  (minutes)**, and a Test connection button. Below
   them, an **Auto-scanner** card shows what the switch is doing (see *The
   scheduled auto-scanner*).
 
@@ -238,6 +273,7 @@ announcement that cannot be seen cannot be turned off.
 | `sync.interrupted` | A restart may have left a sync undone, or lost the result of a copy |
 | `sync.stuck` | A season went ahead without a download stuck in Sonarr, or after waiting 30 minutes |
 | `scanner.found` | The auto-scanner started syncs, or cannot close a gap (a gap's alert, once dismissed, is not sent again for 24 hours) |
+| `scanner.missed` | The auto-scanner, set to Alert only, found imports nothing has synced. One message per scan listing up to 10, only for new alerts; nothing was copied (added in 2.3.2) |
 | `integration.down` | Sonarr did not answer when a batch asked; sent once until it answers again, and not again for 24 hours once its alert is dismissed |
 | `scheduler.failing` | A background job failed three times in a row (once its alert is dismissed, not again for 24 hours) |
 | `fast_route.failed` | A copy failed on the fast transfer server and ran again over SSH; sent once while its alert is open, and not again for 24 hours once it is dismissed |
@@ -281,8 +317,8 @@ Who a message pings is decided once it has somewhere to go
    Reports of something done — Sync finished, Rename finished, Old backups
    deleted, Synced without a stuck download — default to never; everything
    else to attention. So by default "Sync failed" pings and "Sync finished"
-   does not, and the auto-scanner pings when it cannot close a gap but not
-   when it starts syncs.
+   does not, and the auto-scanner pings when it cannot close a gap or finds a
+   missed auto-sync, but not when it starts syncs.
 2. **Whom.** The people the route picked; a route that picked nobody
    explicitly pings nobody. A route that never chose uses the webhook's own
    **Pings**, so "ping Admins for everything in the alerts channel" is set
@@ -385,17 +421,31 @@ silent failure. The auto-scanner asks the service instead, on a schedule. It
 replaced the "Check for missed imports" sweep that pre-release builds had.
 
 **The switch.** One per service, on its Connection tab: **Scheduled
-auto-scanner**, off by default, and **Scan every (minutes)**, 5 to 360,
-default 15. It runs only while the connector itself is on and configured. One
-switch means scan *and* sync: the sweep's separate "Sync what it finds
-automatically" is gone.
+auto-scanner**, off by default, and **Scan every (minutes)** — how often it
+asks, 5 to 360, default 15 (60 is once an hour). It runs only while the
+connector itself is on and configured. **Look back (days)**, 1 to 30, default
+7, is how much history an Alert only scan reads (added in 2.3.2, operator
+2026-10-20). Out-of-range numbers are clamped when read, not refused on
+save, for both.
+
+**The mode.** **When it finds something**, beside the switch:
+
+- **Alert only** — the default, and what an unset value means. A find opens a
+  *Missed auto-sync* alert and a Discord message, and nothing is copied: you
+  sync it from Explore when it is ready. Added in 2.3.2 (operator,
+  2026-10-19) because some downloads are not ready to sync; you stop those by
+  cancelling the waiting sync, and a scanner that synced them anyway would
+  undo that.
+- **Sync it** — what the scanner did before: every find is synced.
 
 **Each scan** (`services/auto_scanner.py`):
 
 1. Checks that the service answers. One that does not is a failed scan.
 2. Reads the service's library, refreshing the title index.
-3. Reads its import history since the last scan — the first scan looks back
-   24 hours — covering new episodes, new titles and upgrades. Each import that
+3. Reads its import history — in Alert only, the last **Look back (days)**
+   (default 7) on every scan;
+   in Sync it, since the last scan, and the first scan looks back 24 hours —
+   covering new episodes, new titles and upgrades. Each import that
    nothing has synced since is a find: no finished copy of its folder started
    after it (see [Sync engine](../sync-engine/README.md), "The scheduled
    auto-scanner").
@@ -403,9 +453,11 @@ automatically" is gone.
    episodes of than Sonarr has files for, counted as episodes on both sides (a
    double-episode file is two). A season is copied from its real folder on
    the media server into the folder this disk already keeps it in.
-5. Hands every find to the sync engine as an *Auto-scanner* sync, so batching,
-   Sonarr's ready check and the safety check all apply. A find whose folder
-   already has a sync on its way is left to that sync.
+5. A find whose folder already has a sync on its way — held for a manual
+   sync, in the ready check, queued or copying — is left to that sync. Then:
+   - **Alert only** opens one *Missed auto-sync* alert per folder (see below).
+   - **Sync it** hands every find to the sync engine as an *Auto-scanner*
+     sync, so batching, Sonarr's ready check and the safety check all apply.
 
 It never fetches the backlog. A season this disk holds nothing of, or a title
 it has never held, is fetched only when the service imports something for it —
@@ -423,10 +475,37 @@ dismissed or marked wrong, it stays closed for 24 hours rather than coming back
 at the next scan. An import that landed while its season was mid-copy is looked
 at again on the next scan, in case the copy missed it.
 
+**Alert only, in detail** (`AlertService.missed_sync`):
+
+- The alert reads "Missed auto-sync: Example Show — Season 01" with the
+  reason ("Sonarr imported season 1 at …, and nothing has synced it since")
+  and offers **Open in Explore**, which opens Explore on that series and
+  season (or film), and **Dismiss**. There is no Sync now: you look at the
+  difference in Explore and sync from there.
+- **Skipped syncs are caught.** The look-back read means a sync that was waiting
+  while one scan looked, then cancelled, refused or failed, is alerted by a
+  later scan once nothing is on its way any more.
+- **Once per folder.** Found again on the next scan, an open alert is left as
+  it is — no new message, no count going up. Only a newer import (or, for a
+  short season, Sonarr holding more episodes) updates it, without a new
+  Discord message.
+- **Dismissed stays dismissed** until something new is imported for that
+  season or film (or a short season grows on Sonarr's side) — not for 24
+  hours, as other scanner alerts.
+- **Not alerted twice.** A folder that already has an open alert of another
+  kind — the safety check's, a failed transfer's, a restart's — gets no
+  *Missed auto-sync* alert on top.
+- **It closes itself** once a copy of the folder that started after the import
+  finishes — a sync from Explore counts. Every scan checks, in either mode.
+- One Discord message per scan, `scanner.missed`, lists what it newly alerted.
+- Switching to **Sync it** later reads history from the last Alert-only scan,
+  so what was already alerted is not then synced in bulk.
+
 **What it leaves behind.** A `scanner.run` entry in the activity trail for every
 scan that reached the service, with its summary, and a `scanner.sync_started`
 entry for each sync it started; a `scanner.found` message on Discord when it
-started anything; and the line `Auto-scanner · Sonarr · <summary>` in the
+started anything, or a `scanner.missed` one when it alerted anything; and the
+line `Auto-scanner · Sonarr · <summary>` in the
 backend log.
 
 **The scheduler.** Both scanners are jobs on DragonCP's general scheduler
@@ -446,14 +525,17 @@ backend log.
 **On screen.** Each service's Connection tab ends with an **Auto-scanner** card
 for its job (`sonarr_auto_scanner`, `radarr_auto_scanner`):
 
-- the schedule — "Every 15 min · next scan at …" — or "Switched off", with a
-  pointer to the switch above;
+- the schedule and the saved mode — "Every 15 min · Alert only, looks back 7
+  days, copies nothing · next scan at …" (or "syncs what it finds") — or
+  "Switched off",
+  with a pointer to the switch above;
 - the last scan: "Last scan 5 min ago: …" with its summary, in red when it
   failed, and how many times in a row when more than once;
 - up to eight of that scan's finds, each with its first reason and what became
   of it — Started a sync (a link to that sync), Already on its way, Held back
-  for the next scan, Waiting for a person, or Could not start — and "and N more
-  in the activity trail" beyond eight;
+  for the next scan, Waiting for a person, or Could not start; in Alert only,
+  Alerted, Alert updated or Already alerted (each a link to Notifications), or
+  Dismissed earlier — and "and N more in the activity trail" beyond eight;
 - **Scan now**, while the scanner is on; it reads "Scanning…" while a scan runs.
 
 When the job does not run, the card says why it can tell: with the connector
@@ -500,12 +582,28 @@ absolute numbers). Each episode gets one state:
 | In sync | Sonarr has a file, and an episode file here is the same size |
 | Upgrade (different file) | both have it, sizes differ — an upgrade over there, or another release |
 | Missing here | Sonarr has a file and nothing is here: this needs syncing |
+| Nested | here, but only inside a folder below the season folder (`Season 01/ep.mkv/ep.mkv`), where the media server cannot see it — Explore's Repair moves it |
 | Only here | here, and Sonarr has no file — normal once the media server cleans up after a sync |
 | Not downloaded | neither has it, aired or not |
 
 A title is **out of sync exactly when an episode is Missing here or an
-Upgrade**. Specials are compared and shown, never counted. A film is the same
-comparison with one file: Radarr's file against the media file in its folder.
+Upgrade**. With neither, a media file in a nested folder — standing for an
+episode, or a second copy beside one in place — makes it **Needs repair**
+(2.3.2). Specials are compared and shown, never counted. A film is the same
+comparison with one file: Radarr's file against the media file in its folder,
+or in a folder below it.
+
+**Nested files, and why this tab used to say "Missing here".** Until 2.3.2
+this tab read only the files directly inside each season folder, so an
+episode stranded at `Season 01/ep.mkv/ep.mkv` read "Missing here" while
+Explore — which walks every level — read "In sync", and **Get** then found
+nothing to copy. Both now say what is true: it is here, nested, and Repair is
+the fix. A copy in place is preferred over a nested one when both exist. The
+list does the same from its folder scan: a season's nested files count as
+present for the count and size rules (so they are not "a file that is not
+here") and add their own reason, `nested`. The scan's `seasons`, `file_count`
+and `episodes_here` — what the auto-scanner decides from — still count only
+what the media server can see.
 
 **The list, cheaply.** The grid may not ask Sonarr about every title, so it
 judges each one from three reads made once for the whole page:

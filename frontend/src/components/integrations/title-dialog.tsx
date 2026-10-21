@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
@@ -9,14 +9,16 @@ import {
   IconCircleX,
   IconCloudDownload,
   IconHistory,
+  IconFolderSearch,
   IconInfoCircle,
   IconListDetails,
   IconLoader2,
   IconRefresh,
+  IconTool,
   IconX,
 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
@@ -268,7 +270,7 @@ interface Pending {
 }
 
 /** The seasons that count, with the episodes needing a given fix. */
-function needing(detail: TitleDetail, state: "missing_here" | "different") {
+function needing(detail: TitleDetail, state: "missing_here" | "different" | "nested") {
   return (detail.seasons ?? [])
     .filter((season) => season.counts_towards_state)
     .map((season) => ({
@@ -310,12 +312,19 @@ function Status({
   const [pending, setPending] = useState<Pending | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [started, setStarted] = useState<string | null>(null);
+  // Copy the series / Copy the film asks first, as Get does: it copies whole
+  // folders, so nothing starts from a single press.
+  const [confirmCopy, setConfirmCopy] = useState(false);
 
   const missing = needing(detail, "missing_here");
   const different = needing(detail, "different");
   const missingEpisodes = missing.flatMap((entry) => entry.episodes);
   const differentEpisodes = different.flatMap((entry) => entry.episodes);
+  const nestedEpisodes = needing(detail, "nested").flatMap((entry) => entry.episodes);
   const film = detail.movie ?? null;
+  // Files here one folder too deep. Copying them again would not make them
+  // visible, so Repair in Explore is the answer — and the lead action.
+  const nestedFiles = detail.nested_files ?? 0;
   const busy = phase !== null || execute.isPending || sync.isPending;
 
   const planAll = async (fix: Fix) => {
@@ -338,7 +347,7 @@ function Status({
   /**
    * Ask Explore for the exact plan, one per season, before anything moves.
    *
-   * Explore reads the media server over the app's browse session, which a
+   * Explore reads the remote server over the app's browse session, which a
    * server restart drops. Rather than send the reader to Settings to press
    * Connect, it connects with the saved credentials (what that button does)
    * and asks once more.
@@ -357,7 +366,7 @@ function Status({
         const answer = (await connect.mutateAsync()) as { status?: string; message?: string };
         if (answer?.status !== "success") {
           setError(
-            `Could not connect to the media server (${answer?.message ?? "no answer"}). Check the connection in Settings, then try again.`
+            `Could not connect to the remote server (${answer?.message ?? "no answer"}). Check the connection in Settings, then try again.`
           );
           return;
         }
@@ -365,7 +374,7 @@ function Status({
         setPending({ fix, plans: await planAll(fix) });
       }
     } catch (err) {
-      setError(libraryError(err, "Explore could not read the media server"));
+      setError(libraryError(err, "Explore could not read the remote server"));
     } finally {
       setPhase(null);
     }
@@ -397,6 +406,7 @@ function Status({
       const result = await sync.mutateAsync(externalId);
       const said = (result.runs ?? []).map((entry) => entry.message).filter(Boolean);
       if (result.success) {
+        setConfirmCopy(false);
         setStarted(said[0] ?? "Copy started.");
         toast.success(said[0] ?? "Copy started.", {
           action: { label: "Transfers", onClick: () => navigate({ to: "/transfers" }) },
@@ -425,6 +435,16 @@ function Status({
         `${displayName} has an upgrade for this film: a different file from the one here.`
       );
       note = `${displayName}: ${fileText(film.service_file)}. Here: ${fileText(film.local_file)}.`;
+    } else if (film.state === "nested") {
+      tone = "warn";
+      lines.push(`This film is here, but inside a nested folder your media server cannot see.`);
+      note = film.local_file
+        ? `${nestedWhere(film.local_file.relative_path, true)}. Repair moves it into the film's folder and deletes the empty one.`
+        : null;
+    } else if (film.state === "in_sync" && nestedFiles > 0) {
+      tone = "warn";
+      lines.push(`The film here is the same file as on ${displayName}.`);
+      lines.push(`A second copy is inside a nested folder your media server cannot see.`);
     } else if (film.state === "in_sync") {
       tone = "ok";
       lines.push(`The film here is the same file as on ${displayName}.`);
@@ -453,6 +473,14 @@ function Status({
         `${displayName} has upgrades for ${differentEpisodes.length} episodes: ${codesText(differentEpisodes)}.`
       );
     }
+    if (nestedFiles > 0) lines.push(nestedLine(nestedEpisodes, nestedFiles));
+  } else if (nestedFiles > 0) {
+    tone = "warn";
+    lines.push(nestedLine(nestedEpisodes, nestedFiles));
+    const only = nestedEpisodes.length === 1 ? nestedEpisodes[0] : null;
+    note = only?.local_file
+      ? `${nestedWhere(only.local_file.relative_path)}. Repair moves it into the season folder and deletes the empty one.`
+      : "Repair moves each one into its season folder and deletes the empty folders.";
   } else if (detail.state === "in_sync" || detail.state === "kept_here") {
     tone = "ok";
     lines.push(`Everything ${displayName} has for this series is here.`);
@@ -472,19 +500,22 @@ function Status({
   const canReplace = !film && differentEpisodes.length > 0 && Boolean(explore?.series);
   const canCopyTitle =
     detail.actions?.sync.offered === true && (detail.state === "never" || Boolean(film));
-  const exploreLink = explore?.series ? (
-    <Link
-      to="/media/$type"
-      params={{ type: explore.media_type }}
-      search={{ series: explore.series, season: explore.season ?? undefined }}
-      className={cn(
-        "inline-flex items-center text-[13px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline",
-        TAP
-      )}
-    >
-      Open in Explore
-    </Link>
-  ) : null;
+  /**
+   * Which one action leads, filled; the rest are outlined. A stranded file
+   * comes first — nothing else makes it visible — then what this pop-up can
+   * do itself, and Explore when it can do nothing.
+   */
+  const lead: "repair" | "get" | "replace" | "copy" | "explore" =
+    nestedFiles > 0
+      ? "repair"
+      : canDownload
+        ? "get"
+        : canReplace
+          ? "replace"
+          : canCopyTitle
+            ? "copy"
+            : "explore";
+  const exploreLink = <ExploreButton explore={explore} repair={false} lead={lead === "explore"} />;
 
   return (
     <section
@@ -540,7 +571,11 @@ function Status({
         </div>
       </div>
 
-      {(canDownload || canReplace || canCopyTitle || (tone === "warn" && exploreLink)) && (
+      {(canDownload ||
+        canReplace ||
+        canCopyTitle ||
+        nestedFiles > 0 ||
+        (tone === "warn" && explore?.series)) && (
         <div className="mt-4 border-t border-border/70 pt-4 sm:pl-8">
           {pending ? (
             <Confirm
@@ -548,7 +583,17 @@ function Status({
               running={execute.isPending}
               onRun={run}
               onCancel={() => setPending(null)}
-              exploreLink={exploreLink}
+              explore={explore}
+            />
+          ) : confirmCopy ? (
+            <CopyConfirm
+              detail={detail}
+              running={sync.isPending}
+              onRun={copyTitle}
+              onCancel={() => {
+                setConfirmCopy(false);
+                setError(null);
+              }}
             />
           ) : started ? (
             <p className="flex flex-wrap items-center gap-x-2 text-[13px] text-foreground">
@@ -565,9 +610,15 @@ function Status({
               </Link>
             </p>
           ) : (
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              {nestedFiles > 0 && <ExploreButton explore={explore} repair lead />}
               {canDownload && (
-                <Button onClick={() => prepare("download")} disabled={busy} className={TAP_BUTTON}>
+                <Button
+                  onClick={() => prepare("download")}
+                  disabled={busy}
+                  variant={lead === "get" ? "default" : "outline"}
+                  className={TAP_BUTTON}
+                >
                   {phase ? (
                     <IconLoader2 className="size-4 animate-spin" />
                   ) : (
@@ -581,7 +632,7 @@ function Status({
               {canReplace && (
                 <Button
                   className={TAP_BUTTON}
-                  variant={canDownload ? "outline" : "default"}
+                  variant={lead === "replace" ? "default" : "outline"}
                   onClick={() => prepare("replace")}
                   disabled={busy}
                 >
@@ -592,22 +643,26 @@ function Status({
                 </Button>
               )}
               {canCopyTitle && (
-                <Button onClick={copyTitle} disabled={busy} className={TAP_BUTTON}>
-                  {sync.isPending ? (
-                    <IconLoader2 className="size-4 animate-spin" />
-                  ) : (
-                    <IconCloudDownload className="size-4" />
-                  )}
+                <Button
+                  onClick={() => {
+                    setError(null);
+                    setConfirmCopy(true);
+                  }}
+                  disabled={busy}
+                  variant={lead === "copy" ? "default" : "outline"}
+                  className={TAP_BUTTON}
+                >
+                  <IconCloudDownload className="size-4" />
                   {film ? "Copy the film" : "Copy the series"}
                 </Button>
               )}
               {phase ? (
                 <span className="text-[13px] text-muted-foreground" aria-live="polite">
                   {phase === "connecting"
-                    ? "Connecting to the media server…"
+                    ? "Connecting to the remote server…"
                     : "Checking what to copy…"}
                 </span>
-              ) : (
+              ) : nestedFiles > 0 ? null : (
                 exploreLink
               )}
             </div>
@@ -629,13 +684,13 @@ function Confirm({
   running,
   onRun,
   onCancel,
-  exploreLink,
+  explore,
 }: {
   pending: Pending;
   running: boolean;
   onRun: () => void;
   onCancel: () => void;
-  exploreLink: ReactNode;
+  explore: ExploreTarget | null;
 }) {
   const fetch = pending.plans.reduce((sum, plan) => sum + plan.counts.fetch, 0);
   const replace = pending.plans.reduce((sum, plan) => sum + plan.counts.supersede, 0);
@@ -644,38 +699,182 @@ function Confirm({
   const failed = pending.plans.flatMap((plan) => plan.checks).find((check) => !check.passed);
   const blocked = pending.plans.some((plan) => !plan.safe || plan.requires_override);
   const folders = [...new Set(pending.plans.map((plan) => plan.season_label).filter(Boolean))];
+  const nested = pending.plans.reduce((sum, plan) => sum + (plan.nested_files ?? 0), 0);
   const where = folders.length ? ` into ${folders.join(", ")}` : "";
 
   let sentence: string;
   if (blocked) {
     sentence = `Explore's checks stopped this${failed ? `: ${failed.detail || failed.label}` : ""}. Review it in Explore.`;
+  } else if (fetch === 0 && nested > 0 && pending.fix === "download") {
+    // Here already, one folder too deep: Sonarr's view and this one both read
+    // it as absent, and copying it again would not make it visible.
+    sentence = `Already here, but inside a nested folder your media server cannot see. Open it in Explore and press Repair to move it into place.`;
   } else if (fetch === 0) {
     sentence =
-      "Explore found nothing to copy: the media server's folder may hold it under another name. Compare the folders in Explore.";
+      "Explore found nothing to copy: the remote server's folder may hold it under another name. Compare the folders in Explore.";
   } else if (pending.fix === "download") {
-    sentence = `Copy ${plural(fetch, "file")} (${formatSize(bytes)}) from the media server${where}. Nothing here is replaced or removed.`;
+    sentence = `Copy ${plural(fetch, "file")} (${formatSize(bytes)}) from the remote server${where}. Nothing here is replaced or removed.`;
   } else {
-    sentence = `Replace ${plural(replace || fetch, "file")} here with ${replace + fetch === 1 ? "the one" : "the ones"} on the media server (${formatSize(bytes)}). The files here now are kept in Backups first.`;
+    sentence = `Replace ${plural(replace || fetch, "file")} here with ${replace + fetch === 1 ? "the one" : "the ones"} on the remote server (${formatSize(bytes)}). The files here now are kept in Backups first.`;
   }
   const runnable = !blocked && fetch + replace > 0 && remove === 0;
 
   return (
     <div className="space-y-3">
       <p className="text-[13.5px] text-pretty text-foreground">{sentence}</p>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        {runnable && (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        {runnable ? (
           <Button onClick={onRun} disabled={running} className={TAP_BUTTON}>
             {running ? <IconLoader2 className="size-4 animate-spin" /> : null}
             {pending.fix === "download" ? "Copy now" : "Replace now"}
           </Button>
+        ) : (
+          // Nothing to run here: Explore is the way on, so it leads.
+          <ExploreButton explore={explore} repair={nested > 0 && pending.fix === "download"} lead />
         )}
         <Button variant="outline" onClick={onCancel} disabled={running} className={TAP_BUTTON}>
           Cancel
         </Button>
-        {!runnable && exploreLink}
       </div>
     </div>
   );
+}
+
+/**
+ * What Copy the series / Copy the film is about to do, before it does it.
+ *
+ * Offered only when nothing of the title is here, so it can only add. The
+ * numbers are the service's own: its files in the seasons the copy fetches
+ * (Specials are not fetched), or the film's file. The sync behind it copies
+ * whole folders, artwork and subtitles too, so the size is "about".
+ */
+function CopyConfirm({
+  detail,
+  running,
+  onRun,
+  onCancel,
+}: {
+  detail: TitleDetail;
+  running: boolean;
+  onRun: () => void;
+  onCancel: () => void;
+}) {
+  const film = detail.movie ?? null;
+  let what: string;
+  if (film) {
+    const file = film.service_file;
+    const facts = [file?.quality, file?.size ? formatSize(file.size) : null].filter(Boolean);
+    what = `Copy the film${facts.length ? ` (${facts.join(", ")})` : ""}`;
+  } else {
+    const wanted = new Set(detail.actions?.sync.seasons ?? []);
+    const seasons = (detail.seasons ?? []).filter((season) => wanted.has(season.season_number));
+    // One double-episode file sits on two episode rows; count it once.
+    const unique = new Map<string, number>();
+    for (const season of seasons) {
+      for (const episode of season.episodes) {
+        const file = episode.service_file;
+        if (file) unique.set(file.relative_path || episode.code, file.size ?? 0);
+      }
+    }
+    const files = [...unique.values()];
+    const bytes = files.reduce((sum, size) => sum + size, 0);
+    const numbers = seasons.map((season) => season.season_number);
+    const which =
+      numbers.length === 1
+        ? `season ${numbers[0]}`
+        : numbers.length > 1
+          ? `seasons ${numbers.slice(0, -1).join(", ")} and ${numbers[numbers.length - 1]}`
+          : "the series";
+    what = `Copy ${which}: ${plural(files.length, "file")}${bytes ? `, about ${formatSize(bytes)}` : ""},`;
+  }
+  return (
+    <div className="space-y-3">
+      <p className="text-[13.5px] text-pretty text-foreground">
+        {what} from the remote server. Nothing of it is here yet, so nothing here is replaced.
+      </p>
+      <p className="text-[12.5px] text-muted-foreground">
+        It runs as a sync: a dry run checks it first, and it shows on Transfers.
+      </p>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Button onClick={onRun} disabled={running} className={TAP_BUTTON}>
+          {running ? (
+            <IconLoader2 className="size-4 animate-spin" />
+          ) : (
+            <IconCloudDownload className="size-4" />
+          )}
+          Copy now
+        </Button>
+        <Button variant="outline" onClick={onCancel} disabled={running} className={TAP_BUTTON}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+type ExploreTarget = NonNullable<NonNullable<TitleDetail["actions"]>["explore"]>;
+
+/**
+ * Explore, as a button rather than a quiet link: it is where a copy is
+ * planned file by file and where a stranded file is repaired. Filled when it
+ * is the thing to do next; otherwise outlined in brand, so it still reads as
+ * an action beside Get or Replace.
+ */
+function ExploreButton({
+  explore,
+  repair,
+  lead,
+}: {
+  explore: ExploreTarget | null;
+  repair: boolean;
+  lead: boolean;
+}) {
+  if (!explore?.series) return null;
+  const season = repair ? (explore.nested_season ?? explore.season) : explore.season;
+  const Glyph = repair ? IconTool : IconFolderSearch;
+  return (
+    <Link
+      to="/media/$type"
+      params={{ type: explore.media_type }}
+      search={{ series: explore.series, season: season ?? undefined }}
+      className={cn(
+        buttonVariants({ variant: lead ? "default" : "outline" }),
+        TAP_BUTTON,
+        !lead && "border-brand/45 text-brand-foreground hover:bg-brand/12 dark:border-brand/45"
+      )}
+    >
+      <Glyph className="size-4" />
+      {repair ? "Repair in Explore" : "Open in Explore"}
+    </Link>
+  );
+}
+
+/**
+ * Where a nested file is, in words. The path itself is the file's name twice
+ * (`Season 01/ep.mkv/ep.mkv`, 200+ characters), which on a phone fills the
+ * screen and says less than "a folder named after the file".
+ */
+function nestedWhere(path: string, film = false): string {
+  const parts = path.split("/").filter(Boolean);
+  const name = parts[parts.length - 1] ?? "";
+  // A film's path starts at its own folder's child; an episode's at the season.
+  const home = film ? null : (parts[0] ?? null);
+  const between = parts.slice(film ? 0 : 1, -1);
+  const extra =
+    between.length === 1 && between[0] === name
+      ? "an extra folder named after the file"
+      : `an extra folder (${between.join("/")})`;
+  return home ? `Inside ${extra}, in ${home}` : `Inside ${extra}`;
+}
+
+/** "S01E38 is here, but inside a nested folder …" for the pop-up's lead sentence. */
+function nestedLine(episodes: TitleEpisode[], files: number): string {
+  const where = "inside a nested folder your media server cannot see";
+  if (episodes.length === 1 && files === 1) return `${episodes[0].code} is here, but ${where}.`;
+  if (episodes.length > 0 && episodes.length === files) {
+    return `${episodes.length} episodes are here, but ${where}: ${codesText(episodes)}.`;
+  }
+  return `${plural(files, "file")} here ${files === 1 ? "is" : "are"} ${where}.`;
 }
 
 // -- the evidence, season by season ---------------------------------------------
@@ -737,7 +936,10 @@ function SeasonBlock({
   const known = season.episodes.length - counts.not_downloaded;
   const here = known - counts.missing_here;
   const problems = season.episodes.filter(
-    (episode) => episode.state === "missing_here" || episode.state === "different"
+    (episode) =>
+      episode.state === "missing_here" ||
+      episode.state === "different" ||
+      episode.state === "nested"
   );
   // Episodes still to air are a fact about the schedule, not the files; a
   // season in progress would otherwise end in a column of "TBA, not
@@ -751,6 +953,9 @@ function SeasonBlock({
 
   const summary: Array<{ text: string; warn?: boolean; upgrade?: boolean }> = [];
   if (counts.missing_here) summary.push({ text: `${counts.missing_here} not here`, warn: true });
+  // Every file of the season in a nested folder, a second copy included.
+  const nested = season.nested_here?.length ?? 0;
+  if (nested > 0) summary.push({ text: `${nested} nested`, warn: true });
   if (counts.different)
     summary.push({
       text: `${counts.different} upgrade${counts.different === 1 ? "" : "s"}`,
@@ -886,6 +1091,7 @@ function EpisodeRow({ episode, displayName }: { episode: TitleEpisode; displayNa
   else if (episode.state === "different")
     facts = `${displayName}: ${fileText(theirs)}. Here: ${fileText(ours)}`;
   else if (episode.state === "in_sync") facts = fileText(theirs ?? ours);
+  else if (episode.state === "nested" && ours) facts = nestedWhere(ours.relative_path);
   else if (episode.state === "only_here" && ours?.size) facts = `${formatSize(ours.size)} here`;
   const air = airText(episode.air_date);
   const meta = [air, facts].filter(Boolean).join(" · ");
@@ -1259,7 +1465,7 @@ function fileText(file: ServiceFile | LocalFile | null | undefined): string {
   return [quality, formatSize(file.size)].filter(Boolean).join(", ");
 }
 
-/** Explore's answer when the app has no browse session to the media server. */
+/** Explore's answer when the app has no browse session to the remote server. */
 function noBrowseSession(error: unknown) {
   const response = (error as { response?: { status?: number; data?: { message?: string } } })
     ?.response;

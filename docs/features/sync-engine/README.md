@@ -416,14 +416,16 @@ result nobody saw.
 A webhook is the only thing that starts an automatic sync, so a lost one is a
 silent failure. The auto-scanner asks Sonarr and Radarr instead, on a schedule.
 One switch per service, on the Sonarr and Radarr integration settings, **off by
-default**, with an interval in minutes.
+default**, with an interval in minutes, and a mode: **Alert only** (the
+default) tells you about a find and copies nothing; **Sync it** syncs it.
 
 Each scan:
 
 1. checks the service answers (a scan that cannot reach it counts as failed);
-2. reads the service's **import history since the last scan** — new episodes,
-   new titles, upgrades — and keeps each import nothing has synced since
-   (the first scan looks back 24 hours). "Synced since" means a finished copy
+2. reads the service's **import history** — since the last scan in Sync it
+   (the first scan looks back 24 hours); in Alert only, on every scan, the
+   service's **Look back (days)**, 1 to 30, default 7. New episodes, new
+   titles, upgrades: it keeps each import nothing has synced since. "Synced since" means a finished copy
    of that folder that **started** after the import: rsync lists the folder
    when a copy starts, so one that began earlier may have missed the episode
    however late it ended. A copy that was paused and resumed counts from its
@@ -437,9 +439,12 @@ Each scan:
    episodes here than Sonarr has files for, counted as episodes on both
    sides, so one double-episode file is two (until 2026-10-13, branch only, it
    counted files here and called such a season short);
-4. hands every find to the engine as an *Auto-scanner* sync, so batching, the
-   ready check and the safety check all apply. A find whose folder already has
-   a sync on its way is left to it. A season is copied from its real folder on
+4. leaves a find whose folder already has a sync on its way to that sync. In
+   **Alert only** it opens one *Missed auto-sync* alert per folder, with **Open
+   in Explore**, and sends one `scanner.missed` Discord message per scan for
+   what it newly alerted; nothing is copied. In **Sync it** it hands every find
+   to the engine as an *Auto-scanner* sync, so batching, the ready check and
+   the safety check all apply. A season is copied from its real folder on
    the media server (asked of Sonarr) into the folder this disk already keeps
    it in, so a library with `Season 1` folders is neither read from a rebuilt
    `Season 01` nor given a second folder beside its own. Until 2026-10-13
@@ -449,7 +454,20 @@ It deliberately does **not** fetch the service's whole backlog: a season this
 disk holds nothing of, or a title it never held, is fetched only when the
 service imports something for it.
 
-Limits:
+Alert only, because the look-back read finds the same import every scan:
+
+- an open alert is left alone unless a newer import arrives (or Sonarr holds
+  more episodes of a short season); then it is updated, with no new message;
+- a dismissed one comes back only on such a new import, not after 24 hours;
+- a folder with an open alert of another kind (safety check, failed, restart)
+  gets no second alert;
+- the alert closes itself once a copy of the folder that started after the
+  import finishes — from Explore or anywhere else; every scan checks, in either
+  mode;
+- a sync that was waiting during one scan and was then cancelled, refused or
+  failed is alerted by a later one — the "skipped" case.
+
+Limits (Sync it):
 
 - at most **5 new syncs per scan** per service; the rest wait for the next scan,
   and the history window does not move past them;
@@ -459,11 +477,13 @@ Limits:
   next scan, because the copy may have missed it.
 
 Each scan's result is in the activity trail (`scanner.run`) and, when it
-started anything, on Discord (`scanner.found`).
+started anything, on Discord (`scanner.found`); when it alerted anything, on
+Discord as `scanner.missed`.
 
 **On screen**, below the settings on each service's Connection tab, an
 **Auto-scanner** card shows the scanner's job: "Switched off" with a pointer to
-the switch above it, or "Every 15 min · next scan at …"; the last scan's result
+the switch above it, or "Every 15 min · Alert only, looks back 7 days, copies
+nothing · next scan at …"; the last scan's result
 ("Last scan 5 min ago: …", in red when it failed, with how many times in a row
 when more than once); up to eight of that scan's finds, each with what became of
 it — a started one links to its sync — and **Scan now** while the scanner is
@@ -492,6 +512,9 @@ actions that make sense for it. An alert for the same thing is not opened
 twice: a repeat bumps the open one's count. Alerts that need a person are also
 announced on Discord once, when they open.
 
+*Missed auto-sync* has its own rule, above: dismissed, it stays closed until
+something new is imported.
+
 Three kinds watch a condition rather than report an event — *Auto-scanner*,
 *Integration* and *Scheduler*. Once a person dismisses one, or marks it wrong,
 the same subject does not open — or announce — a new alert for 24 hours; after
@@ -509,6 +532,7 @@ scanner's default interval.
 | Safety check | The dry run stopped a sync | Sync anyway · Dismiss |
 | Failed | A transfer failed, or the queue would not start it. A restore's is titled "Restore failed" | Retry · Mark as done · Dismiss; a restore's, Dismiss only |
 | Auto-scanner | The scanner tried a gap twice | Sync now · Dismiss |
+| Missed auto-sync | The scanner, set to Alert only, found an import nothing has synced (closes itself once synced) | Open in Explore (a link) · Dismiss |
 | Integration | Sonarr stopped answering (closes itself when it answers) | Dismiss |
 | Scheduler | A background job failed three times in a row (closes itself on success) | Run now · Dismiss |
 

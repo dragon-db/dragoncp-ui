@@ -111,6 +111,25 @@ class AlertStore:
                 (dedupe_key, DISMISSED, WRONG, since)).fetchone()
         return row is not None
 
+    def last_closed_by_a_person(self, dedupe_key: str) -> Optional[Dict[str, Any]]:
+        """The latest alert with this key that was dismissed or marked wrong."""
+        with self.db.get_connection() as conn:
+            return self._row(conn.execute(
+                "SELECT * FROM alert WHERE dedupe_key = ? AND state IN (?, ?) "
+                "ORDER BY resolved_at DESC LIMIT 1",
+                (dedupe_key, DISMISSED, WRONG)).fetchone())
+
+    def open_for_unit(self, unit_keys: Sequence[str]) -> List[Dict[str, Any]]:
+        """Open alerts, of any kind, about one of these folders."""
+        keys = [k for k in unit_keys if k]
+        if not keys:
+            return []
+        with self.db.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM alert WHERE state = 'open' AND unit_key IN "
+                f"({', '.join('?' for _ in keys)}) ORDER BY id DESC", keys).fetchall()
+        return [self._row(r) for r in rows]
+
     def resolve(self, alert_id: str, state: str, action: str, actor) -> Optional[Dict[str, Any]]:
         now = utc_now_iso()
         with self.db.get_connection() as conn:

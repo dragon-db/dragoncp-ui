@@ -38,6 +38,14 @@ def init_debug_routes(app_config, app_ssh_manager, app_db_manager, app_transfer_
     socketio_runtime_info = app_socketio_runtime_info or {}
 
 
+def _session_alive() -> bool:
+    """Whether the browse session is open now — not whether it once opened."""
+    if ssh_manager is None:
+        return False
+    check = getattr(ssh_manager, 'is_alive', None)
+    return bool(check()) if check is not None else bool(getattr(ssh_manager, 'connected', False))
+
+
 def _settings_timeout():
     """The configured realtime idle timeout, in minutes, or a note when unset."""
     from websocket import _settings_service
@@ -71,7 +79,7 @@ def api_runtime_status():
             # is fine on a test server and alarming anywhere else, and either
             # way an operator has to be able to see it without reading a log.
             "test_mode": bool(socketio_runtime_info.get('test_mode')),
-            "ssh_connected": ssh_manager.connected if ssh_manager else False,
+            "ssh_connected": _session_alive(),
             "websocket": {
                 "active_connections": get_websocket_connection_count(),
                 "cleanup_thread_running": get_cleanup_thread_status(),
@@ -108,7 +116,7 @@ def api_debug():
             "working_directory": os.getcwd(),
             "environment_file": config.env_file,
             "environment_file_exists": os.path.exists(config.env_file),
-            "ssh_connected": ssh_manager.connected if ssh_manager else False,
+            "ssh_connected": _session_alive(),
             "websocket_info": {
                 "active_connections": get_websocket_connection_count(),
                 "default_timeout_minutes": WEBSOCKET_TIMEOUT_DEFAULT // 60,

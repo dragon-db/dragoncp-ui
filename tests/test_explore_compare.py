@@ -11,8 +11,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from services.explore.compare import (
-    IN_SYNC, LOCAL_ONLY, MISSING, UPGRADED,
-    NO_INFO, OUT_OF_SYNC, PARTIAL_SYNC, SYNCED,
+    IN_SYNC, LOCAL_ONLY, MISSING, NESTED, UPGRADED,
+    NEEDS_REPAIR, NO_INFO, OUT_OF_SYNC, PARTIAL_SYNC, SYNCED,
     compare_library,
 )
 from services.explore.inventory import StaticInventory
@@ -183,6 +183,80 @@ class MisplacedTests(unittest.TestCase):
 
         self.assertEqual(len(season.misplaced), 1)
         self.assertTrue(season.misplaced[0].endswith(f'{name}/{name}'))
+
+    def test_a_nested_copy_is_never_in_sync(self):
+        # Same episode, same size, but the media server cannot see it. Not in
+        # sync, and not missing either: nothing needs downloading.
+        name = 'Example Show - S04E14 - Title [WEBDL-1080p][HONE-Dragon DB].mkv'
+        diff = build(
+            'tvshows',
+            [(f'Example Show/Season 04/{name}', 2 * GB, 100)],
+            [(f'Example Show/Season 04/{name}/{name}', 2 * GB, 100),
+             (ep('Example Show', 'Season 04', 'S04E13'), 2 * GB, 90)],
+        )
+        series = diff.find('Example Show')
+        season = series.seasons[0]
+        episode = next(e for e in season.episodes if e.code == 'S04E14')
+
+        self.assertEqual(episode.label, NESTED)
+        self.assertTrue(episode.to_dict()['local_nested'])
+        self.assertEqual(season.counts.in_sync, 0)
+        self.assertEqual(season.counts.nested, 1)
+        self.assertEqual(season.counts.missing, 0)
+        self.assertEqual(season.counts.nested_files, 1)
+        self.assertEqual(season.counts.remote_total, 1)
+        self.assertEqual(season.counts.local_media, 2)
+        self.assertEqual(season.status, NEEDS_REPAIR)
+        self.assertEqual(series.status, NEEDS_REPAIR)
+        self.assertEqual(series.to_dict()['counts']['nested_files'], 1)
+
+    def test_a_properly_placed_copy_wins_over_a_nested_one(self):
+        # The episode plays from the copy in the season folder, so it is in
+        # sync; the stranded extra still keeps the season from reading Synced.
+        name = 'Example Show - S01E02 - Title [WEBDL-1080p][HONE-Dragon DB].mkv'
+        season = build(
+            'tvshows',
+            [(f'Example Show/Season 01/{name}', 2 * GB, 100)],
+            [(f'Example Show/Season 01/{name}/{name}', 2 * GB, 100),
+             (f'Example Show/Season 01/{name}', 2 * GB, 80)],
+        ).find('Example Show').seasons[0]
+
+        self.assertEqual(season.episodes[0].label, IN_SYNC)
+        self.assertEqual(season.episodes[0].local.relative_path,
+                         f'Example Show/Season 01/{name}')
+        self.assertEqual(season.counts.nested_files, 1)
+        self.assertEqual(season.status, NEEDS_REPAIR)
+
+    def test_nested_files_leave_other_statuses_alone(self):
+        # Missing an episode is still Partial; a season the remote does not
+        # hold is still Not on remote. The page tags both as nested.
+        wrapped = ep('Show', 'Season 01', 'S01E01')
+        wrapped += '/' + wrapped.rsplit('/', 1)[1]
+        partial = build(
+            'tvshows',
+            [(ep('Show', 'Season 01', 'S01E01'), GB, 100),
+             (ep('Show', 'Season 01', 'S01E02'), GB, 100)],
+            [(wrapped, GB, 100)],
+        ).find('Show').seasons[0]
+        self.assertEqual(partial.status, PARTIAL_SYNC)
+        self.assertEqual(partial.counts.nested, 1)
+        self.assertEqual(partial.counts.nested_files, 1)
+
+        local_only = build('tvshows', [], [(wrapped, GB, 100)]).find('Show').seasons[0]
+        self.assertEqual(local_only.status, NO_INFO)
+        self.assertEqual(local_only.counts.nested_files, 1)
+        self.assertTrue(local_only.episodes[0].to_dict()['local_nested'])
+
+    def test_a_nested_movie_is_never_in_sync(self):
+        name = 'Example Film (2024) WEBDL-1080p [HONE].mkv'
+        series = build(
+            'movies',
+            [(f'Example Film (2024)/{name}', 4 * GB, 100)],
+            [(f'Example Film (2024)/{name}/{name}', 4 * GB, 100)],
+        ).find('Example Film (2024)')
+
+        self.assertEqual(series.seasons[0].episodes[0].label, NESTED)
+        self.assertEqual(series.status, NEEDS_REPAIR)
 
 
 class RollupTests(unittest.TestCase):

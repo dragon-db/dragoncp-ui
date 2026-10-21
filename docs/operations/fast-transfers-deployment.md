@@ -45,7 +45,7 @@ Production already has the `transport` column and both environment keys, so
 step 2 below is done. What is left:
 
 1. Deploy the fix (step 1 and 3 below).
-2. Settings → Connections → Fast transfers → **Install**. Nothing is installed
+2. Settings → Remote server → Fast transfers → **Install**. Nothing is installed
    on the remote server, so this is a fresh install and pushes production's
    password.
 3. Switch **"Use it for transfers"** on.

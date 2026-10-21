@@ -5,15 +5,16 @@ difference into a plan you review before anything is written. It replaces the
 old Browse Media page, which walked the remote server and guessed at sync state
 from transfer timestamps.
 
-Last updated: 2026-10-05
+Last updated: 2026-10-21
 
 ## The idea in one paragraph
 
 Sonarr and Radarr keep the remote library current and webhooks pull most of it
 down automatically. Explore is for what the automation missed. It reads both
 libraries as lists of files, gives every media file an **episode identity**
-(`S01E23`), and labels each one: in sync, missing, upgraded, or local-only. Every
-badge, count and action on the page comes from those four labels.
+(`S01E23`), and labels each one: in sync, nested, missing, upgraded, or
+local-only. Every badge, count and action on the page comes from those five
+labels.
 
 ## Where it lives
 
@@ -27,7 +28,8 @@ badge, count and action on the page comes from those four labels.
 | Handing each season to the sync pipeline | `services/explore/executor.py` (`_sync_request`), `services/sync_engine/engine.py` |
 | Snapshots, plan tokens, per-file outcomes | `services/explore/store.py` |
 | Repairing files stranded a level too deep | `services/explore/repair.py` |
-| The facade the routes call | `services/explore/service.py` |
+| The facade the routes call; how often the remote is read | `services/explore/service.py` |
+| The SSH session to the remote server: reconnecting, and never hammering it | `services/remote_session.py`, `ssh.py` (`is_alive`, keepalive) |
 | Endpoints, rate limiting, status codes | `routes/explore.py` |
 | The rsync command for a plan | `services/transfer_service.py` (`_start_explore_rsync`) |
 | Page, tree, table, inspector, review dialog | `frontend/src/components/explore/`, `frontend/src/components/pages/explore.tsx` |
@@ -54,6 +56,14 @@ badge, count and action on the page comes from those four labels.
    and have an upgrade for another; "Partial" alone could not say which. The
    **Upgrade** filter lists every title with one, however old — as of the last
    Re-check sync.
+7. **A file in a nested folder is never In sync** (2.3.2, operator,
+   2026-10-21). Below the season folder means the media server cannot see
+   it, so the episode reads **Nested**, not In sync, and nothing is
+   downloaded again — the file is here; [Repair](#repairing-misplaced-files)
+   moves it. A season or series that would otherwise be Synced reads **Needs
+   repair**; Partial, Out of sync and Not on remote keep their status and gain
+   an amber **Nested** tag, the way an upgrade gets its tag. See
+   [Nested files on the page](#nested-files-on-the-page).
 
 ### "Not on remote" is an answer, not a gap
 
@@ -76,8 +86,69 @@ The wire value is still `NO_INFO`; only what it is called on screen changed. It
 used to read "Not checked", which said the opposite of what had happened and
 sent people looking for a button to press.
 
-Results are cached and timestamped. The page reads the cache instantly and shows
-"checked …"; **Re-check** forces a fresh pass.
+Results are cached and timestamped. The page paints the saved result at once and
+then checks the remote by itself — see [Keeping it current](#keeping-it-current).
+
+## Keeping it current
+
+Since 2.3.2 (operator, 2026-10-20) opening Explore brings it up to date without a
+button, and repeated opening does not read the remote again and again.
+
+1. **The page opens on the saved result**, instantly, then asks the server to
+   check (`GET /explore/tree/<lib>?check=auto`). A small label beside Re-check
+   says "Checking remote…", then "Checked just now" (or "3 min ago").
+2. **One walk answers for two minutes.** A walk of a remote library from the
+   last 2 minutes is reused — unless Sonarr or Radarr has sent an import webhook
+   for that library since, which is the moment the remote changed. Even then a
+   walk less than 15 seconds old is reused, so a burst of webhooks during a
+   season pack does not make every click a walk. An anime import does not
+   count against TV Shows.
+3. **This disk is read every time.** It is a local walk (~65 ms) and where syncs
+   land, so a finished copy shows at once even when the remote walk is reused.
+4. **Series and seasons use the same walk.** Opening a season used to walk the
+   whole remote library each time (production: 60 season opens, 60 walks, 5 of
+   them refused as "too many"). Now it reuses the library's walk on the same
+   two-minute rule, and the season answer carries its `checked_at`.
+5. **Re-check always reads the remote**, except when a walk finished less than
+   10 seconds ago or is still running — then it shares that one.
+6. **One walk at a time per library.** A request that arrives during a walk
+   waits for it and shares its result: two tabs, or a double click, are one
+   walk.
+7. **Plan, Dry run, Download, Replace and Sync still read the remote fresh
+   every time.** A plan is never built on a reused walk.
+
+The cost being saved: one walk is one `find` over the library, median 0.5 s
+and at most 1.8 s on production (22 Re-checks measured, 2026-10-20).
+
+### The SSH session
+
+Explore reads the remote over one SSH session, shared by everyone. Before
+2.3.2 it was opened only by Settings → Auto Connect, was gone after every
+restart, and was believed open after the server had reset it — so Re-check
+failed at once with "Re-check failed" (production: 9 times; "Connection reset
+by peer" on 2026-10-19). Now (`services/remote_session.py`):
+
+- **Before every walk the session is checked for real** — the transport is
+  asked, not a flag set once at connect time.
+- **A missing or dead session is reopened with the saved login**, if
+  **Auto-connect** is on (Settings → Remote server; on by default). A walk that
+  fails because the session died under it is retried once on a fresh one.
+- **Keepalive every 30 seconds**, so an idle session is not dropped.
+- **It never hammers the remote server** (operator, 2026-10-20): one connect at
+  a time, whoever asks; after a failed automatic attempt the next waits 30 s,
+  then 1, 2, 4 and 5 minutes; a refused login or a host key that does not
+  match stops automatic attempts until a person connects; a person's own
+  presses are spaced 60 s after a refused login and 10 s after anything else.
+  A failed login is what gets an address banned, and a ban would stop every
+  sync. rsync and the fast transfer server's set-up use their own SSH and are
+  not affected.
+- **When the remote cannot be read**, the page keeps the saved result and an
+  amber strip says why and how old it is, with **Connect** on the page — greyed
+  out with "Connect at 12:01:30" while the spacing above applies. The label
+  beside Re-check reads "Offline". The old full-page "Remote browse session
+  required" is gone.
+- **With Auto-connect off**, nothing connects by itself: the strip says so, and
+  Connect (here or in Settings) is how to open the session.
 
 ### Deliberate: local-only files do not break "Synced"
 
@@ -423,13 +494,50 @@ not respond" has to mean wait.
 work with the browse session down — a file that is invisible to the media server
 should not wait on a connection the fix does not use.
 
-The *page* is another matter, and today it does not deliver that. Explore shows
-"no browse session" when SSH is down, and opening a title re-compares against
-the remote, so there is currently no way to reach the Repair button offline. The
+The *page* only partly delivers that. Since 2.3.2 it opens on the saved result
+when SSH is down, with an amber strip and Connect, instead of a full-page "no
+browse session"; but opening a title still needs a walk under two minutes old,
+so the Repair button cannot be reached offline. The
 capability is in the API and covered by tests; only the screen gates it. Making
 it reachable means serving the series and season views from the cached snapshot
 and disabling the actions that genuinely need the remote — a change worth making
 deliberately rather than as a side effect.
+
+### Nested files on the page
+
+Until 2.3.2 the only sign was a warning in the actions panel, which is off
+screen below `xl`; the rows said **In sync** and **Synced**. Found when
+Sonarr's Library tab said an episode was "Missing here" and Explore said "In
+sync" for the same file: the Library tab looks only directly inside the season
+folder, Explore at every level, and neither was the truth. Now:
+
+- **The episode** reads **Nested** (label `NESTED`), with the path it is really
+  at on hover. An upgrade or a local-only file that is nested keeps its label
+  and gains "nested folder" beside its name (`local_nested`).
+- **The season and the series** read **Needs repair** instead of Synced, or
+  carry a **Nested** tag beside any other status — in the tree, in the season
+  list, and in the actions panel. A **Nested** filter lists every title with
+  one.
+- **Opening one** shows an amber strip above the list — "1 file in this
+  season is inside a nested folder, where your media server cannot see it" —
+  with **Repair**, at every screen width.
+- **A sync leaves it alone and says why**: an empty plan reads "Nothing to
+  download — but 1 file here is inside a nested folder. Repair moves it into
+  place." The Library tab's **Get** says the same instead of "nothing to
+  copy".
+- **Replace still works on it**: the stranded copy goes to backup and the
+  remote one lands in the season folder. Any folder a sync or a replace
+  empties by moving a file to backup is removed before the copy starts (the
+  arriving file usually has the very name of the folder), never the season
+  folder itself; a rollback makes it again.
+- **Two copies of one episode**, one in place and one nested: the one in
+  place is the match (it is what plays), and the nested one still marks the
+  season Needs repair. Repair then asks which to keep.
+
+**The first run against the real library** was the operator's, on production
+2.3.1, 2026-10-21: one TV episode, the banner gone afterwards, the file in its
+season folder and the wrapper folder deleted. All 22 wrappers left in the
+library then predated 2026-07-12; nothing creates them any more.
 
 ## Behaviour worth knowing
 
@@ -461,12 +569,19 @@ copy. Fixed 2026-10-05: before, the restart was judged by that folder dry run,
 with files only this disk has counted as deletions
 (`tests/test_sync_engine.py::FinishTests::test_a_retried_explore_plan_is_not_judged_by_a_folder_dry_run`).
 
-**Comparison is manual.** There is no schedule. A full-library pass has not been
-measured against the real remote yet, and scheduling work of unknown cost against
-the media server is not something to guess at — see the plan's follow-ups.
+**There is no background comparison.** Explore reads the remote when the page
+is opened or Re-check is pressed, never on a timer or on returning to the tab
+(see [Keeping it current](#keeping-it-current)).
 
 **One browse session is shared by everyone.** Unchanged from before, and a
-deliberate single-operator assumption.
+deliberate single-operator assumption. Disconnecting in Settings closes it for
+everyone; with Auto-connect on, the next Explore read opens it again.
+
+**A season view while the remote is out of reach** shows the season pane's own
+message ("Not connected to the remote server…") rather than "empty on both
+sides". It is served from the last walk while that is under two minutes old;
+older than that it needs the remote, because the saved result keeps seasons but
+not their episodes (TASK-018).
 
 **A plan is only spent when it actually runs.** `execute` checks the safety
 verdict and the typed confirmation *before* claiming the plan, so a rejected
@@ -475,8 +590,10 @@ the corrected retry then met "expired or already used". The claim itself is a
 single `UPDATE ... WHERE consumed = 0`, so two callers racing each other cannot
 both run the same destructive plan.
 
-**Rate limiting is per user and only on the expensive endpoints.** Twelve
-comparisons a minute; cached reads are unlimited.
+**Rate limiting is per user and only on the expensive endpoints.** Twelve a
+minute for Re-check, Plan and Dry run. Opening the page and its series and
+seasons are not limited since 2.3.2: they reuse one walk for two minutes, so
+they rarely reach the remote at all.
 
 **Switching library throws the selection away.** The page is keyed on the media
 type, so moving from TV Shows to Anime clears the open series, the open season,
@@ -515,7 +632,9 @@ all.
 
 ```
 GET  /api/explore/libraries                      media types, both paths, config health
-GET  /api/explore/tree/<media_type>[?refresh=1]  series with rolled-up status
+GET  /api/explore/tree/<media_type>[?check=auto|refresh]  series with rolled-up status
+GET  /api/explore/session                       the SSH session: connected, Auto-connect, last failure, when it may retry
+POST /api/explore/connect                       connect now (spaced like any attempt; 409 with the reason and the time)
 GET  /api/explore/series/<media_type>/<folder>   seasons
 GET  /api/explore/season/<...>/<season>          episodes with labels
 GET  /api/explore/history/<media_type>/<folder>  past runs + per-file records
@@ -528,8 +647,9 @@ POST /api/explore/transfer                       execute a plan by id
 ```
 
 `/plan` takes `seasons: [...]` for the sync_seasons operation, and `codes: [...]`
-for download and replace. `/dry-run` and `/plan` are rate limited with the
-comparisons — both open an ssh connection and walk the remote. The two `repair`
+for download and replace. `/dry-run`, `/plan` and `?check=refresh` are rate
+limited — each walks the remote. `?refresh=1` is the older spelling of
+`check=refresh`. The two `repair`
 routes are the exception to everything above: local only, no ssh, no rate limit,
 and the POST body carries the scope and nothing else so it cannot name a file.
 
@@ -561,9 +681,11 @@ PYTHONPATH=venv/lib/python3.12/site-packages python3 -m unittest \
   tests.test_explore_backups tests.test_explore_repair
 ```
 
-156 tests: the identity parser against real filename shapes from the library, the
+183 tests: the identity parser against real filename shapes from the library, the
 comparison labels, planning and safety, multi-season plans, re-fetching a file
-that already matches, reading rsync's itemised dry-run output and reconciling it
+that already matches, nested files (never In sync, never re-downloaded, the
+emptied wrapper folder removed and put back on rollback), reading rsync's
+itemised dry-run output and reconciling it
 with the plan, scoping backups to a series and season, an end-to-end run with the
 ssh boundary faked, and the HTTP layer.
 

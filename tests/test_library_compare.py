@@ -93,7 +93,7 @@ class EpisodeStateTests(unittest.TestCase):
         self.assertEqual(rows['S01E05']['state'], cmp.NOT_DOWNLOADED)
         self.assertEqual(result['state'], cmp.OUT_OF_SYNC)
         self.assertEqual(result['counts'], {
-            cmp.MISSING_HERE: 1, cmp.DIFFERENT: 1, cmp.IN_SYNC: 1,
+            cmp.MISSING_HERE: 1, cmp.DIFFERENT: 1, cmp.NESTED: 0, cmp.IN_SYNC: 1,
             cmp.ONLY_HERE: 1, cmp.NOT_DOWNLOADED: 1})
 
     def test_the_service_file_details_are_carried(self):
@@ -268,6 +268,73 @@ class EdgeTests(unittest.TestCase):
         self.assertIsNone(rows['S01E09']['title'])
 
 
+def nested_file(season, name, size, folder=None):
+    """`Season 01/ep.mkv/ep.mkv` — what the old single-episode download left."""
+    entry = local_file(season, name, size, folder)
+    entry['relative_path'] = f"{entry['folder']}/{name}/{name}"
+    entry['nested'] = True
+    return entry
+
+
+class NestedTests(unittest.TestCase):
+    """A file one folder too deep: here, but not where a media server looks.
+
+    Explore calls it Nested; this view has to say the same, not "Not here".
+    """
+
+    def test_an_episode_only_a_nested_copy_holds_is_nested_not_missing(self):
+        episodes = [episode(1, 37, 137), episode(1, 38, 138)]
+        files = [service_file(138, 1, ep_name(1, 38), 2000)]
+        here = local(local_file(1, ep_name(1, 37), 1900), nested_file(1, ep_name(1, 38), 2000))
+
+        result = cmp.compare_series(episodes, files, here)
+        row = by_code(result)['S01E38']
+        self.assertEqual(row['state'], cmp.NESTED)
+        self.assertTrue(row['local_file']['nested'])
+        self.assertTrue(row['local_file']['relative_path'].endswith(
+            f"{ep_name(1, 38)}/{ep_name(1, 38)}"))
+        self.assertEqual(result['state'], cmp.NEEDS_REPAIR)
+        self.assertEqual(result['nested_files'], 1)
+        self.assertIn('S01E38', result['summary'])
+        self.assertIn('nested folder', result['summary'])
+        self.assertIn('Explore', result['summary'])
+        self.assertEqual(result['seasons'][0]['state'], cmp.NEEDS_REPAIR)
+        self.assertFalse(result['sync']['offered'])
+
+    def test_a_copy_in_place_wins_and_the_stranded_one_still_counts(self):
+        episodes = [episode(1, 1, 11)]
+        files = [service_file(11, 1, ep_name(1, 1), 100)]
+        here = local(nested_file(1, ep_name(1, 1), 100), local_file(1, ep_name(1, 1), 100))
+
+        result = cmp.compare_series(episodes, files, here)
+        row = by_code(result)['S01E01']
+        self.assertEqual(row['state'], cmp.IN_SYNC)
+        self.assertFalse(row['local_file']['nested'])
+        self.assertEqual(result['state'], cmp.NEEDS_REPAIR)
+        self.assertIn('1 file here is inside a nested folder', result['summary'])
+
+    def test_something_missing_too_is_still_out_of_sync(self):
+        episodes = [episode(1, 1, 11), episode(1, 2, 12)]
+        files = [service_file(11, 1, ep_name(1, 1), 100),
+                 service_file(12, 1, ep_name(1, 2), 200)]
+        here = local(nested_file(1, ep_name(1, 1), 100))
+
+        result = cmp.compare_series(episodes, files, here)
+        self.assertEqual(result['state'], cmp.OUT_OF_SYNC)
+        self.assertIn('S01E02', result['summary'])
+        self.assertIn('nested folder', result['summary'])
+        self.assertFalse(result['sync']['offered'])
+        self.assertIn('nested folder', result['sync']['reason'])
+
+    def test_a_season_with_a_nested_file_is_not_counted_twice(self):
+        episodes = [episode(1, 1, 11)]
+        files = [service_file(11, 1, ep_name(1, 1), 100)]
+        here = local(nested_file(1, ep_name(1, 1), 100))
+        season = cmp.compare_series(episodes, files, here)['seasons'][0]
+        self.assertEqual(season['episodes_here'], 0, 'what a media server can see')
+        self.assertEqual(season['nested_here'], [here['files'][0]['relative_path']])
+
+
 class MovieTests(unittest.TestCase):
 
     def movie(self, has_file=True, size=4000):
@@ -300,6 +367,25 @@ class MovieTests(unittest.TestCase):
         result = cmp.compare_movie(self.movie(size=4000), self.here(100, 4000))
         self.assertEqual(result['movie']['state'], cmp.IN_SYNC)
         self.assertEqual(len(result['movie']['other_files_here']), 1)
+
+    def test_a_film_only_in_a_nested_folder_needs_repair(self):
+        stranded = {'loose': [], 'nested_loose': [
+            {'name': 'Example Film (2024).mkv',
+             'relative_path': 'Example Film (2024).mkv/Example Film (2024).mkv', 'size': 4000}]}
+        result = cmp.compare_movie(self.movie(size=4000), stranded)
+        self.assertEqual(result['movie']['state'], cmp.NESTED)
+        self.assertEqual(result['state'], cmp.NEEDS_REPAIR)
+        self.assertFalse(result['sync']['offered'], 'copying it again would not fix it')
+        self.assertIn('nested folder', result['summary'])
+
+    def test_a_film_in_place_with_a_stranded_second_copy_needs_repair(self):
+        here = self.here(4000)
+        here['nested_loose'] = [{'name': 'old.mkv', 'relative_path': 'Extras/old.mkv',
+                                 'size': 3000}]
+        result = cmp.compare_movie(self.movie(size=4000), here)
+        self.assertEqual(result['movie']['state'], cmp.IN_SYNC)
+        self.assertEqual(result['state'], cmp.NEEDS_REPAIR)
+        self.assertIn('second copy', result['summary'])
 
     def test_only_a_film_not_here_offers_the_sync(self):
         self.assertTrue(cmp.compare_movie(self.movie(), None)['sync']['offered'])

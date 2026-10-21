@@ -8,7 +8,7 @@ Everything that needs a person is also kept in the application as an **alert**, 
 
 Everything is off until an operator turns Discord on and adds a webhook. There is no default destination. Alerts are recorded either way.
 
-Last updated: 2026-10-05
+Last updated: 2026-10-19
 Primary files: `services/notification_service.py`, `services/sync_engine/engine.py`, `services/alert_service.py`, `services/auto_scanner.py`, `services/connectors/adapters/discord.py`, `services/connectors/events.py`
 
 ## Where it lives
@@ -132,6 +132,7 @@ An alert is opened by the sync engine, by its start-up recovery, by the auto-sca
 | Safety check | The dry run stopped a sync | `autosync.blocked`, automatic syncs only | Sync anyway · Dismiss |
 | Failed | A transfer failed, or the queue would not start it. A failed restore's is titled "Restore failed" and says to run it again from the Backups page | none | Retry · Mark as done · Dismiss; a restore's, Dismiss only |
 | Auto-scanner | The scanner has started two syncs for a gap and still finds it | `scanner.found` | Sync now · Dismiss |
+| Missed auto-sync | The scanner, set to Alert only (the default), found an import nothing has synced. Closes itself once the folder is synced; dismissed, it comes back only on a newer import | `scanner.missed`, one message per scan, not per alert | Open in Explore (a link) · Dismiss |
 | Integration | Sonarr did not answer when a batch asked; closes itself when a later batch finds it answering | `integration.down` | Dismiss |
 | Scheduler | A background job failed three times in a row; closes itself on the job's next success | `scheduler.failing` | Run now · Dismiss |
 | Fast transfers | A copy failed on the fast transfer server and ran again over SSH. One alert for the route: every later fallback bumps it | `fast_route.failed` | Dismiss |
@@ -146,6 +147,7 @@ Every alert reads the same on Discord: a headline for its kind, as the table bel
 | Waited 30 minutes | READY CHECK - WAITED 30 MINUTES |
 | Safety check | SAFETY CHECK - AUTO SYNC STOPPED |
 | Auto-scanner | AUTO-SCANNER - GAP NOT CLOSED |
+| Missed auto-sync | AUTO-SCANNER - MISSED AUTO SYNC (the scan's own message) |
 | Integration | INTEGRATION DOWN - SONARR |
 | Scheduler | SCHEDULER - JOB FAILING |
 | Fast transfers | FAST TRANSFER FAILED - SSH FALLBACK USED |
@@ -174,6 +176,15 @@ Movies are checked now too. A Radarr webhook runs the same dry run, so a film ca
 After a scan that started anything, one message per service: "Auto-scanner found 3 to sync in Sonarr", listing up to ten of the syncs it started, each with its first reason ("Sonarr imported season 1 at 2026-10-05 14:02, and nothing has synced it since."), and how many were held back for the next scan. Headline AUTO-SCANNER - SYNCS STARTED, purple (the info colour). Each of those syncs then gets its own finished or failed message, headed AUTO SYNC - SCANNER. A scan that started nothing sends nothing.
 
 The *Auto-scanner* alert uses the same event key, so routing `scanner.found` routes both.
+
+With the scanner set to **Alert only** (the default since 2.3.2), a scan that
+opened any *Missed auto-sync* alert sends one `scanner.missed` message per
+service instead: "2 titles in Sonarr missed auto-sync", headline AUTO-SCANNER -
+MISSED AUTO SYNC, orange (a warning, so it pings by the default rule). It lists
+up to ten of the new alerts, each with its first reason, says nothing was
+copied, and **What to do** reads "Open DragonCP → Notifications, then Open in
+Explore to sync it by hand when it is ready." An alert found again, updated by
+a newer import, or dismissed earlier sends nothing.
 
 ### Rename notification
 

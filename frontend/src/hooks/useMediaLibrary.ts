@@ -45,7 +45,14 @@ export interface LibrarySeason {
  * (`state_exact`).
  */
 export type LibraryState =
-  "out_of_sync" | "in_sync" | "kept_here" | "never" | "no_files" | "orphan" | "unknown";
+  | "out_of_sync"
+  | "needs_repair"
+  | "in_sync"
+  | "kept_here"
+  | "never"
+  | "no_files"
+  | "orphan"
+  | "unknown";
 
 /** Why a title is out of sync — the list words its sentence from these. */
 export interface LibraryAttention {
@@ -56,7 +63,8 @@ export interface LibraryAttention {
     | "season_not_here"
     | "not_matching"
     | "missing"
-    | "different";
+    | "different"
+    | "nested";
   season_number: number | null;
   count: number;
   theirs?: number;
@@ -65,6 +73,8 @@ export interface LibraryAttention {
   imported_at?: string | null;
   quality?: string | null;
   size?: number | null;
+  /** For "nested": where each stranded file sits now. */
+  paths?: string[];
 }
 
 export interface LibraryItem {
@@ -136,7 +146,7 @@ export interface LibraryView {
  *   not_downloaded  neither has it, aired or not
  */
 export type EpisodeState =
-  "missing_here" | "different" | "in_sync" | "only_here" | "not_downloaded";
+  "missing_here" | "different" | "nested" | "in_sync" | "only_here" | "not_downloaded";
 
 export type EpisodeCounts = Record<EpisodeState, number>;
 
@@ -157,6 +167,8 @@ export interface LocalFile {
   size: number;
   /** For a file holding several episodes: every code it covers. */
   covers: string[];
+  /** In a folder below the season (or film) folder: here, but not visible to a media server. */
+  nested?: boolean;
 }
 
 export interface TitleEpisode {
@@ -192,6 +204,8 @@ export interface TitleSeason {
   episodes_here: number;
   /** Files here a whole-folder sync of this season would remove. */
   local_only_files: number;
+  /** Every media file of the season in a nested folder, by path. */
+  nested_here?: string[];
   episodes: TitleEpisode[];
   unidentified_here: LocalFile[];
   last_synced_at: string | null;
@@ -234,12 +248,20 @@ export interface TitleDetail {
   movie?: TitleMovie | null;
   attention?: LibraryAttention[];
   kept_here_count?: number;
+  /** Media files here in a nested folder (counted seasons, or the film). */
+  nested_files?: number;
   last_synced_at?: string | null;
   actions?: {
     /** The title's Sync, offered only where a whole-folder sync removes nothing. */
     sync: { offered: boolean; seasons: number[]; reason: string };
     /** Where Explore opens to fetch only what is missing. */
-    explore: { media_type: string; series: string | null; season: string | null } | null;
+    explore: {
+      media_type: string;
+      series: string | null;
+      season: string | null;
+      /** The first season with a nested file: where "Repair in Explore" opens. */
+      nested_season?: string | null;
+    } | null;
   };
   computed_at?: string;
 }
