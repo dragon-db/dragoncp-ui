@@ -520,10 +520,15 @@ class AlertService:
             if others:
                 return 'already_alerted', others[0]
             closed = self.store.last_closed_by_a_person(dedupe)
-            if closed is not None and not _newer(
-                    imported_at, service_files, closed.get('resolved_at'),
-                    (closed.get('data') or {}).get('service_files')):
-                return 'dismissed', closed
+            if closed is not None:
+                # Against the import the person saw, not when they closed it: an
+                # import that landed after the last scan but before the dismiss
+                # was never shown to them.
+                seen = closed.get('data') or {}
+                if not _newer(imported_at, service_files,
+                              seen.get('imported_at') or closed.get('resolved_at'),
+                              seen.get('service_files')):
+                    return 'dismissed', closed
             alert = self.raise_alert(
                 'missed_sync', f"Missed auto-sync: {label}", message, WARNING,
                 dedupe_key=dedupe, unit_key=key, actions=('dismiss',), data=data)

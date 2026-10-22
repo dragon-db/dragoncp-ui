@@ -458,7 +458,8 @@ Alert only, because the look-back read finds the same import every scan:
 
 - an open alert is left alone unless a newer import arrives (or Sonarr holds
   more episodes of a short season); then it is updated, with no new message;
-- a dismissed one comes back only on such a new import, not after 24 hours;
+- a dismissed one comes back only on an import newer than the one it showed
+  (even one that landed before the dismiss), not after 24 hours;
 - a folder with an open alert of another kind (safety check, failed, restart)
   gets no second alert;
 - the alert closes itself once a copy of the folder that started after the

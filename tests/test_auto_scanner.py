@@ -452,6 +452,16 @@ class AlertOnlyTests(ScannerTestCase):
         self.assertEqual(len(self.missed()), 1)
         self.assertEqual(len(messages), 1)
 
+    def test_an_import_between_the_scan_and_the_dismiss_comes_back(self):
+        """The person dismissed the import they were shown, not one that landed since."""
+        self.library.items = [show()]
+        self.arr.records = [imported(hours_ago=3)]
+        self.scan()
+        self.arr.records = [imported(hours_ago=3), imported(hours_ago=1)]
+        self.alerts.act(self.missed()[0]['alert_id'], 'dismiss')
+        self.assertEqual(self.scan()['alerted'], 1)
+        self.assertEqual(self.scan()['already_alerted'], 1)
+
     def test_a_short_season_dismissed_comes_back_when_the_service_has_more(self):
         def short(theirs):
             return [show(seasons=[{'season_number': 1, 'episode_file_count': theirs,
