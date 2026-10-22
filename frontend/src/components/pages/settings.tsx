@@ -1,5 +1,11 @@
 import { useNavigate } from "@tanstack/react-router";
-import { IconPlugConnected, IconRefresh, IconServer, IconUserShield } from "@tabler/icons-react";
+import {
+  IconFileText,
+  IconPlugConnected,
+  IconRefresh,
+  IconServer,
+  IconUserShield,
+} from "@tabler/icons-react";
 import { PageHeader } from "@/components/layout/page-header";
 import { PageTabsList } from "@/components/layout/page-tabs";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
@@ -7,6 +13,7 @@ import { RemoteServerTab } from "@/components/settings/remote-server-tab";
 import { SyncingTab } from "@/components/settings/syncing-tab";
 import { AccountTab } from "@/components/settings/account-tab";
 import { SystemTab } from "@/components/settings/system-tab";
+import { LogsTab } from "@/components/settings/logs-tab";
 import { useSettingMap } from "@/components/settings/settings-model";
 
 /**
@@ -22,7 +29,7 @@ import { useSettingMap } from "@/components/settings/settings-model";
  * greyed-out field.
  */
 
-export const SETTINGS_TABS = ["remote", "syncing", "account", "system"] as const;
+export const SETTINGS_TABS = ["remote", "syncing", "account", "system", "logs"] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 const TABS = [
@@ -30,6 +37,7 @@ const TABS = [
   { value: "syncing", label: "Syncing", icon: IconRefresh },
   { value: "account", label: "Account", icon: IconUserShield },
   { value: "system", label: "System", icon: IconServer },
+  { value: "logs", label: "Logs", icon: IconFileText },
 ];
 
 export function SettingsPage({ tab }: { tab: SettingsTab }) {
@@ -74,6 +82,9 @@ export function SettingsPage({ tab }: { tab: SettingsTab }) {
         </TabsContent>
         <TabsContent value="system">
           <SystemTab />
+        </TabsContent>
+        <TabsContent value="logs">
+          <LogsTab />
         </TabsContent>
       </Tabs>
     </div>

@@ -1,7 +1,7 @@
 # Settings Screen
 
 Last updated: 2026-10-21
-Primary files: `frontend/src/components/pages/settings.tsx`, `frontend/src/components/settings/` (`remote-server-tab.tsx`, `syncing-tab.tsx`, `account-tab.tsx`, `system-tab.tsx`, `remote-transfer-panel.tsx`, `backend-log-panel.tsx`, `settings-bits.tsx`, `settings-model.ts`), `frontend/src/routes/_authenticated/settings.tsx`, `settings_registry.py`, `services/settings_service.py`, `frontend/src/hooks/useConfig.ts`, `app.py`, `config.py`, `routes/webhooks.py`, `routes/logs.py`, `models/settings.py`, `websocket.py`
+Primary files: `frontend/src/components/pages/settings.tsx`, `frontend/src/components/settings/` (`remote-server-tab.tsx`, `syncing-tab.tsx`, `account-tab.tsx`, `system-tab.tsx`, `logs-tab.tsx`, `websocket-panel.tsx`, `remote-transfer-panel.tsx`, `backend-log-panel.tsx`, `settings-bits.tsx`, `settings-model.ts`), `frontend/src/routes/_authenticated/settings.tsx`, `settings_registry.py`, `services/settings_service.py`, `frontend/src/hooks/useConfig.ts`, `frontend/src/stores/socket-diagnostics.ts`, `app.py`, `config.py`, `routes/webhooks.py`, `routes/logs.py`, `models/settings.py`, `websocket.py`
 
 ## Where a setting lives
 
@@ -19,7 +19,8 @@ cutover soak. New clients use only the grouped configuration payload.
 Where an operator checks how DragonCP is set up and changes the few things that
 can be changed from a browser: the SSH session to the remote server and the
 fast transfer route, automatic sync and backup retention, their own password,
-and the realtime timeout; and where they read the backend log. Discord and the
+and the realtime timeout; and where they read the backend log and see who is
+getting live updates. Discord and the
 Sonarr and Radarr auto-scanners are configured under
 [Integrations](../integrations/README.md) instead.
 
@@ -36,16 +37,17 @@ environment file sets was drawn as a greyed-out input.
 **Header:** the title only. No buttons, no description.
 
 **Tabs**, each a stack of section cards. The tab is in the address
-(`/settings?tab=remote|syncing|account|system`; anything else opens Remote
-server), so other pages can link to one. On a phone the first reads **Remote**
-so all four fit.
+(`/settings?tab=remote|syncing|account|system|logs`; anything else opens Remote
+server), so other pages can link to one. On a phone the first reads **Remote**;
+the row scrolls sideways if all five do not fit.
 
 | Tab | Sections |
 | --- | --- |
 | Remote server | Connection, Fast transfers |
 | Syncing | Automatic sync, Library folders, Backup retention |
 | Account | Signed in as, Password, Administrators, Sign-in and access |
-| System | Runtime, Live connections, Disk usage, Backend log, Other settings |
+| System | Runtime, Disk usage, Other settings |
+| Logs | Live-connection tiles, WebSocket sessions, Backend log |
 
 **Rows.** A setting is a row: name and what it does on the left, its control or
 value on the right (under it on a phone, except switches and short values, which
@@ -101,7 +103,7 @@ Transfers open their own connections and are not affected.
 
 **Fast transfers** — the transfer server on the remote server; see
 [fast transfers](../fast-transfers/README.md). Its state as a coloured icon and
-sentence, the warnings (address changed, not configured), the actions (Install
+sentence (stopped between transfers on demand is green "Ready", not a fault), the warnings (address changed, not configured), the actions (Install
 or Reinstall, Start, Stop, New password, Remove — pressed twice), the three
 choices (Use it for transfers, Who may connect, When it runs; each saves on
 change), the facts (installed, running, answering, settings match, address
@@ -187,18 +189,53 @@ scan and what the last one found.
 
 - **Runtime** — **Test mode** (on: amber icon, "transfers are rehearsed and nothing is
   written", and the Backups page caveat; from the runtime status, which reads
-  `TEST_MODE` at start-up) and **Live updates time out after** (`WEBSOCKET_TIMEOUT_MINUTES`,
-  5-60 minutes).
-- **Live connections** — one row per browser holding a realtime connection: its
-  shortened session id, when it connected, when it was last active, and how long it may
-  idle. Polled every 5 seconds from `GET /api/websocket/status`. With none: "No browser
-  is connected live". Until 2026-10-21 this was a raw JSON dump.
+  `TEST_MODE` at start-up).
 - **Disk usage** — the three disk paths and the remote server's disk API address, as a
   compact list.
+- **Other settings** — only when a setting has no other place (see Layout).
+
+## Logs tab
+
+Split out of System on 2026-10-21 (operator: logs as their own section, with
+WebSocket diagnostics that show at a glance how many sessions are alive).
+Everything on it except the backend log reads one query, `GET /api/websocket/status`
+every 5 seconds, which the header's live pill already polls, so the tab adds no
+requests of its own.
+
+- **Tiles**: **Live sessions** (browsers connected now), **On WebSocket** (how
+  many of them; amber when any are on long-polling) and **Reconnects here** (how
+  many times this browser came back on its own since the page loaded). Three, not
+  four: this browser's state and the idle limit each have one place in the card
+  below; on a phone the third tile takes the second row.
+- **WebSocket sessions**, one card (merged on 2026-10-22: it used to be two
+  cards, and both offered Turn on and showed this browser's session and countdown).
+  - **This browser, always the first row.** Live: its connection id, a **This
+    browser** chip, its transport, who, how long connected, when last used, the
+    countdown bar, and **Keep open** / **Turn off**. Not live: why (Live updates
+    are off, Connecting, Paused after going unused, Live connection lost with the
+    error) and **Turn on** or **Reconnect**. Right after connecting, before the
+    server lists it, it shows when it connected and no bar.
+  - **Since this page loaded**, folded under that row to the latest event: the
+    last 12 connection events (connected, moved to WebSocket, dropped and why,
+    could not connect, trying again). Kept in memory only
+    (`stores/socket-diagnostics.ts`), because the server never sees the drops and
+    retries a browser goes through. Hidden until something has happened.
+  - **Every other session**, one row each: the first eight characters of its
+    connection id, its transport *now* (browsers open on long-polling and upgrade a
+    moment later, so the transport saved at connect says polling for nearly all of
+    them; the server asks the transport layer instead), who, how long connected,
+    when last used, and a bar that shrinks as it nears being closed for going
+    unused (green, amber under half, rose near the end). The bar counts to the
+    configured time, when the browser closes its own connection, not the server's
+    backstop five minutes later.
+  - **Close unused sessions after** (`WEBSOCKET_TIMEOUT_MINUTES`, 5-60 minutes).
+  - The server's side: WebSocket support installed or missing (with what to
+    install), idle check running (rose "Stopped, nothing gets closed" if its thread
+    has died), heartbeat interval and timeout, and whether socket logging is
+    detailed (which is why the log can be full of heartbeat lines).
 - **Backend log** — level (Errors, Warnings and errors, Info only, Debug only,
   Everything; as `routes/logs.py` filters them), search, Keep refreshing, Refresh and
   Download. Error lines are rose, warnings amber, the rest quiet.
-- **Other settings** — only when a setting has no other place (see Layout).
 
 ## Saving
 

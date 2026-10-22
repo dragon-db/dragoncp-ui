@@ -1,5 +1,6 @@
 import { io, Socket } from "socket.io-client";
 import { useAuthStore } from "@/stores/auth";
+import { useSocketDiagnostics } from "@/stores/socket-diagnostics";
 
 let socket: Socket | null = null;
 
@@ -85,6 +86,15 @@ function getSocketUrl(): string {
   );
 }
 
+/** A transport name as people read it. */
+function transportLabel(name: string | undefined): string {
+  if (name === "websocket") return "WebSocket";
+  if (name === "polling") return "long-polling";
+  return name ?? "an unknown transport";
+}
+
+const diagnostics = () => useSocketDiagnostics.getState();
+
 function bindTransportListeners(target: Socket): void {
   const engine = target.io.engine as
     (typeof target.io.engine & { __dragoncpTransportBound?: boolean }) | undefined;
@@ -97,11 +107,35 @@ function bindTransportListeners(target: Socket): void {
 
   engine.on("upgrade", (transport) => {
     console.log(`🔌 Socket transport upgraded to ${transport?.name ?? "unknown"}`);
+    diagnostics().record("upgraded", `Moved to ${transportLabel(transport?.name)}`, {
+      transport: transport?.name ?? null,
+    });
   });
 
   engine.on("upgradeError", (error) => {
     console.warn("🔌 Socket transport upgrade failed, continuing with fallback transport:", error);
+    diagnostics().record("error", "Could not move to WebSocket, staying on long-polling");
   });
+}
+
+/** Socket.IO's disconnect reasons, said plainly. */
+function dropReason(reason: string): string {
+  switch (reason) {
+    case "io client disconnect":
+      return "Closed from this browser";
+    case "io server disconnect":
+      return "Closed by the server";
+    case "ping timeout":
+      return "Dropped: the server stopped answering heartbeats";
+    case "transport close":
+      return "Dropped: the connection closed";
+    case "transport error":
+      return "Dropped: the connection failed";
+    case "parse error":
+      return "Dropped: the server sent something unreadable";
+    default:
+      return `Dropped: ${reason}`;
+  }
 }
 
 function ensureSocket(): Socket {
@@ -118,6 +152,11 @@ function ensureSocket(): Socket {
     bindTransportListeners(socket as Socket);
     const transport = socket?.io.engine?.transport?.name ?? "unknown";
     console.log(`🔌 Socket connected via ${transport}`);
+    diagnostics().record("connected", `Connected over ${transportLabel(transport)}`, {
+      transport,
+      socketId: socket?.id ?? null,
+      connectedAt: Date.now(),
+    });
     // Rooms live on the server connection, so a reconnect starts with none.
     // Replaying what the UI still wants keeps an open log panel live across a
     // drop without the page having to know a drop happened.
@@ -128,6 +167,11 @@ function ensureSocket(): Socket {
 
   socket.on("disconnect", (reason) => {
     console.log("🔌 Socket disconnected:", reason);
+    diagnostics().record("dropped", dropReason(reason), {
+      transport: null,
+      socketId: null,
+      connectedAt: null,
+    });
     if (reason === "io server disconnect") {
       socket?.connect();
     }
@@ -135,14 +179,17 @@ function ensureSocket(): Socket {
 
   socket.on("connect_error", (error) => {
     console.error("🔌 Socket connection error:", error.message);
+    diagnostics().record("error", `Could not connect: ${error.message}`);
   });
 
   socket.io.on("reconnect_attempt", (attempt) => {
     console.log(`🔌 Socket reconnect attempt ${attempt}`);
+    diagnostics().record("retrying", `Trying again, attempt ${attempt}`);
   });
 
   socket.io.on("reconnect", (attempt) => {
     console.log(`🔌 Socket reconnected after ${attempt} attempt(s)`);
+    diagnostics().countReconnect();
   });
 
   socket.io.on("reconnect_failed", () => {

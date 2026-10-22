@@ -358,6 +358,40 @@ class ResolverTests(unittest.TestCase):
         self.assertFalse(flat['BACKUP_RETENTION_KEEP']['is_default'])
 
 
+class QuietEnvFallbackTests(unittest.TestCase):
+    """
+    A database setting with nothing saved looks in the env file for a default.
+    An empty env file is the normal case there, and `config.get` logs a
+    "not found" warning for it: once per read, so one every five seconds per
+    open page through the live-connection status.
+    """
+
+    class LoudConfig:
+        def __init__(self, values=None):
+            self.env_config = dict(values or {})
+            self.asked = []
+
+        def get(self, key, default=''):
+            self.asked.append(key)
+            return self.env_config.get(key, default)
+
+    def build(self, values=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = DatabaseManager(os.path.join(tmp.name, 'quiet_test.db'))
+        config = self.LoudConfig(values)
+        return config, SettingsService(config, AppSettings(db))
+
+    def test_an_unsaved_database_setting_does_not_ask_the_loud_reader(self):
+        config, service = self.build()
+        self.assertEqual(service.get('WEBSOCKET_TIMEOUT_MINUTES'), '30')
+        self.assertNotIn('WEBSOCKET_TIMEOUT_MINUTES', config.asked)
+
+    def test_an_env_file_value_is_still_honoured_as_the_default(self):
+        _, service = self.build({'WEBSOCKET_TIMEOUT_MINUTES': '45'})
+        self.assertEqual(service.get('WEBSOCKET_TIMEOUT_MINUTES'), '45')
+
+
 class WebsocketTimeoutTests(unittest.TestCase):
     """
     The idle timeout moved from a per-browser session to the database. The

@@ -1,7 +1,7 @@
-import { IconBroadcast, IconFlask, IconWifi, IconWifiOff } from "@tabler/icons-react";
+import { IconFlask } from "@tabler/icons-react";
 import { Switch } from "@/components/ui/switch";
 import { SectionCard } from "@/components/layout/section-card";
-import { useTestMode, useWebSocketStatus } from "@/hooks/useConfig";
+import { useTestMode } from "@/hooks/useConfig";
 import type { SettingDescriptor } from "@/lib/api-types";
 import {
   EnvNote,
@@ -14,18 +14,9 @@ import {
   ToneIcon,
 } from "./settings-bits";
 import { PLACED_KEYS, useSaveSetting, useSettingMap } from "./settings-model";
-import { BackendLogPanel } from "./backend-log-panel";
-
-function minutes(value: number) {
-  if (value <= 0) return "just now";
-  return value === 1 ? "1 min ago" : `${value} min ago`;
-}
 
 function RuntimeSection() {
   const testMode = useTestMode();
-  const { map } = useSettingMap();
-  const { save, saving } = useSaveSetting();
-  const timeout = map.get("WEBSOCKET_TIMEOUT_MINUTES");
 
   return (
     <SectionCard label="Runtime" description="How this DragonCP process is running.">
@@ -42,74 +33,11 @@ function RuntimeSection() {
         >
           <EnvValue value={testMode ? "On" : "Off"} mono={false} />
         </SettingRow>
-        <SettingRow
-          label="Live updates time out after"
-          htmlFor="realtime-timeout"
-          icon={<ToneIcon icon={IconBroadcast} tone="muted" />}
-          description="How long a browser's live connection stays open with nothing happening. Pages go back to polling when it closes. Applies from the next live connection."
-        >
-          <NumberSetting
-            id="realtime-timeout"
-            value={timeout?.value as number | undefined}
-            unit="minutes"
-            min={timeout?.minimum}
-            max={timeout?.maximum}
-            disabled={!timeout || saving}
-            onSave={(next) =>
-              save("WEBSOCKET_TIMEOUT_MINUTES", next, `Live updates time out after ${next} minutes`)
-            }
-          />
-        </SettingRow>
       </SettingList>
       <EnvNote>
         Test mode comes from <span className="font-mono">TEST_MODE</span> in the environment when
         DragonCP starts.
       </EnvNote>
-    </SectionCard>
-  );
-}
-
-/** Browsers holding a live connection right now, as rows rather than a dump. */
-function ConnectionsSection() {
-  const query = useWebSocketStatus();
-  const status = query.data?.websocket_status;
-  const rows = status?.connection_details ?? [];
-
-  return (
-    <SectionCard
-      label="Live connections"
-      description={
-        status && status.active_connections > 0
-          ? `${status.active_connections} ${status.active_connections === 1 ? "browser" : "browsers"} receiving live updates.`
-          : "Browsers receiving live updates."
-      }
-    >
-      {query.isError ? (
-        <p className="px-4 py-4 text-[13px] text-rose-300">
-          Could not read the live connections. Reload once the backend answers.
-        </p>
-      ) : query.isLoading ? (
-        <p className="px-4 py-4 text-[13px] text-muted-foreground">Reading live connections…</p>
-      ) : rows.length === 0 ? (
-        <SettingList>
-          <SettingRow
-            label="No browser is connected live"
-            icon={<ToneIcon icon={IconWifiOff} tone="muted" />}
-            description="Pages still refresh by polling. Turn live updates on from the status pill in the header."
-          />
-        </SettingList>
-      ) : (
-        <SettingList>
-          {rows.map((row) => (
-            <SettingRow
-              key={row.session_id}
-              label={<span className="font-mono text-[12.5px]">{row.session_id}</span>}
-              icon={<ToneIcon icon={IconWifi} tone="ok" />}
-              description={`Connected ${minutes(row.connected_minutes_ago)}, last active ${minutes(row.last_activity_minutes_ago)}. Closes after ${row.timeout_minutes} min idle.`}
-            />
-          ))}
-        </SettingList>
-      )}
     </SectionCard>
   );
 }
@@ -196,9 +124,7 @@ export function SystemTab() {
   return (
     <div className="space-y-4">
       <RuntimeSection />
-      <ConnectionsSection />
       <DisksSection />
-      <BackendLogPanel />
       <OtherSection />
     </div>
   );

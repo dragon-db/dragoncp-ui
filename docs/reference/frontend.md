@@ -100,7 +100,7 @@ frontend/
 │   │   │                   #   pipeline-run, notifications, explore, backups,
 │   │   │                   #   activity, integrations, settings
 │   │   ├── pipeline/       # pipeline-bits, stage-flow, stage-detail, run-stages, sync-row, sync-sheet, alert-card
-│   │   ├── settings/       # the four Settings tabs, their shared rows, fast transfers, backend log
+│   │   ├── settings/       # the five Settings tabs, their shared rows, fast transfers, WebSocket diagnostics, backend log
 │   │   ├── transfers/      # transfer-bits, transfer-detail, transfer-logs,
 │   │   │                   #   simulation-panel, confirm-dialog
 │   │   ├── webhooks/       # webhook-bits, episode-details, auto-sync-panel,
@@ -110,7 +110,7 @@ frontend/
 │   ├── lib/                # api client, api types, formatting, grouping, utils
 │   ├── routes/             # TanStack Router file-based routes
 │   ├── services/           # socket.ts (Socket.IO client)
-│   ├── stores/             # auth.ts, runtime.ts (Zustand)
+│   ├── stores/             # auth.ts, runtime.ts, socket-diagnostics.ts (Zustand)
 │   ├── index.css           # brand tokens, theme variables, toast styling
 │   └── main.tsx            # app entry point
 ├── components.json         # shadcn configuration
@@ -228,12 +228,13 @@ A run or alert action invalidates the `sync`, `alerts`, `transfers` and
 
 ## Stores (Zustand)
 
-Two stores, both in `src/stores/`.
+Three stores, all in `src/stores/`.
 
 | Store | File | Holds |
 |---|---|---|
 | `useAuthStore` | `stores/auth.ts` | `token`, `refreshToken`, `user`, `isAuthenticated`, `expiresAt`; actions `login`, `logout`, `updateToken` |
 | `useRuntimeStore` | `stores/runtime.ts` | backend reachability, SSH state, and the whole realtime/socket session |
+| `useSocketDiagnostics` | `stores/socket-diagnostics.ts` | this browser's live connection as the Logs tab shows it: current transport, connection id, reconnect count, and the last 12 connection events, written by `services/socket.ts` |
 
 `auth.ts` persists through Zustand's `persist` middleware under the localStorage
 key `dragoncp-auth`, and all five fields are persisted. It also exports two

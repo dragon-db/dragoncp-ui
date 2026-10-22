@@ -50,18 +50,31 @@ synced and how.
 
 ### Settings
 
-- **Rebuilt to match the rest of the app**, in four tabs by task: **Remote
+- **Rebuilt to match the rest of the app**, in five tabs by task: **Remote
   server** (connection, Auto-connect, login details, fast transfers),
   **Syncing** (auto-sync per library, library folders as remote → local pairs,
-  backup retention), **Account** and **System** (test mode, live updates,
-  live connections, disks, backend log). Each topic now lives in one place.
+  backup retention), **Account**, **System** (test mode, disks) and **Logs**.
+  Each topic now lives in one place.
+- **New Logs tab with WebSocket diagnostics.** Tiles show at a glance how many
+  browsers are getting live updates, how many are on WebSocket, and how often
+  this browser had to reconnect. One card lists every session with its real
+  transport (it used to say "polling" for everyone), who, how long, and a bar
+  counting down to when it closes. This browser is always the first row, with
+  Turn on / Keep open / Turn off and its own drops and retries since the page
+  loaded. The backend log sits below.
+- **Fast transfers: stopped between transfers is green now.** On demand, an
+  idle server read "Installed but not running" in amber. It now reads **Ready.
+  It starts for each transfer and stops when they finish.** when nothing stands
+  in the way of the next start.
 - Values from the environment file read as locked text instead of greyed-out
   fields; coloured icons show real states (connected, running, on, test mode).
 - **One save model**: switches and choices save as you change them, numbers on
   Enter; an out-of-range number is refused with its range. No more Save
   buttons.
-- Live connections are listed as rows instead of raw JSON. The tab is in the
-  address (`/settings?tab=syncing`). Switch focus rings are easier to see.
+- The tab is in the address (`/settings?tab=logs`). Switch focus rings are
+  easier to see.
+- The log no longer gets a "Configuration key … not found" warning each time a
+  database setting with nothing saved is read.
 
 ### Explore
 
@@ -79,7 +92,7 @@ synced and how.
 - **The remote server is never hammered**: one connection attempt at a time,
   growing waits after a failure (30 s up to 5 min), and a refused login is
   never retried by itself, so the server has no reason to ban this address.
-- **New: Auto-connect** (Settings → Connections, on by default). Off: connect
+- **New: Auto-connect** (Settings → Remote server, on by default). Off: connect
   by hand. The **Auto Connect** button there is now called **Connect**.
 - **A file stuck in an extra folder is never "In sync" any more.** An episode
   at `Season 04/episode.mkv/episode.mkv` — invisible to the media server —

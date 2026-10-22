@@ -780,8 +780,34 @@ class RemoteDaemonService:
             state['reachable_over_ssh'] = False
             state['problem'] = f"Could not inspect the remote host: {error}"
 
+        state['standing_by'] = self._standing_by(state)
         state['summary'] = self._summarise(state)
         return state
+
+    @staticmethod
+    def _standing_by(state: Dict) -> bool:
+        """
+        Stopped only because nothing is transferring, with nothing in the way
+        of the next start.
+
+        This is how a server set to run on demand spends most of the day: each
+        transfer starts it and the last one to finish stops it. Reporting it as
+        "not running" read as a fault when it is the resting state. What the
+        status check could establish over SSH all has to hold: installed, its
+        settings current, its boot setting as asked, a password to offer it,
+        and no sign that our address changed underneath it.
+        """
+        return bool(
+            state.get('installed') is True
+            and not state.get('start_at_boot')
+            and state.get('service_state') == 'inactive'
+            and not state['health']['running']
+            and state.get('up_to_date') is not False
+            and state.get('lifecycle_matches') is not False
+            and not state.get('detected_address_differs')
+            and state.get('password_stored')
+            and not state.get('password_problem')
+        )
 
     @staticmethod
     def _summarise(state: Dict) -> str:
@@ -794,33 +820,42 @@ class RemoteDaemonService:
             return 'Not installed on the remote host yet'
         health = state['health']
         if health['state'] == probe.AUTH_FAILED:
-            return ('Running, but it is not accepting our password — reinstall '
-                    'to push the current one')
+            return ('Running, but it is not accepting our password. Reinstall '
+                    'to push the current one.')
+        # rsync will not distinguish "you may not see this" from "it is not
+        # there", so a refusal is explained from what is known here. The
+        # address comes first because it is by far the likelier cause on an
+        # installation that was working yesterday. A stopped server would meet
+        # the same refusal at its next start, so it is told the same.
+        if state.get('detected_address_differs') and not health['ok']:
+            return ('This connection now comes from a different address than '
+                    'the one it allows. Update the allowed address or switch to '
+                    'password-only access.')
         if health['state'] == probe.BLOCKED:
-            # rsync will not distinguish "you may not see this" from "it is not
-            # there", so the answer is assembled from what is known here. The
-            # address is checked first because it is by far the likelier of the
-            # two on an installation that was working yesterday.
-            if state.get('detected_address_differs'):
-                return ('Running, but this connection now comes from a different '
-                        'address than the one it allows — update the allowed '
-                        'address or switch to password-only access')
             if state['up_to_date'] is False:
-                return ('Running, but with older settings than the ones here — '
-                        'reinstall to apply them')
+                return ('Running, but with older settings than the ones here. '
+                        'Reinstall to apply them.')
             return ('Running, but it will not serve this library. Check the '
                     'allowed address and the configured media directories.')
-        if health['ok'] and state.get('lifecycle_matches') is False:
+        if state.get('lifecycle_matches') is False:
             return (
-                'Answering, but it is set to '
+                'It is set to '
                 + ('stay off at boot when it should stay on'
                    if state['start_at_boot'] else 'start at boot when it should not')
-                + ' — reinstall to apply'
+                + '. Reinstall to apply.'
             )
-        if health['ok'] and state['up_to_date'] is False:
-            return 'Answering, but its settings are older than the ones here — reinstall to apply them'
+        if state['up_to_date'] is False:
+            return 'Its settings are older than the ones here. Reinstall to apply them.'
         if health['ok']:
             return 'Installed and answering'
+        if state.get('standing_by'):
+            if not state.get('enabled_for_transfers'):
+                return 'Installed and stopped. Transfers use SSH while it is off for them.'
+            return 'Ready. It starts for each transfer and stops when they finish.'
         if state['service_state'] == 'active':
             return f"The service is running but not answering: {health['detail']}"
+        if state['service_state'] == 'failed':
+            return 'It stopped with an error the last time it ran. Press Start to try it.'
+        if state['start_at_boot']:
+            return 'Not running, though it is set to run all the time. Press Start.'
         return 'Installed but not running'

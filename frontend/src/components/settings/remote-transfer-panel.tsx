@@ -141,12 +141,19 @@ export function RemoteTransferPanel() {
     }
   };
 
+  // On demand, stopped between transfers is how a healthy server rests: green,
+  // unless it is switched off for transfers, which is a choice and not a fault.
+  const standingBy = Boolean(server?.standing_by);
   const tone: Tone = server
     ? server.health.running
       ? HEALTH_TONE[server.health.state]
-      : server.installed
-        ? "warn"
-        : "muted"
+      : standingBy
+        ? server.enabled_for_transfers
+          ? "ok"
+          : "muted"
+        : server.installed
+          ? "warn"
+          : "muted"
     : "muted";
 
   return (
@@ -188,8 +195,17 @@ export function RemoteTransferPanel() {
               <p className="font-display text-[15px] font-semibold text-foreground">
                 {server.summary}
               </p>
-              {server.health.detail && server.health.state !== "ready" && (
-                <p className="mt-0.5 text-[12.5px] text-muted-foreground">{server.health.detail}</p>
+              {standingBy ? (
+                <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+                  Stopped between transfers, so its port stays closed until one needs it.
+                </p>
+              ) : (
+                server.health.detail &&
+                server.health.state !== "ready" && (
+                  <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+                    {server.health.detail}
+                  </p>
+                )
               )}
             </div>
           </div>
@@ -363,12 +379,16 @@ export function RemoteTransferPanel() {
             />
             <Fact
               label="Running"
-              value={server.service_state ?? "Unknown"}
+              value={
+                standingBy
+                  ? "Not now, starts for each transfer"
+                  : (server.service_state ?? "Unknown")
+              }
               tone={server.service_state === "active" ? "ok" : undefined}
             />
             <Fact
               label="Answering us"
-              value={server.health.ok ? "Yes" : "No"}
+              value={server.health.ok ? "Yes" : standingBy ? "Not while stopped" : "No"}
               tone={server.health.ok ? "ok" : server.health.running ? "warn" : undefined}
             />
             {server.installed && (

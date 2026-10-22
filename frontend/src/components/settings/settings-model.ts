@@ -92,11 +92,12 @@ export const PLACED_KEYS = new Set([
   "CORS_ORIGINS",
   // System
   "TEST_MODE",
-  "WEBSOCKET_TIMEOUT_MINUTES",
   "DISK_PATH_1",
   "DISK_PATH_2",
   "DISK_PATH_3",
   "DISK_API_ENDPOINT",
+  // Logs
+  "WEBSOCKET_TIMEOUT_MINUTES",
 ]);
 
 /** The time now, refreshed every `ms`, so a "try again at" wait can end on screen. */

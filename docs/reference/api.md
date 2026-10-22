@@ -2323,7 +2323,9 @@ Output JSON:
 ```
 
 ### GET `/websocket/status`
-What it does: reports websocket connection count and per-connection timing info.
+What it does: reports the live (WebSocket) connections, one row each, most
+recently used first, and how the Socket.IO server is running. Read every 5
+seconds by the header's live pill and the Settings Logs tab.
 
 Auth: required.
 
@@ -2335,10 +2337,41 @@ Output JSON:
     "active_connections": 1,
     "default_timeout_minutes": 35,
     "max_timeout_minutes": 65,
-    "connection_details": []
+    "configured_timeout_minutes": 30,
+    "cleanup_thread_running": true,
+    "connection_details": [
+      {
+        "session_id": "Y6wfVLG7...",
+        "username": "admin",
+        "connected_seconds": 125,
+        "idle_seconds": 4,
+        "timeout_seconds": 2100,
+        "idle_limit_seconds": 1800,
+        "transport": "websocket",
+        "connected_minutes_ago": 2,
+        "last_activity_minutes_ago": 0,
+        "timeout_minutes": 35
+      }
+    ],
+    "runtime": {
+      "async_mode": "threading",
+      "ping_interval_seconds": 25,
+      "ping_timeout_seconds": 60,
+      "verbose_logging": false,
+      "websocket_transport_ready": true
+    },
+    "timestamp": "2026-10-21T23:29:42"
   }
 }
 ```
+
+- `transport` is what the connection uses now. Browsers open on polling and
+  upgrade, so the server asks the transport layer rather than repeating the
+  transport the connection opened with.
+- `timeout_seconds` is the server's backstop; `idle_limit_seconds` is when the
+  browser closes its own connection (the configured time, five minutes sooner).
+- `configured_timeout_minutes` is what a connection opened from now gets.
+- The `*_minutes*` fields are kept for older readers.
 
 ### GET `/local-files`
 What it does: lists local files in a directory path.

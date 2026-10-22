@@ -99,8 +99,8 @@ def api_debug():
         WEBSOCKET_TIMEOUT_MAX,
         WEBSOCKET_TIMEOUT_DEFAULT,
         get_cleanup_thread_status,
+        describe_connections,
         get_websocket_connection_count,
-        get_websocket_connection_snapshot,
         get_websocket_timeout_for_session,
     )
     if config is None:
@@ -125,16 +125,7 @@ def api_debug():
                 "configured_timeout_minutes": _settings_timeout(),
                 "cleanup_thread_running": get_cleanup_thread_status(),
                 "runtime": socketio_runtime_info,
-                "connection_details": [
-                    {
-                        "session_id": sid[:8] + "...",  # Only show first 8 chars for privacy
-                        "connected_minutes_ago": int((datetime.now() - info['connected_at']).total_seconds() // 60),
-                        "last_activity_minutes_ago": int((datetime.now() - info['last_activity']).total_seconds() // 60),
-                        "timeout_minutes": info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT) // 60,
-                        "transport": info.get('transport', 'unknown'),
-                    }
-                    for sid, info in get_websocket_connection_snapshot().items()
-                ],
+                "connection_details": describe_connections(),
             },
             "configuration": {
                 "REMOTE_IP": config.get("REMOTE_IP"),
@@ -227,33 +218,25 @@ def api_debug_transfers():
 @require_auth
 def api_websocket_status():
     """Get WebSocket connection status and count"""
-    from websocket import WEBSOCKET_TIMEOUT_DEFAULT, get_cleanup_thread_status, get_websocket_connection_count, get_websocket_connection_snapshot
+    from websocket import (
+        WEBSOCKET_TIMEOUT_DEFAULT,
+        WEBSOCKET_TIMEOUT_MAX,
+        describe_connections,
+        get_cleanup_thread_status,
+        get_websocket_connection_count,
+    )
     if config is None:
         return _service_not_initialized_response("Config service")
-    
+
     try:
         current_time = datetime.now()
-        connection_details = []
-        
-        for session_id, connection_info in get_websocket_connection_snapshot().items():
-            connected_minutes_ago = int((current_time - connection_info['connected_at']).total_seconds() // 60)
-            last_activity_minutes_ago = int((current_time - connection_info['last_activity']).total_seconds() // 60)
-            timeout_minutes = connection_info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT) // 60
-            
-            connection_details.append({
-                "session_id": session_id[:8] + "...",  # Only show first 8 chars for privacy
-                "connected_minutes_ago": connected_minutes_ago,
-                "last_activity_minutes_ago": last_activity_minutes_ago,
-                "timeout_minutes": timeout_minutes,
-                "transport": connection_info.get('transport', 'unknown'),
-            })
-        
-        from websocket import WEBSOCKET_TIMEOUT_MAX
         status_info = {
             "active_connections": get_websocket_connection_count(),
             "default_timeout_minutes": WEBSOCKET_TIMEOUT_DEFAULT // 60,
             "max_timeout_minutes": WEBSOCKET_TIMEOUT_MAX // 60,
-            "connection_details": connection_details,
+            # What a connection opened from now gets; open ones keep their own.
+            "configured_timeout_minutes": _settings_timeout(),
+            "connection_details": describe_connections(current_time),
             "runtime": socketio_runtime_info,
             "cleanup_thread_running": get_cleanup_thread_status(),
             "timestamp": current_time.isoformat()

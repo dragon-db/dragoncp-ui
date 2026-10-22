@@ -775,5 +775,66 @@ class ThirdPassFindingsTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn('start-at-boot', message)
 
+
+class StandingByTests(unittest.TestCase):
+    """
+    On demand, stopped is the resting state. Each transfer starts the server
+    and the last one to finish stops it, so a healthy installation spends most
+    of the day stopped and must not read as broken.
+    """
+
+    @staticmethod
+    def state(**overrides):
+        state = {
+            'configured': True, 'configuration_problem': '', 'reachable_over_ssh': True,
+            'problem': None, 'installed': True, 'start_at_boot': False,
+            'enabled_for_transfers': True, 'service_state': 'inactive',
+            'service_enabled': 'disabled', 'lifecycle_matches': True, 'up_to_date': True,
+            'detected_address_differs': None, 'password_stored': True,
+            'password_problem': None,
+            'health': probe.ProbeResult(
+                probe.UNREACHABLE, 'Nothing is listening on that port').to_dict(),
+        }
+        state.update(overrides)
+        state['standing_by'] = RemoteDaemonService._standing_by(state)
+        return state
+
+    def test_a_stopped_on_demand_server_is_ready(self):
+        state = self.state()
+        self.assertTrue(state['standing_by'])
+        self.assertIn('starts for each transfer', RemoteDaemonService._summarise(state))
+
+    def test_a_server_meant_to_run_always_is_not_standing_by(self):
+        state = self.state(start_at_boot=True, service_enabled='enabled')
+        self.assertFalse(state['standing_by'])
+        self.assertIn('run all the time', RemoteDaemonService._summarise(state))
+
+    def test_anything_that_would_stop_the_next_start_is_not_ready(self):
+        cases = {
+            'older settings': {'up_to_date': False},
+            'boot setting drifted': {'lifecycle_matches': False},
+            'address changed': {'detected_address_differs': True},
+            'no password': {'password_stored': False},
+            'unreadable password': {'password_problem': 'permission denied'},
+            'crashed last time': {'service_state': 'failed'},
+        }
+        for name, overrides in cases.items():
+            with self.subTest(name):
+                state = self.state(**overrides)
+                self.assertFalse(state['standing_by'])
+                self.assertNotIn('starts for each transfer',
+                                 RemoteDaemonService._summarise(state))
+
+    def test_switched_off_for_transfers_says_so(self):
+        state = self.state(enabled_for_transfers=False)
+        self.assertTrue(state['standing_by'])
+        self.assertIn('use SSH', RemoteDaemonService._summarise(state))
+
+    def test_a_running_server_is_not_standing_by(self):
+        state = self.state(service_state='active',
+                           health=probe.ProbeResult(probe.READY, 'Ready').to_dict())
+        self.assertFalse(state['standing_by'])
+        self.assertEqual(RemoteDaemonService._summarise(state), 'Installed and answering')
+
 if __name__ == '__main__':
     unittest.main()
