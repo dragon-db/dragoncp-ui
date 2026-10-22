@@ -44,6 +44,7 @@ from services.connectors.base import (
     ConfigField,
     Connector,
     DeliveryResult,
+    Mention,
     NotifyingConnector,
     Target,
 )
@@ -331,8 +332,9 @@ class DiscordRenderingTests(unittest.TestCase):
 
     def test_the_author_icon_comes_from_the_connector_settings(self):
         embed = self.embed(Event(key='transfer.completed', severity=SUCCESS,
-                                 title='Example Show', author='Manual Sync'))
-        self.assertEqual(embed['author']['name'], 'Manual Sync')
+                                 title='Example Show', author='Manual sync - Explore'))
+        # Upper case however a sender wrote it: one style on every message.
+        self.assertEqual(embed['author']['name'], 'MANUAL SYNC - EXPLORE')
         self.assertEqual(embed['author']['icon_url'], 'https://example.invalid/icon.png')
 
     def test_a_bad_app_url_costs_the_link_and_nothing_else(self):
@@ -571,6 +573,115 @@ class RoutingTests(unittest.TestCase):
                                      configured=False)
         self.assertFalse(resolution.deliver)
         self.assertEqual(resolution.reason, routing.SKIP_NOT_CONFIGURED)
+
+
+# ===========================================================================
+# Pings (issue #35)
+# ===========================================================================
+
+ROLE_ID = '112233445566778899'
+USER_ID = '998877665544332211'
+
+
+class DiscordMentionTests(unittest.TestCase):
+    """A ping is written in the message text, and nothing else can ping."""
+
+    def setUp(self):
+        self.adapter = DiscordConnector()
+        self.event = Event(key='transfer.failed', severity=FAILURE,
+                           title='@everyone Example Show')
+
+    def test_a_role_ping_goes_in_the_message_text(self):
+        admins = Mention('men_1', 'Admins', 'role', ROLE_ID)
+        payload = self.adapter.render(self.event, [admins])
+        self.assertEqual(payload['content'], f"<@&{ROLE_ID}>")
+        self.assertEqual(payload['allowed_mentions'], {'parse': [], 'roles': [ROLE_ID]})
+
+    def test_a_message_with_no_ping_still_forbids_every_ping(self):
+        """A title containing "@everyone" must never ping the whole server."""
+        payload = self.adapter.render(self.event)
+        self.assertNotIn('content', payload)
+        self.assertEqual(payload['allowed_mentions'], {'parse': []})
+
+    def test_users_and_here_are_allowed_exactly(self):
+        payload = self.adapter.render(self.event, [
+            Mention('men_1', 'Me', 'user', USER_ID),
+            Mention('men_2', 'Online', 'here'),
+        ])
+        self.assertEqual(payload['content'], f"<@{USER_ID}> @here")
+        self.assertEqual(payload['allowed_mentions'],
+                         {'parse': ['everyone'], 'users': [USER_ID]})
+
+    def test_a_role_needs_a_discord_id(self):
+        self.assertIsNone(self.adapter.validate_mention('role', ROLE_ID))
+        self.assertIn('ID', self.adapter.validate_mention('role', 'Admins'))
+        self.assertIn('ID', self.adapter.validate_mention('user', ''))
+        self.assertIsNone(self.adapter.validate_mention('here', ''))
+        self.assertIsNotNone(self.adapter.validate_mention('channel', ROLE_ID))
+
+
+class PingRoutingTests(unittest.TestCase):
+    """When a message pings, and whom."""
+
+    def setUp(self):
+        self.store, _ = store_with_db(self)
+        self.store.upsert_connector('discord', 'Discord', enabled=True)
+        self.admins = self.store.create_mention('discord', 'Admins', 'role', ROLE_ID)
+        self.me = self.store.create_mention('discord', 'Me', 'user', USER_ID)
+        self.target = self.store.create_target('discord', 'general', SECRET_URL)
+        self.store.update_target(self.target, mention_ids=[self.admins])
+
+    def pinged(self, key, severity):
+        row = self.store.get_target(self.target)
+        return [m.label for m in routing.mentions_for(self.store, 'discord', key,
+                                                     severity, row)]
+
+    def test_a_failure_pings_the_webhooks_people(self):
+        self.assertEqual(self.pinged('transfer.failed', FAILURE), ['Admins'])
+
+    def test_a_finished_sync_pings_nobody_by_default(self):
+        self.assertEqual(self.pinged('transfer.completed', SUCCESS), [])
+
+    def test_a_report_under_the_needs_a_person_rule_pings_only_on_a_warning(self):
+        """The auto-scanner starting syncs is news; it failing to close a gap
+        needs someone."""
+        self.assertEqual(self.pinged('scanner.found', 'info'), [])
+        self.assertEqual(self.pinged('scanner.found', WARNING), ['Admins'])
+
+    def test_a_route_can_ping_someone_else(self):
+        self.store.set_route('transfer.failed', 'discord', None, mention_ids=[self.me])
+        self.assertEqual(self.pinged('transfer.failed', FAILURE), ['Me'])
+
+    def test_a_route_can_ping_nobody(self):
+        self.store.set_route('transfer.failed', 'discord', None, mention_ids=[])
+        self.assertEqual(self.pinged('transfer.failed', FAILURE), [])
+
+    def test_a_route_can_ping_on_every_message(self):
+        self.store.set_route('transfer.completed', 'discord', None, ping_when='always')
+        self.assertEqual(self.pinged('transfer.completed', SUCCESS), ['Admins'])
+
+    def test_a_route_can_turn_pings_off(self):
+        self.store.set_route('transfer.failed', 'discord', None, ping_when='never')
+        self.assertEqual(self.pinged('transfer.failed', FAILURE), [])
+
+    def test_removing_someone_takes_them_out_of_every_list(self):
+        self.store.set_route('transfer.failed', 'discord', None,
+                             mention_ids=[self.admins, self.me])
+        self.store.delete_mention(self.admins)
+        self.assertEqual(self.store.get_target(self.target)['mention_ids'], [])
+        self.assertEqual(self.store.get_route('transfer.failed', 'discord')['mention_ids'],
+                         [self.me])
+        self.assertEqual(self.pinged('transfer.failed', FAILURE), ['Me'])
+
+    def test_a_delivered_message_pings_and_the_log_says_who(self):
+        service = ConnectorService(self.store, synchronous=True)
+        with patch('services.connectors.transport.requests.request',
+                   return_value=FakeResponse(204)) as request:
+            service.notify(Event(key='transfer.failed', severity=FAILURE,
+                                 title='Example Show'))
+        sent = request.call_args.kwargs['json']
+        self.assertEqual(sent['content'], f"<@&{ROLE_ID}>")
+        self.assertEqual(self.store.list_deliveries('discord')[0]['mentions'], 'Admins')
 
 
 # ===========================================================================
@@ -887,10 +998,83 @@ class CallSiteTests(unittest.TestCase):
 
         embed = payloads[0]['embeds'][0]
         self.assertEqual(embed['color'], 15158332)
-        self.assertEqual(embed['author']['name'], 'Manual Sync - FAILED ❌')
+        self.assertEqual(embed['author']['name'], 'MANUAL SYNC FAILED')
         names = [f['name'] for f in embed['fields']]
-        self.assertIn('Folder Path', names)
+        self.assertIn('Folder', names)
         self.assertIn('Error Details', names)
+
+    def finished(self, logs, transport='daemon', **kwargs):
+        from services.notification_service import NotificationService
+
+        class FakeTransfers:
+            def get(self, transfer_id):
+                return {'parsed_title': 'Example Show', 'season_name': 'Season 03',
+                        'dest_path': '/library/Example Show/Season 03',
+                        'media_type': 'tvshows', 'transport': transport, 'logs': logs}
+
+        class FakeWebhooks:
+            def get_all(self):
+                return []
+
+        service = NotificationService(None, None, FakeTransfers(), FakeWebhooks(),
+                                      FakeWebhooks())
+        payloads = self.run_and_capture(
+            lambda: service.send_discord_notification('t1', 'completed', **kwargs))
+        embed = payloads[0]['embeds'][0]
+        return embed, {f['name']: f['value'] for f in embed['fields']}
+
+    UPGRADE_LOG = [
+        'Season 03/',
+        'deleting Example Show - S03E10 - 059 - Alpha - Bravo, Charlie of the Delta [HDTV-720p].mkv',
+        'Example Show - S03E10 - 059 - Alpha - Bravo, Charlie of the Delta [WEBDL-1080p].mkv',
+        'Example Show - S03E11 - 060 - Episode Eleven [WEBDL-1080p].mkv',
+        'Example Show - S03E11 - 060 - Episode Eleven [WEBDL-1080p].en.srt',
+        'Number of deleted files: 1',
+        'Total transferred file size: 3.70G bytes',
+        'sent 1.20K bytes  received 3.70G bytes  31.20M bytes/sec',
+    ]
+
+    def test_a_finished_sync_names_how_it_started_and_where_from(self):
+        """One scheme for every sync: "MANUAL SYNC - EXPLORE", not "Explore"."""
+        embed, _ = self.finished(self.UPGRADE_LOG, sync_mode='MANUAL', sync_source='EXPLORE')
+        self.assertEqual(embed['author']['name'], 'MANUAL SYNC - EXPLORE')
+        self.assertEqual(embed['title'], 'Example Show — Season 03')
+
+    def test_a_finished_sync_lists_the_episodes_it_copied(self):
+        _, fields = self.finished(self.UPGRADE_LOG, sync_mode='AUTO', sync_source='SONARR')
+        synced = fields['Synced (2)']
+        self.assertIn('`S03E10` Alpha - Bravo, Charlie of the Delta — upgrade to WEBDL-1080p',
+                      synced)
+        self.assertIn('`S03E11` Episode Eleven', synced)
+        self.assertNotIn('srt', synced)
+        # The deleted file was the old half of the upgrade, not a removal.
+        self.assertNotIn('Removed', fields)
+        self.assertEqual(fields['Size'], '3.70 GB')
+        self.assertEqual(fields['Speed'], '31.20 MB/s')
+
+    def test_a_finished_sync_says_which_route_it_took(self):
+        for transport, label in (('daemon', '⚡ FAST'), ('ssh', 'SSH'),
+                                 ('ssh_fallback', 'SSH FALLBACK (fast route failed)')):
+            _, fields = self.finished(self.UPGRADE_LOG, transport=transport)
+            self.assertEqual(fields['Transfer'], label)
+        _, fields = self.finished(self.UPGRADE_LOG, transport=None)
+        self.assertNotIn('Transfer', fields)
+
+    def test_a_long_list_is_cut_short(self):
+        logs = [f"Example Show - S03E{n:02d} - Episode {n} [WEBDL-1080p].mkv"
+                for n in range(1, 15)]
+        _, fields = self.finished(logs)
+        self.assertTrue(fields['Synced (14)'].endswith('… and 4 more'))
+
+    def test_a_sync_with_nothing_to_copy_says_so(self):
+        _, fields = self.finished(['Number of regular files transferred: 0'])
+        self.assertIn('already here', fields['Synced'])
+
+    def test_every_message_carries_the_same_footer(self):
+        from services.connectors.adapters.discord import FOOTER
+        embed, _ = self.finished(self.UPGRADE_LOG)
+        self.assertEqual(embed['footer']['text'], FOOTER)
+        self.assertTrue(FOOTER.startswith('DragonCP v'))
 
     def test_a_cancelled_transfer_announces_nothing(self):
         from services.notification_service import NotificationService
@@ -944,7 +1128,8 @@ class CallSiteTests(unittest.TestCase):
 
         embed = payloads[0]['embeds'][0]
         self.assertEqual(embed['color'], 1752220, 'renames keep their own colour')
-        self.assertEqual(embed['footer']['text'], 'DragonCP Rename Operation')
+        self.assertEqual(embed['author']['name'], 'FILE RENAME - COMPLETED')
+        self.assertTrue(embed['footer']['text'].startswith('DragonCP v'))
 
     def test_notify_without_a_configured_layer_does_nothing_and_does_not_raise(self):
         from services.connectors import service as service_module

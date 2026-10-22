@@ -12,6 +12,7 @@ import {
   IconDownload,
   IconExchange,
   IconEye,
+  IconFolderExclamation,
   IconHistory,
   IconLayoutList,
   IconArrowsDiff,
@@ -19,11 +20,11 @@ import {
   IconList,
   IconMovie,
   IconPlayerPlay,
+  IconLoader2,
   IconPlugConnected,
   IconRefresh,
   IconRestore,
   IconSearch,
-  IconSettings,
   IconTestPipe,
   IconTool,
   IconX,
@@ -36,6 +37,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import {
   useExploreBackups,
+  useExploreCheck,
+  useExploreConnect,
   useExploreDryRun,
   useExploreExecute,
   useExploreHistory,
@@ -48,7 +51,6 @@ import {
   useExploreTree,
   type PlanRequest,
 } from "@/hooks/useExplore";
-import { useSSHStatus } from "@/hooks/useConfig";
 import { LibraryTree } from "@/components/explore/library-tree";
 import {
   EpisodeRows,
@@ -61,8 +63,9 @@ import { RepairDialog } from "@/components/explore/repair-dialog";
 import { RestoreDialog } from "@/components/backups/restore-dialog";
 import { usePlanRestore, useRestoreCapture } from "@/hooks/useBackups";
 import type { RestorePlan } from "@/lib/backup-types";
-import { CountChips, StatusBadge } from "@/components/explore/explore-bits";
+import { CountChips, NestedTag, StatusBadge, UpgradeTag } from "@/components/explore/explore-bits";
 import { formatBytes, formatWhen } from "@/lib/explore-format";
+import { clockText, sinceText } from "@/lib/pipeline";
 import type {
   ExploreBackupRun,
   ExploreCounts,
@@ -70,7 +73,9 @@ import type {
   ExplorePlan,
   ExploreSeason,
   ExploreSeriesSummary,
+  ExploreSession,
   ExploreStatus,
+  ExploreTree,
   RepairDecision,
 } from "@/lib/explore-types";
 
@@ -80,13 +85,30 @@ const LIBRARIES = [
   { id: "anime", label: "Anime", Icon: IconLayoutList },
 ] as const;
 
-const STATUS_FILTERS: Array<{ id: "all" | ExploreStatus; label: string }> = [
+// "Upgrade" and "Nested" are not statuses: each picks every title with at
+// least one such file, whatever else is going on with it. "Nested" covers
+// "Needs repair" too — that status only means a nested file and nothing else.
+type StatusFilter = "all" | "UPGRADE" | "NESTED" | ExploreStatus;
+
+const STATUS_FILTERS: Array<{ id: StatusFilter; label: string }> = [
   { id: "all", label: "All" },
   { id: "OUT_OF_SYNC", label: "Out of sync" },
   { id: "PARTIAL_SYNC", label: "Partial" },
+  { id: "UPGRADE", label: "Upgrade" },
+  { id: "NESTED", label: "Nested" },
   { id: "SYNCED", label: "Synced" },
   { id: "NO_INFO", label: "Not on remote" },
 ];
+
+function matchesFilter(
+  entry: { status: ExploreStatus; counts: { upgraded: number }; misplaced_count: number },
+  filter: StatusFilter
+) {
+  if (filter === "all") return true;
+  if (filter === "UPGRADE") return entry.counts.upgraded > 0;
+  if (filter === "NESTED") return entry.misplaced_count > 0;
+  return entry.status === filter;
+}
 
 type Pane = "tree" | "table";
 
@@ -132,7 +154,7 @@ export function ExplorePage({
   const isMovies = mediaType === "movies";
 
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | ExploreStatus>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sort, setSort] = useState<"recent" | "name">("recent");
   const [view, setView] = useState<ViewMode>("list");
   const [expanded, setExpanded] = useState<Set<string>>(
@@ -183,12 +205,59 @@ export function ExplorePage({
   // The actions panel is pinned open on a wide screen; below that it is a
   // sheet, so anything that wants to show actions has to open it first.
   const inspectorPinned = useMediaQuery("(min-width: 1280px)");
-  const sshStatus = useSSHStatus();
-  const connected = Boolean(sshStatus.data);
-
   const libraries = useExploreLibraries();
-  const tree = useExploreTree(mediaType, connected);
+  const tree = useExploreTree(mediaType);
+  const { mutateAsync: checkNow, isPending: checking } = useExploreCheck(mediaType);
   const refresh = useExploreRefresh(mediaType);
+  const connect = useExploreConnect();
+  /** Why the remote could not be read last time, and how the session stands. */
+  const [offline, setOffline] = useState<Offline | null>(null);
+
+  const settle = useCallback((data: ExploreTree) => {
+    setOffline(data.remote_error ? { message: data.remote_error, session: data.session } : null);
+  }, []);
+  const fail = useCallback((error: unknown, fallback: string) => {
+    setOffline({ message: messageFrom(error, fallback), session: sessionFrom(error) });
+  }, []);
+
+  /*
+   * Opening the page brings it up to date (operator, 2026-10-20): the saved
+   * result paints first, then the server checks the remote — connecting if
+   * Auto-connect allows — unless a walk from the last two minutes still
+   * answers. Once per opening, never on focus or a timer.
+   */
+  useEffect(() => {
+    checkNow()
+      .then(settle)
+      .catch((error) => fail(error, "Could not check the remote library."));
+  }, [checkNow, settle, fail]);
+
+  const recheck = () =>
+    refresh
+      .mutateAsync()
+      .then((data) => {
+        settle(data);
+        if (data.remote_error) toast.error(data.remote_error);
+        else toast.success("Library re-checked");
+      })
+      .catch((error) => {
+        fail(error, "Re-check failed");
+        toast.error(messageFrom(error, "Re-check failed"));
+      });
+
+  const connectNow = () =>
+    connect
+      .mutateAsync()
+      .then(() => {
+        toast.success("Connected to the remote server");
+        checkNow()
+          .then(settle)
+          .catch((error) => fail(error, "Could not check the remote library."));
+      })
+      .catch((error) => {
+        toast.error(messageFrom(error, "Could not connect to the remote server"));
+        fail(error, "Could not connect to the remote server");
+      });
   const seasonQuery = useExploreSeason(mediaType, selectedSeries, selectedSeason);
   const historyQuery = useExploreHistory(
     mediaType,
@@ -232,7 +301,7 @@ export function ExplorePage({
     const needle = query.trim().toLowerCase();
     let list = series;
     if (needle) list = list.filter((s) => s.name.toLowerCase().includes(needle));
-    if (statusFilter !== "all") list = list.filter((s) => s.status === statusFilter);
+    if (statusFilter !== "all") list = list.filter((s) => matchesFilter(s, statusFilter));
     return [...list].sort((a, b) =>
       sort === "name" ? a.name.localeCompare(b.name) : b.remote_mtime - a.remote_mtime
     );
@@ -241,7 +310,7 @@ export function ExplorePage({
   const counts = useMemo(() => {
     const base: Record<string, number> = { all: series.length };
     for (const filter of STATUS_FILTERS.slice(1)) {
-      base[filter.id] = series.filter((s) => s.status === filter.id).length;
+      base[filter.id] = series.filter((s) => matchesFilter(s, filter.id)).length;
     }
     return base;
   }, [series]);
@@ -643,8 +712,6 @@ export function ExplorePage({
     return parts.join("/");
   }, [library, selectedSeries, activeSeason, selectedSeason, pane, episodes, cursor]);
 
-  if (!connected && !sshStatus.isLoading) return <NoSession />;
-
   const treeError = tree.isError ? messageFrom(tree.error, "Could not read the library.") : null;
   const tally = selectedSeason
     ? `${episodes.length} items · ${formatBytes(activeSeason?.remote_bytes)}`
@@ -660,8 +727,11 @@ export function ExplorePage({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      {/* ---- toolbar ---- */}
-      <div className="flex flex-none items-center gap-2.5 overflow-x-auto border-b border-border px-4 py-[11px] [scrollbar-width:none] lg:overflow-hidden [&::-webkit-scrollbar]:hidden">
+      {/* ---- toolbar ----
+          Scrolls sideways on a phone. On a wider screen it wraps instead, so a
+          desktop too narrow for every filter puts Recent and Re-check sync on a
+          second line rather than cutting them off. */}
+      <div className="flex flex-none items-center gap-2.5 overflow-x-auto border-b border-border px-4 py-[11px] [scrollbar-width:none] lg:flex-wrap lg:overflow-visible [&::-webkit-scrollbar]:hidden">
         <div className="inline-flex flex-none gap-0.5 rounded-[10px] border border-border bg-well p-[3px]">
           {LIBRARIES.map(({ id, label, Icon }) => (
             <button
@@ -709,6 +779,11 @@ export function ExplorePage({
         ))}
 
         <div className="ml-auto flex flex-none items-center gap-1">
+          <RemoteStatus
+            checking={checking || refresh.isPending || connect.isPending}
+            offline={offline !== null}
+            checkedAt={tree.data?.checked_at ?? null}
+          />
           <Button
             variant="ghost"
             size="sm"
@@ -726,18 +801,23 @@ export function ExplorePage({
                 ? `Last checked ${formatWhen(tree.data.checked_at)}`
                 : "Never checked"
             }
-            onClick={() =>
-              refresh
-                .mutateAsync()
-                .then(() => toast.success("Library re-checked"))
-                .catch((error) => toast.error(messageFrom(error, "Re-check failed")))
-            }
+            onClick={recheck}
           >
             <IconRefresh className={cn("mr-2 size-4", refresh.isPending && "animate-spin")} />
             Re-check sync
           </Button>
         </div>
       </div>
+
+      {offline && (
+        <OfflineBanner
+          message={offline.message}
+          session={offline.session}
+          checkedAt={tree.data ? (tree.data.checked_at ?? null) : null}
+          connecting={connect.isPending}
+          onConnect={connectNow}
+        />
+      )}
 
       {/* ---- panes: three side by side, one at a time on a narrow screen ---- */}
       <div className="flex min-h-0 flex-1">
@@ -892,16 +972,35 @@ export function ExplorePage({
             </div>
           </div>
 
+          {activeSeries && (
+            <NestedBanner
+              count={
+                selectedSeason
+                  ? (activeSeries.seasons?.find((s) => s.name === selectedSeason)?.misplaced
+                      .length ?? 0)
+                  : activeSeries.misplaced_count
+              }
+              scope={
+                selectedSeason ? (isMovies ? "folder" : "season") : isMovies ? "movie" : "series"
+              }
+              onRepair={() =>
+                setRepairScope({ folder: activeSeries.name, season: selectedSeason ?? null })
+              }
+            />
+          )}
+
           <TableShell
             loading={seasonQuery.isLoading}
             empty={
               !selectedSeries
                 ? `Pick a ${isMovies ? "movie" : "series"} on the left to see what it holds.`
-                : selectedSeason && episodes.length === 0
-                  ? `This ${isMovies ? "movie folder" : "season"} is empty on both sides.`
-                  : !selectedSeason && seasons.length === 0
-                    ? "No seasons found."
-                    : null
+                : selectedSeason && seasonQuery.isError
+                  ? messageFrom(seasonQuery.error, "Could not read this season.")
+                  : selectedSeason && episodes.length === 0
+                    ? `This ${isMovies ? "movie folder" : "season"} is empty on both sides.`
+                    : !selectedSeason && seasons.length === 0
+                      ? "No seasons found."
+                      : null
             }
           >
             {selectedSeason ? (
@@ -1284,7 +1383,14 @@ function Inspector({
               {picked.length && season ? ` · ${season.name}` : ""}
             </span>
           ) : (
-            <StatusBadge status={scope.status} />
+            <span className="flex flex-wrap items-center gap-1.5">
+              <StatusBadge status={scope.status} />
+              <NestedTag
+                count={season ? season.misplaced.length : series.misplaced_count}
+                status={scope.status}
+              />
+              <UpgradeTag count={scope.counts.upgraded} />
+            </span>
           )}
         </div>
       </div>
@@ -1699,12 +1805,52 @@ function Facts({ items }: { items: Array<[string, string, string?]> }) {
   );
 }
 
+/**
+ * Above the season or episode list, not only in the actions panel: that
+ * panel is off screen below `xl`, and a stranded file is the first thing to
+ * know about a title, before reading its rows.
+ */
+function NestedBanner({
+  count,
+  scope,
+  onRepair,
+}: {
+  count: number;
+  scope: string;
+  onRepair: () => void;
+}) {
+  if (count <= 0) return null;
+  const one = count === 1;
+  return (
+    <div
+      role="status"
+      aria-label="Files in a nested folder"
+      className="flex flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-amber-500/30 bg-amber-500/8 px-4 py-2 text-[12.5px] text-amber-50/90"
+    >
+      <IconFolderExclamation className="size-4 flex-none text-amber-300" />
+      <span className="min-w-0 flex-1">
+        {count} file{one ? "" : "s"} in this {scope} {one ? "is" : "are"} inside a nested folder,
+        where your media server cannot see {one ? "it" : "them"}.
+      </span>
+      <Button
+        variant="outline"
+        size="sm"
+        className="flex-none border-amber-500/40 text-amber-100 hover:bg-amber-500/12"
+        onClick={onRepair}
+      >
+        <IconTool className="mr-1.5 size-3.5" />
+        Repair
+      </Button>
+    </div>
+  );
+}
+
 function MisplacedWarning({ count, onRepair }: { count: number; onRepair: () => void }) {
   return (
     <div className="rounded-md border border-amber-500/40 bg-amber-500/8 p-2.5">
       <p className="flex items-center gap-2 text-[12px] font-medium text-amber-100">
         <IconAlertTriangle className="size-3.5 flex-none" />
-        {count} file{count === 1 ? " is" : "s are"} in the wrong place
+        {count} file{count === 1 ? " is" : "s are"} inside a nested folder
       </p>
       <p className="mt-1 text-[11px] text-amber-50/75">
         Nested one level too deep, inside a folder named after the file, so your media server cannot
@@ -1823,25 +1969,114 @@ function Action({
   );
 }
 
-function NoSession() {
+interface Offline {
+  message: string;
+  session?: ExploreSession;
+}
+
+function sessionFrom(error: unknown): ExploreSession | undefined {
+  const response = (error as { response?: { data?: { session?: ExploreSession } } })?.response;
+  return response?.data?.session;
+}
+
+/** Re-renders every `ms`, so "checked 3 min ago" and a Connect wait keep up. */
+function useNow(ms: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), ms);
+    return () => window.clearInterval(timer);
+  }, [ms]);
+  return now;
+}
+
+/** Beside Re-check: whether the list is current, being checked, or the remote is out of reach. */
+function RemoteStatus({
+  checking,
+  offline,
+  checkedAt,
+}: {
+  checking: boolean;
+  offline: boolean;
+  checkedAt: string | null;
+}) {
+  const now = useNow(30_000);
+  if (checking) {
+    return (
+      <span className="inline-flex flex-none items-center gap-1.5 px-1 text-[11.5px] text-muted-foreground">
+        <IconLoader2 className="size-3.5 animate-spin" />
+        Checking remote…
+      </span>
+    );
+  }
+  if (offline) {
+    return (
+      <span className="inline-flex flex-none items-center gap-1.5 px-1 text-[11.5px] font-medium text-amber-300">
+        <span className="size-1.5 rounded-full bg-amber-400" />
+        Offline
+      </span>
+    );
+  }
+  if (!checkedAt) return null;
   return (
-    <div className="flex flex-1 items-center justify-center p-8">
-      <div className="max-w-md rounded-xl border border-amber-500/30 bg-amber-500/8 p-5">
-        <p className="flex items-center gap-2 text-sm font-medium text-amber-100">
-          <IconPlugConnected className="size-4" />
-          Remote browse session required
-        </p>
-        <p className="mt-2 text-sm text-amber-50/80">
-          Explore compares your local library against the remote one, so it needs the SSH browse
-          connection. Connect it in Settings and come back.
-        </p>
-        <Link to="/settings" className="mt-4 inline-block">
-          <Button variant="outline" size="sm">
-            <IconSettings className="mr-2 size-4" />
-            Open Settings
-          </Button>
-        </Link>
-      </div>
+    <span
+      className="flex-none px-1 text-[11.5px] text-muted-foreground"
+      title={`Last read the remote ${formatWhen(checkedAt)}`}
+    >
+      Checked {sinceText(checkedAt, now)}
+    </span>
+  );
+}
+
+/**
+ * The remote could not be read. The saved result stays on screen, says how old
+ * it is, and Connect is here rather than in Settings. The button waits as long
+ * as the server says to — attempts are spaced so the remote server never bans
+ * this address.
+ */
+function OfflineBanner({
+  message,
+  session,
+  checkedAt,
+  connecting,
+  onConnect,
+}: {
+  message: string;
+  session?: ExploreSession;
+  checkedAt: string | null;
+  connecting: boolean;
+  onConnect: () => void;
+}) {
+  const now = useNow(5_000);
+  const waitUntil = session?.manual_retry_at ?? null;
+  const waiting = waitUntil !== null && new Date(waitUntil).getTime() > now;
+  const showConnect = session ? !session.connected : true;
+  return (
+    <div
+      role="status"
+      aria-label="Remote server connection"
+      className="flex flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-amber-500/30 bg-amber-500/8 px-4 py-2 text-[12.5px] text-amber-50/90"
+    >
+      <IconPlugConnected className="size-4 flex-none text-amber-300" />
+      <span className="min-w-0 flex-1">
+        {message}
+        {checkedAt && <> Showing the result from {formatWhen(checkedAt)}.</>}
+      </span>
+      {showConnect && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="flex-none"
+          disabled={connecting || waiting}
+          onClick={onConnect}
+        >
+          {connecting ? (
+            <IconLoader2 className="mr-1.5 size-3.5 animate-spin" />
+          ) : (
+            <IconPlugConnected className="mr-1.5 size-3.5" />
+          )}
+          {waiting ? `Connect at ${clockText(waitUntil)}` : connecting ? "Connecting…" : "Connect"}
+        </Button>
+      )}
     </div>
   );
 }

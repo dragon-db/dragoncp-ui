@@ -44,6 +44,12 @@ export interface RemoteTransferStatus {
   detected_address_differs: boolean | null;
   reachable_over_ssh: boolean | null;
   problem: string | null;
+  /**
+   * Stopped only because nothing is transferring, and fit to start for the
+   * next one. On demand, this is the resting state, not a fault. Absent from a
+   * backend older than the field.
+   */
+  standing_by?: boolean;
   summary: string;
   health: {
     state: RemoteTransferHealthState;

@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  IconCircleArrowUp,
+  IconFolderExclamation,
   IconInbox,
   IconInfoCircle,
   IconPlugConnectedX,
@@ -20,11 +22,18 @@ import {
 import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
 import { FilterChips, ListSearch } from "@/components/layout/list-controls";
 import { type LibraryItem, useLibrary, useRefreshLibrary } from "@/hooks/useMediaLibrary";
-import { Notice, TitlePoster, TitleStateChip } from "@/components/integrations/library-bits";
+import {
+  Notice,
+  TitlePoster,
+  TitleStateChip,
+  ToneChip,
+} from "@/components/integrations/library-bits";
 import {
   LIBRARY_FILTERS,
   STATE_RANK,
   formatSize,
+  hasNested,
+  hasUpgrade,
   itemSentence,
   libraryError,
 } from "@/components/integrations/library-vocab";
@@ -45,6 +54,9 @@ import {
  */
 
 type SortKey = "attention" | "recent" | "title";
+
+const UPGRADE_FILTER = "upgrade";
+const NESTED_FILTER = "nested";
 
 const SORTS: Array<{ value: SortKey; label: string }> = [
   { value: "attention", label: "Needs attention first" },
@@ -87,13 +99,35 @@ export function LibraryPanel({
       label: entry.label,
       count: items.filter((item) => entry.states.includes(item.sync_state)).length,
     })).filter((entry) => entry.count > 0 || entry.value === "out_of_sync");
-    return [...present, { value: "all", label: "All", count: items.length }];
+    // A file in a nested folder, whatever else is going on: Explore's Nested
+    // filter, offered only when there is one.
+    const nested = {
+      value: NESTED_FILTER,
+      label: "Nested",
+      count: items.filter(hasNested).length,
+    };
+    // Upgrades are a kind of out of sync, picked out on their own. Always
+    // offered, like Out of sync, so "none waiting" is an answer too.
+    const upgrade = {
+      value: UPGRADE_FILTER,
+      label: "Upgrade",
+      count: items.filter(hasUpgrade).length,
+    };
+    return [
+      present[0],
+      upgrade,
+      ...(nested.count > 0 ? [nested] : []),
+      ...present.slice(1),
+      { value: "all", label: "All", count: items.length },
+    ];
   }, [items]);
 
   const visible = useMemo(() => {
     const wanted = LIBRARY_FILTERS.find((entry) => entry.value === filter)?.states;
     const needle = query.trim().toLowerCase();
     const list = items
+      .filter((item) => (filter === UPGRADE_FILTER ? hasUpgrade(item) : true))
+      .filter((item) => (filter === NESTED_FILTER ? hasNested(item) : true))
       .filter((item) => !wanted || wanted.includes(item.sync_state))
       .filter((item) => !needle || (item.title ?? "").toLowerCase().includes(needle));
     return [...list].sort((a, b) => {
@@ -132,6 +166,10 @@ export function LibraryPanel({
   }
 
   const outOfSync = items.filter((item) => item.sync_state === "out_of_sync").length;
+  const needsRepair = items.filter((item) => item.sync_state === "needs_repair").length;
+  const repairWords = needsRepair
+    ? `${needsRepair} ${needsRepair === 1 ? "title needs" : "titles need"} repair: a file sits in a nested folder.`
+    : "";
 
   return (
     <div className="space-y-3">
@@ -148,8 +186,9 @@ export function LibraryPanel({
           isLoading
             ? `Reading ${displayName} and this disk…`
             : outOfSync
-              ? `${outOfSync} ${outOfSync === 1 ? "title is" : "titles are"} out of sync. Open one to see which episodes.`
-              : `Everything ${displayName} holds is here, as far as its counts and recent imports say.`
+              ? `${outOfSync} ${outOfSync === 1 ? "title is" : "titles are"} out of sync. Open one to see which episodes.${repairWords ? ` ${repairWords}` : ""}`
+              : repairWords ||
+                `Everything ${displayName} holds is here, as far as its counts and recent imports say.`
         }
         actions={refreshButton}
         toolbar={
@@ -249,7 +288,11 @@ function TitleCard({
   onOpen: () => void;
 }) {
   const sentence = itemSentence(item, displayName);
-  const outOfSync = item.sync_state === "out_of_sync";
+  const outOfSync = item.sync_state === "out_of_sync" || item.sync_state === "needs_repair";
+  const upgrade = hasUpgrade(item);
+  // "Needs repair" already says it; the tag is for a title with something
+  // else wrong as well, as in Explore.
+  const nested = hasNested(item) && item.sync_state !== "needs_repair";
   return (
     <li className="min-w-0">
       <button
@@ -277,7 +320,11 @@ function TitleCard({
             <span className="font-normal text-muted-foreground"> ({item.year})</span>
           ) : null}
         </span>
-        <TitleStateChip state={item.sync_state} size="sm" className="self-start" />
+        <span className="flex flex-wrap items-center gap-1">
+          <TitleStateChip state={item.sync_state} size="sm" />
+          {upgrade && <ToneChip tone="info" icon={IconCircleArrowUp} label="Upgrade" size="sm" />}
+          {nested && <ToneChip tone="warn" icon={IconFolderExclamation} label="Nested" size="sm" />}
+        </span>
         <CountsLine item={item} movie={movie} displayName={displayName} />
       </button>
     </li>

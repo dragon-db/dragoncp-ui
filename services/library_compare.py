@@ -14,12 +14,17 @@ says it holds rather than from a remote folder listing:
     different       both have the episode and the sizes differ — an upgrade over
                     there, or a different release
     missing_here    the service has a file and nothing is here: needs syncing
+    nested          here, but only in a folder below the season folder
+                    (`Season 01/ep.mkv/ep.mkv`), where a media server cannot
+                    see it. Not missing — copying it again would not make it
+                    visible — and not in sync: Explore's Repair moves it.
     only_here       here, and the service has no file — normal once the media
                     server has cleaned up after a sync; not a problem
     not_downloaded  neither side has it, aired or not — not a problem either
 
 A title is out of sync exactly when one of its episodes is `missing_here` or
-`different`. Specials (season 0) are compared and shown, never counted: most
+`different`. One with nothing else wrong but a file in a nested folder needs
+repair — Explore's word for the same thing. Specials (season 0) are compared and shown, never counted: most
 libraries leave them out on purpose, and a warning nobody can clear is one
 everybody learns to ignore.
 
@@ -35,16 +40,18 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 IN_SYNC = 'in_sync'
 DIFFERENT = 'different'
 MISSING_HERE = 'missing_here'
+NESTED = 'nested'
 ONLY_HERE = 'only_here'
 NOT_DOWNLOADED = 'not_downloaded'
 
 #: In the order a person wants to read them: what needs doing first.
-EPISODE_STATES = (MISSING_HERE, DIFFERENT, IN_SYNC, ONLY_HERE, NOT_DOWNLOADED)
+EPISODE_STATES = (MISSING_HERE, DIFFERENT, NESTED, IN_SYNC, ONLY_HERE, NOT_DOWNLOADED)
 NEEDS_SYNC = frozenset({MISSING_HERE, DIFFERENT})
 
 # -- one title, in the list's words -------------------------------------------
 
 OUT_OF_SYNC = 'out_of_sync'
+NEEDS_REPAIR = 'needs_repair'
 TITLE_IN_SYNC = 'in_sync'
 KEPT_HERE = 'kept_here'
 NEVER = 'never'
@@ -57,6 +64,7 @@ MOVIE_TITLE_STATE = {
     IN_SYNC: TITLE_IN_SYNC,
     DIFFERENT: OUT_OF_SYNC,
     MISSING_HERE: NEVER,
+    NESTED: NEEDS_REPAIR,
     ONLY_HERE: KEPT_HERE,
     NOT_DOWNLOADED: NO_FILES,
 }
@@ -177,6 +185,7 @@ def _local_view(entry: Optional[Dict[str, Any]], keys: Iterable[Tuple[int, int]]
         'name': entry.get('name') or '',
         'relative_path': entry.get('relative_path') or entry.get('name') or '',
         'size': _int(entry.get('size')),
+        'nested': bool(entry.get('nested')),
         # A double episode is one file holding two; saying so explains why the
         # same size appears on two rows.
         'covers': covers if len(covers) > 1 else [],
@@ -302,14 +311,20 @@ def compare_series(episodes: List[Dict[str, Any]],
                 # size still counts as the service having it.
                 theirs = service_file({})
 
-        candidates: List[Dict[str, Any]] = []
-        if theirs and theirs['name']:
-            candidates = by_name.get(theirs['name'].lower(), [])
-        if not candidates:
-            candidates = by_key.get(key, [])
-        ours = _pick(candidates, theirs)
+        named = by_name.get(theirs['name'].lower(), []) if theirs and theirs['name'] else []
+        keyed = by_key.get(key, [])
+        # A copy where it belongs stands for the episode; one stranded in a
+        # nested folder only when there is no other.
+        placed = ([c for c in named if not c.get('nested')]
+                  or [c for c in keyed if not c.get('nested')])
+        ours = _pick(placed, theirs)
+        if ours is None:
+            ours = _pick([c for c in named if c.get('nested')]
+                         or [c for c in keyed if c.get('nested')], theirs)
 
-        if theirs and ours:
+        if ours is not None and ours.get('nested'):
+            state = NESTED
+        elif theirs and ours:
             state = IN_SYNC if same_file(theirs, ours) else DIFFERENT
         elif theirs:
             state = MISSING_HERE
@@ -391,6 +406,7 @@ def compare_series(episodes: List[Dict[str, Any]],
         # that is not the service's own copy of an episode. Kept-only-here
         # episodes, second copies and files nothing can identify alike.
         removable = sum(1 for entry in in_folder if id(entry) not in served)
+        nested_here = [entry for entry in in_folder if entry.get('nested')]
         names = folders_here.get(number) or []
         seasons.append({
             'season_number': number,
@@ -400,11 +416,15 @@ def compare_series(episodes: List[Dict[str, Any]],
             'folder_here': names[0] if names else None,
             'service_folder': service_folders.get(number),
             'counts': counts,
-            'state': _season_state(counts, bool(in_folder)),
+            'state': _season_state(counts, bool(in_folder), bool(nested_here)),
+            # Every media file of the season in a nested folder, whatever it
+            # stands for — a second copy of an episode included.
+            'nested_here': [entry.get('relative_path') or '' for entry in nested_here],
             'service_file_count': sum(1 for row in season_rows if row['service_file']),
             'files_here': len(in_folder),
-            'episodes_here': len({key for entry in in_folder for key in entry['_keys']})
-            + sum(1 for entry in in_folder if not entry['_keys']),
+            'episodes_here': len({key for entry in in_folder if not entry.get('nested')
+                                  for key in entry['_keys']})
+            + sum(1 for entry in in_folder if not entry['_keys'] and not entry.get('nested')),
             'local_only_files': removable,
             'episodes': season_rows,
             'unidentified_here': unidentified.get(number, []),
@@ -420,13 +440,16 @@ def compare_series(episodes: List[Dict[str, Any]],
         (entry.get('folder_season') or 0) > 0 for entry in local_files)
     service_has_files = any(s['service_file_count'] for s in seasons)
     unidentified_count = sum(len(s['unidentified_here']) for s in counted)
+    nested_files = sum(len(s['nested_here']) for s in counted)
 
     if local is None or not present:
         state = NEVER if service_has_files else NO_FILES
-    elif not service_has_files:
-        state = KEPT_HERE
     elif counts[MISSING_HERE] or counts[DIFFERENT]:
         state = OUT_OF_SYNC
+    elif nested_files:
+        state = NEEDS_REPAIR
+    elif not service_has_files:
+        state = KEPT_HERE
     elif counts[ONLY_HERE] or unidentified_count:
         state = KEPT_HERE
     else:
@@ -436,6 +459,7 @@ def compare_series(episodes: List[Dict[str, Any]],
         'state': state,
         'summary': series_summary(state, counted, counts, service),
         'counts': counts,
+        'nested_files': nested_files,
         'service_has_files': service_has_files,
         'present_locally': present,
         'seasons': seasons,
@@ -444,9 +468,11 @@ def compare_series(episodes: List[Dict[str, Any]],
     }
 
 
-def _season_state(counts: Dict[str, int], anything_here: bool) -> str:
+def _season_state(counts: Dict[str, int], anything_here: bool, nested: bool = False) -> str:
     if counts[MISSING_HERE] or counts[DIFFERENT]:
         return OUT_OF_SYNC
+    if nested:
+        return NEEDS_REPAIR
     if counts[ONLY_HERE]:
         return KEPT_HERE
     if counts[IN_SYNC]:
@@ -471,6 +497,8 @@ def series_summary(state: str, counted: List[Dict[str, Any]], counts: Dict[str, 
     rows = [row for season in counted for row in season['episodes']]
     missing = [row for row in rows if row['state'] == MISSING_HERE]
     different = [row for row in rows if row['state'] == DIFFERENT]
+    stranded = [row for row in rows if row['state'] == NESTED]
+    nested_files = sum(len(season.get('nested_here') or []) for season in counted)
     kept = counts[ONLY_HERE]
     held = sum(1 for row in rows if row['service_file'])
 
@@ -489,6 +517,10 @@ def series_summary(state: str, counted: List[Dict[str, Any]], counts: Dict[str, 
     if state == TITLE_IN_SYNC:
         return f"Everything {service} holds is here."
 
+    nested_part = _nested_sentence(stranded, nested_files) if nested_files else ''
+    if state == NEEDS_REPAIR:
+        return nested_part + '. Repair it in Explore.'
+
     parts = []
     if missing:
         if len(missing) == 1:
@@ -503,7 +535,19 @@ def series_summary(state: str, counted: List[Dict[str, Any]], counts: Dict[str, 
         else:
             parts.append(f"{len(different)} episodes are a different file on {service}: "
                          f"{_named(different)}")
+    if nested_files:
+        parts.append(nested_part)
     return '; '.join(parts) + '.'
+
+
+def _nested_sentence(stranded: List[Dict[str, Any]], nested_files: int) -> str:
+    """'S01E38 is here, but inside a nested folder …', without the full stop."""
+    where = 'inside a nested folder your media server cannot see'
+    if len(stranded) == 1 and nested_files <= 1:
+        return f"{_named(stranded)} is here, but {where}"
+    if stranded and len(stranded) == nested_files:
+        return f"{len(stranded)} episodes are here, but {where}: {_named(stranded)}"
+    return f"{plural(nested_files, 'file')} here {'is' if nested_files == 1 else 'are'} {where}"
 
 
 def series_sync_advice(state: str, seasons: List[Dict[str, Any]],
@@ -533,6 +577,16 @@ def series_sync_advice(state: str, seasons: List[Dict[str, Any]],
     # here. Said first, because it is the reason the button is not the answer.
     wanted = {s['season_number'] for s in needs}
     order = needs + [s for s in fetch if s['season_number'] not in wanted]
+    stranded = [s for s in order if s.get('nested_here')]
+    if stranded:
+        first = stranded[0]
+        label = 'Specials' if first['specials'] else f"Season {first['season_number']}"
+        return {
+            'offered': False, 'seasons': [],
+            'reason': (f"{label} has a file inside a nested folder. Syncing the whole season "
+                       f"folder would remove it and copy it again; repair it in Explore "
+                       f"instead."),
+        }
     risky = [s for s in order if s['local_only_files']]
     if risky:
         first = risky[0]
@@ -575,8 +629,13 @@ def compare_movie(movie: Dict[str, Any], local: Optional[Dict[str, Any]],
             theirs = service_file({'size': movie.get('sizeOnDisk')})
 
     here = list((local or {}).get('loose') or [])
+    stranded = [dict(entry, nested=True) for entry in (local or {}).get('nested_loose') or []]
     ours = _pick(here, theirs)
-    if theirs and ours:
+    if ours is None and stranded:
+        ours = _pick(stranded, theirs)
+    if ours is not None and ours.get('nested'):
+        state = NESTED
+    elif theirs and ours:
         state = IN_SYNC if same_file(theirs, ours) else DIFFERENT
     elif theirs:
         state = MISSING_HERE
@@ -586,15 +645,24 @@ def compare_movie(movie: Dict[str, Any], local: Optional[Dict[str, Any]],
         state = NOT_DOWNLOADED
 
     title_state = MOVIE_TITLE_STATE[state]
+    if title_state != OUT_OF_SYNC and stranded and ours is not None and not ours.get('nested'):
+        # The film plays from its own folder; a second copy below it is still
+        # stranded there.
+        title_state = NEEDS_REPAIR
     counts = empty_counts()
     counts[state] = 1
-    others = [_local_view(entry) for entry in here if entry is not ours]
+    others = [_local_view(entry) for entry in here + stranded if entry is not ours]
+    summary = movie_summary(state, theirs, ours, service)
+    if title_state == NEEDS_REPAIR and state != NESTED:
+        summary += (" A second copy is inside a nested folder your media server cannot see; "
+                    "repair it in Explore.")
     return {
         'state': title_state,
-        'summary': movie_summary(state, theirs, ours, service),
+        'summary': summary,
         'counts': counts,
+        'nested_files': len(stranded),
         'service_has_files': has_file,
-        'present_locally': bool(here),
+        'present_locally': bool(here or stranded),
         'movie': {
             'state': state,
             'service_file': theirs,
@@ -622,6 +690,9 @@ def size_words(size: int) -> str:
 
 def movie_summary(state: str, theirs: Optional[Dict[str, Any]],
                   ours: Optional[Dict[str, Any]], service: str = 'Radarr') -> str:
+    if state == NESTED:
+        return ("The film is here, but inside a nested folder your media server cannot "
+                "see. Repair it in Explore.")
     if state == IN_SYNC:
         return f"The film here is the file {service} holds."
     if state == DIFFERENT:

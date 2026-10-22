@@ -6,10 +6,22 @@ Reads are served from a cached comparison so the page is instant and can say
 when it last checked. Anything that will touch the disk re-compares first: a
 plan is always built against the library as it is right now, never against a
 cached view that may be minutes stale.
+
+How often the remote is read (operator, 2026-10-20). Opening the page checks
+it, but one walk of a library is reused for `FRESH_FOR` seconds — unless
+Sonarr or Radarr has reported an import for that library since, which is the
+moment the remote changed. Re-check always reads again, except that a press
+landing within `RECHECK_REUSE` seconds of a finished walk, or while one is
+running, shares it. This side is re-read on every view: it is a local walk and
+it is where syncs land, so a finished copy shows at once.
 """
 
 import os
-from typing import Dict, List, Optional, Sequence, Tuple
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from env_flags import test_mode_enabled
 from security import (
@@ -33,6 +45,33 @@ REMOTE_KEYS = {'movies': 'MOVIE_PATH', 'tvshows': 'TVSHOW_PATH', 'anime': 'ANIME
 LOCAL_KEYS = {'movies': 'MOVIE_DEST_PATH', 'tvshows': 'TVSHOW_DEST_PATH', 'anime': 'ANIME_DEST_PATH'}
 
 LABELS = {'movies': 'Movies', 'tvshows': 'TV Shows', 'anime': 'Anime'}
+
+#: Seconds one walk of a remote library answers for, when nothing was imported
+#: into it since (operator, 2026-10-20: 2 minutes).
+FRESH_FOR = 120
+
+#: Seconds a Re-check reuses a walk that has only just finished.
+RECHECK_REUSE = 10
+
+#: Seconds any walk answers for, imports or not, outside a Re-check: a burst of
+#: webhooks during a season pack must not turn every click into a walk.
+MIN_WALK_GAP = 15
+
+#: Which webhook rows mean "the remote library changed", per library.
+_IMPORTS = {
+    'movies': ('radarr_webhook', None),
+    'tvshows': ('sonarr_webhook', ('tvshows', 'series')),
+    'anime': ('sonarr_webhook', ('anime',)),
+}
+
+
+@dataclass
+class _RemoteRead:
+    """One walk of a remote library, and what had been imported when it ran."""
+    inventory: Any
+    at: float               # monotonic, for ages
+    checked_at: str         # what the page shows, in the snapshot's own format
+    imports_seen: int       # the newest import webhook id at the time
 
 
 class _SeasonSelection:
@@ -60,17 +99,42 @@ class ExploreError(Exception):
 
 
 class ExploreService:
-    def __init__(self, config, db_manager, coordinator, ssh_manager=None):
+    def __init__(self, config, db_manager, coordinator, ssh_manager=None, session=None,
+                 clock=time.monotonic):
         self.config = config
         self.db = db_manager
         self.coordinator = coordinator
         self.ssh_manager = ssh_manager
+        #: The app's RemoteSession: opens and reopens the browse session, within
+        #: the rules that keep the remote server from banning this address.
+        #: Without it (tests), `ssh_manager` is used as it is.
+        self.session = session
+        self.clock = clock
         self.store = ExploreStore(db_manager)
         self.executor = ExploreExecutor(config, coordinator, self.store)
+        self._remote: Dict[str, _RemoteRead] = {}
+        self._walk_locks = {media_type: threading.Lock() for media_type in MEDIA_TYPES}
 
     def set_ssh_manager(self, ssh_manager) -> None:
         """The browse session is recreated on connect; keep the pointer fresh."""
         self.ssh_manager = ssh_manager
+
+    def set_session(self, session) -> None:
+        self.session = session
+
+    def session_status(self) -> Dict:
+        if self.session is not None:
+            return self.session.status()
+        connected = bool(self.ssh_manager and getattr(self.ssh_manager, 'connected', False))
+        return {'connected': connected, 'auto_connect': False, 'host': '', 'last_error': '',
+                'last_error_kind': None, 'paused': False, 'retry_at': None}
+
+    def connect(self) -> Dict:
+        """A person pressed Connect on the Explore page."""
+        if self.session is None:
+            raise ExploreError('Connecting is not available here', 409)
+        ok, message = self.session.connect()
+        return {'ok': ok, 'message': message, 'session': self.session.status()}
 
     # ---- configuration ----------------------------------------------------
 
@@ -104,71 +168,155 @@ class ExploreService:
 
     # ---- comparison -------------------------------------------------------
 
-    def _require_session(self) -> None:
+    def _manager(self):
+        """A live browse session, or an ExploreError a person can act on."""
+        if self.session is not None:
+            from services.remote_session import SessionUnavailable
+            try:
+                return self.session.ensure()
+            except SessionUnavailable as error:
+                raise ExploreError(error.message, 409) from error
         if not self.ssh_manager or not getattr(self.ssh_manager, 'connected', False):
             raise ExploreError(
                 'No remote browse session. Connect in Settings and try again.', 409)
+        return self.ssh_manager
+
+    def _imports_seen(self, media_type: str) -> int:
+        """The newest import webhook for this library: it rises when the remote changes."""
+        table, kinds = _IMPORTS[media_type]
+        query = f"SELECT COALESCE(MAX(id), 0) AS n FROM {table}"
+        params: Tuple = ()
+        if kinds:
+            query += f" WHERE media_type IN ({', '.join('?' for _ in kinds)})"
+            params = kinds
+        try:
+            with self.db.get_connection() as conn:
+                return int(conn.execute(query, params).fetchone()['n'])
+        except Exception:  # noqa: BLE001 - unknown means "assume it changed"
+            return -1
+
+    def _usable(self, read: Optional[_RemoteRead], media_type: str, max_age: float) -> bool:
+        if read is None:
+            return False
+        age = self.clock() - read.at
+        if age >= max_age:
+            return False
+        if age < min(MIN_WALK_GAP, max_age):
+            return True
+        seen = self._imports_seen(media_type)
+        return seen != -1 and seen <= read.imports_seen
+
+    def _read_remote(self, media_type: str, remote_root: str,
+                     max_age: float) -> Tuple[_RemoteRead, bool]:
+        """The remote library: a recent walk if it still answers, else a new one.
+
+        Returns the read and whether this call walked. One walk per library at
+        a time: a request arriving during one waits and then shares it.
+        """
+        with self._walk_locks[media_type]:
+            cached = self._remote.get(media_type)
+            if self._usable(cached, media_type, max_age):
+                return cached, False
+            imports = self._imports_seen(media_type)
+            manager = self._manager()
+            remote = RemoteInventory(manager).read(media_type, remote_root)
+            if not remote.exists and self.session is not None and not self.session.alive():
+                # The session died under the walk. Once more on a fresh one,
+                # if the reconnect rules allow it now.
+                manager = self._manager()
+                remote = RemoteInventory(manager).read(media_type, remote_root)
+            if not remote.exists:
+                raise ExploreError(remote.error or 'Could not read the remote library', 502)
+            read = _RemoteRead(remote, self.clock(), datetime.now().isoformat(), imports)
+            self._remote[media_type] = read
+            return read, True
+
+    def _diff(self, media_type: str, max_age: float) -> Tuple[cmp.LibraryDiff, _RemoteRead, bool]:
+        remote_root, local_root = self._roots(media_type)
+        read, walked = self._read_remote(media_type, remote_root, max_age)
+        local = LocalInventory().read(media_type, local_root)
+        diff = cmp.compare_library(media_type, read.inventory, local)
+        if walked:
+            self.store.save_snapshot(
+                media_type, 'library',
+                {'series': [s.to_dict(include_seasons=True) for s in diff.series]},
+                diff.remote_ok, diff.local_ok, diff.remote_error or diff.local_error,
+            )
+        return diff, read, walked
 
     def compare(self, media_type: str) -> cmp.LibraryDiff:
-        """Fresh comparison of a whole library. One ssh round trip."""
-        remote_root, local_root = self._roots(media_type)
-        self._require_session()
+        """Fresh comparison of a whole library. One ssh round trip, always."""
+        return self._diff(media_type, max_age=0)[0]
 
-        remote = RemoteInventory(self.ssh_manager).read(media_type, remote_root)
-        if not remote.exists:
-            raise ExploreError(remote.error or 'Could not read the remote library', 502)
+    def tree(self, media_type: str, refresh: bool = False, check: Optional[str] = None) -> Dict:
+        """The series list.
 
-        local = LocalInventory().read(media_type, local_root)
-        diff = cmp.compare_library(media_type, remote, local)
-
-        self.store.save_snapshot(
-            media_type, 'library',
-            {'series': [s.to_dict(include_seasons=True) for s in diff.series]},
-            diff.remote_ok, diff.local_ok, diff.remote_error or diff.local_error,
-        )
-        return diff
-
-    def tree(self, media_type: str, refresh: bool = False) -> Dict:
-        """The series list, from cache unless asked to re-check."""
+        `check`: None reads the saved result only (instant; checks when there
+        is none); `auto` is opening the page — the remote is read unless a walk
+        from the last `FRESH_FOR` seconds still answers; `refresh` is Re-check.
+        When the remote cannot be read, the saved result is returned with the
+        reason, so the page can show it and say how old it is.
+        """
         if media_type not in MEDIA_TYPES:
             raise ExploreError(f"Unknown library '{media_type}'", 404)
-
-        if not refresh:
-            snapshot = self.store.get_snapshot(media_type, 'library')
-            if snapshot:
-                return {
-                    'media_type': media_type,
-                    'series': snapshot['payload'].get('series', []),
-                    'checked_at': snapshot['checked_at'],
-                    'stale': True,
-                }
-
-        diff = self.compare(media_type)
+        if refresh:
+            check = 'refresh'
         snapshot = self.store.get_snapshot(media_type, 'library')
+
+        if check is None and snapshot:
+            return self._from_snapshot(media_type, snapshot)
+
+        max_age = RECHECK_REUSE if check == 'refresh' else FRESH_FOR
+        try:
+            diff, read, walked = self._diff(media_type, max_age)
+        except ExploreError as error:
+            if snapshot is None or error.status not in (409, 502):
+                raise
+            out = self._from_snapshot(media_type, snapshot)
+            out['remote_error'] = error.message
+            return out
         return {
             'media_type': media_type,
             'series': [s.to_dict(include_seasons=True) for s in diff.series],
-            'checked_at': snapshot['checked_at'] if snapshot else None,
+            'checked_at': read.checked_at,
             'stale': False,
+            'walked': walked,
+            'remote_error': None,
+            'session': self.session_status(),
         }
 
-    def _series_diff(self, media_type: str, folder: str) -> cmp.SeriesDiff:
+    def _from_snapshot(self, media_type: str, snapshot: Dict) -> Dict:
+        return {
+            'media_type': media_type,
+            'series': snapshot['payload'].get('series', []),
+            'checked_at': snapshot['checked_at'],
+            'stale': True,
+            'walked': False,
+            'remote_error': None,
+            'session': self.session_status(),
+        }
+
+    def _series_diff(self, media_type: str, folder: str,
+                     max_age: float = 0) -> Tuple[cmp.SeriesDiff, _RemoteRead]:
         if not validate_path_component(folder):
             raise ExploreError('Invalid folder name', 400)
-        diff = self.compare(media_type)
+        diff, read, _walked = self._diff(media_type, max_age)
         series = diff.find(folder)
         if not series:
             raise ExploreError(f"'{folder}' is not in this library", 404)
-        return series
+        return series, read
 
     def series(self, media_type: str, folder: str) -> Dict:
-        series = self._series_diff(media_type, folder)
+        series, _read = self._series_diff(media_type, folder, FRESH_FOR)
         return series.to_dict(include_seasons=True)
 
     def season(self, media_type: str, folder: str, season_label: str) -> Dict:
-        series = self._series_diff(media_type, folder)
+        """One season, from the library's last walk while it still answers."""
+        series, read = self._series_diff(media_type, folder, FRESH_FOR)
         season = self._find_season(series, season_label)
-        return season.to_dict(include_episodes=True)
+        out = season.to_dict(include_episodes=True)
+        out['checked_at'] = read.checked_at
+        return out
 
     @staticmethod
     def _find_season(series: cmp.SeriesDiff, season_label: str) -> cmp.SeasonDiff:
@@ -192,7 +340,7 @@ class ExploreService:
         view could remove a file that has since come back.
         """
         remote_root, local_root = self._roots(media_type)
-        series = self._series_diff(media_type, folder)
+        series, _read = self._series_diff(media_type, folder)
 
         return self._build_plan(media_type, operation, folder, season_label, codes,
                                 include_removals, created_by, season_labels,
@@ -263,8 +411,7 @@ class ExploreService:
 
     @staticmethod
     def _local_media_total(scope) -> int:
-        counts = scope.counts
-        return counts.in_sync + counts.upgraded + counts.local_only
+        return scope.counts.local_media
 
     @staticmethod
     def _duplicate_codes(scope) -> List[str]:
@@ -278,7 +425,7 @@ class ExploreService:
         seen: Dict[str, int] = {}
         for season in seasons:
             for episode in season.episodes:
-                if episode.label in (cmp.UPGRADED, cmp.IN_SYNC) and episode.key:
+                if episode.label in (cmp.UPGRADED, cmp.IN_SYNC, cmp.NESTED) and episode.key:
                     seen[str(episode.key)] = seen.get(str(episode.key), 0) + 1
         return [code for code, count in seen.items() if count > 1]
 

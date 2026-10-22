@@ -113,7 +113,7 @@ Because the connection is authenticated once at handshake time, a token refresh 
 
 When `mustChangePassword` is set, `routes/_authenticated.tsx` renders `PasswordChangeGate` instead of the application and does not open the live connection. The check lives in the route rather than at sign-in so it survives a page reload and cannot be stepped around by navigating straight to a page; only signing out leads away from it. Changing the password swaps the returned token pair into the store and re-authenticates the socket, so succeeding does not bounce the person to the login screen.
 
-`frontend/src/components/settings/account-panel.tsx` is the Account tab on Settings: who you are signed in as, the self-service password form, and a plain statement that adding or removing administrators happens on the server, with the commands to do it.
+`frontend/src/components/settings/account-tab.tsx` is the Account tab on Settings: who you are signed in as, the self-service password form, the read-only sign-in and access values, and a plain statement that adding or removing administrators happens on the server, with the commands to do it.
 
 The axios request interceptor in `frontend/src/lib/api.ts` is where refresh actually happens: before each API call, if a refresh is due it posts to `/auth/refresh`, stores the new access token, and calls `reAuthenticateSocket()` so the live connection picks up the same token. If the refresh call fails it logs a warning and proceeds with the existing token rather than blocking the request. The response interceptor treats any `401` as terminal — it destroys the socket, clears the store, and redirects to `/login`.
 

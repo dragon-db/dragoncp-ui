@@ -22,6 +22,8 @@ import { cn } from "@/lib/utils";
 export interface PageTabItem {
   value: string;
   label: string;
+  /** Shown instead of `label` below `sm`, where every segment has to fit. */
+  shortLabel?: string;
   icon?: ComponentType<{ className?: string }>;
   /** Shown as a badge after the label. Omit when there is nothing to count. */
   count?: number;
@@ -76,7 +78,14 @@ export function PageTabsList({ items, className }: { items: PageTabItem[]; class
           )}
         >
           {item.icon && <item.icon />}
-          {item.label}
+          {item.shortLabel ? (
+            <>
+              <span className="sm:hidden">{item.shortLabel}</span>
+              <span className="hidden sm:inline">{item.label}</span>
+            </>
+          ) : (
+            item.label
+          )}
           {item.count !== undefined && (
             <Badge
               variant="secondary"

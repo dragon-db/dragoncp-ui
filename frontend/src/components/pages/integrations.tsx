@@ -16,10 +16,12 @@ import { errorText } from "@/lib/api-error";
 import { DeliveryLog } from "@/components/integrations/delivery-log";
 import { RoutingPanel } from "@/components/integrations/routing-panel";
 import { TargetsPanel } from "@/components/integrations/targets-panel";
+import { MentionsPanel } from "@/components/integrations/mentions-panel";
 import { useConnector, useSaveConnector } from "@/hooks/useConnectors";
 import { useLibrary, useLibraryQueue } from "@/hooks/useMediaLibrary";
 import {
   IconAdjustmentsHorizontal,
+  IconAt,
   IconDownload,
   IconHistory,
   IconInbox,
@@ -28,8 +30,14 @@ import {
   IconRoute,
 } from "@tabler/icons-react";
 
-const NOTIFY_TABS = ["targets", "routing", "activity", "settings"];
+const NOTIFY_TABS = ["targets", "mentions", "routing", "activity", "settings"];
 const QUERY_TABS = ["library", "queue", "history", "settings"];
+
+/** The saved "Look back (days)", read the way the server reads it: 1 to 30, 7 when empty. */
+function lookbackDays(value: string | undefined): number {
+  const days = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(days) ? Math.min(30, Math.max(1, days)) : 7;
+}
 
 /**
  * One connector, as its own small application.
@@ -96,10 +104,22 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
 
   const toggleEnabled = async (enabled: boolean) => {
     try {
-      await save.mutateAsync({ enabled });
-      toast.success(
-        enabled ? `${connector.display_name} is on` : `${connector.display_name} is off`
-      );
+      const response = await save.mutateAsync({ enabled });
+      const name = connector.display_name;
+      // The switch saves only on/off. Say so when there is nothing saved to
+      // connect with, rather than "is on" over a form still waiting for Save.
+      if (enabled && response.connector && !response.connector.configured) {
+        toast.warning(
+          canNotify
+            ? `${name} is on, but it has no default webhook yet.`
+            : `${name} is on, but nothing is saved to connect with yet. Fill in ${connector.config_fields
+                .filter((field) => field.required)
+                .map((field) => field.label)
+                .join(" and ")} and press Save.`
+        );
+      } else {
+        toast.success(enabled ? `${name} is on` : `${name} is off`);
+      }
     } catch (error) {
       toast.error(errorText(error, "Could not change it"));
     }
@@ -107,7 +127,11 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
 
   return (
     <div className="space-y-6">
-      <PageHeader title={connector.display_name} description={connector.description}>
+      {/* No description under the name: "Film library manager. Already sends
+          notifications here…" told an operator what they already knew, and
+          on a phone it took three lines above the tabs (operator,
+          2026-10-20). The API still carries it. */}
+      <PageHeader title={connector.display_name}>
         <div className="flex items-center gap-2.5 rounded-xl border border-border/70 bg-card/80 px-3.5 py-2">
           <Switch
             checked={connector.enabled}
@@ -132,8 +156,8 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
         A panel promising the connector was only ever read from. True, and
         enforced in the adapter, but a reassurance nobody asked for is still a
         paragraph between the operator and the thing they came to look at. It
-        belongs where somebody goes looking for it — the connector's own
-        description, and the documentation — not above the content, forever.
+        belongs where somebody goes looking for it — the documentation — not
+        above the content, forever.
 
         What is left is the one line that changes what you can expect from the
         page in front of you.
@@ -171,6 +195,16 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
                 icon: IconInbox,
                 count: (connector.targets ?? []).length,
               },
+              ...(connector.supports_mentions
+                ? [
+                    {
+                      value: "mentions",
+                      label: "Mentions",
+                      icon: IconAt,
+                      count: (connector.mentions ?? []).length,
+                    },
+                  ]
+                : []),
               { value: "routing", label: "Routing", icon: IconRoute },
               { value: "activity", label: "Activity", icon: IconHistory },
               ...(hasSettings
@@ -189,6 +223,11 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
           <TabsContent value="targets" className="mt-4 space-y-4">
             <TargetsPanel connector={connector} />
           </TabsContent>
+          {connector.supports_mentions && (
+            <TabsContent value="mentions" className="mt-4 space-y-4">
+              <MentionsPanel connector={connector} />
+            </TabsContent>
+          )}
           <TabsContent value="routing" className="mt-4 space-y-4">
             <RoutingPanel connector={connector} />
           </TabsContent>
@@ -278,6 +317,8 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
                   source={connector.id}
                   displayName={connector.display_name}
                   connectorEnabled={connector.enabled}
+                  mode={connector.config.auto_scanner_mode === "sync" ? "sync" : "alert"}
+                  lookbackDays={lookbackDays(connector.config.auto_scanner_lookback_days)}
                 />
               </>
             ) : (

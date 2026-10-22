@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -92,8 +93,8 @@ class FakeNotifier:
     def __init__(self):
         self.sent = []
 
-    def send_discord_notification(self, transfer_id, status, sync_label=None):
-        self.sent.append((transfer_id, status, sync_label))
+    def send_discord_notification(self, transfer_id, status, sync_mode=None, sync_source=None):
+        self.sent.append((transfer_id, status, f"{sync_mode} SYNC - {sync_source}"))
 
     def parse_transfer_logs(self, logs):
         return {}
@@ -512,6 +513,22 @@ class KindTests(EngineTestCase):
         self.assertTrue(result['ok'])
         self.assertEqual(self.get_run(held.run_id)['state'], S.TRANSFERRING)
 
+    def test_a_held_batch_is_announced_once_for_a_person(self):
+        """Issue #35: a batch waiting for someone to press Sync posts to the
+        channel once, however many webhooks join it."""
+        with patch('services.connectors.notify') as notify:
+            self.sonarr(self.series_webhook('e1', 1), hold=True)
+            self.sonarr(self.series_webhook('e2', 2), hold=True)
+        held = [c.args[0] for c in notify.call_args_list if c.args[0].key == 'sync.held']
+        self.assertEqual(len(held), 1)
+        self.assertEqual(held[0].severity, 'warning')
+        self.assertIn('press Sync', held[0].summary)
+
+    def test_a_batch_that_starts_by_itself_is_not_announced_as_held(self):
+        with patch('services.connectors.notify') as notify:
+            self.sonarr(self.series_webhook('e1', 1))
+        self.assertFalse([c for c in notify.call_args_list if c.args[0].key == 'sync.held'])
+
     def test_a_manual_sync_of_a_copying_episode_is_left_alone(self):
         first = self.sonarr(self.series_webhook('e1', 1))
         self.clock.advance(SETTLE_SECONDS)
@@ -648,7 +665,7 @@ class FinishTests(EngineTestCase):
         self.assertEqual(self.webhook('e1')['status'], 'completed')
         self.assertEqual(self.webhook('e2')['status'], 'completed')
         self.assertEqual(self.coordinator.notification_service.sent,
-                         [(transfer_id, 'completed', 'Automated Sync')])
+                         [(transfer_id, 'completed', 'AUTO SYNC - SONARR')])
         for stage in (S.TRANSFER, S.FINISH, S.TELL):
             self.assertEqual(self.stage(run_id, stage)['status'], S.PASSED, stage)
 
@@ -742,7 +759,7 @@ class FinishTests(EngineTestCase):
         transfer_id = self.get_run(run.run_id)['transfer_id']
         self.coordinator.finish(transfer_id, 'completed')
         self.assertEqual(self.coordinator.notification_service.sent,
-                         [(transfer_id, 'completed', 'Manual Sync')])
+                         [(transfer_id, 'completed', 'MANUAL SYNC - SONARR')])
 
     def test_a_restarted_simulation_is_not_announced(self):
         self.coordinator.transfer_model.create({

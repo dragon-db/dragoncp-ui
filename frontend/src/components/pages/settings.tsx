@@ -1,370 +1,90 @@
-import { Link } from "@tanstack/react-router";
-import { PageHeader } from "@/components/layout/page-header";
-import { useEffect, useState } from "react";
-import { toast } from "sonner";
+import { useNavigate } from "@tanstack/react-router";
 import {
-  useSSHAutoConnect,
-  useSSHDisconnect,
-  useSSHStatus,
-  useWebSocketStatus,
-} from "@/hooks/useConfig";
-import { SettingsPanel } from "@/components/settings/settings-panel";
-import { AccountPanel } from "@/components/settings/account-panel";
-import { BackendLogPanel } from "@/components/settings/backend-log-panel";
-import { RemoteTransferPanel } from "@/components/settings/remote-transfer-panel";
-import { useUpdateWebhookSettings, useWebhookSettings } from "@/hooks/useWebhooks";
-import { useRuntimeStore } from "@/stores/runtime";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  IconBolt,
-  IconBrandDiscord,
-  IconCheck,
-  IconLink,
-  IconPlayerPause,
+  IconFileText,
   IconPlugConnected,
   IconRefresh,
   IconServer,
-  IconSettings,
   IconUserShield,
-  IconWebhook,
 } from "@tabler/icons-react";
+import { PageHeader } from "@/components/layout/page-header";
+import { PageTabsList } from "@/components/layout/page-tabs";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { RemoteServerTab } from "@/components/settings/remote-server-tab";
+import { SyncingTab } from "@/components/settings/syncing-tab";
+import { AccountTab } from "@/components/settings/account-tab";
+import { SystemTab } from "@/components/settings/system-tab";
+import { LogsTab } from "@/components/settings/logs-tab";
+import { useSettingMap } from "@/components/settings/settings-model";
 
-export function SettingsPage() {
-  const webhookSettingsQuery = useWebhookSettings();
-  const sshStatusQuery = useSSHStatus();
-  const wsStatusQuery = useWebSocketStatus();
+/**
+ * Settings, arranged by what an administrator is doing rather than by where a
+ * value is stored (operator, 2026-10-21).
+ *
+ * It used to be five tabs by mechanism: "Core Config" held everything the
+ * environment file sets, so the remote login sat on one tab and Connect on
+ * another, the fast-transfer options appeared twice, and auto-sync and backup
+ * retention were each split from their neighbours. Now each topic lives in one
+ * place, every tab is built from the same section cards as the rest of the
+ * app, and a value you cannot change from here reads as text, not as a
+ * greyed-out field.
+ */
 
-  const updateWebhookSettings = useUpdateWebhookSettings();
+export const SETTINGS_TABS = ["remote", "syncing", "account", "system", "logs"] as const;
+export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
-  const autoConnect = useSSHAutoConnect();
-  const disconnect = useSSHDisconnect();
+const TABS = [
+  { value: "remote", label: "Remote server", shortLabel: "Remote", icon: IconPlugConnected },
+  { value: "syncing", label: "Syncing", icon: IconRefresh },
+  { value: "account", label: "Account", icon: IconUserShield },
+  { value: "system", label: "System", icon: IconServer },
+  { value: "logs", label: "Logs", icon: IconFileText },
+];
 
-  const setConfigChanged = useRuntimeStore((state) => state.setConfigChanged);
-
-  const [webhookDraft, setWebhookDraft] = useState({
-    auto_sync_movies: false,
-    auto_sync_series: false,
-    auto_sync_anime: false,
-    series_anime_sync_wait_time: "60",
-  });
-
-  /* eslint-disable react-hooks/set-state-in-effect -- query payloads intentionally reset controlled form drafts */
-  useEffect(() => {
-    const settings = webhookSettingsQuery.data?.settings;
-    if (!settings) return;
-    setWebhookDraft({
-      auto_sync_movies: Boolean(settings.auto_sync_movies),
-      auto_sync_series: Boolean(settings.auto_sync_series),
-      auto_sync_anime: Boolean(settings.auto_sync_anime),
-      series_anime_sync_wait_time: String(settings.series_anime_sync_wait_time ?? 60),
-    });
-  }, [webhookSettingsQuery.data]);
-
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  const connectionState = sshStatusQuery.data ? "Connected" : "Disconnected";
-
-  /**
-   * Saves the Automation tab only. The Config tab saves itself — its settings
-   * are split across two stores and only one of them is writable, so a single
-   * "save everything" button would have to claim it wrote things it did not.
-   */
-  const saveAutomationSettings = async () => {
-    try {
-      await updateWebhookSettings.mutateAsync({
-        auto_sync_movies: webhookDraft.auto_sync_movies,
-        auto_sync_series: webhookDraft.auto_sync_series,
-        auto_sync_anime: webhookDraft.auto_sync_anime,
-        series_anime_sync_wait_time: Math.max(
-          1,
-          Number(webhookDraft.series_anime_sync_wait_time) || 60
-        ),
-      });
-      toast.success("Settings saved");
-    } catch {
-      toast.error("Could not save the auto-sync settings");
-    }
-
-    // Refetched either way. After a failed save the screen has to show what
-    // the server actually holds, which is exactly when it differs from the form.
-    webhookSettingsQuery.refetch();
-    wsStatusQuery.refetch();
-  };
-
-  const runAutoConnect = async () => {
-    try {
-      await autoConnect.mutateAsync();
-      setConfigChanged(false);
-      sshStatusQuery.refetch();
-      toast.success("Connected");
-    } catch {
-      toast.error("Connection failed");
-    }
-  };
-
-  const runDisconnect = async () => {
-    try {
-      await disconnect.mutateAsync();
-      sshStatusQuery.refetch();
-      toast.success("Disconnected");
-    } catch {
-      toast.error("Failed to disconnect");
-    }
-  };
+export function SettingsPage({ tab }: { tab: SettingsTab }) {
+  const navigate = useNavigate();
+  const settings = useSettingMap();
 
   return (
-    <div className="space-y-6">
-      {/*
-        No save button up here any more. It used to be "Save All" and wrote
-        every tab at once, which stopped being true when the Config tab split
-        across two stores and gained its own save. A page-level button that
-        saves one tab is worse than no page-level button.
+    <div className="space-y-5">
+      <PageHeader title="Settings" />
 
-        "Reset to Env" went with the per-browser session it reset: a setting now
-        either comes from the environment file, and is read-only, or from the
-        database, where it is the only value there is.
-      */}
-      <PageHeader title="Settings" description="Connection, media paths, and automation" />
+      <Tabs
+        value={tab}
+        onValueChange={(next) =>
+          navigate({ to: "/settings", search: { tab: next as SettingsTab }, replace: true })
+        }
+        className="gap-4"
+      >
+        <PageTabsList items={TABS} />
 
-      <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
-          <div className="inline-flex items-center gap-2 text-xs tracking-[0.14em] text-muted-foreground uppercase">
-            <IconServer className="h-3.5 w-3.5" />
-            SSH
-          </div>
-          <div className="mt-1 text-sm font-semibold text-foreground">{connectionState}</div>
-        </div>
-        <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
-          <div className="inline-flex items-center gap-2 text-xs tracking-[0.14em] text-muted-foreground uppercase">
-            <IconLink className="h-3.5 w-3.5" />
-            WebSockets
-          </div>
-          <div className="mt-1 text-sm font-semibold text-foreground tabular-nums">
-            {wsStatusQuery.data?.websocket_status.active_connections ?? 0} active
-          </div>
-        </div>
-      </div>
+        {settings.data && !Array.isArray(settings.data.groups) && (
+          <p className="rounded-xl border border-amber-500/35 bg-amber-500/8 px-4 py-3 text-[13px] text-amber-100">
+            The backend is running an older version: it answered without the grouped settings this
+            page reads, so values below show as not set. Restart the backend.
+          </p>
+        )}
 
-      <Tabs defaultValue="config" className="gap-5">
-        <TabsList>
-          <TabsTrigger value="config">
-            <IconSettings className="h-4 w-4" />
-            Core Config
-          </TabsTrigger>
-          <TabsTrigger value="connections">
-            <IconPlugConnected className="h-4 w-4" />
-            Connections
-          </TabsTrigger>
-          <TabsTrigger value="automation">
-            <IconWebhook className="h-4 w-4" />
-            Automation
-          </TabsTrigger>
-          <TabsTrigger value="account">
-            <IconUserShield className="h-4 w-4" />
-            Account
-          </TabsTrigger>
-          <TabsTrigger value="diagnostics">
-            <IconServer className="h-4 w-4" />
-            Diagnostics
-          </TabsTrigger>
-        </TabsList>
+        {settings.isError && (
+          <p className="rounded-xl border border-rose-500/35 bg-rose-500/8 px-4 py-3 text-[13px] text-rose-200">
+            Could not load the settings: the backend did not answer. Values below may show as not
+            set. Reload once it is running.
+          </p>
+        )}
 
-        <TabsContent value="config" className="mt-4 space-y-4">
-          <SettingsPanel />
+        <TabsContent value="remote">
+          <RemoteServerTab />
         </TabsContent>
-
-        {/*
-          Reaching the media host, in one place: the SSH session everything else
-          is built on, and the faster route that carries the files. Connection
-          Controls used to sit under Diagnostics, which was the wrong shelf — it
-          has buttons that change what the app is doing, and nothing about it is
-          diagnosis.
-        */}
-        <TabsContent value="connections" className="mt-4 space-y-4">
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardHeader>
-              <CardTitle className="text-white">Connection Controls</CardTitle>
-              <CardDescription className="text-neutral-400">
-                Auto-connect/disconnect and runtime connection details
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex gap-2">
-                <Button onClick={runAutoConnect} disabled={autoConnect.isPending}>
-                  <IconBolt className="mr-2 h-4 w-4" />
-                  Auto Connect
-                </Button>
-                <Button variant="outline" onClick={runDisconnect} disabled={disconnect.isPending}>
-                  <IconPlayerPause className="mr-2 h-4 w-4" />
-                  Disconnect
-                </Button>
-              </div>
-              <div className="text-sm text-neutral-300">
-                SSH: {sshStatusQuery.data ? "Connected" : "Disconnected"} | Active WebSocket
-                sessions: {wsStatusQuery.data?.websocket_status.active_connections ?? 0}
-              </div>
-            </CardContent>
-          </Card>
-
-          <RemoteTransferPanel />
+        <TabsContent value="syncing">
+          <SyncingTab />
         </TabsContent>
-
-        <TabsContent value="account" className="mt-4 space-y-4">
-          <AccountPanel />
+        <TabsContent value="account">
+          <AccountTab />
         </TabsContent>
-
-        <TabsContent value="automation" className="mt-4 space-y-4">
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardHeader>
-              <CardTitle className="text-white">Webhook Auto-Sync</CardTitle>
-              <CardDescription className="text-neutral-400">
-                Control movie/series/anime auto-sync behavior and wait window
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-white">Auto-sync Movies</div>
-                  <div className="text-xs text-neutral-500">
-                    Trigger sync automatically for movie webhooks
-                  </div>
-                </div>
-                <Switch
-                  checked={webhookDraft.auto_sync_movies}
-                  onCheckedChange={(checked) =>
-                    setWebhookDraft((previous) => ({ ...previous, auto_sync_movies: checked }))
-                  }
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-white">Auto-sync TV Shows</div>
-                  <div className="text-xs text-neutral-500">
-                    Trigger sync automatically for series webhooks
-                  </div>
-                </div>
-                <Switch
-                  checked={webhookDraft.auto_sync_series}
-                  onCheckedChange={(checked) =>
-                    setWebhookDraft((previous) => ({ ...previous, auto_sync_series: checked }))
-                  }
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-sm text-white">Auto-sync Anime</div>
-                  <div className="text-xs text-neutral-500">
-                    Trigger sync automatically for anime webhooks
-                  </div>
-                </div>
-                <Switch
-                  checked={webhookDraft.auto_sync_anime}
-                  onCheckedChange={(checked) =>
-                    setWebhookDraft((previous) => ({ ...previous, auto_sync_anime: checked }))
-                  }
-                />
-              </div>
-              <Separator className="bg-neutral-800" />
-              <div className="space-y-2">
-                <Label className="text-neutral-200">Fallback wait (seconds)</Label>
-                <p className="text-xs text-neutral-500">
-                  Used only when Sonarr cannot be asked: how long a TV or anime season waits for
-                  more episodes before syncing, plus this again for each later episode, never more
-                  than 15 minutes. When Sonarr answers, it decides instead.
-                </p>
-                <Input
-                  type="number"
-                  value={webhookDraft.series_anime_sync_wait_time}
-                  onChange={(event) =>
-                    setWebhookDraft((previous) => ({
-                      ...previous,
-                      series_anime_sync_wait_time: event.target.value,
-                    }))
-                  }
-                  className="w-48 border-neutral-700 bg-neutral-900"
-                />
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Discord used to be configured here. It is a connector now, with
-              named webhooks and a choice of destination per notification —
-              Integrations → Discord in the sidebar. */}
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardHeader>
-              <CardTitle className="text-white">Notifications</CardTitle>
-              <CardDescription className="text-neutral-400">
-                Discord moved to its own page under Integrations, where a webhook can be named and
-                each notification pointed at whichever one you choose.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button
-                variant="outline"
-                render={<Link to="/integrations/$connector" params={{ connector: "discord" }} />}
-              >
-                <IconBrandDiscord className="mr-2 h-4 w-4" />
-                Open Discord settings
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Saves this tab, next to what it saves. */}
-          <div className="flex items-center justify-end gap-2">
-            <span className="text-[12px] text-muted-foreground">
-              Auto-sync settings are stored in the database and take effect immediately.
-            </span>
-            <Button onClick={saveAutomationSettings} disabled={updateWebhookSettings.isPending}>
-              <IconCheck className="mr-2 h-4 w-4" />
-              {updateWebhookSettings.isPending ? "Saving…" : "Save automation settings"}
-            </Button>
-          </div>
+        <TabsContent value="system">
+          <SystemTab />
         </TabsContent>
-
-        <TabsContent value="diagnostics" className="mt-4 space-y-4">
-          <Card className="border-neutral-800 bg-neutral-900/50">
-            <CardHeader>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <CardTitle className="text-white">WebSocket Diagnostics</CardTitle>
-                  <CardDescription className="text-neutral-400">
-                    Active connections, timeout details, and refresh actions
-                  </CardDescription>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => wsStatusQuery.refetch()}
-                  disabled={wsStatusQuery.isFetching}
-                >
-                  <IconRefresh
-                    className={`mr-2 h-4 w-4 ${wsStatusQuery.isFetching ? "animate-spin" : ""}`}
-                  />
-                  Refresh Status
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <Textarea
-                readOnly
-                className="min-h-[280px] border-neutral-800 bg-neutral-950 font-mono text-xs"
-                value={JSON.stringify(
-                  wsStatusQuery.data?.websocket_status ?? { status: "no data" },
-                  null,
-                  2
-                )}
-              />
-            </CardContent>
-          </Card>
-
-          <BackendLogPanel />
+        <TabsContent value="logs">
+          <LogsTab />
         </TabsContent>
       </Tabs>
     </div>

@@ -54,7 +54,9 @@ export function DeliveryLog({ connectorId }: { connectorId: string }) {
               <div className="text-xs text-pretty text-muted-foreground">
                 {row.skipped_reason ??
                   row.error ??
-                  `Delivered to “${row.target_label}” in ${row.duration_ms}ms`}
+                  `Delivered to “${row.target_label}” in ${row.duration_ms}ms${
+                    row.mentions ? `, pinging ${row.mentions}` : ""
+                  }`}
               </div>
               <div className="mt-1 text-xs text-muted-foreground tabular-nums sm:hidden">
                 {new Date(row.created_at + "Z").toLocaleString()}

@@ -13,7 +13,7 @@ Callers describe what happened. This decides how Discord shows it.
 
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 from urllib.parse import urlparse
 
 from services.connectors import transport
@@ -21,6 +21,7 @@ from services.connectors.base import (
     CheckResult,
     ConfigField,
     DeliveryResult,
+    Mention,
     NotifyingConnector,
     Target,
 )
@@ -34,6 +35,7 @@ from services.connectors.events import (
     Event,
 )
 from services.connectors.registry import register
+from config import APP_VERSION
 
 # --- the palette ------------------------------------------------------------
 #
@@ -88,6 +90,57 @@ _APP_URL_PATTERN = re.compile(
 )
 
 
+# --- mentions -----------------------------------------------------------------
+#
+# A ping goes in the message text above the card: Discord never pings from
+# inside an embed. `allowed_mentions` is always sent and names exactly who may
+# be pinged, so nothing else in a message — a title that happens to contain
+# "@everyone" — can ever ping anyone.
+
+MENTION_ROLE = 'role'
+MENTION_USER = 'user'
+MENTION_HERE = 'here'
+MENTION_EVERYONE = 'everyone'
+
+#: A Discord id ("snowflake"): digits only, 17-20 of them today. A little
+#: slack either side so an id from an older or newer server is not refused.
+_SNOWFLAKE = re.compile(r'^\d{15,21}$')
+
+
+def mention_text(mention: Mention) -> str:
+    """How one mention is written in a Discord message."""
+    if mention.kind == MENTION_ROLE:
+        return f"<@&{mention.value}>"
+    if mention.kind == MENTION_USER:
+        return f"<@{mention.value}>"
+    if mention.kind == MENTION_HERE:
+        return '@here'
+    if mention.kind == MENTION_EVERYONE:
+        return '@everyone'
+    return ''
+
+
+def allowed_mentions(mentions: Sequence[Mention]) -> Dict[str, Any]:
+    """Exactly these may ping, and nothing else in the message."""
+    roles = sorted({m.value for m in mentions if m.kind == MENTION_ROLE})
+    users = sorted({m.value for m in mentions if m.kind == MENTION_USER})
+    parse = (['everyone'] if any(m.kind in (MENTION_HERE, MENTION_EVERYONE)
+                                 for m in mentions) else [])
+    allowed: Dict[str, Any] = {'parse': parse}
+    if roles:
+        allowed['roles'] = roles
+    if users:
+        allowed['users'] = users
+    return allowed
+
+
+#: The one footer every message carries. Discord adds the time after it. Each
+#: sender used to write its own ("DragonCP Rename Operation", "DRAGONCP
+#: Auto-Sync Safety Check", none at all); what a message is belongs in its
+#: headline, so the footer only says where it came from.
+FOOTER = f"DragonCP v{APP_VERSION}"
+
+
 def is_valid_app_url(url: str) -> bool:
     """Whether a URL is one Discord will accept as an embed link."""
     try:
@@ -110,6 +163,8 @@ class DiscordConnector(NotifyingConnector):
     settings_label = 'Appearance'
     settings_description = 'How a message looks when it arrives in Discord.'
     supports_check = False
+    supports_mentions = True
+    mention_kinds = (MENTION_ROLE, MENTION_USER, MENTION_HERE, MENTION_EVERYONE)
 
     config_fields = (
         ConfigField(
@@ -176,10 +231,23 @@ class DiscordConnector(NotifyingConnector):
             return 'That is a Discord link, but not a webhook URL'
         return None
 
+    def validate_mention(self, kind: str, value: str) -> Optional[str]:
+        """A role or user needs its Discord id; @here and @everyone none."""
+        if kind not in self.mention_kinds:
+            return 'Choose a role, a user, @here or @everyone'
+        if kind in (MENTION_ROLE, MENTION_USER):
+            noun = 'role' if kind == MENTION_ROLE else 'user'
+            if not (value or '').strip():
+                return f"Paste the {noun}'s ID from Discord"
+            if not _SNOWFLAKE.match(value.strip()):
+                return (f"A Discord {noun} ID is a long number, like 112233445566778899. "
+                        f"Right-click the {noun} and choose Copy {noun.title()} ID.")
+        return None
+
     # ---- rendering ---------------------------------------------------------
 
-    def render(self, event: Event) -> Dict[str, Any]:
-        """One event as a Discord message payload."""
+    def render(self, event: Event, mentions: Sequence[Mention] = ()) -> Dict[str, Any]:
+        """One event as a Discord message payload, pinging `mentions`."""
         embed: Dict[str, Any] = {
             'title': _clip(event.title, MAX_TITLE),
             'color': self._colour(event),
@@ -196,14 +264,15 @@ class DiscordConnector(NotifyingConnector):
             embed['fields'] = fields
 
         if event.author:
-            author: Dict[str, Any] = {'name': _clip(event.author, MAX_AUTHOR_NAME)}
+            # Upper case here as well as in `headline()`, so no sender can
+            # bring back a line in its own style.
+            author: Dict[str, Any] = {'name': _clip(event.author.upper(), MAX_AUTHOR_NAME)}
             icon_url = self.setting('icon_url')
             if icon_url:
                 author['icon_url'] = icon_url
             embed['author'] = author
 
-        if event.footer:
-            embed['footer'] = {'text': _clip(event.footer, MAX_FOOTER)}
+        embed['footer'] = {'text': _clip(FOOTER, MAX_FOOTER)}
 
         thumbnail = event.thumbnail_url or self.setting('manual_sync_thumbnail_url')
         if thumbnail:
@@ -216,7 +285,12 @@ class DiscordConnector(NotifyingConnector):
         if link and is_valid_app_url(link):
             embed['url'] = link
 
-        return {'embeds': [embed]}
+        payload: Dict[str, Any] = {'embeds': [embed],
+                                   'allowed_mentions': allowed_mentions(mentions)}
+        content = ' '.join(t for t in (mention_text(m) for m in mentions) if t)
+        if content:
+            payload['content'] = content
+        return payload
 
     def _render_fields(self, event: Event) -> List[Dict[str, Any]]:
         fields = []
@@ -240,8 +314,9 @@ class DiscordConnector(NotifyingConnector):
 
     # ---- delivery ----------------------------------------------------------
 
-    def deliver(self, event: Event, target: Target, credential: str) -> DeliveryResult:
-        payload = self.render(event)
+    def deliver(self, event: Event, target: Target, credential: str,
+                mentions: Sequence[Mention] = ()) -> DeliveryResult:
+        payload = self.render(event, mentions)
         result = transport.send(
             'POST', credential,
             json=payload,

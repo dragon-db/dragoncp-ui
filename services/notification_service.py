@@ -16,18 +16,143 @@ rsync's summary output, pulling errors out of a log, and deciding which title
 and poster describe a transfer.
 """
 
+import os
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from services.connectors import notify
 from services.connectors.events import (
     ACCENT_RENAME,
     FAILURE,
     SUCCESS,
+    SYNC_AUTO,
+    SYNC_MANUAL,
     WARNING,
     Event,
     Field,
+    headline,
+    sync_headline,
 )
+
+#: How a copy reached this disk, as the transfer pages call it.
+ROUTE_LABELS = {
+    'daemon': '⚡ FAST',
+    'ssh': 'SSH',
+    'ssh_fallback': 'SSH FALLBACK (fast route failed)',
+}
+
+_MEDIA_EXTENSIONS = ('.mkv', '.mp4', '.avi', '.m4v', '.mov', '.wmv', '.flv', '.webm', '.ts')
+
+#: S01E05, s1e5, S01E05-E06.
+_EPISODE_CODE = re.compile(r'\bS(\d{1,2})E(\d{1,3})(?:-?E(\d{1,3}))?\b', re.IGNORECASE)
+
+#: An Explore copy logs `--out-format=%i|%l|%n`: flags, size, name.
+_ITEMIZED = re.compile(r'^([<>ch.*][^|]*)\|(\d+)\|(.+)$')
+
+#: How many copied files a message lists before "… and N more".
+LISTED_FILES = 10
+
+
+def _is_media(name: str) -> bool:
+    return name.lower().endswith(_MEDIA_EXTENSIONS)
+
+
+def copied_files(logs: List[str]) -> Tuple[List[str], List[str]]:
+    """The media files a transfer copied and removed, from its rsync log.
+
+    A folder sync runs `rsync -v`, which names every file it copies on a line
+    of its own and every file it removes as `deleting <name>`; an Explore copy
+    logs `%i|%l|%n`. Both are read. Names come back without their folders,
+    once each, in the order rsync wrote them.
+    """
+    copied: List[str] = []
+    removed: List[str] = []
+    for raw in logs or []:
+        line = str(raw).strip()
+        itemized = _ITEMIZED.match(line)
+        if itemized:
+            flags, name = itemized.group(1), itemized.group(3)
+            target = removed if flags.startswith('*deleting') else (
+                copied if flags[:1] in ('>', 'c') else None)
+        elif line.startswith('deleting '):
+            name, target = line[len('deleting '):], removed
+        elif line.startswith('*deleting'):
+            name, target = line.split(None, 1)[-1], removed
+        elif ': ' in line or line.startswith(('sent ', 'total ', 'Number ')):
+            # rsync's own messages and summary, which can end in a file name.
+            continue
+        else:
+            name, target = line, copied
+        if target is None or not _is_media(name):
+            continue
+        name = os.path.basename(name.strip())
+        if name not in target:
+            target.append(name)
+    return copied, removed
+
+
+def describe_file(name: str) -> Tuple[Optional[str], str, str]:
+    """A file name as (episode code, title, quality).
+
+    Reads Sonarr's naming — "Show - S01E05 - 005 - Title [WEBDL-1080p]…" —
+    and anything else as far as it goes: a film is its name and quality.
+    """
+    stem = name.rsplit('.', 1)[0]
+    quality = ''
+    bracket = re.search(r'\[([^\]]+)\]', stem)
+    if bracket:
+        quality = bracket.group(1)
+    match = _EPISODE_CODE.search(stem)
+    if not match:
+        title = re.split(r'\s*\[', stem)[0].strip(' -') or stem
+        return None, title, quality
+    code = f"S{int(match.group(1)):02d}E{int(match.group(2)):02d}"
+    if match.group(3):
+        code += f"-E{int(match.group(3)):02d}"
+    after = stem[match.end():]
+    after = re.sub(r'^\s*-\s*', '', after)
+    after = re.sub(r'^\d{1,4}\s*-\s*', '', after)      # an anime absolute number
+    title = re.split(r'\s*\[', after)[0].strip(' -')
+    return code, title, quality
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + '…'
+
+
+def synced_lines(copied: List[str], removed: List[str]) -> List[str]:
+    """One line per copied file: the episode, its title, and whether it
+    replaced an older file of the same episode (an upgrade)."""
+    removed_codes = {describe_file(name)[0] for name in removed} - {None}
+    lines = []
+    for name in copied:
+        code, title, quality = describe_file(name)
+        if code:
+            text = f"`{code}` {_clip(title, 60)}" if title else f"`{code}`"
+            if code in removed_codes:
+                text += f" — upgrade{f' to {quality}' if quality else ''}"
+        else:
+            text = _clip(title, 70) + (f" · {quality}" if quality else '')
+        lines.append(text)
+    return lines
+
+
+def _human_size(value: Optional[str]) -> Optional[str]:
+    """rsync's "3.70G" as "3.70 GB"."""
+    if not value:
+        return None
+    match = re.match(r'^([0-9.,]+)\s*([KMGT]?)$', str(value).strip())
+    if not match:
+        return str(value)
+    return f"{match.group(1)} {match.group(2)}B" if match.group(2) else f"{match.group(1)} B"
+
+
+def _human_speed(value: Optional[str]) -> Optional[str]:
+    """rsync's "4.68M bytes/sec" as "4.68 MB/s"."""
+    if not value:
+        return None
+    size = _human_size(str(value).replace('bytes/sec', '').strip())
+    return f"{size}/s" if size else None
 
 
 class NotificationService:
@@ -132,16 +257,17 @@ class NotificationService:
     # -- announcements -------------------------------------------------------
 
     def send_discord_notification(self, transfer_id: str, transfer_status: str,
-                                  sync_label: Optional[str] = None):
+                                  sync_mode: Optional[str] = None,
+                                  sync_source: Optional[str] = None):
         """Announce a finished or failed transfer.
 
         The name is kept because four callers use it and it is not Discord's
         any more than it is anyone else's — where this ends up is a routing
         decision now, not a decision made here.
 
-        `sync_label` is what the sync engine knows about how this sync started
-        ("Automated Sync", "Auto-scanner", "Manual Sync"). Without it the label
-        is guessed from the webhook row, which is all older callers had.
+        `sync_mode` (AUTO or MANUAL) and `sync_source` (SONARR, EXPLORE, …) are
+        what the sync engine knows about how this sync started. Without them
+        both are guessed from the webhook row, which is all older callers had.
         """
         try:
             transfer = self.transfer_model.get(transfer_id)
@@ -155,19 +281,38 @@ class NotificationService:
             if transfer_status not in ('completed', 'failed'):
                 return
 
+            failed = transfer_status == 'failed'
             logs = transfer.get('logs', [])
             stats = self.parse_transfer_logs(logs)
-            errors = self.extract_rsync_errors(logs) if transfer_status == 'failed' else []
+            errors = self.extract_rsync_errors(logs) if failed else []
+            copied, removed = copied_files(logs)
 
             title = transfer.get('parsed_title', transfer.get('folder_name', 'Unknown'))
-            poster_url, requested_by, is_auto_sync = self._webhook_context(
+            if transfer.get('season_name') and transfer.get('season_name') not in title:
+                title = f"{title} — {transfer['season_name']}"
+            poster_url, requested_by, is_auto_sync, guessed_source = self._webhook_context(
                 transfer_id, transfer.get('media_type', '')
             )
-            sync_type = sync_label or ('Automated Sync' if is_auto_sync else 'Manual Sync')
+            mode = sync_mode or (SYNC_AUTO if is_auto_sync else SYNC_MANUAL)
+            source = sync_source if sync_source is not None else guessed_source
 
-            if transfer_status == 'failed':
-                fields = [Field('Folder Path', transfer.get('dest_path', 'Unknown'))]
+            fields: List[Field] = []
+            lines = synced_lines(copied, removed)
+            if lines:
+                shown = lines[:LISTED_FILES]
+                if len(lines) > LISTED_FILES:
+                    shown.append(f"… and {len(lines) - LISTED_FILES} more")
+                fields.append(Field(
+                    ('Copied before it stopped' if failed else 'Synced')
+                    + f" ({len(lines)})", '\n'.join(shown)))
+            elif not failed:
+                fields.append(Field('Synced', 'Nothing new: every file was already here.'))
 
+            route = ROUTE_LABELS.get(transfer.get('transport') or '')
+            if route:
+                fields.append(Field('Transfer', route, inline=True))
+
+            if failed:
                 if errors:
                     detail = '\n'.join(errors)
                 else:
@@ -175,46 +320,34 @@ class NotificationService:
                     # description of what went wrong that exists.
                     detail = transfer.get('progress', 'Unknown error')
                 fields.append(Field('Error Details', detail, monospace=True))
-
-                if (stats.get('regular_files_transferred') is not None
-                        or stats.get('deleted_files') is not None):
-                    fields.append(Field(
-                        'Partial Transfer Stats',
-                        f"Transferred: {stats.get('regular_files_transferred', 'N/A')}\n"
-                        f"Deleted: {stats.get('deleted_files', 'N/A')}",
-                        inline=True, monospace=True,
-                    ))
-
                 event_key, severity = 'transfer.failed', FAILURE
-                author = f"{sync_type} - FAILED ❌"
             else:
-                fields = [
-                    Field('Folder Synced', transfer.get('dest_path', 'Unknown')),
-                    Field(
-                        'Files Info',
-                        f"Transferred files: {stats.get('regular_files_transferred', 'N/A')}\n"
-                        f"Deleted Files: {stats.get('deleted_files', 'N/A')}",
-                        inline=True, monospace=True,
-                    ),
-                    Field(
-                        'Speed Info',
-                        f"Transferred: {stats.get('total_transferred_size', 'N/A')}\n"
-                        f"Avg Speed: {stats.get('avg_speed', 'N/A')}",
-                        inline=True, monospace=True,
-                    ),
-                ]
+                size = _human_size(stats.get('total_transferred_size'))
+                speed = _human_speed(stats.get('avg_speed'))
+                if size and copied:
+                    fields.append(Field('Size', size, inline=True))
+                if speed and copied:
+                    fields.append(Field('Speed', speed, inline=True))
                 event_key, severity = 'transfer.completed', SUCCESS
-                author = sync_type
+
+            # Files rsync removed that are not the old half of an upgrade: the
+            # remote server no longer has them. Every one is kept in Backups.
+            upgraded = {describe_file(n)[0] for n in copied} - {None}
+            gone = [n for n in removed if describe_file(n)[0] not in upgraded]
+            if gone:
+                fields.append(Field('Removed', f"{len(gone)} file{'s' if len(gone) != 1 else ''}"
+                                    " (kept in Backups)", inline=True))
 
             if requested_by:
                 fields.append(Field('Requested by', requested_by, inline=True))
+            fields.append(Field('Folder', transfer.get('dest_path', 'Unknown'), monospace=True))
 
             notify(Event(
                 key=event_key,
                 severity=severity,
                 title=title,
                 fields=tuple(fields),
-                author=author,
+                author=sync_headline(mode, source, failed=failed),
                 thumbnail_url=poster_url,
                 context={'transfer_id': transfer_id},
             ))
@@ -225,7 +358,7 @@ class NotificationService:
             traceback.print_exc()
 
     def _webhook_context(self, transfer_id: str, media_type: str):
-        """Poster, requester and whether this ran by itself.
+        """Poster, requester, whether this ran by itself, and from where.
 
         A transfer that came from a Radarr/Sonarr notification carries a poster
         image and the name of whoever asked for it. Finding that means looking
@@ -234,6 +367,7 @@ class NotificationService:
         poster_url: Optional[str] = None
         requested_by: Optional[str] = None
         is_auto_sync = False
+        source = ''
 
         try:
             if media_type == 'movies':
@@ -246,6 +380,7 @@ class NotificationService:
                     requested_by = match.get('requested_by')
                     # A movie sync driven by a notification is always automatic.
                     is_auto_sync = True
+                    source = 'RADARR'
 
             elif media_type in ('series', 'anime', 'tvshows') and self.series_webhook_model:
                 notifications = self.series_webhook_model.get_all()
@@ -259,10 +394,11 @@ class NotificationService:
                     # wait-and-batch scheduler. One an operator pressed sync on
                     # is a manual sync that happens to have a poster.
                     is_auto_sync = match.get('auto_sync_scheduled_at') is not None
+                    source = 'SONARR'
         except Exception as e:
             print(f"⚠️  Could not read the notification behind {transfer_id}: {e}")
 
-        return poster_url, requested_by, is_auto_sync
+        return poster_url, requested_by, is_auto_sync, source
 
     def send_rename_discord_notification(self, rename_result: Dict):
         """Announce a finished rename run.
@@ -317,8 +453,7 @@ class NotificationService:
                     ),
                     Field('Renamed Files', rename_summary, monospace=True),
                 ),
-                author='File Rename',
-                footer='DragonCP Rename Operation',
+                author=headline('File rename', status_text),
                 context={'status': status},
             ))
 
@@ -399,8 +534,7 @@ class NotificationService:
                     'its retention rule. This cannot be undone.'
                 ),
                 fields=tuple(fields),
-                author='Backup Retention',
-                footer='DragonCP Backup Retention',
+                author=headline('Backup retention', 'versions deleted'),
                 context={'deleted_count': deleted_count},
             ))
 

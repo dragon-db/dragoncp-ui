@@ -2,9 +2,11 @@
 """
 Comparison — line the two libraries up and label every episode.
 
-Four labels, and every decision in Explore is built from them:
+Five labels, and every decision in Explore is built from them:
 
     IN_SYNC     same episode both sides, same size
+    NESTED      same episode, same size, but the local copy sits inside an
+                extra folder the media server cannot see   -> repair, never sync
     MISSING     on the remote, not local            -> download
     UPGRADED    both sides, different file          -> replace (back up the old one)
     LOCAL_ONLY  local, not on the remote            -> removal candidate, never silent
@@ -23,10 +25,15 @@ Two rules that are easy to get wrong and matter a lot:
 
 Status roll-up:
 
-    SYNCED        nothing missing, nothing upgraded
+    SYNCED        nothing missing, nothing upgraded, nothing nested
+    NEEDS_REPAIR  would be SYNCED, but a local media file sits in a nested folder
     PARTIAL_SYNC  you have some of it, but not all or not current
     OUT_OF_SYNC   you have none of what the remote holds
     NO_INFO       the remote side holds nothing to compare against
+
+A nested file only changes SYNCED. Partial, Out of sync and Not on remote stay
+what they are, and the page tags them "Nested" beside the status, the way it
+tags an upgrade: a season can be missing one episode and have another stranded.
 
 LOCAL_ONLY files deliberately do NOT push a season out of SYNCED. "In sync with
 the remote" means you hold everything the remote holds; files the remote has
@@ -41,11 +48,13 @@ from .identity import EpisodeKey
 from .inventory import FileEntry, Inventory
 
 IN_SYNC = 'IN_SYNC'
+NESTED = 'NESTED'
 MISSING = 'MISSING'
 UPGRADED = 'UPGRADED'
 LOCAL_ONLY = 'LOCAL_ONLY'
 
 SYNCED = 'SYNCED'
+NEEDS_REPAIR = 'NEEDS_REPAIR'
 PARTIAL_SYNC = 'PARTIAL_SYNC'
 OUT_OF_SYNC = 'OUT_OF_SYNC'
 NO_INFO = 'NO_INFO'
@@ -87,6 +96,9 @@ class EpisodeDiff:
             'local_size': self.local.size if self.local else None,
             'local_mtime': self.local.mtime if self.local else None,
             'local_path': self.local.relative_path if self.local else None,
+            # Whatever the label: an upgrade or a local-only file can be
+            # stranded in a nested folder too.
+            'local_nested': bool(self.local and self.local.misplaced),
             'absolute_number': (self.remote or self.local).absolute_number if (self.remote or self.local) else None,
         }
 
@@ -94,9 +106,12 @@ class EpisodeDiff:
 @dataclass
 class Counts:
     in_sync: int = 0
+    nested: int = 0
     missing: int = 0
     upgraded: int = 0
     local_only: int = 0
+    # every local media file sitting in a nested folder, whatever its label
+    nested_files: int = 0
 
     # bytes that would move if this scope were synced
     incoming_bytes: int = 0
@@ -106,32 +121,43 @@ class Counts:
     def add(self, other: 'Counts') -> 'Counts':
         return Counts(
             in_sync=self.in_sync + other.in_sync,
+            nested=self.nested + other.nested,
             missing=self.missing + other.missing,
             upgraded=self.upgraded + other.upgraded,
             local_only=self.local_only + other.local_only,
+            nested_files=self.nested_files + other.nested_files,
             incoming_bytes=self.incoming_bytes + other.incoming_bytes,
             removable_bytes=self.removable_bytes + other.removable_bytes,
         )
 
     @property
     def remote_total(self) -> int:
-        return self.in_sync + self.missing + self.upgraded
+        return self.in_sync + self.nested + self.missing + self.upgraded
+
+    @property
+    def local_media(self) -> int:
+        """Local media files that took part in the comparison."""
+        return self.in_sync + self.nested + self.upgraded + self.local_only
 
     def status(self) -> str:
         if self.remote_total == 0:
             return NO_INFO
         if self.missing == 0 and self.upgraded == 0:
-            return SYNCED
-        if self.in_sync > 0:
+            # Holding every file is not "Synced" while one of them is where
+            # the media server cannot see it.
+            return NEEDS_REPAIR if self.nested_files else SYNCED
+        if self.in_sync > 0 or self.nested > 0:
             return PARTIAL_SYNC
         return OUT_OF_SYNC
 
     def to_dict(self) -> Dict:
         return {
             'in_sync': self.in_sync,
+            'nested': self.nested,
             'missing': self.missing,
             'upgraded': self.upgraded,
             'local_only': self.local_only,
+            'nested_files': self.nested_files,
             'remote_total': self.remote_total,
             'incoming_bytes': self.incoming_bytes,
             'removable_bytes': self.removable_bytes,
@@ -317,11 +343,16 @@ def _pick_match(remote: FileEntry, candidates: List[FileEntry]) -> Tuple[FileEnt
     A same-size candidate means the content is already there — possibly under a
     different name after a rename, which is not something to re-download.
     Otherwise the newest candidate is the one being superseded.
+
+    A copy in its proper place beats one stranded in a nested folder: that is
+    the one the media server plays. The stranded one is still reported (the
+    season's `misplaced` list), and Repair asks which of the two to keep.
     """
-    for candidate in candidates:
+    ordered = sorted(candidates, key=lambda c: c.misplaced)
+    for candidate in ordered:
         if candidate.size == remote.size:
             return candidate, True
-    return max(candidates, key=lambda c: c.mtime), False
+    return max(ordered, key=lambda c: (not c.misplaced, c.mtime)), False
 
 
 def compare_season(media_type: str, series: str, season: Optional[int],
@@ -341,6 +372,7 @@ def compare_season(media_type: str, series: str, season: Optional[int],
     diff.local_bytes = sum(e.size for e in local_media)
     diff.remote_mtime = max((e.mtime for e in remote_entries), default=0)
     diff.misplaced = sorted(e.relative_path for e in local_media if e.misplaced)
+    diff.counts.nested_files = len(diff.misplaced)
 
     remote_keys = _by_key(remote_media)
     local_keys = _by_key(local_media)
@@ -352,7 +384,15 @@ def compare_season(media_type: str, series: str, season: Optional[int],
         if candidates:
             local_file, same_size = _pick_match(remote_file, candidates)
             matched_local.add(local_file.relative_path)
-            if same_size:
+            if same_size and local_file.misplaced:
+                # The content is here, but not where the media server looks.
+                # Not in sync, and nothing to download either: Repair moves it.
+                diff.episodes.append(EpisodeDiff(
+                    label=NESTED, key=key, remote=remote_file, local=local_file,
+                    renamed=local_file.name != remote_file.name,
+                ))
+                diff.counts.nested += 1
+            elif same_size:
                 diff.episodes.append(EpisodeDiff(
                     label=IN_SYNC, key=key, remote=remote_file, local=local_file,
                     renamed=local_file.name != remote_file.name,
@@ -420,7 +460,11 @@ def compare_season(media_type: str, series: str, season: Optional[int],
         if name not in local_plain:
             continue
         local_file = local_plain[name]
-        if local_file.size == remote_file.size:
+        if local_file.size == remote_file.size and local_file.misplaced:
+            diff.episodes.append(EpisodeDiff(
+                label=NESTED, remote=remote_file, local=local_file))
+            diff.counts.nested += 1
+        elif local_file.size == remote_file.size:
             diff.episodes.append(EpisodeDiff(
                 label=IN_SYNC, remote=remote_file, local=local_file))
             diff.counts.in_sync += 1

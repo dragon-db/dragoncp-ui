@@ -14,11 +14,12 @@ places that raise them.
 """
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from activity_log import record
 from actor import current_actor
+from services.connectors.events import headline
 from models.alert import DISMISSED, DONE, OPEN, WRONG, AlertStore
 
 log = logging.getLogger('dragoncp.alerts')
@@ -56,9 +57,30 @@ KINDS = {
     'sync_refused': 'Safety check',
     'transfer_failed': 'Failed',
     'scanner_gap': 'Auto-scanner',
+    'missed_sync': 'Missed auto-sync',
     'integration_down': 'Integration',
     'job_failing': 'Scheduler',
     'fast_route_failed': 'Fast transfers',
+}
+
+
+#: The Discord headline for each kind of alert ("TOPIC - DETAIL", upper case).
+#: The safety check's used to read "Manual Sync Alert ⚠️", which named what a
+#: person had to do next rather than what happened: an automatic sync stopped
+#: because its dry run would have deleted more than it copied, or found fewer
+#: files on the remote server than here.
+HEADLINES = {
+    'restart_unfinished': ('After restart', 'sync may be skipped'),
+    'transfer_unknown': ('After restart', 'result unknown'),
+    'stuck_download': ('Ready check', 'stuck download'),
+    'ready_timeout': ('Ready check', 'waited 30 minutes'),
+    'sync_refused': ('Safety check', 'auto sync stopped'),
+    'transfer_failed': ('Sync failed', ''),
+    'scanner_gap': ('Auto-scanner', 'gap not closed'),
+    'missed_sync': ('Auto-scanner', 'missed auto sync'),
+    'integration_down': ('Integration down', ''),
+    'job_failing': ('Scheduler', 'job failing'),
+    'fast_route_failed': ('Fast transfer failed', 'SSH fallback used'),
 }
 
 
@@ -67,6 +89,33 @@ def _run_label(run: Dict[str, Any]) -> str:
     if run.get('season_name'):
         label = f"{label} — {run['season_name']}"
     return label
+
+
+def _moment(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _newer(imported_at: Optional[str], service_files: Optional[int],
+           than_moment: Any, than_files: Any) -> bool:
+    """Whether a find carries something new: a later import, or more files on the service.
+
+    Only something new reopens a missed-sync alert a person closed, or updates
+    an open one; the same import found again on the next scan does neither.
+    """
+    moment, before = _moment(imported_at), _moment(than_moment)
+    if moment is not None and (before is None or moment > before):
+        return True
+    try:
+        return service_files is not None and than_files is not None and \
+            int(service_files) > int(than_files)
+    except (TypeError, ValueError):
+        return False
 
 
 def _run_link(run_id: Optional[str]) -> Optional[str]:
@@ -91,7 +140,9 @@ class AlertService:
                     actions: Sequence[str] = ('dismiss',), data: Optional[Dict] = None,
                     announce_event: Optional[str] = None,
                     fields: Sequence[Tuple[str, str]] = (),
-                    quiet_after_dismiss: bool = False) -> Optional[Dict[str, Any]]:
+                    quiet_after_dismiss: bool = False,
+                    announce_detail: Optional[str] = None,
+                    announce_summary: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Open an alert, or bump the open one with the same key. Never raises.
 
         `quiet_after_dismiss` is for conditions checked on a schedule — a gap
@@ -120,7 +171,15 @@ class AlertService:
                                       actions=actions, data=data)
             log.info('Alert opened: %s — %s', kind, title)
             if announce_event:
-                self._announce(announce_event, severity, title, message, fields)
+                topic, detail = HEADLINES.get(kind, (KINDS.get(kind, kind), ''))
+                # "Sync stopped by the safety check: Example Show — Season 04"
+                # reads right in the Notifications list. On Discord the
+                # headline already says what happened, so the title is what it
+                # happened to.
+                about = title.split(': ', 1)[1] if ': ' in title else title
+                self._announce(announce_event, severity, about,
+                               announce_summary or message, fields,
+                               headline(topic, announce_detail or detail))
             self._emit()
             return alert
         except Exception:  # noqa: BLE001 - raising an alert must never break a sync
@@ -128,18 +187,20 @@ class AlertService:
             return None
 
     def _announce(self, event_key: str, severity: str, title: str, message: str,
-                  fields: Sequence[Tuple[str, str]]) -> None:
+                  fields: Sequence[Tuple[str, str]], author: str) -> None:
         try:
             from services.connectors import notify
             from services.connectors.events import Event, Field
-            event_fields = [Field(name, value) for name, value in fields if value]
+            # A folder reads as a path, the way the sync messages show it.
+            event_fields = [Field(name, value, monospace=(name == 'Folder'))
+                            for name, value in fields if value]
             event_fields.append(Field('What to do',
                                       'Open DragonCP → Notifications to act on it.'))
             notify(Event(
                 key=event_key, severity=severity if severity in
                 ('info', 'success', 'warning', 'failure') else 'warning',
                 title=title, summary=message[:900] if message else '',
-                fields=tuple(event_fields), author='DragonCP Notifications',
+                fields=tuple(event_fields), author=author,
             ))
         except Exception:  # noqa: BLE001
             log.exception('Could not announce alert %s', title)
@@ -272,7 +333,7 @@ class AlertService:
             WARNING, dedupe_key=f"integration_down:{source}",
             link=f"/integrations/{source}", actions=('dismiss',),
             data={'source': source}, announce_event='integration.down',
-            quiet_after_dismiss=True)
+            quiet_after_dismiss=True, announce_detail=source)
 
     def integration_up(self, source: str) -> None:
         """A service answered again: close its open "not answering" alert."""
@@ -314,10 +375,14 @@ class AlertService:
     def sync_refused(self, run: Dict[str, Any], reason: str, detail: Dict[str, Any],
                      announce: bool = True) -> None:
         label = _run_label(run)
-        counts = (f"Media server: {detail.get('server_file_count', 0)} files · "
-                  f"this disk: {detail.get('local_file_count', 0)} · would delete "
-                  f"{detail.get('deleted_count', 0)} · would add "
-                  f"{detail.get('incoming_count', 0)}")
+
+        def files(n):
+            return f"{n} file{'s' if n != 1 else ''}"
+
+        remote, here = detail.get('server_file_count', 0), detail.get('local_file_count', 0)
+        delete, add = detail.get('deleted_count', 0), detail.get('incoming_count', 0)
+        counts = (f"Remote server: {files(remote)} · here: {here} · would delete "
+                  f"{delete} · would add {add}")
         self.raise_alert(
             'sync_refused', f"Sync stopped by the safety check: {label}",
             f"{reason}. Nothing was written. {counts}.",
@@ -328,8 +393,13 @@ class AlertService:
                               'folder': run.get('folder_name'),
                               'season': run.get('season_name')}},
             announce_event='autosync.blocked' if announce else None,
-            fields=(('Reason', reason), ('Folder', run.get('dest_path') or ''),
-                    ('File analysis', counts)))
+            # The fields say the reason and the counts, so the message above
+            # them does not say them again.
+            announce_summary='Nothing was copied or deleted.',
+            fields=(('Reason', reason),
+                    ('File analysis', f"Remote server: {files(remote)}\nHere: {files(here)}\n"
+                                      f"Would delete: {delete}\nWould add: {add}"),
+                    ('Folder', run.get('dest_path') or '')))
 
     def transfer_failed(self, run: Dict[str, Any], message: str) -> None:
         label = _run_label(run)
@@ -362,10 +432,10 @@ class AlertService:
             'fast_route_failed', 'Fast transfers failed — copies are using SSH',
             f"{label} failed on the fast transfer server (rsync exit {return_code}) "
             f"and is running again over SSH, at the slower speed.{said} Check "
-            f"Settings → Connections → Fast transfers.",
+            f"Settings → Remote server → Fast transfers.",
             WARNING, dedupe_key='fast_route_failed', run_id=transfer.get('sync_run_id'),
             transfer_id=transfer.get('transfer_id'),
-            link=None if transfer.get('sync_run_id') else '/settings',
+            link=None if transfer.get('sync_run_id') else '/settings?tab=remote',
             actions=('dismiss',), data={'exit_code': return_code, 'reason': reason},
             announce_event='fast_route.failed',
             fields=(('Copy', label), ('rsync said', reason)),
@@ -411,6 +481,85 @@ class AlertService:
             unit_key=unit.get('dest_path'), actions=('sync_now', 'dismiss'),
             data={'unit': unit, 'source': source}, announce_event='scanner.found',
             quiet_after_dismiss=True)
+
+    def missed_sync(self, source: str, label: str, unit: Dict[str, Any], why: str,
+                    imported_at: Optional[str] = None,
+                    service_files: Optional[int] = None
+                    ) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """The auto-scanner, set to Alert only, found something nothing has synced.
+
+        Says what became of it: `alerted` (a new alert), `updated` (the open
+        one gained a newer import), `already_alerted` (an open alert already
+        covers this folder — this kind or another, such as the safety check's),
+        `dismissed` (a person closed it and nothing new has arrived since) or
+        `failed`. Not announced here: the scanner sends one Discord message for
+        everything a scan alerted.
+        """
+        from services.sync_engine.units import unit_key as folder_key
+        dest = unit.get('dest_path') or ''
+        key = folder_key(dest)
+        dedupe = f"missed:{key}"
+        data = {'unit': unit, 'source': source, 'imported_at': imported_at,
+                'service_files': service_files,
+                'explore': {'media_type': unit.get('media_type'),
+                            'series': unit.get('folder_name'),
+                            'season': unit.get('season_name')}}
+        message = (f"{why} The auto-scanner is set to Alert only, so nothing was copied. "
+                   f"Open it in Explore and sync it by hand when it is ready.")
+        try:
+            existing = self.store.find_open(dedupe)
+            if existing is not None:
+                earlier = existing.get('data') or {}
+                if not _newer(imported_at, service_files, earlier.get('imported_at'),
+                              earlier.get('service_files')):
+                    return 'already_alerted', existing
+                alert = self.store.bump(existing['alert_id'], message=message, data=data)
+                self._emit()
+                return 'updated', alert
+            others = self.store.open_for_unit([key, dest])
+            if others:
+                return 'already_alerted', others[0]
+            closed = self.store.last_closed_by_a_person(dedupe)
+            if closed is not None:
+                # Against the import the person saw, not when they closed it: an
+                # import that landed after the last scan but before the dismiss
+                # was never shown to them.
+                seen = closed.get('data') or {}
+                if not _newer(imported_at, service_files,
+                              seen.get('imported_at') or closed.get('resolved_at'),
+                              seen.get('service_files')):
+                    return 'dismissed', closed
+            alert = self.raise_alert(
+                'missed_sync', f"Missed auto-sync: {label}", message, WARNING,
+                dedupe_key=dedupe, unit_key=key, actions=('dismiss',), data=data)
+            return ('alerted' if alert else 'failed'), alert
+        except Exception:  # noqa: BLE001 - a scan must finish whatever the alerts do
+            log.exception('Could not record a missed sync for %s', label)
+            return 'failed', None
+
+    def close_synced_misses(self, source: str, synced_since) -> int:
+        """Close open missed-sync alerts whose folder has been synced since.
+
+        `synced_since(dest_path, moment)` is the scanner's rule: a copy that
+        started after the import and finished. A sync from Explore counts.
+        """
+        closed = 0
+        try:
+            from actor import SYSTEM_ACTOR
+            for alert in self.store.list(states=[OPEN], kinds=['missed_sync'], limit=500):
+                data = alert.get('data') or {}
+                if data.get('source') != source:
+                    continue
+                dest = (data.get('unit') or {}).get('dest_path')
+                since = _moment(data.get('imported_at')) or _moment(alert.get('created_at'))
+                if dest and since and synced_since(dest, since):
+                    self.store.resolve(alert['alert_id'], DONE, 'auto', SYSTEM_ACTOR)
+                    closed += 1
+        except Exception:  # noqa: BLE001
+            log.exception('Could not close synced missed-sync alerts')
+        if closed:
+            self._emit()
+        return closed
 
     def job_failing(self, job: str, label: str, error: str, failures: int) -> None:
         self.raise_alert(

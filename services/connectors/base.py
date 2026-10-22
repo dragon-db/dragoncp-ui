@@ -21,7 +21,7 @@ take down a transfer.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, FrozenSet, Optional
+from typing import Any, Callable, Dict, FrozenSet, Optional, Sequence
 
 from services.connectors.events import Event
 
@@ -106,6 +106,25 @@ class Target:
         }
 
 
+@dataclass(frozen=True)
+class Mention:
+    """Someone a message may ping, under a name the operator chose.
+
+    `kind` is the service's own word for what is pinged — for Discord a role,
+    a user, `here` or `everyone` — and `value` its id ('' when the kind needs
+    none). The adapter decides how it is written into a message.
+    """
+
+    mention_id: str
+    label: str
+    kind: str
+    value: str = ''
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {'mention_id': self.mention_id, 'label': self.label,
+                'kind': self.kind, 'value': self.value}
+
+
 class ConfigField:
     """One input on a connector's settings form.
 
@@ -116,14 +135,25 @@ class ConfigField:
 
     def __init__(self, name: str, label: str, description: str = '',
                  kind: str = 'text', secret: bool = False,
-                 required: bool = False, placeholder: str = ''):
+                 required: bool = False, placeholder: str = '',
+                 choices: Sequence[Sequence[str]] = (), default: str = ''):
         self.name = name
         self.label = label
         self.description = description
-        self.kind = kind            # text | password | url | boolean | number
+        self.kind = kind            # text | password | url | boolean | number | choice
         self.secret = secret        # stored in connector_secret, never returned
         self.required = required
         self.placeholder = placeholder
+        #: For `choice`: (value, label) pairs, in the order the form offers them.
+        self.choices = tuple((str(value), str(text)) for value, text in choices)
+        #: What an unset field means, so the form can show it selected.
+        self.default = default
+
+    def accepts(self, value: str) -> bool:
+        """Whether a submitted value fits. Only a `choice` is checked; unset is fine."""
+        if self.kind != 'choice' or value == '':
+            return True
+        return value in {v for v, _ in self.choices}
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -134,6 +164,8 @@ class ConfigField:
             'secret': self.secret,
             'required': self.required,
             'placeholder': self.placeholder,
+            'choices': [{'value': v, 'label': t} for v, t in self.choices],
+            'default': self.default,
         }
 
 
@@ -220,6 +252,11 @@ class NotifyingConnector(Connector):
     target_noun = 'webhook'
     #: The secret name a target's credential is stored under.
     target_secret_kind = 'url'
+    #: Whether a message can ping someone. When True, `deliver` takes a
+    #: `mentions` argument and `mention_kinds` lists what can be pinged.
+    supports_mentions = False
+    #: The kinds of mention, in the order the form offers them.
+    mention_kinds: Sequence[str] = ()
 
     def render(self, event: Event) -> Dict[str, Any]:
         """Turn a neutral event into this service's payload shape."""
@@ -229,6 +266,13 @@ class NotifyingConnector(Connector):
                 credential: str) -> DeliveryResult:
         """Send one rendered event to one destination."""
         raise NotImplementedError
+
+    def validate_mention(self, kind: str, value: str) -> Optional[str]:
+        """Reject a mention this service could not ping.
+
+        Returns an operator-facing reason, or None when it is acceptable.
+        """
+        return f"{self.display_name} messages cannot ping anyone"
 
     def validate_target(self, credential: str) -> Optional[str]:
         """Reject a bad destination credential before it is stored.

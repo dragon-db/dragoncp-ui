@@ -668,12 +668,14 @@ CREATE TABLE connector_target (
     last_send_ok INTEGER,
     last_send_error TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    mention_ids TEXT,
     UNIQUE (connector_id, label)
 )
 ```
 
 **Column Descriptions:**
 - `label` - the operator's own name for it, unique per connector, offered by name in the routing table
+- `mention_ids` - JSON list of `connector_mention.mention_id`: who every message sent here pings unless the route chooses others. NULL or `[]` is nobody. Added in 2.3.2.
 - `secret_ref` - key into `connector_secret` holding the actual URL
 - `is_default` - exactly one per connector; enforced in `update_target` / `create_target`, not by a constraint
 - `enabled` - "out of service": messages routed here are held, **not** redirected
@@ -694,12 +696,16 @@ CREATE TABLE notification_route (
     target_id TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    ping_when TEXT,
+    mention_ids TEXT,
     PRIMARY KEY (event_key, connector_id)
 )
 ```
 
 **Column Descriptions:**
 - `event_key` - one of the keys in `services/connectors/events.py`
+- `ping_when` - `never`, `attention` (a warning or a failure) or `always`. NULL is the event's `default_ping`. Added in 2.3.2.
+- `mention_ids` - JSON list of who it pings. **NULL means whoever the webhook pings**; `[]` is nobody. Added in 2.3.2.
 - `target_id` - **NULL means "use the connector's default"**, which is also what a missing row means. That is the rule that keeps a notification added in a later version from shipping silent.
 - `enabled` - off means this announcement is not made at all
 
@@ -708,6 +714,37 @@ NULL rather than removing them, so those notifications fall back to the default
 instead of going quiet.
 
 **Added in 2.3.0.**
+
+---
+
+## Table: `connector_mention`
+
+**Purpose:** who a message can ping — a Discord role, a user, `@here` or
+`@everyone` — under a name the operator chose. Webhooks and routes hold its
+`mention_id`, so fixing a wrong Discord ID is one edit.
+
+**Schema:**
+```sql
+CREATE TABLE connector_mention (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mention_id TEXT UNIQUE NOT NULL,
+    connector_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (connector_id, label)
+)
+```
+
+**Column Descriptions:**
+- `kind` - `role`, `user`, `here` or `everyone` (the adapter's `mention_kinds`)
+- `value` - the Discord ID for a role or a user; empty for `here` and `everyone`
+
+Deleting one removes its id from every `connector_target.mention_ids` and
+`notification_route.mention_ids`.
+
+**Added in 2.3.2.**
 
 ---
 
@@ -731,12 +768,14 @@ CREATE TABLE connector_delivery (
     status_code INTEGER,
     error TEXT,
     duration_ms INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    mentions TEXT
 )
 ```
 
 **Column Descriptions:**
 - `skipped_reason` - set when the message was held back deliberately (switched off, destination out of service, no default)
+- `mentions` - who the message pinged, by name, comma separated. Added in 2.3.2.
 - `error` - set when it was attempted and failed. Already redacted; never contains a credential.
 
 Trimmed to the last 100 rows per connector on every write, so there is no sweep
@@ -1279,7 +1318,7 @@ CREATE TABLE sync_run (
   its webhooks, or a restart joining it, while the run is `held` or `waiting`;
   the ready check passes on its next step. A `sonarr_webhook`, `radarr_webhook`
   or `auto_scanner` run with it set counts as started by a person: it is
-  announced as "Manual Sync", and a safety-check refusal of it is not announced
+  announced as a MANUAL SYNC, and a safety-check refusal of it is not announced
   on Discord
 - `force_safety` - 1 when an admin chose to go ahead even if the dry run fails
   (a manual sync asked for it, or Sync anyway). Automatic syncs never set it
@@ -1431,7 +1470,7 @@ CREATE TABLE alert (
 - `alert_id` - `alert_<12 hex>`
 - `kind` - `restart_unfinished`, `transfer_unknown`, `stuck_download`,
   `ready_timeout`, `sync_refused`, `transfer_failed`, `scanner_gap`,
-  `integration_down`, `job_failing`. Labels and wording are in
+  `missed_sync`, `integration_down`, `job_failing`, `fast_route_failed`. Labels and wording are in
   `services/alert_service.py` (`KINDS` and one method per kind)
 - `severity` - `warning`, or `failure` for a failed transfer. `info` is defined
   but no kind uses it

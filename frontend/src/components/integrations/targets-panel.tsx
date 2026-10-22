@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
+import { MentionPicker } from "@/components/integrations/mention-picker";
 import { errorText } from "@/lib/api-error";
 import {
   useAddTarget,
@@ -170,6 +171,33 @@ function TargetRow({ connector, target }: { connector: Connector; target: Connec
             <>Nothing sent here yet</>
           )}
         </div>
+        {connector.supports_mentions && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">Pings</span>
+            {(connector.mentions ?? []).length > 0 ? (
+              <MentionPicker
+                mentions={connector.mentions ?? []}
+                value={target.mention_ids}
+                onChange={(next) =>
+                  run(
+                    updateTarget.mutateAsync({
+                      targetId: target.target_id,
+                      mention_ids: next ?? [],
+                    }),
+                    `Saved who “${target.label}” pings`,
+                    "Could not change who it pings"
+                  )
+                }
+                className="h-8 w-56 max-w-full"
+                ariaLabel={`Who messages to “${target.label}” ping`}
+              />
+            ) : (
+              <span className="text-xs text-muted-foreground">
+                nobody yet — add a role or person on the Mentions tab
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
@@ -219,13 +247,14 @@ function TargetRow({ connector, target }: { connector: Connector; target: Connec
           variant="outline"
           size="sm"
           disabled={testTarget.isPending}
-          onClick={() =>
-            run(
-              testTarget.mutateAsync(target.target_id),
-              `Test message sent to “${target.label}”`,
-              "The test message was not accepted"
-            )
-          }
+          onClick={async () => {
+            try {
+              const result = await testTarget.mutateAsync(target.target_id);
+              toast.success(result?.message ?? `Test message sent to “${target.label}”`);
+            } catch (error) {
+              toast.error(errorText(error, "The test message was not accepted"));
+            }
+          }}
         >
           <IconSend className="mr-1.5 h-4 w-4" />
           Test

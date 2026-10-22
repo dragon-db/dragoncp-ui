@@ -3,7 +3,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { EpisodeLabel, StatusBadge } from "./explore-bits";
+import { EpisodeLabel, NestedTag, StatusBadge } from "./explore-bits";
 import { formatBytes } from "@/lib/explore-format";
 import { EPISODE_CODE, containerOf, parseFilename } from "@/lib/media-filename";
 import type { ExploreEpisode, ExploreSeason } from "@/lib/explore-types";
@@ -411,7 +411,11 @@ function SeasonCompareBlock({ season }: { season: ExploreSeason }) {
   // There is no local total on the wire, so it is the labels that describe a
   // local file: matching, present-but-outdated, and here-only. `missing` is
   // deliberately absent — those are the ones you do not have.
-  const localCount = season.counts.in_sync + season.counts.upgraded + season.counts.local_only;
+  const localCount =
+    season.counts.in_sync +
+    (season.counts.nested ?? 0) +
+    season.counts.upgraded +
+    season.counts.local_only;
   const remoteCount = season.counts.remote_total ?? 0;
   const differs = localCount !== remoteCount || season.local_bytes !== season.remote_bytes;
 
@@ -572,6 +576,7 @@ export function SeasonRows({
                   <span className="min-w-0 truncate font-medium text-foreground">
                     {season.name}
                   </span>
+                  <NestedTag count={season.misplaced.length} status={season.status} />
                 </div>
                 {/* No Quality block here: a season is a folder, and quality is
                     read out of file names. The switch disables that option
@@ -691,6 +696,16 @@ export function EpisodeRows({
                       renamed
                     </span>
                   )}
+                  {/* An upgrade or a local-only file can be stranded too; the
+                      Sync column already says so for a NESTED one. */}
+                  {episode.local_nested && episode.label !== "NESTED" && (
+                    <span
+                      title={nestedWhere(episode.local_path)}
+                      className="flex-none font-mono text-[9.5px] text-amber-300"
+                    >
+                      nested folder
+                    </span>
+                  )}
                 </div>
                 {view === "compare" && <CompareBlock episode={episode} />}
                 {view === "quality" && <QualityBlock episode={episode} />}
@@ -702,7 +717,10 @@ export function EpisodeRows({
                 {relativeDate(episode.remote_mtime ?? episode.local_mtime)}
               </Td>
               <Td>
-                <EpisodeLabel label={episode.label} />
+                <EpisodeLabel
+                  label={episode.label}
+                  title={episode.label === "NESTED" ? nestedWhere(episode.local_path) : undefined}
+                />
               </Td>
             </Row>
           );
@@ -710,6 +728,12 @@ export function EpisodeRows({
       </tbody>
     </table>
   );
+}
+
+function nestedWhere(path: string | null): string {
+  return `Here inside an extra folder, where the media server cannot see it${
+    path ? `: ${path}` : ""
+  }. Repair moves it into the season folder.`;
 }
 
 /**

@@ -272,6 +272,49 @@ class ReplaceAnInSyncFileTests(unittest.TestCase):
         plan = plan_season_sync('tvshows', self.series, self.season, REMOTE_ROOT, LOCAL_ROOT)
         self.assertTrue(plan.is_empty, 'in-sync files are only re-fetched when asked for')
 
+
+class NestedFileTests(unittest.TestCase):
+    """A copy stranded in a nested folder: Repair's job, never a sync's."""
+
+    def setUp(self):
+        name = 'Show - S01E01 - Title [WEBDL-1080p][HONE-Dragon DB].mkv'
+        self.series = diff_for(
+            [(f'Show/Season 01/{name}', 2 * GB, 100)],
+            [(f'Show/Season 01/{name}/{name}', 2 * GB, 100)],
+        ).find('Show')
+        self.season = self.series.seasons[0]
+        self.name = name
+
+    def test_a_sync_does_not_download_it_again_and_says_why(self):
+        plan = plan_season_sync('tvshows', self.series, self.season, REMOTE_ROOT, LOCAL_ROOT)
+        self.assertTrue(plan.is_empty)
+        self.assertIn('nested folder', plan.verdict())
+        self.assertIn('Repair', plan.verdict())
+
+        series_plan = plan_series_sync('tvshows', self.series, REMOTE_ROOT, LOCAL_ROOT)
+        self.assertIn('nested folder', series_plan.verdict())
+
+    def test_a_download_does_not_either(self):
+        plan = plan_download('tvshows', self.series, self.season,
+                             REMOTE_ROOT, LOCAL_ROOT, ['S01E01'])
+        self.assertTrue(plan.is_empty)
+        self.assertEqual(plan.to_dict()['nested_files'], 1)
+        self.assertIn('nested folder', plan.verdict())
+
+    def test_a_download_only_counts_the_episodes_asked_for(self):
+        plan = plan_download('tvshows', self.series, self.season,
+                             REMOTE_ROOT, LOCAL_ROOT, ['S01E09'])
+        self.assertEqual(plan.nested_files, 0)
+        self.assertNotIn('nested folder', plan.verdict())
+
+    def test_replace_backs_up_the_stranded_copy_from_where_it_really_is(self):
+        plan = plan_replace('tvshows', self.series, self.season,
+                            REMOTE_ROOT, LOCAL_ROOT, ['S01E01'])
+        self.assertEqual(len(plan.supersedes), 1)
+        self.assertEqual(plan.supersedes[0].local_rel, f'{self.name}/{self.name}')
+        self.assertEqual(plan.supersedes[0].rel, self.name)
+        self.assertIn('nested folder', plan.supersedes[0].reason)
+
 class SeasonFanOutTests(unittest.TestCase):
     """
     A transfer is a season folder everywhere else in the app — it is what the

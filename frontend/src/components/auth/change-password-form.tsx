@@ -167,7 +167,7 @@ export function ChangePasswordForm({ forced = false, onChanged }: ChangePassword
           className={
             forced
               ? "h-11 w-full rounded-xl border-0 bg-gradient-to-r from-brand-deep to-brand-accent font-semibold text-white"
-              : "rounded-xl"
+              : "rounded-xl max-sm:h-11 max-sm:px-4"
           }
         >
           {changePassword.isPending ? (

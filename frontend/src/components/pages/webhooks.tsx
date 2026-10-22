@@ -631,11 +631,13 @@ export function WebhooksPage() {
             renameQuery.refetch();
           }}
           disabled={notificationsQuery.isFetching || renameQuery.isFetching}
+          aria-label="Refresh"
+          className="max-sm:size-8 max-sm:px-0"
         >
           <IconRefresh
-            className={`mr-2 h-4 w-4 ${notificationsQuery.isFetching || renameQuery.isFetching ? "animate-spin" : ""}`}
+            className={`h-4 w-4 sm:mr-2 ${notificationsQuery.isFetching || renameQuery.isFetching ? "animate-spin" : ""}`}
           />
-          Refresh
+          <span className="hidden sm:inline">Refresh</span>
         </Button>
       </PageHeader>
 

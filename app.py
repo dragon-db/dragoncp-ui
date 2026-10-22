@@ -19,7 +19,7 @@ from frontend_serving import serve_frontend
 
 # Import configuration and managers
 from config import DragonCPConfig
-from ssh import SSHManager
+from services.remote_session import RemoteSession
 from websocket import (
     register_websocket_handlers,
     set_settings_service as set_websocket_settings_service,
@@ -317,6 +317,23 @@ init_simulation_routes(simulation_service)
 explore_service = ExploreService(config, db_manager, transfer_coordinator, ssh_manager)
 init_explore_routes(explore_service)
 
+
+def _session_changed(manager):
+    """The browse session was opened, reopened or closed: every holder gets it."""
+    global ssh_manager
+    ssh_manager = manager
+    init_media_routes(config, ssh_manager, transfer_coordinator)
+    explore_service.set_ssh_manager(ssh_manager)
+    init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator,
+                      websocket_connections, socketio_runtime_info)
+
+
+# Every way of opening the browse session goes through this, so the rules that
+# keep the remote server from banning this address hold for all of them.
+remote_session = RemoteSession(config, settings=transfer_coordinator.settings_service,
+                               on_change=_session_changed)
+explore_service.set_session(remote_session)
+
 # The transfer server on the remote host — the fast route past SSH's own speed
 # limit. The coordinator owns it so the Settings panel and the transfers share
 # ONE instance: it caches the health answer and holds the lock that keeps an
@@ -472,11 +489,7 @@ def api_config():
 @app.route('/api/connect', methods=['POST'])
 @require_auth
 def api_connect():
-    """Connect to SSH server - Protected"""
-    global ssh_manager
-    
-    print("🔌 API: /api/connect called")
-    
+    """Connect to the remote server with the given login - Protected"""
     raw_data = request.get_json(silent=True)
     if raw_data is None:
         data: dict[str, Any] = {}
@@ -486,97 +499,45 @@ def api_connect():
         data = cast(dict[str, Any], raw_data)
     host = str(data.get('host') or '')
     username = str(data.get('username') or '')
-    password = str(data.get('password') or '')
-    key_path = str(data.get('key_path') or '')
-    
-    print(f"🔗 Connection attempt to {username}@{host}")
-    
     if not host or not username:
-        print("❌ Missing host or username")
         return jsonify({"status": "error", "message": "Host and username are required"})
-    
-    ssh_manager = SSHManager(
-        host, username, password, key_path,
-        host_key_policy=config.get("SSH_HOST_KEY_CHECKING", "accept-new"),
-        known_hosts_file=config.get("SSH_KNOWN_HOSTS_FILE", ""),
-    )
-    if ssh_manager.connect():
-        print("✅ SSH connection successful")
+
+    ok, message = remote_session.connect(credentials={
+        'host': host, 'username': username,
+        'password': str(data.get('password') or ''),
+        'key_path': str(data.get('key_path') or ''),
+    })
+    if ok:
         session['ssh_connected'] = True
-        
-        # Update route dependencies with new ssh_manager
-        init_media_routes(config, ssh_manager, transfer_coordinator)
-        explore_service.set_ssh_manager(ssh_manager)
-        init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
-        
-        record('ssh.connect', f"Connected to the media server at {host}",
+        record('ssh.connect', f"Connected to the remote server at {host}",
                target_type='connection', target_label=host)
         return jsonify({"status": "success", "message": "Connected successfully"})
-    else:
-        print("❌ SSH connection failed")
-        return jsonify({"status": "error", "message": "Connection failed"})
+    return jsonify({"status": "error", "message": message})
 
 
 @app.route('/api/disconnect', methods=['POST'])
 @require_auth
 def api_disconnect():
-    """Disconnect from SSH server - Protected"""
-    global ssh_manager
-    
-    if ssh_manager:
-        ssh_manager.disconnect()
-        record('ssh.disconnect', 'Disconnected from the media server',
+    """Disconnect from the remote server - Protected"""
+    if remote_session.manager is not None:
+        record('ssh.disconnect', 'Disconnected from the remote server',
                target_type='connection')
-        ssh_manager = None
-    
+    remote_session.disconnect()
     session['ssh_connected'] = False
-    
-    # Update route dependencies
-    init_media_routes(config, ssh_manager, transfer_coordinator)
-    explore_service.set_ssh_manager(ssh_manager)
-    init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
-    
     return jsonify({"status": "success", "message": "Disconnected"})
 
 
 @app.route('/api/auto-connect')
 @require_auth
 def api_auto_connect():
-    """Auto-connect using environment variables - Protected"""
-    global ssh_manager
-    
-    print("🔌 API: /api/auto-connect called")
-    
-    # Get SSH credentials from config
-    host = config.get("REMOTE_IP")
-    username = config.get("REMOTE_USER")
-    password = config.get("REMOTE_PASSWORD", "")  # Optional
-    key_path = config.get("SSH_KEY_PATH", "")  # Optional
-    
-    print(f"🔗 Auto-connection attempt to {username}@{host}")
-    
-    if not host or not username:
-        print("❌ Missing REMOTE_IP or REMOTE_USER in config")
+    """Connect now with the saved login (Settings → Connect) - Protected"""
+    if not config.get("REMOTE_IP") or not config.get("REMOTE_USER"):
         return jsonify({"status": "error", "message": "SSH credentials not configured"})
-    
-    ssh_manager = SSHManager(
-        host, username, password or '', key_path or '',
-        host_key_policy=config.get("SSH_HOST_KEY_CHECKING", "accept-new"),
-        known_hosts_file=config.get("SSH_KNOWN_HOSTS_FILE", ""),
-    )
-    if ssh_manager.connect():
-        print("✅ Auto-connection successful")
+    ok, message = remote_session.connect()
+    if ok:
         session['ssh_connected'] = True
-        
-        # Update route dependencies with new ssh_manager
-        init_media_routes(config, ssh_manager, transfer_coordinator)
-        explore_service.set_ssh_manager(ssh_manager)
-        init_debug_routes(config, ssh_manager, db_manager, transfer_coordinator, websocket_connections, socketio_runtime_info)
-        
         return jsonify({"status": "success", "message": "Auto-connected successfully"})
-    else:
-        print("❌ Auto-connection failed")
-        return jsonify({"status": "error", "message": "Auto-connection failed"})
+    return jsonify({"status": "error", "message": message})
 
 
 @app.route('/api/ssh-config')

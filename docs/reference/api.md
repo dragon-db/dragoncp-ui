@@ -104,6 +104,8 @@ remote and local libraries. `PARTIAL_SYNC` is Explore's addition; the retired
 sync-status endpoints only had the other three, because they inferred state from
 transfer rows and could not see part of a season.
 - `SYNCED`
+- `NEEDS_REPAIR` — would be `SYNCED`, but a local media file sits in a nested
+  folder (`Season 04/ep.mkv/ep.mkv`) where the media server cannot see it
 - `PARTIAL_SYNC`
 - `OUT_OF_SYNC`
 - `NO_INFO` — the comparison ran and the remote holds nothing for this title
@@ -512,7 +514,12 @@ Output JSON:
 ```
 
 ### GET `/auto-connect`
-What it does: auto-connects via configured env values (`REMOTE_IP`, `REMOTE_USER`, optional password/key path).
+What it does: connects now via configured env values (`REMOTE_IP`, `REMOTE_USER`,
+optional password/key path) — Settings → **Connect**. Goes through the same
+guard as every connect (`services/remote_session.py`): one attempt at a time,
+and after a failure a person's next attempt is refused without trying until
+60 s (refused login, host-key mismatch) or 10 s (anything else) have passed; the
+error message says until when. `/connect` and `/disconnect` use the same guard.
 
 Auth: required.
 
@@ -526,7 +533,8 @@ Output JSON:
 
 Error examples:
 - `{"status":"error","message":"SSH credentials not configured"}`
-- `{"status":"error","message":"Auto-connection failed"}`
+- `{"status":"error","message":"The remote server refused the login (Login refused: Authentication failed.)."}`
+- `{"status":"error","message":"The remote server refused the login (…). To keep the remote server from banning this address, the next try is allowed at 14:03:00."}`
 
 ### GET `/ssh-config`
 What it does: returns SSH config values currently loaded by backend.
@@ -1746,6 +1754,11 @@ Notes:
   Discord's holds only presentation and says "Appearance". The client renders
   what it is given rather than assuming.
 - `supports_check` is false when there is nothing to reach at connector level.
+- A field's `kind` is `text`, `password`, `url`, `boolean`, `number` or
+  `choice`. A `choice` also carries `choices` (`[{"value", "label"}]`, in
+  order) and `default`, what an unset value means — Sonarr's and Radarr's
+  `auto_scanner_mode` is `alert` (Alert only) or `sync`, default `alert`.
+  Every field carries both keys; they are empty for the other kinds.
 
 ### GET `/connectors/<connector_id>`
 One connector, plus its stored routes. `404` for an id no adapter claims.
@@ -1765,6 +1778,10 @@ Notes:
 - Omitting `enabled` leaves it alone; omitting a config key leaves that key alone.
 - A secret sent as `<redacted>` is not written. A secret sent as `""` is deleted.
 - A key the connector does not declare is a `400`, naming the key.
+- A `choice` field set to anything but one of its values (or `""`) is a `400`
+  listing the allowed values; nothing is saved.
+- Changing the address or a key clears `last_check_*`: that result described the
+  old connection.
 
 ### POST `/connectors/<connector_id>/check`
 Reaches the service now and reports what happened.
@@ -1773,13 +1790,28 @@ Reaches the service now and reports what happened.
 endpoint to reach at this level, and answering `ok` would put a green
 "last checked" badge on something nothing checked. Test a webhook instead.
 
-Output JSON:
+Input JSON (optional): the settings form's values, in the same shape as a save.
+They are tested in place of the saved ones and saved nowhere. A secret sent as
+`<redacted>` means the saved one, so the stored key never has to reach the
+browser. Without a body, the saved settings are tested.
 ```json
-{"status": "success", "result": {"ok": true, "message": "Connected to Sonarr 4.0.0", "detail": {}}}
+{"config": {"base_url": "http://localhost:8989", "api_key": "<redacted>"}}
 ```
 
-The result is stored on the connector row, so the page can show when it was
-last checked and what it said.
+Output JSON:
+```json
+{"status": "success", "result": {"ok": true, "message": "Connected to Sonarr 4.0.0", "detail": {}, "unsaved": false}}
+```
+
+Notes:
+- `unsaved` is true when the address or a key tested differs from what is
+  saved. Other fields, such as the auto-scanner switch, do not count.
+- Only a test of the saved connection is stored on the connector row as
+  `last_check_*`, because that badge describes what is saved.
+- The activity log records the result's own message, for example
+  `Sonarr test failed: Not configured yet`, marked `(unsaved settings)` when it
+  tested the form.
+- A key the connector does not declare is a `400`, naming the key.
 
 ### POST `/connectors/<connector_id>/targets`
 Adds a destination. Only for connectors that can notify — `400` otherwise.
@@ -1800,6 +1832,11 @@ Notes:
 Renames, replaces the credential, takes one in or out of service, or makes it
 the default. Setting a new default clears the old one in the same transaction.
 
+`mention_ids` (a list of this connector's mention ids; `[]` for nobody) sets
+who every message sent here pings, unless a notification's route chooses
+others. `400` for an id not in the mention list, or a connector that cannot
+ping (`supports_mentions: false`).
+
 ### DELETE `/connectors/<connector_id>/targets/<target_id>`
 Removes a destination and its credential. If it was the default, the oldest
 remaining destination is promoted. Routes pointing at it are cleared to `null`
@@ -1809,7 +1846,8 @@ going silent.
 ### POST `/connectors/<connector_id>/targets/<target_id>/test`
 Sends a real message to one destination, now, ignoring routing entirely — the
 question being asked is "does this webhook work", not "where would a sync
-notification go".
+notification go". It pings whoever the webhook pings by default, and the
+`message` says so ("…, pinging Admins").
 
 Error behavior: `400` with the service's own explanation, redacted.
 
@@ -1826,14 +1864,23 @@ Output JSON:
       "label": "Sync failed",
       "description": "A transfer stopped without finishing, with the errors rsync reported.",
       "default_severity": "failure",
+      "default_ping": "attention",
       "routes": {
-        "discord": {"target_id": "tgt_abc123", "enabled": true, "using_default": false}
+        "discord": {"target_id": "tgt_abc123", "enabled": true, "using_default": false,
+                    "ping_when": null, "mention_ids": null}
       }
     }
   ],
-  "connectors": [{"id": "discord", "display_name": "Discord", "targets": []}]
+  "connectors": [{"id": "discord", "display_name": "Discord", "targets": [], "mentions": []}]
 }
 ```
+
+`default_ping` is when the notification pings until someone chooses otherwise:
+`never`, `attention` (only a warning or a failure) or `always`. Reports of
+something done (Sync finished, Rename finished, Old backups deleted, Synced
+without a stuck download) default to `never`; the rest to `attention`. In a
+route, `ping_when: null` means that default and `mention_ids: null` means
+whoever the webhook pings; `[]` is nobody.
 
 Every event appears whether or not it has been routed: a notification nobody
 can see is a notification nobody can turn off. `using_default` true means no
@@ -1855,8 +1902,47 @@ Input JSON:
 
 Notes:
 - `target_id: null` means "use the connector's default", the same as no row.
-- An unknown event key, an unknown connector, or a destination belonging to a
-  different connector is a `400` and nothing is saved for that row.
+- Optional per row: `ping_when` (`never` | `attention` | `always`, or `null`
+  for the notification's default) and `mention_ids` (a list, `[]` for nobody,
+  or `null` for whoever the webhook pings).
+- An unknown event key, an unknown connector, a destination belonging to a
+  different connector, an unknown ping rule or a mention not in the list is a
+  `400` and nothing is saved for that row.
+
+### POST `/connectors/<connector_id>/mentions`
+Adds someone a message can ping, under a name. Only for a connector with
+`supports_mentions` (Discord) — `400` otherwise.
+
+Input JSON:
+```json
+{"label": "Admins", "kind": "role", "value": "112233445566778899"}
+```
+
+Notes:
+- `kind` is one of the connector's `mention_kinds`: for Discord `role`,
+  `user`, `here` or `everyone`. A role or a user needs its Discord ID (digits
+  only); `here` and `everyone` need none, and a value sent with them is dropped.
+- `label` is unique per connector, case-insensitively.
+- Output: `mention_id` and the whole `mentions` list.
+
+### PATCH `/connectors/<connector_id>/mentions/<mention_id>`
+Changes the name, kind or ID. Every webhook and route that pings it follows,
+because they hold the id, not the Discord ID.
+
+### DELETE `/connectors/<connector_id>/mentions/<mention_id>`
+Removes it, and takes it out of every webhook's and route's list. A route that
+pinged only this one is left pinging nobody — it does not fall back to its
+webhook's pings, because someone chose who that route pings.
+
+### POST `/connectors/<connector_id>/mentions/<mention_id>/test`
+Sends a test message to one webhook (`{"target_id": "tgt_abc123"}`; without one,
+the default webhook) that pings only this mention, to prove the ping arrives.
+`400` with the service's explanation when the message is refused.
+
+How a ping is sent (Discord): the mentions go in the message text above the
+card, because Discord never pings from inside one, and `allowed_mentions` is
+always sent, naming exactly who may be pinged. Nothing else in a message — a
+title that happens to contain `@everyone` — can ping anyone.
 
 ### GET `/connectors/<connector_id>/deliveries`
 The last hundred announcements this connector handled, newest first. This is
@@ -2237,7 +2323,9 @@ Output JSON:
 ```
 
 ### GET `/websocket/status`
-What it does: reports websocket connection count and per-connection timing info.
+What it does: reports the live (WebSocket) connections, one row each, most
+recently used first, and how the Socket.IO server is running. Read every 5
+seconds by the header's live pill and the Settings Logs tab.
 
 Auth: required.
 
@@ -2249,10 +2337,41 @@ Output JSON:
     "active_connections": 1,
     "default_timeout_minutes": 35,
     "max_timeout_minutes": 65,
-    "connection_details": []
+    "configured_timeout_minutes": 30,
+    "cleanup_thread_running": true,
+    "connection_details": [
+      {
+        "session_id": "Y6wfVLG7...",
+        "username": "admin",
+        "connected_seconds": 125,
+        "idle_seconds": 4,
+        "timeout_seconds": 2100,
+        "idle_limit_seconds": 1800,
+        "transport": "websocket",
+        "connected_minutes_ago": 2,
+        "last_activity_minutes_ago": 0,
+        "timeout_minutes": 35
+      }
+    ],
+    "runtime": {
+      "async_mode": "threading",
+      "ping_interval_seconds": 25,
+      "ping_timeout_seconds": 60,
+      "verbose_logging": false,
+      "websocket_transport_ready": true
+    },
+    "timestamp": "2026-10-21T23:29:42"
   }
 }
 ```
+
+- `transport` is what the connection uses now. Browsers open on polling and
+  upgrade, so the server asks the transport layer rather than repeating the
+  transport the connection opened with.
+- `timeout_seconds` is the server's backstop; `idle_limit_seconds` is when the
+  browser closes its own connection (the configured time, five minutes sooner).
+- `configured_timeout_minutes` is what a connection opened from now gets.
+- The `*_minutes*` fields are kept for older readers.
 
 ### GET `/local-files`
 What it does: lists local files in a directory path.
@@ -2525,8 +2644,20 @@ Output JSON:
 What it does: every series in one library with its rolled-up status, plus each
 series' seasons so several can stay expanded at once.
 
-Query: `refresh=1` forces a fresh comparison (rate limited). Without it the
-cached snapshot is returned and `stale` is `true`.
+Query: `check=auto` (opening the page) brings it up to date — the remote is
+walked unless a walk from the last 2 minutes still answers (no import webhook
+for that library since); `check=refresh` (Re-check, rate limited; `refresh=1`
+is the older spelling) walks unless one finished under 10 s ago. Neither
+parameter: the saved snapshot, `stale: true`, no remote access (or `auto` when
+nothing is saved yet). Any other `check` is `400`.
+
+When the remote cannot be read (no session and Auto-connect off, the reconnect
+waiting out its spacing, the walk failing) and a snapshot exists, the answer is
+`200` with the snapshot, `stale: true` and `remote_error` saying why; with no
+snapshot it is the `409`/`502`, whose body carries `session`.
+
+Extra fields: `walked` (this request read the remote), `remote_error`,
+`session` (as `GET /explore/session`).
 
 Auth: required.
 
@@ -2545,7 +2676,8 @@ Output JSON (abridged):
       "exists_locally": true,
       "remote_bytes": 214748364800,
       "misplaced_count": 0,
-      "counts": {"in_sync": 40, "missing": 2, "upgraded": 1, "local_only": 0,
+      "counts": {"in_sync": 40, "nested": 0, "missing": 2, "upgraded": 1,
+                 "local_only": 0, "nested_files": 0,
                  "remote_total": 43, "incoming_bytes": 6442450944,
                  "removable_bytes": 0},
       "seasons": [ ... ]
@@ -2554,20 +2686,52 @@ Output JSON (abridged):
 }
 ```
 
-`status` is one of `SYNCED`, `PARTIAL_SYNC`, `OUT_OF_SYNC`, `NO_INFO`.
+`status` is one of `SYNCED`, `NEEDS_REPAIR`, `PARTIAL_SYNC`, `OUT_OF_SYNC`,
+`NO_INFO`. `counts.nested` counts episodes labelled `NESTED`;
+`counts.nested_files` (and `misplaced_count`) every local media file in a nested
+folder, whatever its label. A result saved before 2.3.2 has neither count.
+
+### GET `/explore/session`
+What it does: how the SSH session to the remote server stands.
+
+Auth: required.
+
+```json
+{"status": "success", "session": {
+  "connected": false, "auto_connect": true, "host": "remote.example",
+  "last_error": "timed out", "last_error_kind": "network", "paused": false,
+  "retry_at": "2026-10-20T12:01:30+00:00", "manual_retry_at": "2026-10-20T12:01:10+00:00"}}
+```
+
+`last_error_kind` is `auth` (refused login), `host_key` or `network`. `paused`:
+after `auth` or `host_key`, nothing reconnects by itself until a person connects.
+`retry_at`: the next automatic attempt; `manual_retry_at`: when Connect may be
+pressed again.
+
+### POST `/explore/connect`
+What it does: connect now, from the Explore page, with the saved login. Spaced
+like every other attempt.
+
+Auth: required.
+
+`200` `{"status":"success","ok":true,"message":"Connected","session":{…}}`;
+`409` `{"status":"error","ok":false,"message":"… the next try is allowed at 14:03:00.","session":{…}}`.
 
 ### GET `/explore/series/{media_type}/{folder}`
-What it does: one series with its seasons, from a fresh comparison.
+What it does: one series with its seasons, from the library's last walk while it
+is under two minutes old (see `/explore/tree`), else a new one.
 
-Auth: required. Rate limited.
+Auth: required. Not rate limited since 2.3.2.
 
 Not called by the React app — the tree already carries seasons — but it is the
 middle step of the resource hierarchy and is covered by tests.
 
 ### GET `/explore/season/{media_type}/{folder}/{season}`
-What it does: one season's episodes, each labelled.
+What it does: one season's episodes, each labelled, from the library's last walk
+on the same two-minute rule; this disk is read fresh. The season carries
+`checked_at`, when the remote was read.
 
-Auth: required. Rate limited.
+Auth: required. Not rate limited since 2.3.2.
 
 Output JSON (abridged):
 ```json
@@ -2589,14 +2753,18 @@ Output JSON (abridged):
         "remote_name": "Example Series - S05E06 - ... .mkv",
         "remote_size": 2051014656,
         "local_name": null,
-        "local_size": null
+        "local_size": null,
+        "local_nested": false
       }
     ]
   }
 }
 ```
 
-`label` is one of `IN_SYNC`, `MISSING`, `UPGRADED`, `LOCAL_ONLY`.
+`label` is one of `IN_SYNC`, `NESTED`, `MISSING`, `UPGRADED`, `LOCAL_ONLY`.
+`NESTED` is the same file as the remote's, in a nested folder: never In sync,
+never downloaded again; Repair moves it. `local_nested` says the local copy is
+nested whatever the label — an upgrade or a local-only file can be stranded too.
 
 For `movies` the season layer is a single pseudo-season named `Files`.
 
@@ -2798,6 +2966,7 @@ Output JSON (abridged):
     "safe": true,
     "is_destructive": true,
     "is_empty": false,
+    "nested_files": 0,
     "requires_override": false,
     "counts": {"fetch": 2, "supersede": 1, "remove": 0,
                "incoming_bytes": 6442450944, "backup_bytes": 2147483648},
@@ -2809,6 +2978,10 @@ Output JSON (abridged):
   }
 }
 ```
+
+`nested_files`: local media files in the plan's scope sitting in a nested
+folder — for a download, only the episodes asked for. A plan never moves them
+(Repair does); an empty plan with some says so in its `verdict`.
 
 ### POST `/explore/dry-run`
 What it does: runs the plan's own rsync command with `--dry-run` and reports
@@ -3370,7 +3543,8 @@ Output JSON:
   `job_failing`, which watch a condition, an alert with the same key that a
   person closed with `dismiss` or `mark_wrong` in the last 24 hours keeps a new
   one from opening, or being announced; after that, a condition still there
-  opens one again.
+  opens one again. `missed_sync` keys on `missed:<unit_key>` and has its own
+  rule: see its row below.
 - `unit_key` — the destination folder the alert is about, when it is about one.
 - `link` — where the web app shows the subject: `/transfers?sync=<run_id>` (the
   sync panel on Transfers) for a run, `/integrations/<source>` for an
@@ -3390,6 +3564,7 @@ Output JSON:
 | `sync_refused` | Safety check | the safety dry run stopped a sync | `sync_anyway`, `dismiss` |
 | `transfer_failed` | Failed | a transfer failed, or the queue refused it. For a restore the title reads `Restore failed: …` and the message ends `Run it again from the Backups page.` | `retry`, `mark_done`, `dismiss`; for a restore, `dismiss` only |
 | `scanner_gap` | Auto-scanner | the auto-scanner tried a gap twice and will not retry it by itself | `sync_now`, `dismiss` |
+| `missed_sync` | Missed auto-sync | the auto-scanner, set to Alert only, found an import nothing has synced. `data.explore` (`media_type`, `series`, `season`) is where the web app's **Open in Explore** goes. Found again, it is not bumped unless a newer import arrived; dismissed, it stays closed until one does; closes itself (`auto`) once the folder is synced | `dismiss` |
 | `integration_down` | Integration | Sonarr did not answer the ready check; closes itself (`auto`) when it answers again | `dismiss` |
 | `job_failing` | Scheduler | a background job failed three times in a row; closes itself (`auto`) on its next success | `run_now`, `dismiss` |
 
@@ -3562,8 +3737,9 @@ Each item keeps the fields the auto-scanner reads (`present_locally`,
 `files_here`, `counts_towards_state`; `service_item_id`, `service_path`,
 `local_folder`, `media_type`, `external_id`, `title`) and adds:
 
-- `sync_state` — `out_of_sync`, `in_sync`, `kept_here` (in sync, with more kept
-  here than the service still holds), `never` (nothing here), `no_files` (the
+- `sync_state` — `out_of_sync`, `needs_repair` (nothing else wrong, but a
+  media file sits in a nested folder), `in_sync`, `kept_here` (in sync, with
+  more kept here than the service still holds), `never` (nothing here), `no_files` (the
   service holds no files), `orphan` (the service no longer lists it) or
   `unknown`. Until 2026-10-06 the words were `synced`, `partial`, `never`,
   `no_files`, `orphan` and `unknown`.
@@ -3571,7 +3747,9 @@ Each item keeps the fields the auto-scanner reads (`present_locally`,
   file-by-file comparison.
 - `attention` — why it is out of sync, each `{kind, season_number, count, …}`:
   `new_import` and `new_file` (with `episodes` and `imported_at`), `short` and
-  `season_not_here` (with `theirs` and `ours`), `missing`, `different`.
+  `season_not_here` (with `theirs` and `ours`), `missing`, `different`, and
+  `nested` (with `episodes` and `paths`: files a folder too deep, after any
+  other reason).
 - `kept_here_count`, `last_import_at`, `service_files_counted` and
   `episodes_here` (the counts line; Specials left out), and for a film
   `service_file_size`, `local_file_size` and `quality`.
@@ -3627,17 +3805,21 @@ Output JSON:
 ```
 
 - Episode `state` is `in_sync` (same file, by size), `different` (both have
-  it, sizes differ), `missing_here` (needs syncing), `only_here` (normal after
-  the media server's cleanup) or `not_downloaded`. `state` for the title uses
-  the list's words; it is `out_of_sync` exactly when an episode outside
-  Specials is `missing_here` or `different`.
+  it, sizes differ), `missing_here` (needs syncing), `nested` (here only in a
+  folder below the season folder; `local_file.nested` is true and
+  `local_file.relative_path` says where), `only_here` (normal after the media
+  server's cleanup) or `not_downloaded`. `state` for the title uses the
+  list's words; it is `out_of_sync` exactly when an episode outside Specials
+  is `missing_here` or `different`, else `needs_repair` when a media file is
+  nested. Each season carries `nested_here` (paths), the title `nested_files`.
 - A film has `seasons: []` and `movie: {state, service_file, local_file,
   other_files_here}`.
 - `actions.sync.offered` is true only where the title's Sync
   (`POST /library/{source}/sync`) would copy season folders holding nothing kept
   only here; otherwise `reason` says why not. `actions.explore` names the
   Explore library, folder and season (`/media/<media_type>?series=…&season=…`)
-  where only the missing files can be fetched.
+  where only the missing files can be fetched, and `nested_season`, the first
+  season holding a nested file — where "Repair in Explore" opens.
 
 ### GET `/library/{source}/{external_id}/history`
 What it does: one title's history, newest first: the service's own events for

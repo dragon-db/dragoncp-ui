@@ -622,7 +622,8 @@ components:
         kind:
           type: string
           enum: [restart_unfinished, transfer_unknown, stuck_download, ready_timeout,
-                 sync_refused, transfer_failed, scanner_gap, integration_down, job_failing]
+                 sync_refused, transfer_failed, scanner_gap, missed_sync, integration_down,
+                 job_failing, fast_route_failed]
         kind_label: { type: string }
         severity: { type: string }
         title: { type: string }
@@ -3828,7 +3829,7 @@ paths:
   /explore/season/{media_type}/{folder}/{season}:
     get:
       tags: [Explore]
-      summary: One season's episodes, each labelled IN_SYNC / MISSING / UPGRADED / LOCAL_ONLY
+      summary: One season's episodes, each labelled IN_SYNC / NESTED / MISSING / UPGRADED / LOCAL_ONLY
       parameters:
         - name: media_type
           in: path
@@ -4730,7 +4731,7 @@ paths:
                         title: { type: string, nullable: true }
                         sync_state:
                           type: string
-                          enum: [out_of_sync, in_sync, kept_here, never, no_files, orphan, unknown]
+                          enum: [out_of_sync, needs_repair, in_sync, kept_here, never, no_files, orphan, unknown]
                         state_reason: { type: string }
                         state_exact: { type: boolean }
                         attention:
@@ -4909,9 +4910,10 @@ paths:
       tags: [Media Library]
       summary: One title compared episode by episode, with what to do about it
       description: >-
-        Episode states are in_sync, different, missing_here, only_here and
-        not_downloaded; the title is out_of_sync exactly when an episode
-        outside Specials is missing_here or different. A film carries `movie`
+        Episode states are in_sync, different, missing_here, nested, only_here
+        and not_downloaded; the title is out_of_sync exactly when an episode
+        outside Specials is missing_here or different, and needs_repair when
+        neither but a media file sits in a nested folder. A film carries `movie`
         instead of `seasons`. `actions.sync.offered` is true only where the
         title's Sync would copy season folders holding nothing kept only here;
         `actions.explore` names where Explore fetches only the missing files.
@@ -4942,7 +4944,7 @@ paths:
                     additionalProperties: true
                   state:
                     type: string
-                    enum: [out_of_sync, in_sync, kept_here, never, no_files, orphan, unknown]
+                    enum: [out_of_sync, needs_repair, in_sync, kept_here, never, no_files, orphan, unknown]
                   summary: { type: string }
                   counts:
                     type: object
@@ -4970,7 +4972,7 @@ paths:
                               air_date: { type: string, nullable: true }
                               state:
                                 type: string
-                                enum: [in_sync, different, missing_here, only_here, not_downloaded]
+                                enum: [in_sync, different, missing_here, nested, only_here, not_downloaded]
                               service_file:
                                 type: object
                                 nullable: true

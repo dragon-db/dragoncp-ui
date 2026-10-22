@@ -236,9 +236,9 @@ and the cached total estimate is discarded.
 and, once it is no longer `running`/`pending`, releases the queue slot and hands
 the outcome to the sync engine (`on_transfer_finished`). The run's Finish stage
 marks every webhook on it synced, failed or cancelled; its Tell stage announces
-`completed` and `failed` on Discord, labelled by how the sync started
-("Automated Sync", "Manual Sync", "Auto-scanner"…; a webhook or auto-scanner
-batch a person released with Sync or Go now is a "Manual Sync"), and opens a
+`completed` and `failed` on Discord, headed by how the sync started and where
+from ("AUTO SYNC - SONARR", "MANUAL SYNC - EXPLORE"…; a webhook or auto-scanner
+batch a person released with Sync or Go now is a MANUAL SYNC), and opens a
 *Failed* alert with **Retry** for a failure — except a failure whose result a
 restart lost, which gets its own alert instead (section 10), and a failed
 restore, whose alert offers only **Dismiss** and points at the Backups page.

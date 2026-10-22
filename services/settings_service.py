@@ -45,7 +45,7 @@ class SettingsService:
             # With no row at all, an env-file value is honoured as the default,
             # so an existing install keeps working before anything is saved and
             # a fresh one can be seeded from the file.
-            from_env = self.config.get(key, '')
+            from_env = self._env_quietly(key)
             if from_env not in (None, ''):
                 return from_env
             return setting.default if default is None else default
@@ -54,6 +54,19 @@ class SettingsService:
         if value in (None, ''):
             return setting.default if default is None else default
         return value
+
+    def _env_quietly(self, key: str) -> str:
+        """
+        The env file's value, without the "not found" warning.
+
+        For a database setting an empty env file is the normal case, not a
+        missing key: asking it was logging a warning on every read, which on
+        the live-connection status meant one every five seconds per open page.
+        """
+        values = getattr(self.config, 'env_config', None)
+        if isinstance(values, dict):
+            return values.get(key, '')
+        return self.config.get(key, '')
 
     def get_bool(self, key: str, default: bool = False) -> bool:
         # `get(key)` with no default so the registry's own default applies; the

@@ -21,7 +21,14 @@ const ACTION_LABEL: Record<string, string> = {
   held_back: "Held back for the next scan",
   needs_a_person: "Waiting for a person",
   failed: "Could not start",
+  alerted: "Alerted",
+  updated: "Alert updated",
+  already_alerted: "Already alerted",
+  dismissed: "Dismissed earlier",
 };
+
+/** Where an Alert only find's alert is: the Notifications page. */
+const ALERT_ACTIONS = new Set(["alerted", "updated", "already_alerted"]);
 
 /**
  * The scheduled auto-scanner for one service: whether it is on, when it last
@@ -33,10 +40,16 @@ export function ScannerStatus({
   source,
   displayName,
   connectorEnabled,
+  mode,
+  lookbackDays,
 }: {
   source: string;
   displayName: string;
   connectorEnabled: boolean;
+  /** What the saved settings do with a find: `alert` (the default) or `sync`. */
+  mode: string;
+  /** How many days of history an Alert only scan reads. */
+  lookbackDays: number;
 }) {
   const jobs = useSchedulerJobs();
   const runJob = useRunJob();
@@ -96,7 +109,10 @@ export function ScannerStatus({
         </p>
       ) : (
         <p className="text-sm text-foreground/85">
-          Every {formatSpan(job.interval_seconds ?? 0)}
+          Every {formatSpan(job.interval_seconds ?? 0)} ·{" "}
+          {mode === "sync"
+            ? "syncs what it finds"
+            : `Alert only, looks back ${lookbackDays} day${lookbackDays === 1 ? "" : "s"}, copies nothing`}
           {job.next_run_at && <> · next scan at {clockText(job.next_run_at)}</>}
         </p>
       )}
@@ -137,6 +153,13 @@ export function ScannerStatus({
                   <Link
                     to="/transfers"
                     search={{ sync: decision.run_id }}
+                    className="text-[11px] font-medium text-brand-hover hover:underline"
+                  >
+                    {ACTION_LABEL[decision.action]} →
+                  </Link>
+                ) : ALERT_ACTIONS.has(decision.action) ? (
+                  <Link
+                    to="/notifications"
                     className="text-[11px] font-medium text-brand-hover hover:underline"
                   >
                     {ACTION_LABEL[decision.action]} →

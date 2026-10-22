@@ -21,6 +21,12 @@ WEBSOCKET_TIMEOUT_MIN = 5 * 60    # 5 minutes minimum
 WEBSOCKET_TIMEOUT_MAX = 65 * 60   # 65 minutes maximum (5 minutes longer than max client timeout)
 WEBSOCKET_TIMEOUT_DEFAULT = 35 * 60  # 35 minutes default
 
+# How much longer the server holds an unused connection than the browser is
+# told to keep it, so one about to reconnect is not cut off mid-handshake. A
+# live browser closes its own at the configured time; this is the backstop for
+# one that went away without saying so.
+SERVER_GRACE_SECONDS = 5 * 60
+
 # How often a live connection's account is re-checked while it keeps pinging.
 # Small enough that a disabled administrator loses their updates promptly,
 # large enough that a frequent ping does not turn into a read per ping.
@@ -104,6 +110,65 @@ def get_websocket_connection_snapshot():
         }
 
 
+#: Set when the handlers are registered, so a status read can ask the transport
+#: layer which connections have moved from polling to WebSocket.
+_socketio = None
+
+
+def _current_transport(session_id: str, opened_with: str) -> str:
+    """
+    The transport a connection uses now, not the one it opened with.
+
+    Browsers open over polling and upgrade a moment later, so the transport
+    recorded at connect says "polling" for nearly every connection. One that
+    never upgrades is the thing worth seeing: it works, more slowly, and
+    usually means WebSocket support is missing on this server.
+    """
+    if opened_with == 'websocket' or _socketio is None:
+        return opened_with
+    try:
+        server = _socketio.server
+        eio_sid = server.manager.eio_sid_from_sid(session_id, '/')
+        eio_socket = server.eio.sockets.get(eio_sid) if eio_sid else None
+    except Exception:  # noqa: BLE001 - a diagnostic read must never raise
+        return opened_with
+    if eio_socket is None:
+        return opened_with
+    return 'websocket' if getattr(eio_socket, 'upgraded', False) else 'polling'
+
+
+def describe_connections(current_time=None):
+    """
+    Every live connection as the status endpoints report it, most recently
+    used first.
+
+    Minutes stay for older readers; seconds are what the diagnostics card
+    counts down from. The id is cut to eight characters, enough to tell a
+    browser its own row and no more.
+    """
+    current_time = current_time or datetime.now()
+    rows = []
+    for session_id, info in get_websocket_connection_snapshot().items():
+        connected = max(0, int((current_time - info['connected_at']).total_seconds()))
+        idle = max(0, int((current_time - info['last_activity']).total_seconds()))
+        timeout = info.get('timeout_seconds', WEBSOCKET_TIMEOUT_DEFAULT)
+        rows.append({
+            'session_id': session_id[:8] + '...',
+            'username': info.get('username', 'unknown'),
+            'connected_minutes_ago': connected // 60,
+            'last_activity_minutes_ago': idle // 60,
+            'timeout_minutes': timeout // 60,
+            'connected_seconds': connected,
+            'idle_seconds': idle,
+            'timeout_seconds': timeout,
+            # When the browser closes it itself: the number a person was told.
+            'idle_limit_seconds': max(0, timeout - SERVER_GRACE_SECONDS),
+            'transport': _current_transport(session_id, info.get('transport', 'unknown')),
+        })
+    rows.sort(key=lambda row: row['idle_seconds'])
+    return rows
+
+
 def _pop_connection_if_unchanged(session_id: str, stale_snapshot: dict,
                                  *, identity_only: bool = False):
     """Remove a connection if the relevant checked state has not changed."""
@@ -158,16 +223,17 @@ def get_websocket_timeout_for_session(session=None):
         minutes = _settings_service.get_int('WEBSOCKET_TIMEOUT_MINUTES', 0)
         if not minutes:
             return WEBSOCKET_TIMEOUT_DEFAULT
-        # The server holds on a little longer than the client is told to, so a
-        # client that is about to reconnect is not cut off mid-handshake.
-        return min(WEBSOCKET_TIMEOUT_MAX, minutes * 60 + 5 * 60)
+        # The server holds on a little longer than the client is told to.
+        return min(WEBSOCKET_TIMEOUT_MAX, minutes * 60 + SERVER_GRACE_SECONDS)
     except (TypeError, ValueError, AttributeError):
         return WEBSOCKET_TIMEOUT_DEFAULT
 
 
 def register_websocket_handlers(socketio):
     """Register WebSocket event handlers with authentication"""
-    
+    global _socketio
+    _socketio = socketio
+
     @socketio.on('connect')
     def handle_connect(auth=None):
         """Handle WebSocket connection with authentication"""

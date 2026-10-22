@@ -8,7 +8,7 @@ Everything that needs a person is also kept in the application as an **alert**, 
 
 Everything is off until an operator turns Discord on and adds a webhook. There is no default destination. Alerts are recorded either way.
 
-Last updated: 2026-10-05
+Last updated: 2026-10-19
 Primary files: `services/notification_service.py`, `services/sync_engine/engine.py`, `services/alert_service.py`, `services/auto_scanner.py`, `services/connectors/adapters/discord.py`, `services/connectors/events.py`
 
 ## Where it lives
@@ -36,6 +36,25 @@ There is no gate in this file any more. Every announcement is one `notify()` cal
 
 A fresh install announces nothing until an operator adds a webhook.
 
+### One look for every message
+
+Since 2.3.2 every message follows one scheme, so a glance says what kind it is:
+
+- **The headline**, the line above the title, says what happened as
+  `TOPIC - DETAIL` in upper case (`headline()` in
+  `services/connectors/events.py`). The Discord adapter upper-cases it again,
+  so no sender can bring back its own style. The sync and alert headlines are
+  in their sections below; the rest are FILE RENAME - COMPLETED / PARTIAL /
+  FAILED, BACKUP RETENTION - VERSIONS DELETED, AUTO-SCANNER - SYNCS STARTED,
+  MANUAL SYNC NEEDED - SONARR (`sync.held`), and TEST - MESSAGE / TEST - PING.
+- **The title** is what it happened to: a show and season, a film, a job.
+- **The footer** is the same on every message, `DragonCP v<version>`, and
+  Discord adds the time after it. It used to differ per sender - "DragonCP
+  Rename Operation", "DragonCP Backup Retention", "DRAGONCP Auto-Sync Safety
+  Check", or none.
+- The colour still carries the outcome: purple for done or news, amber for a
+  warning, red for a failure, teal for a finished rename.
+
 ### Sync finished or failed
 
 Every sync runs through the sync engine's pipeline, and its last stage, **Tell**, sends this message. When a transfer settles, the completion watcher started with it (`TransferCoordinator._post_transfer_completion`, polling the transfer row every 5 seconds) releases the queue slot and hands the outcome to the engine. The engine's Finish stage marks the batch's webhooks; Tell then calls `NotificationService.send_discord_notification(transfer_id, status, sync_label=...)`.
@@ -51,24 +70,29 @@ Two kinds of sync never announce, and their Tell stage says so: simulations - a 
 
 A transfer with no run behind it - one started before 2.3.0 and still running or queued across the upgrade - is finished the old way: the watcher updates its webhook rows and calls `send_discord_notification(transfer_id, status)` itself, for `completed` and `failed` only.
 
-**The label.** The engine passes the kind of sync, which becomes the embed's author line:
+**The headline.** The engine passes how the sync started (AUTO or MANUAL) and where from, which become the line above the title, in upper case:
 
-| Kind of sync | Author line |
+| Kind of sync | Headline |
 | --- | --- |
-| Sonarr or Radarr webhook | Automated Sync |
-| The scheduled auto-scanner | Auto-scanner |
-| A press of Sync - Webhooks page, a Library tab, an alert - or `POST /api/transfer` | Manual Sync |
-| A Sonarr, Radarr or auto-scanner batch a person released - Sync or Go now while it was held or waiting, or a restart that joined it | Manual Sync |
-| Restart | Manual Sync (restart) |
-| An approved Explore plan | Explore |
+| Sonarr or Radarr webhook | AUTO SYNC - SONARR / AUTO SYNC - RADARR |
+| The scheduled auto-scanner | AUTO SYNC - SCANNER |
+| A press of Sync - Webhooks page, a Library tab, an alert - or `POST /api/transfer` | MANUAL SYNC - SONARR / RADARR, or MANUAL SYNC when no service is behind it |
+| A Sonarr, Radarr or auto-scanner batch a person released - Sync or Go now while it was held or waiting, or a restart that joined it | MANUAL SYNC - SONARR / RADARR / SCANNER |
+| Restart | MANUAL SYNC - RESTART |
+| An approved Explore plan | MANUAL SYNC - EXPLORE |
 
-A failed sync's author line adds ` - FAILED ❌`. Without a label - only transfers with no run - the old guess applies: a movie transfer that matches a webhook row is Automated Sync; a series/anime transfer that matches a webhook row is Automated Sync only if that row has an `auto_sync_scheduled_at` value; everything else is Manual Sync.
+A failed sync says so in the topic: AUTO SYNC FAILED - SONARR, MANUAL SYNC FAILED - EXPLORE. Without the engine's answer - only transfers with no run - the old guess applies: a movie transfer that matches a webhook row is AUTO SYNC - RADARR; a series/anime transfer that matches a webhook row is AUTO SYNC - SONARR only if that row has an `auto_sync_scheduled_at` value; everything else is MANUAL SYNC. Until 2.3.2 these read "Automated Sync", "Auto-scanner", "Manual Sync", "Manual Sync (restart)", "Explore" and "… - FAILED ❌".
 
-The embed is assembled from three sources:
+**What it says** (2.3.2), in this order:
 
-1. The transfer row: `parsed_title` (falling back to `folder_name`) becomes the embed title, `dest_path` becomes the "Folder Synced" / "Folder Path" field.
-2. The parsed rsync statistics (below).
-3. The linked webhook notification, if there is one, for the poster image and the requester.
+1. Title: `parsed_title` (falling back to `folder_name`), with the season added - "Example Show — Season 03".
+2. **Synced (N)** - one line per media file the copy wrote, read from rsync's own log (`copied_files()`: `rsync -v` names each file, an Explore copy logs `%i|%l|%n`): the episode code, the episode title from Sonarr's file name, and "— upgrade to WEBDL-1080p" when an older file of the same episode was removed in the same copy. Ten lines at most, then "… and N more". Subtitles and artwork are not listed. A copy that wrote nothing says "Nothing new: every file was already here." A failed copy calls it **Copied before it stopped (N)**.
+3. **Transfer** - the route the copy took: ⚡ FAST, SSH, or SSH FALLBACK (fast route failed). Left out for a transfer that recorded none (before 2.3.1).
+4. **Size** and **Speed** from rsync's summary ("4.12 GB", "31.20 MB/s"); a failure shows **Error Details** instead.
+5. **Removed** - files rsync removed that were not the old half of an upgrade, "2 files (kept in Backups)": every copy runs with `--backup`.
+6. **Requested by**, when the linked webhook names someone, and **Folder**, the destination path.
+
+The poster comes from the linked webhook notification, if there is one.
 
 To find the linked notification the service switches on the transfer's `media_type`: `movies` searches the Radarr notification table, `series` / `anime` / `tvshows` search the Sonarr notification table. If a row is found, its `poster_url` replaces the default thumbnail and its `requested_by` is added as a field. Syncs with no webhook linked to them - the auto-scanner, a Library-tab Sync, Explore - find none.
 
@@ -108,11 +132,27 @@ An alert is opened by the sync engine, by its start-up recovery, by the auto-sca
 | Safety check | The dry run stopped a sync | `autosync.blocked`, automatic syncs only | Sync anyway · Dismiss |
 | Failed | A transfer failed, or the queue would not start it. A failed restore's is titled "Restore failed" and says to run it again from the Backups page | none | Retry · Mark as done · Dismiss; a restore's, Dismiss only |
 | Auto-scanner | The scanner has started two syncs for a gap and still finds it | `scanner.found` | Sync now · Dismiss |
+| Missed auto-sync | The scanner, set to Alert only (the default), found an import nothing has synced. Closes itself once the folder is synced; dismissed, it comes back only on a newer import | `scanner.missed`, one message per scan, not per alert | Open in Explore (a link) · Dismiss |
 | Integration | Sonarr did not answer when a batch asked; closes itself when a later batch finds it answering | `integration.down` | Dismiss |
 | Scheduler | A background job failed three times in a row; closes itself on the job's next success | `scheduler.failing` | Run now · Dismiss |
 | Fast transfers | A copy failed on the fast transfer server and ran again over SSH. One alert for the route: every later fallback bumps it | `fast_route.failed` | Dismiss |
 
-Every alert reads the same on Discord: the alert's title, its sentence as the description, whatever labelled fields that kind carries (the reason and the counts, what is stuck, how many webhooks were waiting), and a last field, **What to do**, reading "Open DragonCP → Notifications to act on it." - the Notifications page in the sidebar. The author line is "DragonCP Notifications"; warnings are orange (`15105570`, the colour of a partial rename).
+Every alert reads the same on Discord: a headline for its kind, as the table below; as the title, what it is about - the alert's own title after its "…: " (so "Sync stopped by the safety check: Example Show — Season 04" posts as "Example Show — Season 04" under SAFETY CHECK - AUTO SYNC STOPPED); its sentence as the description; whatever labelled fields that kind carries (the reason and the counts, what is stuck, how many webhooks were waiting; a Folder as a path); and a last field, **What to do**, reading "Open DragonCP → Notifications to act on it." - the Notifications page in the sidebar.
+
+| Alert | Headline |
+| --- | --- |
+| After a restart | AFTER RESTART - SYNC MAY BE SKIPPED |
+| Result unknown | AFTER RESTART - RESULT UNKNOWN |
+| Stuck download | READY CHECK - STUCK DOWNLOAD |
+| Waited 30 minutes | READY CHECK - WAITED 30 MINUTES |
+| Safety check | SAFETY CHECK - AUTO SYNC STOPPED |
+| Auto-scanner | AUTO-SCANNER - GAP NOT CLOSED |
+| Missed auto-sync | AUTO-SCANNER - MISSED AUTO SYNC (the scan's own message) |
+| Integration | INTEGRATION DOWN - SONARR |
+| Scheduler | SCHEDULER - JOB FAILING |
+| Fast transfers | FAST TRANSFER FAILED - SSH FALLBACK USED |
+
+Until 2.3.2 every alert's author line was "DragonCP Notifications"; warnings are orange (`15105570`, the colour of a partial rename).
 
 What each action does is on [the sync engine page](../sync-engine/README.md), under *Alerts*.
 
@@ -120,25 +160,35 @@ What each action does is on [the sync engine page](../sync-engine/README.md), un
 
 This replaces the "manual-sync alert" of earlier releases. When the Safety check stage's dry run looks unsafe, the engine stops the sync before anything is written, flags its webhooks for manual sync, and opens a *Safety check* alert. The alert is announced (`autosync.blocked`) only when the sync started by itself - a Sonarr or Radarr webhook batch, or an auto-scanner find, that nobody released - because an admin who pressed Sync, or released a held or waiting batch with Sync or Go now, is already looking at it.
 
-- Title: `Sync stopped by the safety check: Example Show — Season 01`.
-- Description: the dry run's reason, "Nothing was written.", and the counts - media files on the media server and on this disk, how many would be deleted and how many added.
-- Fields: Reason, Folder (the local destination), File analysis, What to do.
+- Headline: `SAFETY CHECK - AUTO SYNC STOPPED`. It names what happened: an automatic sync stopped because its dry run would have deleted more files than it copied, or found fewer media files on the remote server than here. (Before 2.3.0 it read "Manual Sync Alert ⚠️", which named what a person had to do rather than what happened.)
+- Title: `Example Show — Season 01`.
+- Description: "Nothing was copied or deleted." The reason and the counts are in the fields, not repeated here.
+- Fields: Reason; File analysis, one line each - media files on the remote server, here, would delete, would add; Folder (the local destination); What to do.
 
 One message per batch, not per episode: a batch is one folder, so six episodes refused together are one message.
 
-Before 2.3.0 this was a gold (`15844367`) embed titled with the series and season number, authored `Manual Sync Alert ⚠️`, footed `DRAGONCP Auto-Sync Safety Check`, and showing the remote season path. Its sender, `TransferCoordinator.send_manual_sync_discord_alert`, is still in the file; nothing calls it.
+Before 2.3.0 this was a gold (`15844367`) embed titled with the series and season number, authored `Manual Sync Alert ⚠️`, footed `DRAGONCP Auto-Sync Safety Check`, and showing the remote season path. Its sender, `TransferCoordinator.send_manual_sync_discord_alert`, stayed in the file with nothing calling it until 2.3.2 removed it.
 
 Movies are checked now too. A Radarr webhook runs the same dry run, so a film can be stopped and announced the same way; before 2.3.0 a movie webhook started its transfer with no dry run at all.
 
 ### The auto-scanner's report
 
-After a scan that started anything, one message per service: "Auto-scanner found 3 to sync in Sonarr", listing up to ten of the syncs it started, each with its first reason ("Sonarr imported season 1 at 2026-10-05 14:02, and nothing has synced it since."), and how many were held back for the next scan. Author `Auto-scanner`, purple (the info colour). Each of those syncs then gets its own finished or failed message, labelled Auto-scanner. A scan that started nothing sends nothing.
+After a scan that started anything, one message per service: "Auto-scanner found 3 to sync in Sonarr", listing up to ten of the syncs it started, each with its first reason ("Sonarr imported season 1 at 2026-10-05 14:02, and nothing has synced it since."), and how many were held back for the next scan. Headline AUTO-SCANNER - SYNCS STARTED, purple (the info colour). Each of those syncs then gets its own finished or failed message, headed AUTO SYNC - SCANNER. A scan that started nothing sends nothing.
 
 The *Auto-scanner* alert uses the same event key, so routing `scanner.found` routes both.
 
+With the scanner set to **Alert only** (the default since 2.3.2), a scan that
+opened any *Missed auto-sync* alert sends one `scanner.missed` message per
+service instead: "2 titles in Sonarr missed auto-sync", headline AUTO-SCANNER -
+MISSED AUTO SYNC, orange (a warning, so it pings by the default rule). It lists
+up to ten of the new alerts, each with its first reason, says nothing was
+copied, and **What to do** reads "Open DragonCP → Notifications, then Open in
+Explore to sync it by hand when it is ready." An alert found again, updated by
+a newer import, or dismissed earlier sends nothing.
+
 ### Rename notification
 
-`RenameService.process_rename_webhook()` calls `send_rename_discord_notification()` after a rename batch finishes. The embed colour tracks the outcome: teal (`1752220`) for `completed`, orange (`15105570`) for `partial`, red (`15158332`) for `failed`. It lists the media type, the status, a totals block, and the first five resulting file names (prefixed `✓` or `✗`) with an "... and N more files" line beyond that, truncated to 900 characters. Footer is `DragonCP Rename Operation`.
+`RenameService.process_rename_webhook()` calls `send_rename_discord_notification()` after a rename batch finishes. The embed colour tracks the outcome: teal (`1752220`) for `completed`, orange (`15105570`) for `partial`, red (`15158332`) for `failed`. It lists the media type, the status, a totals block, and the first five resulting file names (prefixed `✓` or `✗`) with an "... and N more files" line beyond that, truncated to 900 characters. Headline FILE RENAME - COMPLETED (or PARTIAL, FAILED); until 2.3.2 it was authored "File Rename" and footed `DragonCP Rename Operation`.
 
 ### The app URL
 
@@ -150,6 +200,7 @@ The connector's **App URL** is attached as the embed's clickable `url`, but only
 - **Of a transfer's outcomes, only finished and failed are announced.** Cancelled and paused transfers never are. A pause is treated as "not an outcome" throughout the coordinator, and a cancelled sync's Tell stage records why it stayed quiet.
 - **A restart is announced.** It runs through the pipeline as a sync of its own - safety check, queue, then the usual finish - so its result arrives labelled "Manual Sync (restart)". A restarted simulated transfer is the exception (below), and a restore is never restarted. Before 2.3.0 `TransferCoordinator.restart_transfer()` started rsync with no completion watcher, and the restarted run finished without a message.
 - **A batch a person released is a manual sync.** Pressing Sync on a webhook whose batch is still open does not start a second sync: it tells that batch to go now, as Go now on the batch does, and so does a restart that joins it. From then on the batch counts as a person's: its result is announced as "Manual Sync", and if its safety check stops it, the alert opens without an `autosync.blocked` message. With automatic sync off - where every webhook opens a batch held for a person - that is every sync. A press that finds the batch already past its ready check does not release it, and the batch keeps the label of the kind that opened it. Fixed 2026-10-05: a released batch used to keep its kind, so a sync an admin started was announced as "Automated Sync", and a refusal of it as an automatic one.
+- **A batch held for a person is announced once.** With automatic sync off for a library, each new batch posts `sync.held` ("Waiting for a manual sync") to Discord when it opens, and pings by default, so whoever needs to press Sync is told. Webhooks that join the batch later send nothing more, and a held batch that survives a restart is not announced again. It is not an alert on the Notifications page: the Webhooks page already shows those webhooks as **Manual**, with Sync beside them. Added in 2.3.2 (issue #35).
 - **A manual sync the safety check stops is not announced.** Its alert opens on the Notifications page, where **Sync anyway** is, and any webhook linked to it reads **Manual** on the Webhooks page. Until the page arrived on 2026-10-05 the manual-sync flag on those webhooks was the only visible trace.
 - **"Result unknown" covers a copy whose rsync was gone at start-up.** A `running` transfer whose rsync process no longer exists when DragonCP starts is recorded as failed with the "Result unknown: ..." sentence, so it gets the *Result unknown* alert, not "Sync failed": it may have finished before DragonCP stopped, or been cut off with it. Until 2026-10-05 it was recorded as "Transfer process was interrupted" and announced as a failed sync, with a *Failed* alert.
 - **Backup restores never notify.** A restore is recorded in the pipeline (kind `restore`), and its Tell stage records that restores are not announced: the result is on the Backups page and in the activity trail. A failed restore does open an alert, which is not announced either: titled "Restore failed", saying to run it again from the Backups page, and offering only Dismiss - a restore is never retried from the transfer list.

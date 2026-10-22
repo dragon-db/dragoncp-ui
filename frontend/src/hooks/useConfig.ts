@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import api from "@/lib/api";
+import type { ExploreSession } from "@/lib/explore-types";
 import { isOutdated } from "@/lib/version";
 import type {
   SettingsResponse,
@@ -251,6 +252,23 @@ export function useSSHConnect() {
   });
 }
 
+/**
+ * How the SSH session to the remote server stands: connected, the last failure,
+ * and when it may try again. Reading it asks nothing of the remote server.
+ */
+export function useRemoteSession() {
+  return useQuery({
+    queryKey: ["ssh", "session"],
+    queryFn: async () => {
+      const response = await api.get<{ status: string; session: ExploreSession }>(
+        "/explore/session"
+      );
+      return response.data.session;
+    },
+    refetchInterval: 15_000,
+  });
+}
+
 export function useSSHAutoConnect() {
   const queryClient = useQueryClient();
 
@@ -321,23 +339,53 @@ export function useDebugInfo() {
   });
 }
 
+/** One browser holding a live connection, as `/websocket/status` reports it. */
+export interface LiveConnection {
+  /** The first eight characters of the connection id, then "...". */
+  session_id: string;
+  connected_minutes_ago: number;
+  last_activity_minutes_ago: number;
+  timeout_minutes: number;
+  // The rest arrived with the diagnostics card; an older backend omits them.
+  username?: string;
+  connected_seconds?: number;
+  idle_seconds?: number;
+  timeout_seconds?: number;
+  /**
+   * When the browser closes it for going unused: the configured time. The
+   * server's own `timeout_seconds` is a few minutes longer, as a backstop.
+   */
+  idle_limit_seconds?: number;
+  /** What it uses now: "websocket", "polling", or "unknown". */
+  transport?: string;
+}
+
+export interface WebSocketStatus {
+  active_connections: number;
+  default_timeout_minutes: number;
+  max_timeout_minutes: number;
+  /** What a connection opened from now gets; a note when it is not set. */
+  configured_timeout_minutes?: number | string;
+  connection_details: LiveConnection[];
+  cleanup_thread_running?: boolean;
+  runtime?: {
+    async_mode?: string;
+    ping_interval_seconds?: number;
+    ping_timeout_seconds?: number;
+    verbose_logging?: boolean;
+    websocket_transport_ready?: boolean;
+    entrypoint?: string;
+  };
+  timestamp?: string;
+}
+
 export function useWebSocketStatus() {
   return useQuery({
     queryKey: ["websocket", "status"],
     queryFn: async () => {
       const response = await api.get<{
         status: string;
-        websocket_status: {
-          active_connections: number;
-          default_timeout_minutes: number;
-          max_timeout_minutes: number;
-          connection_details: Array<{
-            session_id: string;
-            connected_minutes_ago: number;
-            last_activity_minutes_ago: number;
-            timeout_minutes: number;
-          }>;
-        };
+        websocket_status: WebSocketStatus;
       }>("/websocket/status");
       return response.data;
     },

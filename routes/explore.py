@@ -10,9 +10,11 @@ Every endpoint requires a valid session (`@require_auth`). Beyond that:
 *   The client never describes work. It asks for a plan, the server computes and
     stores it, and execution quotes the plan's id. A destructive plan that
     failed its checks additionally needs an explicit typed confirmation.
-*   Comparison endpoints do real work on the media server, so they are rate
+*   Comparison endpoints do real work on the remote server, so they are rate
     limited per user — the rest of the app has no rate limiting at all and a
-    held-down refresh key would otherwise keep the remote busy.
+    held-down refresh key would otherwise keep the remote busy. Opening the page
+    and its series and seasons are not: the service reuses one walk for two
+    minutes (see `services/explore/service.py`), so they rarely walk at all.
 *   Failures return real status codes (400/404/409/422/502) so the UI can tell
     "no session" from "empty library", which the old browse endpoints could not.
 """
@@ -74,7 +76,12 @@ def handled(f):
         try:
             return f(*args, **kwargs)
         except ExploreError as error:
-            return jsonify({'status': 'error', 'message': error.message}), error.status
+            body = {'status': 'error', 'message': error.message}
+            status_of = getattr(explore_service, 'session_status', None)
+            if error.status == 409 and status_of is not None:
+                # Not connected: the page shows why, and when it may try again.
+                body['session'] = status_of()
+            return jsonify(body), error.status
         except Exception as error:  # noqa: BLE001 - surface, do not swallow
             import traceback
             traceback.print_exc()
@@ -95,17 +102,41 @@ def api_libraries():
 @require_auth
 @handled
 def api_tree(media_type):
-    refresh = request.args.get('refresh') == '1'
-    if refresh:
+    """`check=auto` when the page opens, `refresh=1` (or `check=refresh`) for Re-check."""
+    check = request.args.get('check')
+    if request.args.get('refresh') == '1':
+        check = 'refresh'
+    if check not in (None, 'auto', 'refresh'):
+        return jsonify({'status': 'error', 'message': 'check must be auto or refresh'}), 400
+    if check == 'refresh':
         limited = rate_limited(lambda: None)()
         if limited is not None:
             return limited
-    return jsonify({'status': 'success', **explore_service.tree(media_type, refresh=refresh)})
+    return jsonify({'status': 'success', **explore_service.tree(media_type, check=check)})
+
+
+@explore_bp.route('/explore/session')
+@require_auth
+@handled
+def api_session():
+    return jsonify({'status': 'success', 'session': explore_service.session_status()})
+
+
+@explore_bp.route('/explore/connect', methods=['POST'])
+@require_auth
+@handled
+def api_connect():
+    """Connect now, from the Explore page. Spaced like any other attempt."""
+    result = explore_service.connect()
+    if result['ok']:
+        record('ssh.connect', 'Connected to the remote server from Explore',
+               target_type='connection', target_label=result['session'].get('host') or None)
+    return jsonify({'status': 'success' if result['ok'] else 'error', **result}), \
+        200 if result['ok'] else 409
 
 
 @explore_bp.route('/explore/series/<media_type>/<path:folder>')
 @require_auth
-@rate_limited
 @handled
 def api_series(media_type, folder):
     return jsonify({'status': 'success', 'series': explore_service.series(media_type, folder)})
@@ -113,7 +144,6 @@ def api_series(media_type, folder):
 
 @explore_bp.route('/explore/season/<media_type>/<folder>/<path:season>')
 @require_auth
-@rate_limited
 @handled
 def api_season(media_type, folder, season):
     return jsonify({

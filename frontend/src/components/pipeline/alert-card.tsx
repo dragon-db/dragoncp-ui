@@ -25,6 +25,28 @@ const SEVERITY_TONE: Record<string, PipelineTone> = {
 /** Actions that settle the matter rather than just closing the alert. */
 const DOING_ACTIONS = new Set(["sync_now", "retry", "sync_anyway", "run_now"]);
 
+/**
+ * The folder an alert is about, as Explore opens it. A missed auto-sync names
+ * `series`; the safety check's alert has named the same folder `folder` since
+ * before this link existed.
+ */
+function exploreTarget(
+  data: Record<string, unknown>
+): { type: string; series: string; season?: string } | null {
+  const explore = data.explore;
+  if (!explore || typeof explore !== "object") return null;
+  const { media_type, series, folder, season } = explore as Record<string, unknown>;
+  const name = typeof series === "string" && series ? series : folder;
+  if (typeof media_type !== "string" || !media_type || typeof name !== "string" || !name) {
+    return null;
+  }
+  return {
+    type: media_type,
+    series: name,
+    season: typeof season === "string" ? season : undefined,
+  };
+}
+
 const CLOSED_AS: Record<string, string> = {
   done: "Closed as done",
   wrong: "Marked as wrong",
@@ -43,6 +65,7 @@ export function AlertCard({ alert, showRunLink = true }: { alert: Alert; showRun
   const [confirmAnyway, setConfirmAnyway] = useState(false);
   const tone = SEVERITY_TONE[alert.severity] ?? "warn";
   const open = alert.state === "open";
+  const explore = exploreTarget(alert.data ?? {});
   const Glyph =
     alert.kind === "sync_refused"
       ? IconShieldExclamation
@@ -120,6 +143,18 @@ export function AlertCard({ alert, showRunLink = true }: { alert: Alert; showRun
                 </Button>
               );
             })}
+
+          {explore && (
+            <Link
+              to="/media/$type"
+              params={{ type: explore.type }}
+              search={{ series: explore.series, season: explore.season }}
+              className="inline-flex items-center gap-1 text-xs font-medium text-brand-hover hover:underline"
+            >
+              Open in Explore
+              <IconArrowRight className="size-3.5" />
+            </Link>
+          )}
 
           {showRunLink && alert.run_id && (
             <Link

@@ -595,8 +595,8 @@ What remains:
   - A refusal is visible: the sync is listed on Transfers → History under
     **Stopped before copying**, its alert on Notifications, and its webhooks
     read **Manual** on the Webhooks page instead of Pending.
-  - The fallback wait's meaning is on screen: the Automation tab labels it
-    **Fallback wait (seconds)** with a sentence saying it applies only when
+  - The fallback wait's meaning is on screen: Settings → Syncing labels it
+    **Fallback wait** with a sentence saying it applies only when
     Sonarr cannot be asked, and the auto-sync popover says "TV & anime start
     once Sonarr has nothing more for the season; if Sonarr cannot be asked, Ns
     after the last episode."
@@ -657,11 +657,12 @@ What remains:
 - **Undefined CSS variables.** `webhook-bits.tsx:29` builds the poster fallback
   from `var(--surface-3)` and `var(--surface-2)`; neither is defined anywhere in
   `frontend/src`, so the tile renders transparent.
-- **Settings "Save All" is three sequential calls in one `try`.** An early
-  failure skips the rest, and the only feedback is a generic toast — a partial
-  save is invisible.
-- **Disconnect on the Diagnostics tab is global.** It tears down the
-  process-wide SSH manager, affecting every operator.
+- **Fixed: Settings "Save All" was three sequential calls in one `try`.** There
+  is no Save All any more; since 2026-10-21 every control saves itself and says
+  what it saved.
+- **Disconnect on Settings → Remote server is global.** It closes the
+  process-wide SSH session, affecting every operator; with Auto-connect on,
+  Explore opens it again the next time it needs it.
 
 ---
 

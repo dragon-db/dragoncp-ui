@@ -234,6 +234,18 @@ Five answers, each needing a different response:
 `blocked` and `auth_failed` never trigger a restart: the server is running
 perfectly well and restarting it would throw away what the check established.
 
+**Stopped is not down.** On demand, a healthy server spends most of the day
+stopped, so the panel reports that as **Ready. It starts for each transfer and
+stops when they finish.** with a green icon (`standing_by` in the status), not as
+"Installed but not running" in amber, which is what it said until 2026-10-21. It
+counts as ready only when everything the status read can establish over SSH holds:
+installed, the service stopped cleanly (not `failed`), settings current, the boot
+setting as asked, a password stored and readable, and no sign our address changed.
+The one thing a stopped server cannot show is that it accepts our password right
+now; each start checks that, and a refusal sends the transfer over SSH. With **Use
+it for transfers** off it reads "Installed and stopped" in grey instead. A server
+set to run always and found stopped is still amber.
+
 The answer is cached briefly so a batch of queued transfers asks once rather than
 once each. The Settings panel does not poll — each status read opens an SSH
 connection and asks the server, which costs seconds on a long link, for a value

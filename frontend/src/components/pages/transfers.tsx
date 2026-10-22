@@ -1,4 +1,4 @@
-import { PageHeader } from "@/components/layout/page-header";
+import { PageHeader, PageHeaderMenu } from "@/components/layout/page-header";
 import { actorLabel } from "@/lib/api";
 import { PageTabsList } from "@/components/layout/page-tabs";
 import { SectionCard, SectionEmpty } from "@/components/layout/section-card";
@@ -743,23 +743,36 @@ export function TransfersPage() {
           variant="outline"
           onClick={refreshAll}
           disabled={activeQuery.isFetching || allQuery.isFetching}
+          aria-label="Refresh"
+          className="max-sm:size-8 max-sm:px-0"
         >
           <IconRefresh
             className={cn(
-              "mr-2 h-4 w-4",
+              "h-4 w-4 sm:mr-2",
               (activeQuery.isFetching || allQuery.isFetching) && "animate-spin"
             )}
           />
-          Refresh
+          <span className="hidden sm:inline">Refresh</span>
         </Button>
         <Button
           variant="outline"
           onClick={() => setConfirmCleanup(true)}
           disabled={cleanupMutation.isPending}
+          className="hidden sm:inline-flex"
         >
           <IconTrash className="mr-2 h-4 w-4" />
           Remove duplicates
         </Button>
+        <PageHeaderMenu
+          items={[
+            {
+              label: "Remove duplicates",
+              icon: IconTrash,
+              onSelect: () => setConfirmCleanup(true),
+              disabled: cleanupMutation.isPending,
+            },
+          ]}
+        />
       </PageHeader>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>

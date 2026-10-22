@@ -11,9 +11,10 @@ layer exists to remove.
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from services.connectors.base import Target
+from services.connectors import events as event_catalogue
+from services.connectors.base import Mention, Target
 
 # Why a message was not delivered. These strings reach the delivery log and the
 # UI, so they are written for an operator reading them in a hurry.
@@ -88,3 +89,34 @@ def as_target(row: Dict[str, Any]) -> Target:
         is_default=bool(row.get('is_default')),
         enabled=bool(row.get('enabled')),
     )
+
+
+def ping_rule(route: Optional[Dict[str, Any]], event_key: str) -> str:
+    """When `event_key` pings: the route's choice, else the catalogue's default."""
+    when = (route or {}).get('ping_when')
+    if when in event_catalogue.PING_CHOICES:
+        return when
+    entry = event_catalogue.get(event_key)
+    return entry.default_ping if entry else event_catalogue.PING_NEVER
+
+
+def mentions_for(store, connector_id: str, event_key: str, severity: str,
+                 target_row: Dict[str, Any]) -> List[Mention]:
+    """Who one message pings, given where it is going.
+
+    The route decides when (never, on a warning or a failure, or always) and,
+    if it named anyone, whom. A route that named nobody uses the webhook's own
+    pings, so "ping Admins for everything in the alerts channel" is set once.
+    """
+    route = store.get_route(event_key, connector_id)
+    if not event_catalogue.should_ping(ping_rule(route, event_key), severity):
+        return []
+    ids = (route or {}).get('mention_ids')
+    if ids is None:
+        ids = target_row.get('mention_ids') or []
+    return [as_mention(row) for row in store.mentions_by_ids(connector_id, ids)]
+
+
+def as_mention(row: Dict[str, Any]) -> Mention:
+    return Mention(mention_id=row['mention_id'], label=row['label'],
+                   kind=row['kind'], value=row.get('value') or '')

@@ -223,12 +223,11 @@ Worth knowing about the fallback wait:
   unconfigured uses the timer silently.
 - **The screens say it is a fallback, in their own words.** The registry's
   label and description ("Fallback wait (seconds)", "Used only when Sonarr
-  cannot be asked…") are served by `GET /api/config`, but the React settings
-  panel skips the `automation` group (`HANDLED_ELSEWHERE` in
-  `frontend/src/components/settings/settings-panel.tsx`). The field an operator
-  actually edits is on Settings → Automation, saved through
-  `/api/webhook/settings`; since 2026-10-05 it is labelled **Fallback wait
-  (seconds)** with its own sentence saying it is used only when Sonarr cannot
+  cannot be asked…") are served by `GET /api/config`, but Settings → Syncing
+  writes its own label and sentence
+  (`frontend/src/components/settings/syncing-tab.tsx`). The field an operator
+  actually edits is saved through `/api/webhook/settings`; it is labelled
+  **Fallback wait** with its own sentence saying it is used only when Sonarr cannot
   be asked, and the auto-sync popover on the Webhooks page says "TV & anime
   start once Sonarr has nothing more for the season; if Sonarr cannot be asked,
   Ns after the last episode." Before, the field read *Series/Anime Wait Time
@@ -400,6 +399,7 @@ a connector now — rows in `connector`, `connector_secret` and `connector_targe
 | `BACKUP_RETENTION_KEEP` | `2` | 1-50 |
 | `BACKUP_RETENTION_GRACE_HOURS` | `24` | 0-720 |
 | `WEBSOCKET_TIMEOUT_MINUTES` | `30` | 5-60 |
+| `SSH_AUTO_CONNECT` | `true`; Explore opens the SSH session by itself when it needs it ([Explore → The SSH session](../features/explore/README.md#the-ssh-session)) | — |
 | `FAST_TRANSPORT_ENABLED` | `false` | — |
 | `FAST_TRANSPORT_ACCESS_MODE` | `restricted` (the other value is `password`) | — |
 | `FAST_TRANSPORT_LIFECYCLE` | `on_demand` (the other value is `always`) | — |

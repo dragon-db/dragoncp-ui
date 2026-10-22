@@ -11,6 +11,161 @@ Newest first.
 
 ---
 
+## 2.3.2
+
+Quality of life, round two: connection tests that test what you typed,
+upgrades you can find, Discord pings, and Discord messages that say what was
+synced and how.
+
+### Integrations
+
+- **Test connection tests what is in the form** (issue #63). Sonarr, Radarr
+  and Jellyfin used to test only the saved settings, so a freshly typed address
+  and key answered "Not configured yet". The test now uses the form's values,
+  saved or not, saves nothing, and shows its answer under the fields — "not
+  saved yet" when it tested unsaved values. **Unsaved changes** shows beside
+  Save. Saving a new address or key tests it straight away.
+- **The On/Off switch no longer wipes what you typed**, and switching a
+  connector on with nothing saved says so.
+- **Clicking through a saved API key no longer deletes it on Save.**
+- **On a phone, a page's title and its controls share one row** — "Sonarr"
+  and its On/Off switch, Webhooks' Auto-sync and Refresh, Transfers' Refresh.
+  Less used actions (Remove duplicates, Retention, Rebuild index) move into a
+  "⋯" menu there. Backups' "Adopt old folders" and "unidentified" now sit
+  under its description.
+- **Integration pages and Notifications lose the line under their title**
+  ("Film library manager. Already sends notifications here…", "What needs a
+  person: …"), so the content starts higher.
+- The activity log gives a failed test's real reason ("Sonarr test failed:
+  Not configured yet") instead of always "Could not reach Sonarr".
+
+### Upgrades
+
+- **An Upgrade tag** (issue #25) marks a show, season or film whose remote
+  file is newer than the one here — in Explore's list and on the Sonarr and
+  Radarr Library tabs, each with an **Upgrade** filter. The episode label reads
+  **Upgrade** instead of "Replace" (Explore) or "Different" (Library tab); the
+  Replace button keeps its name. Explore's filters wrap onto a second line on a
+  narrower desktop instead of hiding **Re-check sync**.
+
+### Settings
+
+- **Rebuilt to match the rest of the app**, in five tabs by task: **Remote
+  server** (connection, Auto-connect, login details, fast transfers),
+  **Syncing** (auto-sync per library, library folders as remote → local pairs,
+  backup retention), **Account**, **System** (test mode, disks) and **Logs**.
+  Each topic now lives in one place.
+- **New Logs tab with WebSocket diagnostics.** Tiles show at a glance how many
+  browsers are getting live updates, how many are on WebSocket, and how often
+  this browser had to reconnect. One card lists every session with its real
+  transport (it used to say "polling" for everyone), who, how long, and a bar
+  counting down to when it closes. This browser is always the first row, with
+  Turn on / Keep open / Turn off and its own drops and retries since the page
+  loaded. The backend log sits below.
+- **Fast transfers: stopped between transfers is green now.** On demand, an
+  idle server read "Installed but not running" in amber. It now reads **Ready.
+  It starts for each transfer and stops when they finish.** when nothing stands
+  in the way of the next start.
+- Values from the environment file read as locked text instead of greyed-out
+  fields; coloured icons show real states (connected, running, on, test mode).
+- **One save model**: switches and choices save as you change them, numbers on
+  Enter; an out-of-range number is refused with its range. No more Save
+  buttons.
+- The tab is in the address (`/settings?tab=logs`). Switch focus rings are
+  easier to see.
+- The log no longer gets a "Configuration key … not found" warning each time a
+  database setting with nothing saved is read.
+
+### Explore
+
+- **Opening Explore brings it up to date by itself.** It shows the last result
+  at once, then checks the remote server and swaps in what changed — no
+  Re-check needed. A check from the last 2 minutes is reused unless Sonarr or
+  Radarr imported something for that library since, so reopening the page does
+  not read the remote again and again. Seasons use the same check instead of
+  reading the whole remote library on every click.
+- **No more trips to Settings when SSH drops.** Explore reconnects with the
+  saved login when the session is missing (after a restart) or dead (reset by
+  the server — what made "Re-check failed"). When it cannot, it keeps showing
+  the last result, says why and how old it is, and offers **Connect** on the
+  page.
+- **The remote server is never hammered**: one connection attempt at a time,
+  growing waits after a failure (30 s up to 5 min), and a refused login is
+  never retried by itself, so the server has no reason to ban this address.
+- **New: Auto-connect** (Settings → Remote server, on by default). Off: connect
+  by hand. The **Auto Connect** button there is now called **Connect**.
+- **A file stuck in an extra folder is never "In sync" any more.** An episode
+  at `Season 04/episode.mkv/episode.mkv` — invisible to the media server —
+  reads **Nested**. Its season and series read **Needs repair** instead of
+  Synced, or carry a **Nested** tag beside Partial / Out of sync / Not on
+  remote, in the tree and the season list; a **Nested** filter lists them, and
+  opening one shows a strip with **Repair** above the list. A sync never
+  downloads it again and says why, and Sonarr's **Get** for it now points to
+  Repair instead of "nothing to copy".
+- **Replacing or syncing away a nested file removes the empty folder it
+  leaves**, so the library keeps the shape Jellyfin expects.
+
+### Sonarr and Radarr pages
+
+- **A file in a nested folder reads the same as in Explore.** The episode
+  says **Nested** instead of "Not here", the title **Needs repair** (or an
+  amber **Nested** tag beside Out of sync), and a **Nested** filter appears
+  when any title has one. Opening it says "S01E38 is here, but inside a nested
+  folder your media server cannot see" and offers **Repair in Explore**,
+  which opens Explore on that season.
+- **The pop-up's buttons lead with what fits.** One action is filled: Repair
+  in Explore when a file is nested, otherwise Get, then Replace, then Copy the
+  series. **Open in Explore** is now an outlined button beside them instead of
+  a quiet link, and filled when it is the only way on. Its copy sentences say
+  "remote server" for where files come from.
+- **Copy the series and Copy the film ask first**, as Get does: what will be
+  copied and roughly how big, with **Copy now** and **Cancel**. Nothing starts
+  from a single press any more.
+
+### Auto-scanner
+
+- **New: Alert only, and it is the default.** The Sonarr and Radarr
+  auto-scanner has a **When it finds something** setting. **Alert only** opens
+  a *Missed auto-sync* alert in Notifications — with **Open in Explore** — and
+  sends one Discord message per scan, and copies nothing, so a download you
+  stopped by hand stays stopped. **Sync it** keeps the old behaviour. Alert
+  only also catches syncs that were skipped or cancelled within its **Look
+  back (days)** (7 by default, up to 30),
+  alerts each folder once, comes back after Dismiss only on a newer import,
+  and closes itself once the folder is synced.
+- **Open in Explore** on the safety check's alert too.
+
+### Discord
+
+- **Pings** (issue #35). A new **Mentions** tab holds who a message can ping —
+  a Discord role, a person, @here or @everyone — each with a Test ping. Each
+  webhook can ping people by default, and each notification on the Routing tab
+  chooses when it pings (never, on warnings and failures, or always) and whom.
+  By default failures, refusals and anything needing a person ping; "Sync
+  finished" and other reports do not. Only the chosen people can be pinged: a
+  title containing "@everyone" never pings anyone.
+- **New: Waiting for a manual sync.** With automatic sync off, a batch waiting
+  for someone to press Sync is announced once.
+- **Sync messages say what was synced and how**: one line per episode copied
+  (with "upgrade to …" when it replaced an older file), the route — ⚡ FAST,
+  SSH or SSH FALLBACK — and size and speed.
+- **One look for every message.** The line above the title names what
+  happened in one upper-case scheme — AUTO SYNC - SONARR, MANUAL SYNC -
+  EXPLORE, AUTO SYNC FAILED - SCANNER, SAFETY CHECK - AUTO SYNC STOPPED — and
+  every message carries the same footer, `DragonCP v2.3.2`. The safety-check
+  message no longer repeats its reason and counts.
+
+### Upgrading
+
+- The database gains one table and four columns on first start; nothing to
+  run by hand.
+- Nobody is pinged until someone is added on Discord's Mentions tab.
+- An auto-scanner that was switched on now alerts instead of syncing. Set
+  **When it finds something** to **Sync it** on the Sonarr or Radarr
+  Connection tab to keep it syncing.
+
+---
+
 ## 2.3.1
 
 Fast transfers work again, and can no longer fail a copy on their own.

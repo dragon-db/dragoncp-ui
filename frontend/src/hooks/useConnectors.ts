@@ -15,12 +15,16 @@ export interface ConnectorField {
   name: string;
   label: string;
   description: string;
-  /** text | password | url | boolean | number */
+  /** text | password | url | boolean | number | choice */
   kind: string;
   /** Stored out of reach; the client is never sent its value. */
   secret: boolean;
   required: boolean;
   placeholder: string;
+  /** For `choice`: what can be picked, in order. */
+  choices?: { value: string; label: string }[];
+  /** What an unset field means. A `choice` shows it selected. */
+  default?: string;
 }
 
 /** A place announcements can be sent — a named Discord webhook. */
@@ -34,7 +38,24 @@ export interface ConnectorTarget {
   last_send_ok: boolean | null;
   last_send_error: string | null;
   created_at: string;
+  /** Who every message sent here pings, unless the notification picks others. */
+  mention_ids: string[];
 }
+
+/** Someone a message can ping — a Discord role, a user, @here or @everyone. */
+export interface ConnectorMention {
+  mention_id: string;
+  connector_id: string;
+  label: string;
+  /** role | user | here | everyone */
+  kind: string;
+  /** The Discord ID for a role or a user; empty for @here and @everyone. */
+  value: string;
+  created_at: string;
+}
+
+/** When a notification pings: never, on a warning or a failure, or always. */
+export type PingWhen = "never" | "attention" | "always";
 
 export interface Connector {
   id: string;
@@ -61,6 +82,10 @@ export interface Connector {
   exists: boolean;
   target_noun?: string;
   targets?: ConnectorTarget[];
+  /** Whether a message can ping someone, and who can be pinged. */
+  supports_mentions?: boolean;
+  mention_kinds?: string[];
+  mentions?: ConnectorMention[];
 }
 
 /** Where one announcement goes, per connector. */
@@ -69,6 +94,10 @@ export interface EventRoute {
   enabled: boolean;
   /** True when no destination was chosen, so the default is used. */
   using_default: boolean;
+  /** Null: the notification's `default_ping`. */
+  ping_when: PingWhen | null;
+  /** Null: whoever the webhook pings. An empty list is nobody. */
+  mention_ids: string[] | null;
 }
 
 export interface CatalogueEvent {
@@ -76,6 +105,8 @@ export interface CatalogueEvent {
   label: string;
   description: string;
   default_severity: string;
+  /** When this pings until someone chooses otherwise. */
+  default_ping: PingWhen;
   routes: Record<string, EventRoute>;
 }
 
@@ -91,12 +122,16 @@ export interface Delivery {
   error: string | null;
   duration_ms: number;
   created_at: string;
+  /** Who the message pinged, by name. */
+  mentions: string | null;
 }
 
 export interface CheckResult {
   ok: boolean;
   message: string;
   detail: Record<string, unknown>;
+  /** True when what was tested is not what is saved — the form's own values. */
+  unsaved?: boolean;
 }
 
 /** What the server sends back for a secret it will not disclose. */
@@ -173,19 +208,29 @@ function useConnectorMutation<TVariables, TData = unknown>(
 export function useSaveConnector(connectorId: string) {
   return useConnectorMutation(
     async (payload: { enabled?: boolean; config?: Record<string, string> }) => {
-      const response = await api.post(`/connectors/${connectorId}`, payload);
+      const response = await api.post<{ status: string; connector: Connector }>(
+        `/connectors/${connectorId}`,
+        payload
+      );
       return response.data;
     }
   );
 }
 
+/**
+ * Test connection. With `config`, the form's values are tested — saved or
+ * not, and saved nowhere; without, the saved settings are.
+ */
 export function useCheckConnector(connectorId: string) {
-  return useConnectorMutation<void, CheckResult>(async () => {
-    const response = await api.post<{ status: string; result: CheckResult }>(
-      `/connectors/${connectorId}/check`
-    );
-    return response.data.result;
-  });
+  return useConnectorMutation<{ config?: Record<string, string> } | void, CheckResult>(
+    async (payload) => {
+      const response = await api.post<{ status: string; result: CheckResult }>(
+        `/connectors/${connectorId}/check`,
+        payload?.config ? { config: payload.config } : undefined
+      );
+      return response.data.result;
+    }
+  );
 }
 
 export function useAddTarget(connectorId: string) {
@@ -208,6 +253,7 @@ export function useUpdateTarget(connectorId: string) {
       credential?: string;
       enabled?: boolean;
       make_default?: boolean;
+      mention_ids?: string[];
     }) => {
       const response = await api.patch(`/connectors/${connectorId}/targets/${targetId}`, payload);
       return response.data;
@@ -224,7 +270,9 @@ export function useDeleteTarget(connectorId: string) {
 
 export function useTestTarget(connectorId: string) {
   return useConnectorMutation(async (targetId: string) => {
-    const response = await api.post(`/connectors/${connectorId}/targets/${targetId}/test`);
+    const response = await api.post<{ status: string; message: string }>(
+      `/connectors/${connectorId}/targets/${targetId}/test`
+    );
     return response.data;
   });
 }
@@ -237,9 +285,55 @@ export function useSaveRoutes() {
         connector_id: string;
         target_id: string | null;
         enabled: boolean;
+        ping_when?: PingWhen | null;
+        mention_ids?: string[] | null;
       }[]
     ) => {
       const response = await api.put("/connectors/routes", { routes });
+      return response.data;
+    }
+  );
+}
+
+export function useAddMention(connectorId: string) {
+  return useConnectorMutation(async (payload: { label: string; kind: string; value?: string }) => {
+    const response = await api.post(`/connectors/${connectorId}/mentions`, payload);
+    return response.data;
+  });
+}
+
+export function useUpdateMention(connectorId: string) {
+  return useConnectorMutation(
+    async ({
+      mentionId,
+      ...payload
+    }: {
+      mentionId: string;
+      label?: string;
+      kind?: string;
+      value?: string;
+    }) => {
+      const response = await api.patch(`/connectors/${connectorId}/mentions/${mentionId}`, payload);
+      return response.data;
+    }
+  );
+}
+
+export function useDeleteMention(connectorId: string) {
+  return useConnectorMutation(async (mentionId: string) => {
+    const response = await api.delete(`/connectors/${connectorId}/mentions/${mentionId}`);
+    return response.data;
+  });
+}
+
+/** Ping one mention through one webhook, to prove the ping arrives. */
+export function useTestMention(connectorId: string) {
+  return useConnectorMutation(
+    async ({ mentionId, targetId }: { mentionId: string; targetId: string }) => {
+      const response = await api.post<{ status: string; message: string }>(
+        `/connectors/${connectorId}/mentions/${mentionId}/test`,
+        { target_id: targetId }
+      );
       return response.data;
     }
   );

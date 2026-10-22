@@ -19,10 +19,17 @@ something for them. The service's whole backlog is not a gap: plenty of
 libraries keep a subset here on purpose, and a scanner that fetched everything
 it could see would fill the disk five titles at a time.
 
-Every find goes through the sync engine as an `auto_scanner` sync, so the batch
-check (no duplicates), Sonarr's ready check and the safety check all apply.
-The scanner itself only decides what to ask for. One switch per service, on its
-integration page, off by default.
+What happens to a find is the service's scanner mode (decided 2026-10-19):
+
+  * **Alert only** (the default) opens a *Missed auto-sync* alert and sends one
+    Discord message per scan, and copies nothing. A download that is not ready
+    to sync is stopped by hand, and a scanner that synced it anyway would undo
+    that; the operator syncs it from Explore when it is ready.
+  * **Sync it** hands every find to the sync engine as an `auto_scanner` sync,
+    so the batch check (no duplicates), Sonarr's ready check and the safety
+    check all apply.
+
+One switch per service, on its integration page, off by default.
 """
 
 import logging
@@ -54,6 +61,16 @@ MAX_ATTEMPTS = 2
 
 #: How far back the history is read when this service has never been scanned.
 FIRST_SCAN_LOOKBACK = timedelta(hours=24)
+
+MODE_ALERT = 'alert'
+MODE_SYNC = 'sync'
+
+#: How far back Alert only reads the history, on every scan, unless the
+#: service's "Look back (days)" says otherwise. Not "since the last scan": a
+#: sync that was waiting while one scan looked, and was cancelled or failed
+#: afterwards, has to be seen again by a later one. An import already alerted
+#: is not alerted twice.
+DEFAULT_LOOKBACK_DAYS = 7
 
 LAST_SCAN_KEY = 'AUTO_SCANNER_LAST_SCAN_{source}'
 
@@ -100,6 +117,8 @@ class Find:
     finding: str = ''
     #: When the service imported it; None for a gap found by comparing libraries.
     imported_at: Optional[datetime] = None
+    #: Episodes the service has files for, for a short season; None otherwise.
+    service_files: Optional[int] = None
 
     @property
     def key(self) -> str:
@@ -147,14 +166,32 @@ class AutoScanner:
             return None
         return adapter.auto_scanner_interval_minutes() * 60.0
 
+    @staticmethod
+    def mode(adapter) -> str:
+        """Alert only, unless the service is explicitly set to sync what it finds."""
+        read = getattr(adapter, 'auto_scanner_mode', None)
+        try:
+            return MODE_SYNC if read is not None and read() == MODE_SYNC else MODE_ALERT
+        except Exception:  # noqa: BLE001
+            return MODE_ALERT
+
+    @staticmethod
+    def lookback_days(adapter) -> int:
+        read = getattr(adapter, 'auto_scanner_lookback_days', None)
+        try:
+            return int(read()) if read is not None else DEFAULT_LOOKBACK_DAYS
+        except Exception:  # noqa: BLE001
+            return DEFAULT_LOOKBACK_DAYS
+
     def jobs(self):
         """The two scheduler entries this scanner provides."""
         from services.scheduler import Job
         return [
             Job(name=f"{source}_auto_scanner",
                 label=f"{source.title()} auto-scanner",
-                description=(f"Asks {source.title()} what it imported and syncs anything "
-                             f"this disk does not have yet."),
+                description=(f"Asks {source.title()} what it imported and finds anything "
+                             f"nothing has synced — then alerts you, or syncs it, as set "
+                             f"above."),
                 interval=(lambda s=source: self.interval_seconds(s)),
                 run=(lambda s=source: self.scan(s)),
                 first_run_delay=60.0)
@@ -197,13 +234,26 @@ class AutoScanner:
         if not view.get('live'):
             return {'ok': False, 'summary': f"{name} did not send its library."}
 
-        since = self._last_scan_at(source) or (started - FIRST_SCAN_LOOKBACK)
+        mode = self.mode(adapter)
+        days = self.lookback_days(adapter)
+        if mode == MODE_ALERT:
+            since = started - timedelta(days=days)
+        else:
+            since = self._last_scan_at(source) or (started - FIRST_SCAN_LOOKBACK)
+        if self.alerts is not None:
+            # Whatever the mode: a missed sync somebody has since synced, from
+            # Explore or anywhere else, needs nobody any more.
+            self.alerts.close_synced_misses(source, self._synced_since)
         finds: Dict[str, Find] = {}
         imported, history_ok = self._from_history(source, adapter, view, since)
         for find in imported:
             self._merge(finds, find)
         for find in self._from_library(source, view, adapter):
             self._merge(finds, find)
+
+        if mode == MODE_ALERT:
+            return self._finish_alert(source, name, view, since, list(finds.values()),
+                                      history_ok, started, days)
 
         decisions = self._act(source, list(finds.values()))
 
@@ -235,10 +285,48 @@ class AutoScanner:
         if started_runs:
             self._announce(source, started_runs, held)
         log.info('Auto-scanner · %s · %s', name, summary)
-        return {'ok': True, 'summary': summary, 'source': source,
+        return {'ok': True, 'summary': summary, 'source': source, 'mode': mode,
                 'found': len(finds), 'started': len(started_runs),
                 'already_on_its_way': len(on_the_way), 'held_back': len(held),
                 'needs_a_person': len(given_up), 'failed': len(failed),
+                'since': since.isoformat(), 'decisions': decisions}
+
+    def _finish_alert(self, source: str, name: str, view: Dict[str, Any], since: datetime,
+                      finds: List[Find], history_ok: bool, started: datetime,
+                      days: int) -> Dict[str, Any]:
+        """Alert only: say what nothing has synced, and copy nothing."""
+        decisions = self._alert(source, finds)
+        if history_ok:
+            # Read by Sync it only: switched over, it starts from here rather
+            # than syncing everything that was already alerted.
+            self._set_last_scan_at(source, started)
+
+        count = lambda action: len([d for d in decisions if d['action'] == action])  # noqa: E731
+        alerted = [d for d in decisions if d['action'] == 'alerted']
+        summary = (f"Checked {view.get('total', 0)} {name} title(s): {len(finds)} not synced "
+                   f"— {len(alerted)} new alert(s), {count('updated')} updated, "
+                   f"{count('already_alerted')} already alerted, "
+                   f"{count('already_on_its_way')} on their way, {count('dismissed')} "
+                   f"dismissed earlier. Alert only: nothing was copied.")
+        if not finds:
+            summary = (f"Checked {view.get('total', 0)} {name} title(s): everything it "
+                       f"imported in the last {days} day{'s' if days != 1 else ''} has "
+                       f"been synced.")
+        if not history_ok:
+            summary += f" {name}'s history could not be read; only the library was compared."
+
+        record('scanner.run', summary, target_type='connector', target_id=source,
+               detail={'mode': MODE_ALERT, 'finds': [d['find'] for d in decisions],
+                       'since': since.isoformat()})
+        if alerted:
+            self._announce_missed(source, alerted)
+        log.info('Auto-scanner · %s · %s', name, summary)
+        return {'ok': True, 'summary': summary, 'source': source, 'mode': MODE_ALERT,
+                'lookback_days': days,
+                'found': len(finds), 'alerted': len(alerted), 'updated': count('updated'),
+                'already_alerted': count('already_alerted'),
+                'already_on_its_way': count('already_on_its_way'),
+                'dismissed': count('dismissed'), 'failed': count('failed'),
                 'since': since.isoformat(), 'decisions': decisions}
 
     @staticmethod
@@ -248,6 +336,9 @@ class AutoScanner:
             finds[find.key] = find
         else:
             existing.reasons.extend(r for r in find.reasons if r not in existing.reasons)
+            existing.imported_at = existing.imported_at or find.imported_at
+            if existing.service_files is None:
+                existing.service_files = find.service_files
 
     # ------------------------------------------------------- what to look at
 
@@ -283,6 +374,15 @@ class AutoScanner:
         for (service_id, season), (moment, entry) in latest.items():
             item = by_service_id.get(service_id)
             if item is None:
+                continue
+            # Naming the season's folder is a request to the service per title.
+            # Where this disk keeps the season, the destination is known
+            # without it, and a season synced since needs no request at all.
+            known = self._find_for(source, item, season, None)
+            if known is None:
+                continue
+            if (season is None or _season_folder_here(item, season)) and \
+                    self._synced_since(known.dest_path, moment):
                 continue
             find = self._find_for(source, item, season, adapter)
             if find is None or self._synced_since(find.dest_path, moment):
@@ -321,6 +421,7 @@ class AutoScanner:
                 find.reasons.append(f"{source.title()} has files for {theirs} episode(s) of "
                                     f"season {season['season_number']}; this disk has {ours}.")
                 find.finding = f"found {theirs - ours} episode(s) missing here"
+                find.service_files = theirs
                 out.append(find)
         return out
 
@@ -466,11 +567,63 @@ class AutoScanner:
         self._resolve_absent(source, seen)
         return decisions
 
+    def _alert(self, source: str, finds: List[Find]) -> List[Dict[str, Any]]:
+        """Alert only: one alert per find nothing is on its way for."""
+        decisions: List[Dict[str, Any]] = []
+        seen = set()
+        for find in finds:
+            seen.add((find.external_id, find.season_number))
+            self._remember(find)
+            decision = {'find': find.as_dict(), 'action': '', 'run_id': None, 'detail': ''}
+            live = self.engine.store.find_live(find.key)
+            if live is not None:
+                # Held for a manual sync, in the ready check, queued or copying:
+                # that sync says what happens to it. If it ends without copying,
+                # a later scan still sees the import.
+                decision['action'] = 'already_on_its_way'
+                decision['run_id'] = live.get('run_id')
+            elif self.alerts is None:
+                decision['action'] = 'failed'
+                decision['detail'] = 'alerts are not running'
+            else:
+                outcome, alert = self.alerts.missed_sync(
+                    source, find.label, find.as_dict(), ' '.join(find.reasons),
+                    imported_at=find.imported_at.isoformat() if find.imported_at else None,
+                    service_files=find.service_files)
+                decision['action'] = outcome
+                decision['alert_id'] = (alert or {}).get('alert_id')
+            decisions.append(decision)
+        self._resolve_absent(source, seen)
+        return decisions
+
+    def _announce_missed(self, source: str, alerted: List[Dict[str, Any]]) -> None:
+        """One Discord message for everything a scan alerted, not one per title."""
+        try:
+            from services.connectors import notify
+            from services.connectors.events import Event, Field, headline
+            lines = [f"• {d['find']['label']} — {d['find']['reasons'][0]}"
+                     for d in alerted[:10] if d['find'].get('reasons')]
+            if len(alerted) > 10:
+                lines.append(f"… and {len(alerted) - 10} more")
+            count = len(alerted)
+            notify(Event(
+                key='scanner.missed', severity='warning',
+                title=f"{count} {'title' if count == 1 else 'titles'} in {source.title()} "
+                      f"missed auto-sync",
+                summary='Nothing was copied: the auto-scanner is set to Alert only.',
+                fields=(Field('Not synced', '\n'.join(lines) or 'see Notifications'),
+                        Field('What to do', 'Open DragonCP → Notifications, then Open in '
+                                            'Explore to sync it by hand when it is ready.')),
+                author=headline('Auto-scanner', 'missed auto sync'),
+            ))
+        except Exception:  # noqa: BLE001
+            log.exception('Could not announce the missed syncs')
+
     def _announce(self, source: str, started: List[Dict[str, Any]],
                   held: List[Dict[str, Any]]) -> None:
         try:
             from services.connectors import notify
-            from services.connectors.events import Event, Field
+            from services.connectors.events import Event, Field, headline
             lines = [f"• {d['find']['label']} — {d['find']['reasons'][0]}"
                      for d in started[:10] if d['find'].get('reasons')]
             if len(started) > 10:
@@ -483,7 +636,7 @@ class AutoScanner:
                 title=f"Auto-scanner found {len(started)} to sync in {source.title()}",
                 summary='These go through the normal pipeline; the usual finished or '
                         'failed message follows for each.',
-                fields=tuple(fields), author='Auto-scanner',
+                fields=tuple(fields), author=headline('Auto-scanner', 'syncs started'),
             ))
         except Exception:  # noqa: BLE001
             log.exception('Could not announce the scan')

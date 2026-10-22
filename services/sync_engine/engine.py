@@ -46,6 +46,7 @@ from models.sync_run import (
     episode_label,
     utc_now_iso,
 )
+from services.connectors.events import SYNC_AUTO, SYNC_MANUAL
 from services.sync_engine import stages as S
 from services.sync_engine.units import (
     IdentifyError,
@@ -129,16 +130,24 @@ def _request_stands_alone(request: 'SyncRequest', policy: S.KindPolicy) -> bool:
         request.operation_type, request.extra_fields or request.options.get('extra_fields'))
 
 
-_SYNC_LABEL = {
-    S.SONARR_WEBHOOK: 'Automated Sync',
-    S.RADARR_WEBHOOK: 'Automated Sync',
-    S.AUTO_SCANNER: 'Auto-scanner',
-    S.MANUAL: 'Manual Sync',
-    S.RESTART: 'Manual Sync (restart)',
-    S.EXPLORE: 'Explore',
-    S.RESTORE: 'Restore',
-    S.SIMULATION: 'Simulation',
+#: Where a sync came from, for its Discord headline ("AUTO SYNC - SONARR").
+#: A manual sync is named by the service its webhooks came from, if any.
+_SYNC_SOURCE = {
+    S.SONARR_WEBHOOK: 'SONARR',
+    S.RADARR_WEBHOOK: 'RADARR',
+    S.AUTO_SCANNER: 'SCANNER',
+    S.RESTART: 'RESTART',
+    S.EXPLORE: 'EXPLORE',
+    S.RESTORE: 'RESTORE',
+    S.SIMULATION: 'SIMULATION',
 }
+
+
+def _sync_origin(run: Dict[str, Any]) -> Tuple[str, str]:
+    """How a run started and where from: ('AUTO', 'SONARR'), ('MANUAL', 'EXPLORE')."""
+    mode = SYNC_MANUAL if _started_by_a_person(run) else SYNC_AUTO
+    source = _SYNC_SOURCE.get(run['kind']) or (run.get('source') or '').upper()
+    return mode, source
 
 
 def _now_iso() -> str:
@@ -677,6 +686,32 @@ class SyncEngine:
         self._set_state(run_id, S.CANCELLED, S.QUEUE, outcome='cancelled',
                         outcome_message=reason)
 
+    def _announce_held(self, run: Dict[str, Any], media: str) -> None:
+        """Tell the channel a batch is waiting for someone to press Sync.
+
+        Once per batch: a batch is held when it opens, and the webhooks that
+        join it later do not pass through here. Never raises — an announcement
+        must not stop a webhook being recorded.
+        """
+        try:
+            from services.connectors import notify
+            from services.connectors.events import WARNING, Event, Field, headline
+            label = run.get('title') or run.get('folder_name') or 'A sync'
+            if run.get('season_name'):
+                label = f"{label} — {run['season_name']}"
+            notify(Event(
+                key='sync.held', severity=WARNING,
+                title=label,
+                summary=(f"Automatic sync is off for {media}, so this waits for someone "
+                         f"to press Sync. Anything else that arrives for it joins the "
+                         f"same batch."),
+                fields=(Field('Folder', run.get('dest_path') or '', monospace=True),
+                        Field('What to do', 'Open DragonCP → Webhooks and press Sync.')),
+                author=headline('Manual sync needed', (run.get('source') or '')),
+            ))
+        except Exception:  # noqa: BLE001 - announcing must never break a sync
+            log.exception('Could not announce the held batch %s', run.get('run_id'))
+
     def _opened_message(self, run: Dict[str, Any], active: Optional[Dict[str, Any]]) -> str:
         label = run.get('title') or 'this folder'
         if run.get('season_name'):
@@ -782,6 +817,7 @@ class SyncEngine:
                         f"Automatic sync is off for {media}, so this waits for "
                         f"someone to press Sync.")
             self._set_state(run_id, S.HELD, S.READY)
+            self._announce_held(run, media)
             return
 
         if self._ready_skipped(run, policy):
@@ -1634,10 +1670,9 @@ class SyncEngine:
             notifier = getattr(self.coordinator, 'notification_service', None)
             if notifier is not None:
                 try:
-                    label = _SYNC_LABEL.get(run['kind'], 'Sync')
-                    if run['kind'] in _AUTOMATIC_KINDS and _started_by_a_person(run):
-                        label = 'Manual Sync'
-                    notifier.send_discord_notification(transfer_id, status, sync_label=label)
+                    mode, source = _sync_origin(run)
+                    notifier.send_discord_notification(transfer_id, status,
+                                                       sync_mode=mode, sync_source=source)
                     event = 'Sync finished' if status == 'completed' else 'Sync failed'
                     self._stage(run_id, S.TELL, S.PASSED,
                                 f"Announced “{event}” on Discord. Delivery is listed under "

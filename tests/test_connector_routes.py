@@ -193,6 +193,210 @@ class ConnectorRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('sudo_password', response.get_json()['message'])
 
+    # -- testing what the form holds -------------------------------------------
+
+    SONARR_STATUS = json.dumps({'appName': 'Sonarr', 'version': '4.0.0.0'})
+
+    def _check(self, config=None):
+        """Press Test connection, with the form's values when given."""
+        with patch('services.connectors.transport.requests.request',
+                   return_value=FakeResponse(200, self.SONARR_STATUS)) as request:
+            response = self.client.post('/api/connectors/sonarr/check',
+                                        json=None if config is None else {'config': config})
+        self.assertEqual(response.status_code, 200)
+        self.assertNoSecret(response, 'check')
+        return response.get_json()['result'], request
+
+    def test_test_connection_reaches_the_address_typed_in_the_form(self):
+        """Issue #63: it used to test only what was saved, and answered "Not
+        configured yet" for a form someone had just filled in."""
+        result, request = self._check({'base_url': 'http://elsewhere:8989',
+                                       'api_key': REDACTED})
+        self.assertTrue(result['ok'])
+        self.assertTrue(result['unsaved'])
+        url = request.call_args.args[1]
+        self.assertTrue(url.startswith('http://elsewhere:8989/'), url)
+        # The placeholder stands for the saved key, which the browser never had.
+        self.assertEqual(request.call_args.kwargs['headers']['X-Api-Key'], SECRET_KEY)
+
+    def test_testing_unsaved_values_saves_nothing(self):
+        self._check({'base_url': 'http://elsewhere:8989', 'api_key': 'typed-but-not-saved'})
+        saved = self.store.get_connector('sonarr')
+        self.assertEqual(saved['config']['base_url'], 'http://localhost:8989')
+        self.assertEqual(self.store.secret('sonarr', 'api_key'), SECRET_KEY)
+        # The badge describes the saved connection, which nothing has tested.
+        self.assertIsNone(saved['last_check_at'])
+
+    def test_a_typed_key_is_the_one_tested(self):
+        _, request = self._check({'base_url': 'http://localhost:8989',
+                                  'api_key': 'typed-but-not-saved'})
+        self.assertEqual(request.call_args.kwargs['headers']['X-Api-Key'],
+                         'typed-but-not-saved')
+
+    def test_testing_the_saved_values_records_the_last_check(self):
+        result, _ = self._check({'base_url': 'http://localhost:8989', 'api_key': REDACTED,
+                                 'auto_scanner_enabled': 'true'})
+        self.assertFalse(result['unsaved'])
+        self.assertTrue(self.store.get_connector('sonarr')['last_check_ok'])
+
+    def test_a_check_with_no_form_tests_the_saved_settings(self):
+        result, _ = self._check()
+        self.assertTrue(result['ok'])
+        self.assertFalse(result['unsaved'])
+        self.assertTrue(self.store.get_connector('sonarr')['last_check_ok'])
+
+    def test_a_form_without_a_key_is_not_tried_over_the_wire(self):
+        with patch('services.connectors.transport.requests.request') as request:
+            response = self.client.post('/api/connectors/radarr/check', json={
+                'config': {'base_url': 'http://localhost:7878', 'api_key': ''}})
+        request.assert_not_called()
+        result = response.get_json()['result']
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['message'], 'Not configured yet')
+
+    def test_the_scanner_mode_saves_and_refuses_anything_else(self):
+        fields = {f['name']: f for f in self.client.get('/api/connectors/sonarr')
+                  .get_json()['connector']['config_fields']}
+        mode = fields['auto_scanner_mode']
+        self.assertEqual(mode['kind'], 'choice')
+        self.assertEqual(mode['default'], 'alert')
+        self.assertEqual([c['value'] for c in mode['choices']], ['alert', 'sync'])
+
+        response = self.client.post('/api/connectors/sonarr',
+                                    json={'config': {'auto_scanner_mode': 'sync'}})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.store.get_connector('sonarr')['config']['auto_scanner_mode'],
+                         'sync')
+        response = self.client.post('/api/connectors/sonarr',
+                                    json={'config': {'auto_scanner_mode': 'always'}})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('alert, sync', response.get_json()['message'])
+        self.assertEqual(self.store.get_connector('sonarr')['config']['auto_scanner_mode'],
+                         'sync')
+
+    def test_a_check_refuses_a_setting_the_connector_does_not_have(self):
+        response = self.client.post('/api/connectors/sonarr/check',
+                                    json={'config': {'sudo_password': 'x'}})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('sudo_password', response.get_json()['message'])
+
+    def test_the_activity_log_says_why_a_test_failed(self):
+        """It said "Could not reach Sonarr" even when nothing was attempted."""
+        with patch('routes.connectors.record_failure') as failed:
+            self.client.post('/api/connectors/radarr/check', json={
+                'config': {'base_url': 'http://localhost:7878', 'api_key': ''}})
+        summary = failed.call_args.args[1]
+        self.assertIn('Not configured yet', summary)
+        self.assertNotIn('Could not reach', summary)
+
+    def test_saving_a_new_address_forgets_the_last_check(self):
+        self.store.record_check('sonarr', True, 'Connected to Sonarr 4.0.0.0')
+        self.client.post('/api/connectors/sonarr',
+                         json={'config': {'auto_scanner_enabled': 'true'}})
+        self.assertTrue(self.store.get_connector('sonarr')['last_check_ok'])
+
+        self.client.post('/api/connectors/sonarr',
+                         json={'config': {'base_url': 'http://elsewhere:8989',
+                                          'api_key': REDACTED}})
+        self.assertIsNone(self.store.get_connector('sonarr')['last_check_at'])
+
+    # -- who a message pings (issue #35) --------------------------------------
+
+    ROLE_ID = '112233445566778899'
+
+    def _add_admins(self):
+        response = self.client.post('/api/connectors/discord/mentions', json={
+            'label': 'Admins', 'kind': 'role', 'value': self.ROLE_ID})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        return response.get_json()['mention_id']
+
+    def test_someone_to_ping_is_added_and_described(self):
+        admins = self._add_admins()
+        discord = self.client.get('/api/connectors/discord').get_json()['connector']
+        self.assertTrue(discord['supports_mentions'])
+        self.assertIn('role', discord['mention_kinds'])
+        self.assertEqual([(m['mention_id'], m['label'], m['value'])
+                          for m in discord['mentions']], [(admins, 'Admins', self.ROLE_ID)])
+
+    def test_a_role_without_a_discord_id_is_refused(self):
+        response = self.client.post('/api/connectors/discord/mentions', json={
+            'label': 'Admins', 'kind': 'role', 'value': '@Admins'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('ID', response.get_json()['message'])
+
+    def test_two_mentions_cannot_share_a_name(self):
+        self._add_admins()
+        response = self.client.post('/api/connectors/discord/mentions', json={
+            'label': 'admins', 'kind': 'here'})
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_service_that_cannot_ping_has_no_mentions(self):
+        response = self.client.post('/api/connectors/sonarr/mentions', json={
+            'label': 'Admins', 'kind': 'role', 'value': self.ROLE_ID})
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_webhook_pings_its_own_people_and_its_test_says_so(self):
+        admins = self._add_admins()
+        response = self.client.patch(f'/api/connectors/discord/targets/{self.target}',
+                                     json={'mention_ids': [admins]})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.store.get_target(self.target)['mention_ids'], [admins])
+
+        with patch('services.connectors.transport.requests.request',
+                   return_value=FakeResponse(204)) as request:
+            response = self.client.post(f'/api/connectors/discord/targets/{self.target}/test')
+        self.assertNoSecret(response, 'target test')
+        self.assertIn('pinging Admins', response.get_json()['message'])
+        self.assertEqual(request.call_args.kwargs['json']['content'], f"<@&{self.ROLE_ID}>")
+
+    def test_a_webhook_cannot_ping_someone_not_in_the_list(self):
+        response = self.client.patch(f'/api/connectors/discord/targets/{self.target}',
+                                     json={'mention_ids': ['men_nobody']})
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_test_ping_reaches_the_chosen_webhook(self):
+        admins = self._add_admins()
+        with patch('services.connectors.transport.requests.request',
+                   return_value=FakeResponse(204)) as request:
+            response = self.client.post(f'/api/connectors/discord/mentions/{admins}/test',
+                                        json={'target_id': self.target})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertNoSecret(response, 'mention test')
+        sent = request.call_args.kwargs['json']
+        self.assertEqual(sent['content'], f"<@&{self.ROLE_ID}>")
+        self.assertEqual(sent['allowed_mentions']['roles'], [self.ROLE_ID])
+
+    def test_routing_saves_when_and_whom_a_notification_pings(self):
+        admins = self._add_admins()
+        response = self.client.put('/api/connectors/routes', json={'routes': [{
+            'event_key': 'transfer.completed', 'connector_id': 'discord',
+            'target_id': None, 'enabled': True,
+            'ping_when': 'always', 'mention_ids': [admins]}]})
+        self.assertEqual(response.status_code, 200, response.get_json())
+
+        catalogue = self.client.get('/api/connectors/events').get_json()
+        done = next(e for e in catalogue['events'] if e['key'] == 'transfer.completed')
+        self.assertEqual(done['default_ping'], 'never')
+        self.assertEqual(done['routes']['discord']['ping_when'], 'always')
+        self.assertEqual(done['routes']['discord']['mention_ids'], [admins])
+        held = next(e for e in catalogue['events'] if e['key'] == 'sync.held')
+        self.assertEqual(held['default_ping'], 'attention')
+        self.assertIsNone(held['routes']['discord']['mention_ids'])
+
+    def test_routing_refuses_an_unknown_ping_rule_or_person(self):
+        for row in ({'ping_when': 'sometimes'}, {'mention_ids': ['men_nobody']}):
+            response = self.client.put('/api/connectors/routes', json={'routes': [{
+                'event_key': 'transfer.failed', 'connector_id': 'discord',
+                'target_id': None, 'enabled': True, **row}]})
+            self.assertEqual(response.status_code, 400, row)
+
+    def test_removing_someone_clears_them_everywhere(self):
+        admins = self._add_admins()
+        self.store.update_target(self.target, mention_ids=[admins])
+        response = self.client.delete(f'/api/connectors/discord/mentions/{admins}')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.store.get_target(self.target)['mention_ids'], [])
+
     # -- destinations --------------------------------------------------------
 
     def test_setting_a_new_default_clears_the_old_one(self):
