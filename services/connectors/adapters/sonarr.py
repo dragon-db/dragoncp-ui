@@ -14,6 +14,7 @@ complete instead of when `SERIES_ANIME_SYNC_WAIT_TIME` runs out.
 from typing import Any, Dict, List, Optional, Tuple
 
 from services.connectors.adapters._arr import UNKNOWN, ArrConnector, InFlight
+from services.connectors.base import CheckResult, ConfigField
 from services.connectors.registry import register
 
 
@@ -33,6 +34,88 @@ class SonarrConnector(ArrConnector):
     queue_filter_param = 'seriesId'
     library_path = '/api/v3/series'
     external_id_field = 'tvdbId'
+
+    #: Renames from Explore (operator, 2026-10-23): rename the copy Sonarr
+    #: holds of an episode that just got its title, and fetch fresh titles for
+    #: a series. Nothing else is ever sent.
+    allowed_commands = frozenset({'RenameFiles', 'RefreshSeries'})
+
+    # The TMDB key lives here rather than on a connector of its own (operator,
+    # 2026-10-23): renaming is a Sonarr feature, and TMDB only fills the titles
+    # Sonarr does not have.
+    config_fields = ArrConnector.config_fields + (
+        ConfigField(
+            'tmdb_token', 'TMDB key',
+            'Optional. Titles Sonarr does not have yet, and titles for series '
+            'Sonarr does not have. The API Read Access Token from themoviedb.org '
+            '→ Settings → API.',
+            kind='password', secret=True, group='renames',
+        ),
+        # Off by default (operator, 2026-10-23): titles are checked when
+        # someone presses Check titles or Refresh titles in Explore.
+        ConfigField(
+            'title_check_enabled', 'Scheduled title check',
+            'Look for real titles on a schedule and say so in Notifications. It '
+            'never renames anything. Off by default: press Check titles in '
+            'Explore instead.',
+            kind='boolean', group='renames',
+        ),
+        ConfigField(
+            'title_check_hours', 'Check every (hours)',
+            'While the scheduled check is on. Between 1 and 48; 6 when empty. One '
+            'request to Sonarr per series with a TBA episode.',
+            kind='number', placeholder='6', group='renames',
+            depends_on='title_check_enabled',
+        ),
+    )
+
+    config_groups = ArrConnector.config_groups + (
+        ('renames', 'Renames', 'Real titles for episodes still named TBA.'),
+    )
+
+    def tmdb_token(self) -> str:
+        return self.secret('tmdb_token')
+
+    def title_check_hours(self) -> int:
+        """Hours between scheduled title checks; 0 while the check is off."""
+        if str(self.setting('title_check_enabled')).strip().lower() not in (
+                '1', 'true', 'yes', 'on'):
+            return 0
+        raw = self.setting('title_check_hours')
+        if raw == '':
+            return 6
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return 6
+        return 0 if value <= 0 else min(48, value)
+
+    def check(self) -> CheckResult:
+        """Sonarr, and the TMDB key when one is set, each on its own line."""
+        result = super().check()
+        token = self.tmdb_token()
+        if not token:
+            return result
+        from services.renames.tmdb import TmdbClient
+        tmdb_ok, tmdb_message = TmdbClient(token).check()
+        detail = dict(result.detail)
+        detail['tmdb'] = {'ok': tmdb_ok, 'message': tmdb_message}
+        return CheckResult(result.ok and tmdb_ok,
+                           f"{result.message}\n{tmdb_message}", detail=detail)
+
+    def naming_config(self) -> Optional[Dict[str, Any]]:
+        """Sonarr's file naming settings, or None when it cannot be asked."""
+        ok, row = self._get('/api/v3/config/naming', timeout=15.0)
+        return row if ok and isinstance(row, dict) else None
+
+    def rename_preview(self, series_id: Any) -> Tuple[bool, List[Dict[str, Any]]]:
+        """What Sonarr's own rename would do for a series: one row per file it holds."""
+        if series_id in (None, ''):
+            return False, []
+        ok, rows = self._get('/api/v3/rename', {'seriesId': series_id}, timeout=20.0)
+        if not ok or not isinstance(rows, list):
+            return False, []
+        return True, [r for r in rows if isinstance(r, dict)]
 
     #: With these, a history or queue row carries its series and its episode —
     #: the "1x08 Episode Title" an operator reads in Sonarr's own screens.

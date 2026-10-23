@@ -332,7 +332,13 @@ export function useRuntimeConnection() {
     const unbindRenameCompleted = onRenameCompleted((payload) => {
       const message = payload.message || "Rename flow completed";
       setLiveActivity("rename", message);
-      toast.success(message);
+      // A rename pressed in Explore is reported there, with Sonarr's answer;
+      // a second message here would say the same thing twice.
+      if (payload.trigger_kind !== "manual") {
+        if (payload.dry_run || payload.status === "partial") toast.warning(message);
+        else if (payload.status === "failed") toast.error(message);
+        else toast.success(message);
+      }
       queryClient.invalidateQueries({ queryKey: ["webhooks", "rename"] });
     });
 

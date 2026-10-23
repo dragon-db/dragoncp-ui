@@ -1,6 +1,6 @@
 # DragonCP API Reference
 
-Last updated: 2026-10-05
+Last updated: 2026-10-23
 
 Purpose: human-friendly reference for every backend HTTP API endpoint implemented by the Python server.
 
@@ -39,7 +39,9 @@ Source checked while writing this file:
 - `routes/simulation.py`
 - `routes/sync_engine.py`
 - `routes/media_library.py`
+- `routes/renames.py`
 - `services/rename_service.py`
+- `services/renames/service.py`
 - `services/sync_engine/engine.py`, `services/sync_engine/stages.py`
 - `services/alert_service.py`
 - `services/scheduler.py`
@@ -1068,6 +1070,9 @@ Input JSON: Radarr payload (movie import/test event payload).
 
 Special behavior:
 - Detects test webhooks (`eventType=Test`, `title=Test Title`, or `testpath`) and returns test success.
+- A `Rename` event (Radarr renamed a film) is acknowledged and ignored:
+  `{"status":"success","event_type":"Rename","message":"Film renames are not replayed here; nothing was synced"}`.
+  Before 2026-10-23 it was read as a download and synced the film again.
 - For normal events, creates the notification record and submits it to the sync engine.
 
 Output JSON (auto-sync off):
@@ -1108,6 +1113,10 @@ Input JSON: Sonarr payload.
 Special behavior:
 - Handles test webhook detection.
 - If `eventType` is `Rename`, processes rename workflow instead of import sync flow.
+  Each file is found here by its old name, or, when that name is not here, by
+  its episode in the same season folder; subtitles, `.nfo` and artwork with the
+  same name move with it. A file this disk never had is reported `not_here`
+  rather than failed, so a run where nothing was here answers `200`, not `400`.
 - For import flow, creates the series notification and submits it to the sync
   engine as a `sonarr_webhook` run. With auto-sync on, the run waits in the
   ready check — asking Sonarr whether anything for the season is still
@@ -1524,6 +1533,11 @@ Output JSON:
 {"status":"success","notifications":[...],"total":N}
 ```
 
+Each row carries every `rename_webhook` column, including `trigger_kind`
+(`webhook`, `manual` or `scheduled`; NULL on older rows, meaning the webhook),
+`triggered_by`, `undone_at` and `sonarr_message`. See
+`database-schema.md` for the per-file fields in `renamed_files`.
+
 ### GET `/webhook/rename/notifications/{notification_id}`
 What it does: returns one rename notification by ID.
 
@@ -1632,8 +1646,40 @@ Status codes:
 - `404` when the notification does not exist.
 - `500` when the rename service is not wired up, or on an unexpected error.
 
+Files recorded as `not_here` (Sonarr renamed them, this disk never had them)
+are left out of the check.
+
 See `../features/renames/README.md` for what the three failure shapes mean in
 practice and how the Renames tab presents them.
+
+### POST `/webhook/rename/notifications/{notification_id}/undo`
+What it does: puts back the old names of the files one rename run renamed here,
+with the subtitles, `.nfo` and artwork that moved with them. Works for runs
+started in Explore and for Sonarr's webhook runs. Sonarr's own copies keep their
+new names. Under `TEST_MODE` it rehearses: the same checks, and nothing moves.
+
+Auth: required. Served by `routes/renames.py`.
+
+Input: no body.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "notification_id": "rename_manual_1792763743000",
+  "restored_count": 3,
+  "failed": [],
+  "dry_run": false,
+  "message": "Put back 3 name(s). Sonarr’s copy keeps its new name."
+}
+```
+
+A file is put back only when it is still under its new name and nothing has
+taken the old one; otherwise it is listed in `failed` with the reason. Sets the
+row's `undone_at`.
+
+Errors: `404` the run is not in the history; `409` it was already undone, or a
+transfer is writing into the series; `400` nothing in the run changed a file.
 
 ---
 
@@ -2928,6 +2974,257 @@ Output JSON:
 Errors: `409` if a transfer is active against this title or the check could not
 be made; `400` if nothing in scope can be repaired automatically.
 
+### Renames (since 2026-10-23)
+
+Episodes still named TBA get their real titles, here and in Sonarr's copy.
+Served by `routes/renames.py`; behaviour in `../features/renames/README.md`.
+Like Repair these are local: nothing reads the remote server, so they work with
+the browse session down. They do read Sonarr — never on a page view: a preview
+or a rename reads one series (its series list entry, episodes, files and
+rename preview), a title check reads one episode list per series with a TBA
+file. Requests to Sonarr are spaced half a second apart.
+
+The comparison answers carry the counts these endpoints act on:
+`placeholders` on every series and season of `GET /explore/tree/{media_type}`,
+and `local_placeholder` on every episode of the season endpoint — media files
+here still named TBA, read from names already listed.
+
+Status codes as above, plus: `404` for the movies library (renames are for TV
+shows and anime) or a folder not on this disk; `409` when a transfer is writing
+into the series, when no TMDB key is set (TMDB endpoints), or when the names
+changed since the preview.
+
+### GET `/explore/rename/{media_type}/{folder}`
+What it does: what renaming the TBA episodes here would do. Changes nothing.
+
+Query: `season=<season folder>` narrows to one season.
+
+Auth: required.
+
+Output JSON (abridged):
+```json
+{
+  "status": "success",
+  "plan": {
+    "media_type": "tvshows",
+    "folder": "Example Show (2024)",
+    "season": null,
+    "scope": "Example Show (2024)",
+    "items": [
+      {
+        "path": "Season 01/Example Show (2024) - S01E05 - TBA [WEBDL-1080p][GRP].mkv",
+        "season_folder": "Season 01",
+        "season": 1,
+        "code": "S01E05",
+        "old_name": "Example Show (2024) - S01E05 - TBA [WEBDL-1080p][GRP].mkv",
+        "new_name": "Example Show (2024) - S01E05 - The Real Title [WEBDL-1080p][GRP].mkv",
+        "title": "The Real Title",
+        "source": "sonarr",
+        "state": "ready",
+        "reason": "",
+        "sidecars": [{"old": "… - TBA [WEBDL-1080p][GRP].nfo", "new": "… - The Real Title [WEBDL-1080p][GRP].nfo"}],
+        "sonarr_file_id": 501,
+        "sonarr_rename": true,
+        "retitle": false,
+        "size": 1073741824
+      }
+    ],
+    "counts": {"ready": 1, "waiting": 0, "skipped": 0, "sonarr_files": 1, "sidecars": 1, "from_tmdb": 0},
+    "sonarr": {"state": "found", "series_id": 7, "title": "Example Show", "message": "In Sonarr as Example Show"},
+    "tmdb": {"state": "off", "tmdb_id": null, "name": "", "link_source": null},
+    "blocker": null,
+    "test_mode": false
+  }
+}
+```
+
+- `state`: `ready` (has a new name), `waiting` (no title anywhere yet;
+  `reason` says why — "Sonarr still says TBA", "Not in Sonarr. Find it on TMDB
+  to get titles", "Sonarr only has “Episode 5” so far", an air date that does
+  not match) or `skipped` (cannot be renamed safely: a name already taken, a
+  double episode, a name off the naming format).
+- `source`: `sonarr` or `tmdb`. `sonarr_rename` is true when Sonarr holds the
+  file and will be asked to rename its copy to the same name.
+- `retitle`: the file was named from TMDB earlier and Sonarr now has its own
+  title.
+- `sonarr.state`: `found`, `missing` (not in Sonarr), `unavailable` (did not
+  answer) or `off`. `tmdb.state`: `linked`, `unlinked`, `unavailable` or `off`
+  (no key).
+- `blocker`: why a rename cannot run now (a transfer into the series), or null.
+
+### POST `/explore/rename/{media_type}/{folder}`
+What it does: renames what the preview showed, here and — for files Sonarr
+holds — asks Sonarr to rename its copy (`RenameFiles`, the only write besides
+`RefreshSeries` that DragonCP ever sends Sonarr). Records the run in the rename
+history with `trigger_kind` `manual`. Under `TEST_MODE` it rehearses: the same
+plan and report, nothing renamed, Sonarr not asked.
+
+Auth: required.
+
+Input JSON:
+```json
+{
+  "season": "Season 01",
+  "picks": [
+    {"path": "Season 01/Example Show (2024) - S01E05 - TBA [WEBDL-1080p][GRP].mkv",
+     "new_name": "Example Show (2024) - S01E05 - The Real Title [WEBDL-1080p][GRP].mkv"}
+  ]
+}
+```
+
+Both optional. Without `picks` every ready file in scope is renamed. The plan is
+rebuilt from the disk and Sonarr here; a pick is applied only when the rebuilt
+plan proposes exactly that new name for that file, so the body can never name a
+file or a name the server did not propose itself.
+
+Output JSON (abridged):
+```json
+{
+  "status": "success",
+  "run_status": "completed",
+  "notification_id": "rename_manual_1792763743000",
+  "series_title": "Example Show",
+  "folder": "Example Show (2024)",
+  "media_type": "tvshows",
+  "total_files": 1,
+  "success_count": 1,
+  "failed_count": 0,
+  "renamed_files": [],
+  "sidecar_count": 1,
+  "sonarr": {"asked": true, "ok": true, "files": 1, "command_id": 99,
+             "message": "Sonarr is renaming its 1 copy/copies"},
+  "dry_run": false,
+  "trigger_kind": "manual",
+  "message": "Renamed 1 file(s) in Example Show"
+}
+```
+
+`status` is `success`, as on every endpoint; how the run went is `run_status`
+(`completed`, `partial` or `failed`). Errors: `409` a transfer is writing into the series, or the
+names changed since the preview; `400` nothing here can be renamed right now.
+
+### POST `/explore/titles/refresh/{media_type}/{folder}`
+What it does: asks Sonarr to fetch fresh titles for the series
+(`RefreshSeries`), then checks the titles again in the background once Sonarr
+says it is done (or after two minutes), and sends `titles_checked`. For a
+series Sonarr does not have, or with Sonarr off, it checks TMDB again at once.
+
+Auth: required.
+
+Output JSON:
+```json
+{"status": "success", "asked_sonarr": true,
+ "message": "Sonarr is fetching fresh titles. This checks again when it is done."}
+```
+When Sonarr was not asked, `asked_sonarr` is false and `summary` carries the
+fresh check of the folder.
+
+### GET `/explore/titles/{media_type}`
+What it does: the last title check of every series in one library, for
+Explore's tags and strip. Asks nothing.
+
+Auth: required.
+
+Output JSON:
+```json
+{
+  "status": "success",
+  "media_type": "tvshows",
+  "titles": {
+    "Example Show (2024)": {
+      "state": "ready", "ready": 12, "waiting": 3, "skipped": 0, "placeholders": 15,
+      "checked_at": "2026-10-23T09:00:00", "message": "In Sonarr as Example Show",
+      "seasons": {"Season 01": {"ready": 12, "waiting": 3, "skipped": 0}},
+      "tmdb": {"state": "off"}, "sonarr": {"state": "found", "series_id": 7}
+    }
+  }
+}
+```
+`state` is `ready`, `waiting`, `not_in_sonarr` or `unknown`. A series with
+nothing left to rename has no entry.
+
+### GET `/explore/titles/{media_type}/{folder}`
+What it does: what the last check proposed for each file of one series, keyed
+by the file's current name. Asks nothing.
+
+Query: `season=<season folder>` narrows to one season.
+
+Output JSON:
+```json
+{"status": "success", "files": {
+  "Example Show (2024) - S01E05 - TBA [WEBDL-1080p][GRP].mkv": {
+    "code": "S01E05", "season_folder": "Season 01",
+    "old_name": "Example Show (2024) - S01E05 - TBA [WEBDL-1080p][GRP].mkv",
+    "new_name": "Example Show (2024) - S01E05 - The Real Title [WEBDL-1080p][GRP].mkv",
+    "state": "ready", "reason": "", "source": "sonarr", "retitle": false}}}
+```
+A check reads Sonarr's episode list only, so a name here can differ from the
+preview's when Sonarr's own rename would change more than the title (a tag it
+added to its naming since); the preview and the rename use Sonarr's name.
+
+### POST `/explore/titles/check`
+What it does: runs the title check. With `folder`, checks that one series now
+and answers with its summary. Without, checks the TV and anime libraries in the
+background (answers `202`) and sends `titles_checked` when done. A check someone
+starts never alerts; the scheduled one (off by default; *Scheduled title check*
+and *Check every (hours)* under Renames on Sonarr's Connection tab) opens a
+*Titles ready* alert and sends one Discord message when it finds titles it has
+not announced before.
+
+Input JSON: `{"media_type": "tvshows", "folder": "Example Show (2024)"}` — both
+optional.
+
+Output JSON: `{"status":"success","summary":{"folder":"…","state":"ready","ready":12,"waiting":3,…}}`
+or `{"status":"success","started":true}` (`202`).
+
+### GET `/explore/rename-all/{media_type}`
+What it does: what *Rename all ready* would rename across one library, from the
+last title check. Asks nothing.
+
+Output JSON:
+```json
+{"status": "success", "plan": {"media_type": "tvshows",
+  "series": [{"folder": "Example Show (2024)", "checked_at": "…", "items": [ … ]}],
+  "files": 12, "running": false, "test_mode": false}}
+```
+
+### POST `/explore/rename-all/{media_type}`
+What it does: renames every ready episode in the chosen series, one series at a
+time, in the background (answers `202`). Each series is its own run in the
+rename history, built fresh from the disk and Sonarr exactly as a single rename
+is. Sends `rename_progress` after each series and `rename_library_finished` at
+the end; one Discord message covers the whole run.
+
+Input JSON: `{"folders": ["Example Show (2024)", "Another Show (2020)"]}`.
+
+Output JSON: `{"status":"success","started":true,"total":2}`. `409` when one is
+already running for the library; `400` without a folder.
+
+### GET `/explore/tmdb/search/{media_type}/{folder}`
+What it does: TMDB shows matching the folder's name and year, best first, for
+linking a series Sonarr does not have. `q=` searches for something else.
+
+Output JSON:
+```json
+{"status": "success", "query": "Another Show",
+ "results": [{"tmdb_id": 3003, "name": "Another Show", "year": 2020,
+              "first_air_date": "2020-02-01", "overview": "…", "poster_path": "/x.jpg"}],
+ "linked": null}
+```
+`409` without a TMDB key; `502` when TMDB did not answer.
+
+### POST `/explore/tmdb/link/{media_type}/{folder}`
+What it does: links the series folder to a TMDB show, then checks its titles
+again. Input `{"tmdb_id": 3003}`. Output `{"status":"success","linked":{…},"summary":{…}}`.
+
+### DELETE `/explore/tmdb/link/{media_type}/{folder}`
+What it does: removes the link and checks again. Output
+`{"status":"success","removed":true,"summary":{…}}`.
+
+Socket events: `titles_checked` (a check finished), `rename_completed` (a
+rename run finished — the same event Sonarr's webhook runs send),
+`rename_progress` and `rename_library_finished` (*Rename all ready*).
+
 ### POST `/explore/plan`
 What it does: evaluates an operation against a fresh comparison, stores it, and
 returns the plan with its verdict and safety checks. Nothing is written.
@@ -3984,21 +4281,24 @@ This document covers these `/api/*` routes from the backend Python route decorat
 - 2 media endpoints (`/media-types` and `/media/dry-run`; the rest were retired
   with Browse Media)
 - 13 transfer endpoints (including `pause`, `resume` and `bulk-delete`)
-- 29 webhook-related endpoints (receivers, management, rename, settings)
-- 11 connector endpoints (listing, settings, destinations, routing, delivery history)
+- 30 webhook-related endpoints (receivers, management, rename including Undo,
+  settings)
+- 15 connector endpoints (listing, settings, destinations, mentions, routing,
+  delivery history)
 - 28 backup endpoints
 - 7 debug endpoints
 - 4 simulation endpoints
 - 2 server log endpoints
-- 11 explore endpoints (including `repair`)
+- 24 explore endpoints: 13 in `routes/explore.py` (including `repair`), and the
+  11 rename, title-check and TMDB endpoints in `routes/renames.py`
 - 13 sync engine, alert and scheduler endpoints
-- 6 media library endpoints
+- 7 media library endpoints
 
-Total covered: 144 method+path API endpoints.
+Total covered: 163 method+path API endpoints (recounted 2026-10-23).
 
 Not covered here: the 8 `/remote-transfer/*` endpoints in
 `routes/remote_daemon.py`, which `../features/fast-transfers/README.md` lists.
-With them the backend serves 152.
+With them the backend serves 171.
 
 Counts verified against the `@*_bp.route`/`@app.route` decorators in `routes/`
 and `app.py`, counting one per method+path. `GET /` and

@@ -252,6 +252,66 @@ class DatabaseManager:
         print(f"🧩 Built the title index: {made} titles, "
               f"{linked} transfers by identifier, {by_name} by folder name")
 
+    def _create_title_tables(self, conn):
+        """Renames from Explore (TASK-028): titles, where they came from, who ran what."""
+        # Who started a rename, and whether it was put back. Rows from before
+        # this all came from Sonarr's webhook, which is what NULL reads as.
+        self._ensure_column(conn, 'rename_webhook', 'trigger_kind', "TEXT")
+        self._ensure_column(conn, 'rename_webhook', 'triggered_by', "TEXT")
+        self._ensure_column(conn, 'rename_webhook', 'undone_at', "DATETIME")
+        self._ensure_column(conn, 'rename_webhook', 'sonarr_message', "TEXT")
+
+        # The last title check of one series folder: how many of its TBA
+        # episodes have a title waiting, and the proposed name for each, so
+        # Explore can show them without asking Sonarr on every view.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS title_check (
+                media_type TEXT NOT NULL,
+                folder TEXT NOT NULL,
+                state TEXT NOT NULL,
+                placeholders INTEGER DEFAULT 0,
+                ready INTEGER DEFAULT 0,
+                waiting INTEGER DEFAULT 0,
+                skipped INTEGER DEFAULT 0,
+                sonarr_series_id INTEGER,
+                message TEXT,
+                detail TEXT,
+                notified_ready INTEGER DEFAULT 0,
+                checked_at DATETIME,
+                PRIMARY KEY (media_type, folder)
+            )
+        ''')
+        # A series folder matched to a TMDB show: picked by a person for a
+        # series Sonarr does not have, or found from Sonarr's own ids.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS title_link (
+                media_type TEXT NOT NULL,
+                folder TEXT NOT NULL,
+                tmdb_id INTEGER NOT NULL,
+                tmdb_name TEXT,
+                tmdb_year INTEGER,
+                source TEXT NOT NULL DEFAULT 'manual',
+                linked_by TEXT,
+                linked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (media_type, folder)
+            )
+        ''')
+        # Episodes renamed to a TMDB title, so the title check can offer
+        # Sonarr's own title once Sonarr has one.
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS episode_title (
+                media_type TEXT NOT NULL,
+                folder TEXT NOT NULL,
+                season INTEGER NOT NULL,
+                episode INTEGER NOT NULL,
+                title TEXT,
+                source TEXT NOT NULL,
+                file_name TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (media_type, folder, season, episode)
+            )
+        ''')
+
     def _create_sync_engine_tables(self, conn):
         """The sync engine's memory: every pass through the pipeline, stage by stage.
 
@@ -1130,6 +1190,7 @@ class DatabaseManager:
                 'ON connector_delivery(connector_id, id DESC)'
             )
 
+            self._create_title_tables(conn)
             self._create_sync_engine_tables(conn)
 
             self._migrate_discord_to_connector(conn)

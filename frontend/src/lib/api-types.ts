@@ -200,6 +200,33 @@ export interface WebhookNotification {
   manual_sync_reason?: string | null;
 }
 
+/** One file of a rename run, with whatever travelled with it. */
+export interface RenamedFile {
+  previous_name?: string;
+  new_name?: string;
+  previous_relative_path?: string;
+  new_relative_path?: string;
+  /** `not_here`: Sonarr renamed a file this disk never had — not a failure. */
+  status?: "success" | "failed" | "not_here" | "pending" | string;
+  message?: string;
+  error?: string | null;
+  local_previous_path?: string | null;
+  local_new_path?: string | null;
+  /** `S01E05`, for a run started in Explore. */
+  code?: string;
+  /** The title it was given, and where that title came from. */
+  title?: string | null;
+  source?: "sonarr" | "tmdb" | null;
+  /** Subtitles, `.nfo` and artwork that kept the video's name. */
+  sidecars?: Array<{ old: string; new: string; status?: string; error?: string }>;
+  /** Test mode: reported, not renamed. */
+  dry_run?: boolean;
+  /** Sonarr was asked to rename its own copy too. */
+  sonarr_rename?: boolean;
+  /** Found by its episode because its old name was not here. */
+  matched_by_episode?: boolean;
+}
+
 export interface RenameNotification {
   notification_id: string;
   media_type: "tvshows" | "anime" | string;
@@ -210,17 +237,24 @@ export interface RenameNotification {
   failed_count: number;
   created_at?: string;
   completed_at?: string;
-  renamed_files?: Array<{
-    previous_name?: string;
-    new_name?: string;
-    previous_relative_path?: string;
-    new_relative_path?: string;
-    status?: string;
-    message?: string;
-    error?: string;
-    local_previous_path?: string | null;
-    local_new_path?: string | null;
-  }>;
+  /** Who started it: Sonarr's webhook (or null, for runs before this existed), Explore, or the schedule. */
+  trigger_kind?: "webhook" | "manual" | "scheduled" | string | null;
+  /** The admin who pressed Rename, for a run started in Explore. */
+  triggered_by?: string | null;
+  /** Set once Undo has put the old names back. */
+  undone_at?: string | null;
+  /** What Sonarr said when asked to rename its own copies. */
+  sonarr_message?: string | null;
+  renamed_files?: RenamedFile[];
+}
+
+export interface RenameUndoResult {
+  notification_id: string;
+  restored_count: number;
+  failed: Array<{ name?: string; error: string }>;
+  /** Test mode: nothing was put back; the message says what would have been. */
+  dry_run: boolean;
+  message: string;
 }
 
 export interface RenameVerificationResult {
