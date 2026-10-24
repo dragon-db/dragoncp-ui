@@ -11,7 +11,7 @@ Newest first.
 
 ---
 
-## 2.4.0
+## 2.3.3
 
 Renames, rebuilt: DragonCP now works out each file's real name itself and
 renames it here, instead of only repeating what Sonarr renamed.
