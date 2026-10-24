@@ -43,6 +43,7 @@ from services.connectors.adapters._arr import (
     seconds_left,
 )
 from services.local_library import LocalLibrary, media_sizes_in, size_of_path
+from services.renames.naming import is_placeholder
 from services.sync_engine import stages as S
 from services.sync_engine.coverage import last_copies
 from services.sync_engine.units import unit_key
@@ -72,6 +73,18 @@ EXACT_TTL_SECONDS = 600
 TITLE_HISTORY_LIMIT = 150
 
 _REMOTE_ROOTS = (('anime', 'ANIME_PATH'), ('tvshows', 'TVSHOW_PATH'), ('movies', 'MOVIE_PATH'))
+
+
+def _placeholder_count(local: Optional[Dict[str, Any]]) -> int:
+    """Media files in this title's season folders still named TBA.
+
+    A file in a nested folder is left out: Repair moves it into place first,
+    and only then can it be renamed.
+    """
+    if not local:
+        return 0
+    return sum(1 for f in local.get('files') or []
+               if not f.get('nested') and is_placeholder(f.get('name') or ''))
 
 
 def _now_iso() -> str:
@@ -699,6 +712,9 @@ class MediaIndex:
         # brought up to date the moment its detail has been read.
         out['attention'] = self._remember_exact(source, external_id, result)
         out['kept_here_count'] = result['counts'].get(cmp.ONLY_HERE, 0)
+        # Episodes here still named TBA: Explore's Rename gives them their
+        # titles. Read from the names already listed, so it costs nothing.
+        out['placeholder_count'] = _placeholder_count(local) if source == SOURCE_SONARR else 0
         return out
 
     def title_history(self, source: str, external_id: Any,

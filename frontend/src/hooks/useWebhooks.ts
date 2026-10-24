@@ -2,11 +2,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "@/lib/api";
 import type {
   RenameNotification,
+  RenameUndoResult,
   RenameVerificationResult,
   WebhookNotification,
 } from "@/lib/api-types";
 export type {
+  RenamedFile,
   RenameNotification,
+  RenameUndoResult,
   RenameVerificationResult,
   WebhookNotification,
 } from "@/lib/api-types";
@@ -156,6 +159,27 @@ export function useDeleteRenameNotification() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["webhooks", "rename"] });
+    },
+  });
+}
+
+/**
+ * Put the old names of one rename run back. Sonarr's copies keep their new
+ * names; the server's message says so. Test mode rehearses and moves nothing.
+ */
+export function useUndoRenameNotification() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (notificationId: string) => {
+      const response = await api.post<{ status: string } & RenameUndoResult>(
+        `/webhook/rename/notifications/${notificationId}/undo`
+      );
+      return response.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["webhooks", "rename"] });
+      // The names Explore shows came back with them.
+      queryClient.invalidateQueries({ queryKey: ["explore"] });
     },
   });
 }

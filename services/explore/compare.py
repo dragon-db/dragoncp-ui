@@ -46,6 +46,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .identity import EpisodeKey
 from .inventory import FileEntry, Inventory
+from services.renames.naming import is_placeholder
 
 IN_SYNC = 'IN_SYNC'
 NESTED = 'NESTED'
@@ -99,6 +100,8 @@ class EpisodeDiff:
             # Whatever the label: an upgrade or a local-only file can be
             # stranded in a nested folder too.
             'local_nested': bool(self.local and self.local.misplaced),
+            # Still named TBA here: Rename can give it its real title.
+            'local_placeholder': bool(self.local and is_placeholder(self.local.name)),
             'absolute_number': (self.remote or self.local).absolute_number if (self.remote or self.local) else None,
         }
 
@@ -178,6 +181,8 @@ class SeasonDiff:
     remote_bytes: int = 0
     local_bytes: int = 0
     remote_mtime: int = 0
+    #: Media files here still named TBA, read from names already listed.
+    placeholders: int = 0
 
     @property
     def status(self) -> str:
@@ -233,6 +238,7 @@ class SeasonDiff:
             'remote_bytes': self.remote_bytes,
             'local_bytes': self.local_bytes,
             'remote_mtime': self.remote_mtime,
+            'placeholders': self.placeholders,
         }
         if include_episodes:
             data['episodes'] = [e.to_dict() for e in self.episodes]
@@ -288,6 +294,7 @@ class SeriesDiff:
             'remote_mtime': self.remote_mtime,
             'misplaced_count': len(self.misplaced),
             'odd_folders': self.odd_folders,
+            'placeholders': sum(s.placeholders for s in self.seasons),
         }
         if include_seasons:
             data['seasons'] = [s.to_dict() for s in self.seasons]
@@ -373,6 +380,7 @@ def compare_season(media_type: str, series: str, season: Optional[int],
     diff.remote_mtime = max((e.mtime for e in remote_entries), default=0)
     diff.misplaced = sorted(e.relative_path for e in local_media if e.misplaced)
     diff.counts.nested_files = len(diff.misplaced)
+    diff.placeholders = sum(1 for e in local_media if not e.misplaced and is_placeholder(e.name))
 
     remote_keys = _by_key(remote_media)
     local_keys = _by_key(local_media)
