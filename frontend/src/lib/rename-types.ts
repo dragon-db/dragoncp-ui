@@ -166,10 +166,27 @@ export interface RenameProgress {
 /** `rename_library_finished`: Rename all is done. */
 export interface RenameLibraryFinished {
   media_type: string;
+  run_id?: string;
   renamed: number;
   series: number;
   failed: Array<{ folder: string; message?: string; failed?: number }>;
   dry_run: boolean;
+}
+
+/** `GET /explore/title-jobs`: background work, polled while one runs. */
+export interface TitleJobs {
+  checking: boolean;
+  checks_finished: number;
+  rename_all: Record<
+    string,
+    {
+      running: boolean;
+      run_id: string | null;
+      done: number;
+      total: number;
+      finished: RenameLibraryFinished | null;
+    }
+  >;
 }
 
 /**

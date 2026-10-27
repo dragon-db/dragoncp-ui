@@ -38,7 +38,7 @@ from security import (
 )
 from services.explore.identity import EpisodeKey, is_media_file
 from services.explore.inventory import FileEntry, LocalInventory, build_entry
-from services.local_library import normalise, year_of
+from services.local_library import episode_keys, normalise, year_of
 
 from . import naming
 from .tmdb import TmdbClient
@@ -121,6 +121,7 @@ class RenamesService:
         self._series_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
         self._naming_cache: Optional[Tuple[float, naming.NamingRules]] = None
         self._check_lock = threading.Lock()
+        self.checks_finished = 0
         self._library_runs: Dict[str, Dict[str, Any]] = {}
 
     # ==================================================================
@@ -656,7 +657,7 @@ class RenamesService:
 
         The plan is rebuilt here from the disk and Sonarr as they are now. The
         caller names the files it approved, by their path and the new name it
-        was shown; anything whose new name has changed since is left alone.
+        was shown; if any of them no longer matches, nothing is renamed.
         """
         blocker = self._blocker(media_type, folder)
         if blocker:
@@ -667,9 +668,13 @@ class RenamesService:
             wanted = {(str(p.get('path') or ''), str(p.get('new_name') or ''))
                       for p in picks if isinstance(p, dict)}
             chosen = [i for i in ready if (i['path'], i['new_name']) in wanted]
-            if wanted and not chosen:
-                raise RenamesError('These names changed since the preview. Review them again.',
-                                   409)
+            stale = len(wanted) - len(chosen)
+            if stale:
+                # All or nothing: renaming the rest would apply a review the
+                # person never saw.
+                raise RenamesError(
+                    f"{stale} of {len(wanted)} name(s) changed since the preview. Nothing was "
+                    'renamed. Review them again.', 409)
         else:
             chosen = ready
         if not chosen:
@@ -681,10 +686,12 @@ class RenamesService:
 
         sonarr = self._ask_sonarr(src, [r for r in done if r.get('sonarr_rename')], dry_run)
         if not dry_run:
+            titled = self.store.episode_titles(media_type, folder)
             for result in done:
                 key = result.get('key')
                 if not key:
                     continue
+                self._keep_tmdb_before(result, titled.get(key), key)
                 if result['source'] == SOURCE_TMDB:
                     self.store.record_title(media_type, folder, key[0], key[1],
                                             result['title'] or '', SOURCE_TMDB, result['new_name'])
@@ -866,15 +873,18 @@ class RenamesService:
     # ==================================================================
 
     def undo(self, notification_id: str, actor: Optional[str] = None) -> Dict[str, Any]:
-        """Put the names of one rename run back. Sonarr's copies keep their new names."""
+        """Put the names of one rename run back. Sonarr's copies keep their new names.
+
+        Progress is kept per file and per sidecar, so a file that could not be
+        put back can be retried; the run counts as undone only once every one is.
+        """
         row = self.rename_model.get(notification_id)
         if not row:
             raise RenamesError('That rename is not in the history', 404)
         if row.get('undone_at'):
             raise RenamesError('That rename was already undone', 409)
-        files = [f for f in row.get('renamed_files') or []
-                 if f.get('status') == 'success' and not f.get('dry_run')
-                 and f.get('local_previous_path') and f.get('local_new_path')]
+        stored = row.get('renamed_files') or []
+        files = [f for f in stored if _changed_a_file(f)]
         if not files:
             raise RenamesError('Nothing in that rename changed a file, so there is nothing to '
                                'put back', 400)
@@ -890,6 +900,8 @@ class RenamesService:
         dry_run = test_mode_enabled()
         restored, failed = [], []
         for info in files:
+            if _undo_finished(info):
+                continue
             new, old = info['local_new_path'], info['local_previous_path']
             local_new = self._local_twin(root, row, new)
             local_old = self._local_twin(root, row, old)
@@ -898,32 +910,36 @@ class RenamesService:
                 assert_path_within_bounds(local_old, [root])
                 if os.path.dirname(local_new) != os.path.dirname(local_old):
                     raise OSError('the two names are in different folders')
-                if not os.path.lexists(local_new):
-                    raise OSError('the renamed file is no longer there')
-                if os.path.lexists(local_old):
-                    raise OSError('a file with the old name is back already')
-                if not dry_run:
-                    os.rename(local_new, local_old)
-                    directory = os.path.dirname(local_old)
-                    for sidecar in info.get('sidecars') or []:
-                        if sidecar.get('status') != 'success':
-                            continue
-                        a = os.path.join(directory, sidecar['new'])
-                        b = os.path.join(directory, sidecar['old'])
-                        if os.path.lexists(a) and not os.path.lexists(b):
-                            os.rename(a, b)
-                    self._forget_tmdb_title(media_type, folder, info)
-                restored.append(info.get('previous_name'))
+                if not info.get('undone'):
+                    if not os.path.lexists(local_new):
+                        raise OSError('the renamed file is no longer there')
+                    if os.path.lexists(local_old):
+                        raise OSError('a file with the old name is back already')
+                    if not dry_run:
+                        os.rename(local_new, local_old)
+                        info['undone'] = True
+                        self._restore_title(media_type, folder, info)
+                    restored.append(info.get('previous_name'))
+                if dry_run:
+                    continue
+                stuck = self._restore_sidecars(os.path.dirname(local_old), info)
+                if stuck:
+                    failed.append({'name': info.get('new_name'),
+                                   'error': f"{', '.join(stuck)} could not be put back"})
             except (OSError, PathTraversalError) as error:
                 failed.append({'name': info.get('new_name'), 'error': str(error)})
 
-        if not dry_run and restored:
-            self.rename_model.update(notification_id, {'undone_at': datetime.now().isoformat()})
-            try:
-                if folder:
-                    self.check_folder(media_type, folder)
-            except Exception:  # noqa: BLE001
-                pass
+        if not dry_run:
+            changes: Dict[str, Any] = {'renamed_files': stored}
+            if all(_undo_finished(f) for f in files):
+                changes['undone_at'] = datetime.now().isoformat()
+            self.rename_model.update(notification_id, changes)
+            if restored:
+                try:
+                    if folder:
+                        self.check_folder(media_type, folder)
+                except Exception:  # noqa: BLE001
+                    pass
         sonarr_renamed = any(f.get('sonarr_rename') for f in files) or \
             (row.get('trigger_kind') in (None, 'webhook'))
         return {
@@ -935,10 +951,91 @@ class RenamesService:
                 ('Test mode: nothing was put back. Would have restored '
                  if dry_run else 'Put back ')
                 + f"{len(restored)} name(s)"
-                + (f"; {len(failed)} could not be" if failed else '')
+                + (f"; {len(failed)} could not be. Undo again once that is fixed"
+                   if failed else '')
                 + ('. Sonarr’s copy keeps its new name.' if sonarr_renamed and restored else '.')
             ),
         }
+
+    @staticmethod
+    def _restore_sidecars(directory: str, info: Dict[str, Any]) -> List[str]:
+        """Put a file's sidecars back; returns the ones that could not be."""
+        stuck = []
+        for sidecar in info.get('sidecars') or []:
+            if sidecar.get('status') != 'success' or sidecar.get('undone'):
+                continue
+            a = os.path.join(directory, sidecar['new'])
+            b = os.path.join(directory, sidecar['old'])
+            if os.path.lexists(a) and os.path.lexists(b):
+                stuck.append(sidecar['old'])
+                continue
+            try:
+                if os.path.lexists(a):
+                    os.rename(a, b)
+                # Gone under its new name: nothing left to put back.
+                sidecar['undone'] = True
+            except OSError:
+                stuck.append(sidecar['old'])
+        return stuck
+
+    @staticmethod
+    def _keep_tmdb_before(result: Dict[str, Any], row: Optional[Dict[str, Any]],
+                          key: Tuple[int, int]) -> None:
+        """Note the TMDB title a rename replaces, so Undo can bring it back."""
+        previous = os.path.basename(str(result.get('local_previous_path') or ''))
+        if (row and row.get('source') == SOURCE_TMDB and row.get('file_name') == previous
+                and result.get('source') != SOURCE_TMDB):
+            result['tmdb_before'] = {'season': key[0], 'episode': key[1],
+                                     'title': row.get('title') or '',
+                                     'file_name': row.get('file_name')}
+
+    def _restore_title(self, media_type: str, folder: str, info: Dict[str, Any]) -> None:
+        before = info.get('tmdb_before')
+        if before:
+            self.store.record_title(media_type, folder, int(before['season']),
+                                    int(before['episode']), before.get('title') or '',
+                                    SOURCE_TMDB, before.get('file_name') or '')
+        else:
+            self._forget_tmdb_title(media_type, folder, info)
+
+    # ------------------------------------------------------------------
+    # Sonarr's own renames
+    # ------------------------------------------------------------------
+
+    def note_webhook_renames(self, media_type: str, folder: str,
+                             results: List[Dict[str, Any]]) -> bool:
+        """A webhook renamed files here: retire the TMDB titles they carried.
+
+        Notes each one on the result first, for Undo. Returns whether anything
+        changed on disk, i.e. whether the title check is now out of date.
+        """
+        if media_type not in LIBRARIES:
+            return False
+        changed = [r for r in results if _changed_a_file(r)]
+        if not changed:
+            return False
+        titled = self.store.episode_titles(media_type, folder)
+        for result in changed:
+            keys = episode_keys(result.get('new_name') or '', None)
+            if len(keys) != 1:
+                continue
+            key = (keys[0][0], keys[0][1])
+            row = titled.get(key)
+            if row and row.get('source') == SOURCE_TMDB:
+                self._keep_tmdb_before(result, row, key)
+                self.store.forget_title(media_type, folder, key[0], key[1])
+        return True
+
+    def check_later(self, media_type: str, folder: str) -> None:
+        """Check one series again in the background, then tell the page."""
+        def run():
+            try:
+                summary = self.check_folder(media_type, folder)
+            except Exception:  # noqa: BLE001 - a missing folder or Sonarr down
+                return
+            self._emit('titles_checked', {'trigger': 'webhook', 'media_type': media_type,
+                                          'folder': folder, **summary})
+        threading.Thread(target=run, daemon=True, name='title-check-webhook').start()
 
     def _local_twin(self, root: str, row: Dict[str, Any], path: str) -> str:
         """A path a rename recorded, as it is on this disk."""
@@ -1057,7 +1154,20 @@ class RenamesService:
                         f"their real titles; {totals[WAITING]} still waiting")
             return {'ok': True, 'summary': sentence, **totals}
         finally:
+            self.checks_finished += 1
             self._check_lock.release()
+
+    def jobs(self) -> Dict[str, Any]:
+        """What runs in the background, for a page whose live updates are off."""
+        return {
+            'checking': self._check_lock.locked(),
+            'checks_finished': self.checks_finished,
+            'rename_all': {
+                media_type: {'running': run.get('running', False), 'run_id': run.get('id'),
+                             'done': run.get('done', 0), 'total': run.get('total', 0),
+                             'finished': run.get('finished')}
+                for media_type, run in self._library_runs.items()},
+        }
 
     def _tell(self, fresh: List[Tuple[str, str, int]], totals: Dict[str, int]) -> None:
         """An alert and a Discord message when the check found titles to rename."""
@@ -1216,11 +1326,12 @@ class RenamesService:
         run = self._library_runs.get(media_type)
         if run and run.get('running'):
             raise RenamesError('Rename all is already running for this library', 409)
-        run = {'running': True, 'done': 0, 'total': len(chosen), 'results': []}
+        run = {'id': f"{media_type}-{int(time.time() * 1000)}", 'running': True, 'done': 0,
+               'total': len(chosen), 'results': []}
         self._library_runs[media_type] = run
         threading.Thread(target=self._run_library, args=(media_type, chosen, actor, run),
                          daemon=True, name='rename-library').start()
-        return {'started': True, 'total': len(chosen)}
+        return {'started': True, 'total': len(chosen), 'run_id': run['id']}
 
     def _run_library(self, media_type: str, folders: Sequence[str], actor: Optional[str],
                      run: Dict[str, Any]) -> None:
@@ -1259,12 +1370,13 @@ class RenamesService:
                     'status': 'completed' if not failed else 'partial',
                     'renamed_files': run.get('files') or [],
                 })
-            self._emit('rename_library_finished', {
-                'media_type': media_type, 'renamed': renamed,
+            run['finished'] = {
+                'media_type': media_type, 'run_id': run['id'], 'renamed': renamed,
                 'series': len(run['results']),
                 'failed': [o for o in run['results'] if not o.get('ok') or o.get('failed')],
                 'dry_run': test_mode_enabled(),
-            })
+            }
+            self._emit('rename_library_finished', run['finished'])
 
     # ==================================================================
     # TMDB links for series Sonarr does not have
@@ -1308,6 +1420,21 @@ class RenamesService:
         removed = self.store.remove_link(media_type, folder)
         summary = self.check_folder(media_type, folder)
         return {'removed': removed, 'summary': summary}
+
+
+def _changed_a_file(info: Dict[str, Any]) -> bool:
+    """A recorded file this run really renamed on this disk."""
+    if info.get('status') != 'success' or info.get('dry_run'):
+        return False
+    if info.get('changed') is False or \
+            str(info.get('message') or '').startswith('File already renamed'):
+        return False
+    return bool(info.get('local_previous_path') and info.get('local_new_path'))
+
+
+def _undo_finished(info: Dict[str, Any]) -> bool:
+    return bool(info.get('undone')) and all(
+        s.get('undone') for s in info.get('sidecars') or [] if s.get('status') == 'success')
 
 
 def _day(value: Any) -> Optional[date]:

@@ -107,12 +107,18 @@ function renameTrigger(notification: RenameNotification) {
   return "Sonarr";
 }
 
-/** A file this run really renamed — not a test-mode rehearsal, not one that failed. */
+/**
+ * A file this run really renamed — not a test-mode rehearsal, not one that
+ * failed, not one the webhook found already under its new name.
+ */
 function renamedForReal(file: RenamedFile) {
+  const message = (file.message ?? "").toLowerCase();
   return (
     file.status === "success" &&
     !file.dry_run &&
-    !(file.message ?? "").toLowerCase().includes("dry run")
+    file.changed !== false &&
+    !message.includes("dry run") &&
+    !message.startsWith("file already renamed")
   );
 }
 

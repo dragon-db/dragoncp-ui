@@ -129,10 +129,19 @@ def api_titles_check():
     if folder:
         summary = renames_service.check_folder(media_type or '', folder)
         return jsonify({'status': 'success', 'summary': summary})
+    after = renames_service.checks_finished
     threading.Thread(target=renames_service.check_all, kwargs={'trigger': 'manual'},
                      daemon=True, name='title-check').start()
     record('explore.check_titles', 'Started a title check of the TV and anime libraries')
-    return jsonify({'status': 'success', 'started': True}), 202
+    return jsonify({'status': 'success', 'started': True, 'after': after}), 202
+
+
+@renames_bp.route('/explore/title-jobs')
+@require_auth
+@handled
+def api_title_jobs():
+    """The title check and Rename all, running or done: polled while one runs."""
+    return jsonify({'status': 'success', 'jobs': renames_service.jobs()})
 
 
 # --- the whole library -------------------------------------------------------

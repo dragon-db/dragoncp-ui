@@ -45,10 +45,15 @@ renames it here, instead of only repeating what Sonarr renamed.
   already taken is left alone with the reason.
 - **Undo** puts the old names back, for renames from Explore and from
   Sonarr's webhook alike. Both stay in the **Renames** tab under Webhooks.
+  A file whose old name is taken keeps Undo available, so a second Undo
+  finishes the job; files the webhook found already renamed are left alone.
 - **Title check on demand.** **Check titles** and **Refresh titles** read
   Sonarr (and TMDB where needed); page views ask nothing. The scheduled check
   is off by default and, when on, only opens a **Titles ready** alert and one
   Discord message — it never renames by itself.
+- **Check titles and Rename all ready finish on the page even with live
+  updates off** (they close after a while idle): the page asks every
+  3 seconds until the run is done.
 
 ### Webhooks
 
@@ -58,6 +63,8 @@ renames it here, instead of only repeating what Sonarr renamed.
 - **"Not on this disk" is no longer a failure.** Sonarr renames everything it
   holds, synced here or not; a run where nothing was here finishes as
   completed and Sonarr gets HTTP 200 instead of 400.
+- **A Sonarr rename updates Explore's TBA tags and strip** by checking that
+  series again in the background.
 - **A Radarr Rename notification is ignored.** It used to be read as a new
   download and synced the film again.
 

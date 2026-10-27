@@ -50,6 +50,9 @@ class RenameService:
         self.socketio = socketio
         self.notification_service = notification_service
         self.path_service = PathService(config)
+        # Renames from Explore (RenamesService), wired in app.py: told about
+        # what a webhook changed so the title check does not go stale.
+        self.renames = None
     
     def process_rename_webhook(self, webhook_data: Dict, media_type: str) -> Tuple[bool, Dict]:
         """
@@ -94,6 +97,18 @@ class RenameService:
             # Execute the rename operations
             renamed_files, operation_logs = self._execute_renames(rename_data)
             
+            # What Sonarr changed here retires any title taken from TMDB
+            # for those episodes; noted before the run is stored, so Undo
+            # can put it back.
+            folder = os.path.basename(str(rename_data.get('series_path') or '').rstrip('/'))
+            changed_titles = False
+            if self.renames is not None and folder:
+                try:
+                    changed_titles = self.renames.note_webhook_renames(
+                        media_type, folder, renamed_files)
+                except Exception as e:  # noqa: BLE001 - the rename itself is done
+                    print(f"⚠️  Could not update the title state after a rename: {e}")
+
             # Calculate results
             success_count = sum(1 for f in renamed_files if f['status'] == 'success')
             failed_count = sum(1 for f in renamed_files if f['status'] == 'failed')
@@ -150,6 +165,9 @@ class RenameService:
             # Emit completion WebSocket event
             if self.socketio:
                 self.socketio.emit('rename_completed', result)
+
+            if changed_titles:
+                self.renames.check_later(media_type, folder)
             
             # Log result
             status_icon = '✅' if status == 'completed' else ('⚠️' if status == 'partial' else '❌')
@@ -336,6 +354,8 @@ class RenameService:
                         result['status'] = 'success'
                         result['message'] = 'File already renamed (exists at new path)'
                         result['error'] = None
+                        # Nothing changed on disk, so Undo must leave it alone.
+                        result['changed'] = False
                         log_msg = f"ℹ️  File already renamed: {result['new_name']}"
                     else:
                         # Sonarr renamed a file this disk never received or no

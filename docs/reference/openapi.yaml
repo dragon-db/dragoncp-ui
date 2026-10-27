@@ -4120,7 +4120,17 @@ paths:
         '200':
           description: The folder's summary (with `folder`)
         '202':
-          description: The check of every library started (without `folder`); `titles_checked` follows
+          description: The check of every library started (without `folder`); `titles_checked` follows. `after` is `checks_finished` at the start
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /explore/title-jobs:
+    get:
+      tags: [Explore]
+      summary: The title check and Rename all, running or done; polled while one runs
+      responses:
+        '200':
+          description: '`checking`, `checks_finished`, and per library `rename_all` (`running`, `run_id`, `done`, `total`, `finished`)'
         '401':
           $ref: '#/components/responses/Unauthorized'
 

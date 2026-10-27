@@ -221,6 +221,8 @@ export interface RenamedFile {
   sidecars?: Array<{ old: string; new: string; status?: string; error?: string }>;
   /** Test mode: reported, not renamed. */
   dry_run?: boolean;
+  /** `false`: already under its new name when the webhook came, so nothing changed. */
+  changed?: boolean;
   /** Sonarr was asked to rename its own copy too. */
   sonarr_rename?: boolean;
   /** Found by its episode because its old name was not here. */

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import api from "@/lib/api";
 import { getSocket } from "@/services/socket";
@@ -9,10 +9,66 @@ import type {
   RenamePlan,
   RenameProgress,
   RenameResult,
+  TitleJobs,
   TitleProposal,
   TitleStatus,
   TmdbSearch,
 } from "@/lib/rename-types";
+
+const POLL_MS = 3000;
+
+/**
+ * Asks the server how its background work is going until `done` says it is
+ * over. Live updates are the fast path; this is what still lands the result
+ * when they are off — the app closes them after a while idle.
+ */
+async function waitForJobs(
+  done: (jobs: TitleJobs) => boolean,
+  limitMs: number
+): Promise<TitleJobs | null> {
+  const until = Date.now() + limitMs;
+  while (Date.now() < until) {
+    await new Promise((resolve) => window.setTimeout(resolve, POLL_MS));
+    try {
+      const response = await api.get<{ jobs: TitleJobs }>("/explore/title-jobs");
+      if (done(response.data.jobs)) return response.data.jobs;
+    } catch {
+      // A dropped request is retried on the next tick.
+    }
+  }
+  return null;
+}
+
+function refreshTitles(queryClient: QueryClient, mediaType: string) {
+  queryClient.invalidateQueries({ queryKey: ["explore", "titles", mediaType] });
+  queryClient.invalidateQueries({ queryKey: ["explore", "season", mediaType] });
+  queryClient.invalidateQueries({ queryKey: ["explore", "rename-all", mediaType] });
+}
+
+/** Rename all runs already announced, so the socket and the poll say it once. */
+const announcedRuns = new Set<string>();
+/** Pages showing Rename all's progress, told when a run is over. */
+const runFinishedListeners = new Set<(data: RenameLibraryFinished) => void>();
+
+function finishRenameAll(queryClient: QueryClient, data: RenameLibraryFinished) {
+  if (data.run_id) {
+    if (announcedRuns.has(data.run_id)) return;
+    announcedRuns.add(data.run_id);
+  }
+  runFinishedListeners.forEach((listener) => listener(data));
+  refreshTitles(queryClient, data.media_type);
+  queryClient.invalidateQueries({ queryKey: ["webhooks", "rename"] });
+  const text = data.dry_run
+    ? `Test mode: nothing was renamed. Would have renamed ${data.renamed} file(s) in ${data.series} series`
+    : `Renamed ${data.renamed} file(s) in ${data.series} series`;
+  if (data.failed.length) {
+    toast.warning(`${text}. ${data.failed.length} series had a problem — see Webhooks → Renames.`);
+  } else if (data.dry_run) {
+    toast.warning(text);
+  } else {
+    toast.success(text);
+  }
+}
 
 /** Films have no episode titles, so nothing here runs for them. */
 export function hasTitles(mediaType: string): boolean {
@@ -131,14 +187,23 @@ export function useCheckTitles(mediaType: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (folder?: string) => {
-      const response = await api.post<{ started?: boolean }>("/explore/titles/check", {
-        media_type: mediaType,
-        ...(folder ? { folder } : {}),
-      });
+      const response = await api.post<{ started?: boolean; after?: number }>(
+        "/explore/titles/check",
+        { media_type: mediaType, ...(folder ? { folder } : {}) }
+      );
       return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["explore", "titles", mediaType] });
+      if (!data.started) return;
+      // The whole-library check finishes later; land its result even with
+      // live updates off.
+      const after = data.after ?? 0;
+      void waitForJobs((jobs) => !jobs.checking && jobs.checks_finished > after, 15 * 60_000).then(
+        (jobs) => {
+          if (jobs) refreshTitles(queryClient, mediaType);
+        }
+      );
     },
   });
 }
@@ -157,13 +222,28 @@ export function useRenameAllPlan(mediaType: string, enabled: boolean) {
 }
 
 export function useRenameAll(mediaType: string) {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (folders: string[]) => {
-      const response = await api.post<{ started: boolean; total: number }>(
+      const response = await api.post<{ started: boolean; total: number; run_id?: string }>(
         `/explore/rename-all/${mediaType}`,
         { folders }
       );
       return response.data;
+    },
+    onSuccess: (data) => {
+      const runId = data.run_id;
+      if (!runId) return;
+      void waitForJobs(
+        (jobs) => {
+          const run = jobs.rename_all[mediaType];
+          return !run || run.run_id !== runId || !run.running;
+        },
+        2 * 60 * 60_000
+      ).then((jobs) => {
+        const finished = jobs?.rename_all[mediaType]?.finished;
+        if (finished && finished.run_id === runId) finishRenameAll(queryClient, finished);
+      });
     },
   });
 }
@@ -217,36 +297,23 @@ export function useTitleEvents(mediaType: string) {
   useEffect(() => {
     const socket = getSocket();
     if (!socket || !hasTitles(mediaType)) return;
-    const refresh = () => {
-      queryClient.invalidateQueries({ queryKey: ["explore", "titles", mediaType] });
-      queryClient.invalidateQueries({ queryKey: ["explore", "season", mediaType] });
-    };
+    const refresh = () => refreshTitles(queryClient, mediaType);
     const onProgress = (data: RenameProgress) => {
       if (data.media_type === mediaType) setProgress(data);
     };
     const onFinished = (data: RenameLibraryFinished) => {
-      if (data.media_type !== mediaType) return;
-      setProgress(null);
-      refresh();
-      queryClient.invalidateQueries({ queryKey: ["webhooks", "rename"] });
-      const text = data.dry_run
-        ? `Test mode: nothing was renamed. Would have renamed ${data.renamed} file(s) in ${data.series} series`
-        : `Renamed ${data.renamed} file(s) in ${data.series} series`;
-      if (data.failed.length) {
-        toast.warning(
-          `${text}. ${data.failed.length} series had a problem — see Webhooks → Renames.`
-        );
-      } else if (data.dry_run) {
-        toast.warning(text);
-      } else {
-        toast.success(text);
-      }
+      if (data.media_type === mediaType) finishRenameAll(queryClient, data);
     };
+    const clearProgress = (data: RenameLibraryFinished) => {
+      if (data.media_type === mediaType) setProgress(null);
+    };
+    runFinishedListeners.add(clearProgress);
     socket.on("titles_checked", refresh);
     socket.on("rename_completed", refresh);
     socket.on("rename_progress", onProgress);
     socket.on("rename_library_finished", onFinished);
     return () => {
+      runFinishedListeners.delete(clearProgress);
       socket.off("titles_checked", refresh);
       socket.off("rename_completed", refresh);
       socket.off("rename_progress", onProgress);

@@ -1,6 +1,6 @@
 # Renames
 
-Last updated: 2026-10-23
+Last updated: 2026-10-27
 
 Sonarr names an episode `TBA` while its title is still unknown, and keeps that name until someone renames it:
 
@@ -40,7 +40,7 @@ Both are local renames only: nothing is copied, downloaded or read from the remo
 
 1. **A TBA tag** on every series and season in the Explore tree that still has an episode named TBA, and a **Needs titles** filter that shows only those. The tag is read from file names Explore already lists, so it costs nothing.
 2. **A strip above the episode list** of such a series or season: how many episodes can get their real titles now and how many are still waiting, with **Rename** and **Refresh titles**. Each episode row shows its new name under the old one, or why it is still waiting ("Sonarr still says TBA", "Not in Sonarr").
-3. **Rename** opens a review: every file old → new in full, the subtitles, `.nfo` and artwork that move with it, which ones Sonarr will also rename, and what is left alone and why. Nothing changes until you confirm, and only the names you were shown are applied — if anything changed in between, the rename is refused and you review again.
+3. **Rename** opens a review: every file old → new in full, the subtitles, `.nfo` and artwork that move with it, which ones Sonarr will also rename, and what is left alone and why. Nothing changes until you confirm, and only the names you were shown are applied — if any one of them changed in between, nothing is renamed and you review again.
 4. **Rename all ready**, with the Needs titles filter on, does the same for every ready episode in the library, one series at a time, with progress as it goes and one Discord message at the end.
 5. **A series Sonarr does not have** offers **Find titles on TMDB**: search by the folder's name and year, pick the right show once, and its episodes can then be renamed from TMDB's titles.
 
@@ -70,7 +70,7 @@ Titles are written the way Sonarr writes them (its "clean title" rules and its c
 - Asks Sonarr to rename the copies it holds (its `RenameFiles` command). Sonarr then sends its usual rename webhook, which finds the files here already renamed and records that.
 - Under `TEST_MODE`, rehearses: the same review and the same report, and nothing on disk or in Sonarr changes.
 
-**Undo**, from the run in the Renames tab, puts the old names back (with the subtitles and info files). Sonarr's copies keep their new names — Sonarr would only rename them to the same title again. Undo works for Sonarr's webhook runs too.
+**Undo**, from the run in the Renames tab, puts the old names back (with the subtitles and info files). Sonarr's copies keep their new names — Sonarr would only rename them to the same title again. Undo works for Sonarr's webhook runs too, except files the webhook found already renamed: it changed nothing there, so there is nothing to put back. A file that cannot be put back (its old name is taken) keeps Undo available; the rest are remembered, so Undo again finishes the job once that is fixed. Undoing a switch from a TMDB title to Sonarr's brings the TMDB title back, so Sonarr's is offered again.
 
 ### Asking Sonarr and TMDB
 
@@ -123,7 +123,7 @@ Both the previous and the new path go through the same function. Before joining,
 `_execute_renames()` walks the file records. When the old name is not here and the new name is not either, the file is looked for **by its episode** (`_find_by_episode`): the one media file in the target season folder holding the same `SxxEyy` code(s). That covers a file renamed here already under another title (named from TMDB, for instance) and one synced under a different name. Two candidates for one episode find nothing — that is a choice for a person. Then one of five outcomes:
 
 - **Source exists, target does not** — creates the target directory if needed (`os.makedirs`), then `os.rename()`, then moves the subtitles, `.nfo` and artwork that share the video's name (`sidecars` on the record). Status `success`, message `Renamed successfully`; `matched_by_episode` is set when the source was found by its episode.
-- **Source missing, target exists** — treated as already done. Status `success`, message `File already renamed (exists at new path)`. This is what makes a redelivered webhook harmless, and what a rename started in Explore leaves for the webhook Sonarr sends afterwards.
+- **Source missing, target exists** — treated as already done. Status `success`, message `File already renamed (exists at new path)`, `changed: false` so Undo leaves it alone. This is what makes a redelivered webhook harmless, and what a rename started in Explore leaves for the webhook Sonarr sends afterwards.
 - **Nothing for the episode here** — status `not_here`, message `Not on this disk`. Sonarr renames every file it holds, synced here or not, so this is not a failure and is not counted as one.
 - **Source exists and target also exists** — status `failed`, message `Target file already exists`. The service refuses to overwrite; deciding which of two real files wins is not something it will guess.
 - **Test mode** — status `success`, message `Renamed successfully (dry run)`, `dry_run` set, nothing moved.
@@ -133,6 +133,8 @@ Every branch also appends a one-line human-readable entry to an operation log. `
 ### 5. Recording the result
 
 Counts are tallied into an overall status: `completed` (no failures — including a run where nothing was on this disk), `failed` (no successes), or `partial`. `not_here` files are counted separately (`not_here_count`) and are neither. The row is updated with the per-file records, the counts, the status, `completed_at`, and the joined operation log. Note that the log goes into `error_message` — that column holds all log lines, successes included, not just errors.
+
+Before the row is written, files the run really renamed retire any title taken from TMDB for their episode (kept on the file as `tmdb_before`, so Undo can bring it back). Once the run is stored, that series' title check runs again in the background and sends `titles_checked`, so Explore's tags and strip follow Sonarr's rename.
 
 If that update returns false, the service returns failure with `persistence_error: true` and a message saying the rename happened on disk but history could not be updated. It returns **before** emitting `rename_completed` and before the Discord notification, so a persistence failure is loud rather than silently successful.
 
@@ -212,7 +214,7 @@ Management endpoints (session auth):
 
 - `POST /api/webhook/rename/notifications/{id}/undo` — put the old names back
 
-Renames from Explore (session auth): `GET`/`POST /api/explore/rename/{media_type}/{folder}` (review / rename), `POST /api/explore/titles/refresh/{media_type}/{folder}`, `GET /api/explore/titles/{media_type}` and `…/{folder}` (the last check), `POST /api/explore/titles/check`, `GET`/`POST /api/explore/rename-all/{media_type}`, `GET /api/explore/tmdb/search/{media_type}/{folder}`, `POST`/`DELETE /api/explore/tmdb/link/{media_type}/{folder}`. Contracts in `../../reference/api.md`, section 12.
+Renames from Explore (session auth): `GET`/`POST /api/explore/rename/{media_type}/{folder}` (review / rename), `POST /api/explore/titles/refresh/{media_type}/{folder}`, `GET /api/explore/titles/{media_type}` and `…/{folder}` (the last check), `POST /api/explore/titles/check`, `GET /api/explore/title-jobs` (polled while a check or Rename all runs), `GET`/`POST /api/explore/rename-all/{media_type}`, `GET /api/explore/tmdb/search/{media_type}/{folder}`, `POST`/`DELETE /api/explore/tmdb/link/{media_type}/{folder}`. Contracts in `../../reference/api.md`, section 12.
 
 Socket events: `rename_webhook_received` (before work starts), `rename_completed` (after a successfully persisted run, from the webhook or Explore), `titles_checked` (a title check finished), `rename_progress` and `rename_library_finished` (Rename all ready).
 

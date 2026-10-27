@@ -3175,7 +3175,21 @@ Input JSON: `{"media_type": "tvshows", "folder": "Example Show (2024)"}` — bot
 optional.
 
 Output JSON: `{"status":"success","summary":{"folder":"…","state":"ready","ready":12,"waiting":3,…}}`
-or `{"status":"success","started":true}` (`202`).
+or `{"status":"success","started":true,"after":4}` (`202`). `after` is
+`checks_finished` from `GET /explore/title-jobs` when it started: the check is
+done once that count is higher and nothing is checking.
+
+### GET `/explore/title-jobs`
+What it does: the title check and *Rename all*, running or done. The page polls
+it every 3 seconds after starting either one, so the result still lands while
+live updates are off (they close after a while idle). Asks nothing.
+
+Output JSON:
+```json
+{"status": "success", "jobs": {"checking": false, "checks_finished": 5,
+  "rename_all": {"tvshows": {"running": false, "run_id": "tvshows-1761500000000",
+    "done": 2, "total": 2, "finished": { …same as rename_library_finished… }}}}}
+```
 
 ### GET `/explore/rename-all/{media_type}`
 What it does: what *Rename all ready* would rename across one library, from the
@@ -3197,8 +3211,9 @@ the end; one Discord message covers the whole run.
 
 Input JSON: `{"folders": ["Example Show (2024)", "Another Show (2020)"]}`.
 
-Output JSON: `{"status":"success","started":true,"total":2}`. `409` when one is
-already running for the library; `400` without a folder.
+Output JSON: `{"status":"success","started":true,"total":2,"run_id":"tvshows-1761500000000"}`.
+`rename_library_finished` and `GET /explore/title-jobs` carry the same `run_id`.
+`409` when one is already running for the library; `400` without a folder.
 
 ### GET `/explore/tmdb/search/{media_type}/{folder}`
 What it does: TMDB shows matching the folder's name and year, best first, for

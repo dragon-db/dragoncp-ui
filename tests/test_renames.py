@@ -10,6 +10,7 @@ the way the real services were seen to answer. Every name is synthetic.
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -403,6 +404,20 @@ class RenamesServiceTests(unittest.TestCase):
         self.assertEqual(caught.exception.status, 409)
         self.assertTrue(self.here(name(2, 'TBA')))
 
+    def test_one_stale_name_refuses_the_whole_rename(self):
+        # Three approved; one title changed since the preview. Nothing moves.
+        picks = [{'path': f"{SEASON}/{name(1, 'TBA')}", 'new_name': name(1, 'Pilot - Part One')},
+                 {'path': f"{SEASON}/{name(2, 'TBA')}", 'new_name': name(2, 'Second Thing')},
+                 {'path': f"{SEASON}/{name(3, 'TBA')}", 'new_name': name(3, 'Third From TMDB')}]
+        self.sonarr.eps[1]['title'] = 'Second Thing Renamed'
+        with self.assertRaises(RenamesError) as caught:
+            self.service.apply('tvshows', SERIES, picks=picks)
+        self.assertEqual(caught.exception.status, 409)
+        self.assertIn('1 of 3', caught.exception.message)
+        for episode in (1, 2, 3):
+            self.assertTrue(self.here(name(episode, 'TBA')), episode)
+        self.assertEqual(self.sonarr.commands, [])
+
     def test_a_transfer_into_the_series_blocks_a_rename(self):
         self.active = [{'media_type': 'tvshows', 'folder_name': SERIES}]
         with self.assertRaises(RenamesError) as caught:
@@ -433,6 +448,112 @@ class RenamesServiceTests(unittest.TestCase):
         with self.assertRaises(RenamesError) as caught:
             self.service.undo(result['notification_id'])
         self.assertEqual(caught.exception.status, 409)
+
+    def test_a_partial_undo_can_be_retried(self):
+        result = self.service.apply('tvshows', SERIES)
+        blocker = self.touch(name(2, 'TBA'))
+        first = self.service.undo(result['notification_id'])
+        self.assertEqual(first['restored_count'], 2)
+        self.assertEqual(len(first['failed']), 1)
+        self.assertIsNone(self.history.get(result['notification_id'])['undone_at'])
+        self.assertTrue(self.here(name(2, 'Second Thing')))
+
+        os.remove(blocker)
+        second = self.service.undo(result['notification_id'])
+        self.assertEqual((second['restored_count'], second['failed']), (1, []))
+        self.assertTrue(self.here(name(2, 'TBA')))
+        self.assertTrue(self.here(name(1, 'TBA', '.nfo')), 'sidecars were put back once')
+        self.assertIsNotNone(self.history.get(result['notification_id'])['undone_at'])
+
+    def test_a_stuck_sidecar_keeps_the_run_open(self):
+        result = self.service.apply('tvshows', SERIES)
+        blocker = self.touch(name(1, 'TBA', '.nfo'))
+        first = self.service.undo(result['notification_id'])
+        self.assertEqual(first['restored_count'], 3)
+        self.assertEqual(len(first['failed']), 1)
+        self.assertIsNone(self.history.get(result['notification_id'])['undone_at'])
+
+        os.remove(blocker)
+        second = self.service.undo(result['notification_id'])
+        self.assertEqual((second['restored_count'], second['failed']), (0, []))
+        self.assertTrue(self.here(name(1, 'TBA', '.nfo')))
+        self.assertIsNotNone(self.history.get(result['notification_id'])['undone_at'])
+
+    def test_undo_of_a_sonarr_retitle_brings_the_tmdb_title_back(self):
+        self.service.apply('tvshows', SERIES)
+        self.sonarr.eps[2]['title'] = 'Third From Sonarr'
+        retitle = self.service.apply('tvshows', SERIES)
+        self.assertTrue(self.here(name(3, 'Third From Sonarr')))
+        self.assertEqual(self.store.episode_titles('tvshows', SERIES), {})
+
+        self.service.undo(retitle['notification_id'])
+        self.assertTrue(self.here(name(3, 'Third From TMDB')))
+        row = self.store.episode_titles('tvshows', SERIES)[(1, 3)]
+        self.assertEqual((row['source'], row['file_name']), ('tmdb', name(3, 'Third From TMDB')))
+        third = self.items(self.service.plan('tvshows', SERIES))['S01E03']
+        self.assertEqual((third['state'], third['new_name']), ('ready', name(3, 'Third From Sonarr')))
+
+    # -- Sonarr's own rename webhook -------------------------------------------
+
+    def webhook_service(self):
+        from services.rename_service import RenameService
+        replay = RenameService(self.config, self.history)
+        replay.renames = self.service
+        return replay
+
+    @staticmethod
+    def rename_payload(previous: str, new: str):
+        base = f'/remote/tv/{SERIES}'
+        return {'eventType': 'Rename', 'series': {'id': 7, 'title': 'Example Show', 'path': base},
+                'renamedEpisodeFiles': [{
+                    'id': 1, 'previousPath': f"{base}/{SEASON}/{previous}",
+                    'previousRelativePath': f"{SEASON}/{previous}",
+                    'path': f"{base}/{SEASON}/{new}", 'relativePath': f"{SEASON}/{new}"}]}
+
+    def test_undo_skips_what_the_webhook_found_already_renamed(self):
+        self.service.apply('tvshows', SERIES)
+        with patch.object(self.service, 'check_later') as check_later:
+            ok, result = self.webhook_service().process_rename_webhook(
+                self.rename_payload(name(2, 'TBA'), name(2, 'Second Thing')), 'tvshows')
+        self.assertTrue(ok)
+        check_later.assert_not_called()
+        with self.assertRaises(RenamesError) as caught:
+            self.service.undo(result['notification_id'])
+        self.assertEqual(caught.exception.status, 400)
+        self.assertTrue(self.here(name(2, 'Second Thing')))
+
+    def test_a_webhook_rename_retires_the_tmdb_title_and_checks_again(self):
+        self.service.apply('tvshows', SERIES)
+        self.assertIn((1, 3), self.store.episode_titles('tvshows', SERIES))
+        with patch.object(self.service, 'check_later') as check_later:
+            ok, result = self.webhook_service().process_rename_webhook(
+                self.rename_payload(name(3, 'TBA'), name(3, 'Third From Sonarr')), 'tvshows')
+        self.assertTrue(ok)
+        self.assertTrue(self.here(name(3, 'Third From Sonarr')))
+        self.assertEqual(self.store.episode_titles('tvshows', SERIES), {})
+        check_later.assert_called_once_with('tvshows', SERIES)
+
+        self.service.undo(result['notification_id'])
+        self.assertTrue(self.here(name(3, 'Third From TMDB')))
+        self.assertEqual(self.store.episode_titles('tvshows', SERIES)[(1, 3)]['source'], 'tmdb')
+
+    # -- background work, for a page with live updates off ----------------------
+
+    def test_jobs_report_a_finished_check_and_rename_all(self):
+        self.assertEqual(self.service.jobs()['checks_finished'], 0)
+        self.service.check_all(trigger='manual')
+        jobs = self.service.jobs()
+        self.assertEqual((jobs['checking'], jobs['checks_finished']), (False, 1))
+
+        started = self.service.apply_library('tvshows', [SERIES])
+        for _ in range(200):
+            run = self.service.jobs()['rename_all']['tvshows']
+            if not run['running']:
+                break
+            time.sleep(0.01)
+        self.assertEqual(run['run_id'], started['run_id'])
+        self.assertEqual(run['finished']['run_id'], started['run_id'])
+        self.assertEqual(run['finished']['renamed'], 3)
 
     # -- titles from TMDB, later replaced by Sonarr's ---------------------------
 
