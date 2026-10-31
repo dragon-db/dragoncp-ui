@@ -13,6 +13,7 @@ import {
   IconInfoCircle,
   IconListDetails,
   IconLoader2,
+  IconPencil,
   IconRefresh,
   IconTool,
   IconX,
@@ -674,7 +675,43 @@ function Status({
           )}
         </div>
       )}
+
+      {(detail.placeholder_count ?? 0) > 0 && explore?.series && (
+        <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border/70 pt-4 sm:pl-8">
+          <p className="text-[13px] text-foreground">
+            {detail.placeholder_count === 1
+              ? "1 episode here is"
+              : `${detail.placeholder_count} episodes here are`}{" "}
+            still named TBA.
+          </p>
+          <RenameButton explore={explore} />
+        </div>
+      )}
     </section>
+  );
+}
+
+/**
+ * Renames live in Explore (decided 2026-10-23): this opens the series there
+ * with the Needs titles filter on, where the new names are shown before
+ * anything changes.
+ */
+function RenameButton({ explore }: { explore: ExploreTarget }) {
+  if (!explore.series) return null;
+  return (
+    <Link
+      to="/media/$type"
+      params={{ type: explore.media_type }}
+      search={{ series: explore.series, filter: "titles" }}
+      className={cn(
+        buttonVariants({ variant: "outline" }),
+        TAP_BUTTON,
+        "border-brand/45 text-brand-foreground hover:bg-brand/12 dark:border-brand/45"
+      )}
+    >
+      <IconPencil className="size-4" />
+      Rename in Explore
+    </Link>
   );
 }
 

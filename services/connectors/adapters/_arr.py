@@ -92,6 +92,10 @@ UNKNOWN = InFlight(known=False, reason='No usable answer from the service')
 #: syncs what has already been imported. Holding an API key that could do those
 #: things and simply never calling them is a property of today's code; this is
 #: the same property written down where it cannot be lost in a later edit.
+#:
+#: The one exception is `command()`, and it is narrow on purpose: an adapter
+#: names the commands it may send (`allowed_commands`), and nothing else ever
+#: leaves as a write.
 READ_ONLY_METHODS = frozenset({'GET', 'HEAD'})
 
 
@@ -105,11 +109,12 @@ class ArrConnector(Connector):
             'base_url', 'Address',
             'Where this service is reachable from the DragonCP host.',
             kind='url', required=True, placeholder='http://localhost:8989',
+            group='connection',
         ),
         ConfigField(
             'api_key', 'API key',
             'Settings → General → Security → API Key in the service itself.',
-            kind='password', secret=True, required=True,
+            kind='password', secret=True, required=True, group='connection',
         ),
         # -- the scheduled auto-scanner --------------------------------------
         # These live on the connector rather than in app settings because they
@@ -122,7 +127,7 @@ class ArrConnector(Connector):
             'that never arrived, or a sync that was skipped or cancelled. Also '
             'finds missing episodes of seasons this disk already keeps. Off by '
             'default.',
-            kind='boolean',
+            kind='boolean', group='scanner',
         ),
         ConfigField(
             'auto_scanner_mode', 'When it finds something',
@@ -130,13 +135,14 @@ class ArrConnector(Connector):
             'sync it by hand from Explore when it is ready. Sync it: start the sync, '
             'through the same pipeline and safety checks as a webhook.',
             kind='choice', choices=(('alert', 'Alert only'), ('sync', 'Sync it')),
-            default='alert',
+            default='alert', group='scanner', depends_on='auto_scanner_enabled',
         ),
         ConfigField(
             'auto_scanner_interval_minutes', 'Scan every (minutes)',
             'How often it asks: 60 is once an hour. Between 5 and 360; 15 when '
             'empty. Each scan is a few read-only requests to the service.',
-            kind='number', placeholder='15',
+            kind='number', placeholder='15', group='scanner',
+            depends_on='auto_scanner_enabled',
         ),
         ConfigField(
             'auto_scanner_lookback_days', 'Look back (days)',
@@ -144,9 +150,19 @@ class ArrConnector(Connector):
             'sync skipped or cancelled within this many days is still found. '
             'Between 1 and 30; 7 when empty. Sync it reads only what arrived '
             'since its last scan.',
-            kind='number', placeholder='7',
+            kind='number', placeholder='7', group='scanner',
+            depends_on='auto_scanner_enabled',
         ),
     )
+
+    # The tab and the card keep the name Connection; the first group is named
+    # for what it holds so the two headings do not repeat each other.
+    config_groups = (
+        ('connection', 'Address and key', 'Where DragonCP reaches it.'),
+        ('scanner', 'Auto-scanner', 'Finds imports nothing has synced.'),
+    )
+
+    settings_description = 'How DragonCP reaches it, and what it does on its own.'
 
     # -- reading those back ------------------------------------------------
 
@@ -324,6 +340,47 @@ class ArrConnector(Connector):
         if parsed is None:
             return False, None
         return True, parsed
+
+    #: The commands this service may be asked to run. Empty: it is only read.
+    allowed_commands: frozenset = frozenset()
+
+    def command(self, name: str, body: Optional[Dict[str, Any]] = None
+                ) -> Tuple[bool, Optional[Dict[str, Any]], str]:
+        """Ask the service to run one allowed command. Returns (sent, answer, words).
+
+        Refused, with the reason in words, when the command is not allowed,
+        in test mode, or when the service is not set up. Never retried: a
+        command sent twice is queued twice.
+        """
+        if name not in self.allowed_commands:
+            print(f"⛔ Refused command {name} to {self.display_name} "
+                  f"— not one DragonCP may send")
+            return False, None, f"DragonCP never asks {self.display_name} to run {name}"
+        if test_mode_enabled():
+            print(f"🧪 TEST_MODE: did not send {name} to {self.display_name}")
+            return False, None, f"Test mode: {self.display_name} was not asked"
+        base = self.base_url()
+        if not base or not self.api_key():
+            return False, None, f"{self.display_name} is not set up"
+        payload = dict(body or {})
+        payload['name'] = name
+        result = transport.send(
+            'POST', f"{base}/api/v3/command", json=payload,
+            headers={'X-Api-Key': self.api_key()}, timeout=15.0, max_retries=0,
+        )
+        if not result.ok:
+            return False, None, result.error or f"{self.display_name} refused it"
+        answer = result.json if isinstance(result.json, dict) else {}
+        return True, answer, f"{self.display_name} accepted it"
+
+    def command_status(self, command_id: Any) -> Optional[str]:
+        """'queued', 'started', 'completed', 'failed'…, or None when unknown."""
+        if command_id in (None, ''):
+            return None
+        ok, row = self._get(f"/api/v3/command/{command_id}", timeout=10.0)
+        if not ok or not isinstance(row, dict):
+            return None
+        return str(row.get('status') or '').lower() or None
 
     def queue_rows(self, item_id: Any) -> Tuple[bool, List[Dict[str, Any]]]:
         """The queue rows this service attributes to one title."""

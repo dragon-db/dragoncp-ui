@@ -77,6 +77,10 @@ export interface RenameWebhookEvent {
   total_files?: number;
   message?: string;
   status?: string;
+  /** 'webhook' for Sonarr's, 'manual' for a rename pressed in Explore. */
+  trigger_kind?: string;
+  /** Test mode: rehearsed, nothing renamed. */
+  dry_run?: boolean;
 }
 
 function getSocketUrl(): string {

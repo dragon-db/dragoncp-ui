@@ -9,11 +9,13 @@ import {
   useRenameNotifications,
   useTriggerWebhookGroupSync,
   useTriggerWebhookSync,
+  useUndoRenameNotification,
   useVerifyRenameNotification,
   useWebhookDryRun,
   useWebhookNotificationJson,
   useBulkDeleteNotifications,
   useWebhookNotifications,
+  type RenamedFile,
   type RenameNotification,
   type RenameVerificationResult,
   type WebhookNotification,
@@ -36,6 +38,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  IconArrowBackUp,
   IconCheck,
   IconCode,
   IconEye,
@@ -93,6 +96,37 @@ function getStatusBadge(status: string) {
 
 function formatAgo(value?: string) {
   return timeAgo(value) || "Unknown";
+}
+
+/** Who started a rename run: Sonarr's webhook, someone in Explore, or the schedule. */
+function renameTrigger(notification: RenameNotification) {
+  if (notification.trigger_kind === "manual") {
+    return notification.triggered_by ? `Explore · ${notification.triggered_by}` : "Explore";
+  }
+  if (notification.trigger_kind === "scheduled") return "Scheduled";
+  return "Sonarr";
+}
+
+/**
+ * A file this run really renamed — not a test-mode rehearsal, not one that
+ * failed, not one the webhook found already under its new name.
+ */
+function renamedForReal(file: RenamedFile) {
+  const message = (file.message ?? "").toLowerCase();
+  // `pending` with paths: a run from Explore cut short after a file moved.
+  const renamed = file.status === "success" || (file.status === "pending" && !!file.local_new_path);
+  return (
+    renamed &&
+    !file.dry_run &&
+    file.changed !== false &&
+    !message.includes("dry run") &&
+    !message.startsWith("file already renamed")
+  );
+}
+
+/** Undo is offered while the run has a rename to put back and has not been undone. */
+function canUndo(notification: RenameNotification) {
+  return !notification.undone_at && (notification.renamed_files ?? []).some(renamedForReal);
 }
 
 function mapMediaType(mediaType: string) {
@@ -294,6 +328,8 @@ export function WebhooksPage() {
     null
   );
   const [verifyingRenameId, setVerifyingRenameId] = useState<string | null>(null);
+  // The run Undo was pressed on, held while the confirmation is open.
+  const [undoTarget, setUndoTarget] = useState<RenameNotification | null>(null);
 
   const notificationsQuery = useWebhookNotifications({
     limit: notificationLimit,
@@ -314,6 +350,7 @@ export function WebhooksPage() {
   const deleteRenameMutation = useDeleteRenameNotification();
   const bulkDeleteMutation = useBulkDeleteNotifications();
   const verifyRenameMutation = useVerifyRenameNotification();
+  const undoRenameMutation = useUndoRenameNotification();
 
   useEffect(() => {
     const offWebhookCaptured = onWebhookCaptured(() => {
@@ -600,6 +637,23 @@ export function WebhooksPage() {
     }
   };
 
+  const runUndoRename = async (notification: RenameNotification) => {
+    try {
+      const result = await undoRenameMutation.mutateAsync(notification.notification_id);
+      // Test mode rehearses: the message says what would have been put back.
+      if (result.dry_run) toast.warning(result.message);
+      else if (result.restored_count === 0) toast.error(result.message);
+      else toast.success(result.message);
+      for (const failure of result.failed ?? []) {
+        toast.error(`${failure.name ?? "A file"} — ${failure.error}`);
+      }
+    } catch (error) {
+      toast.error(getApiErrorMessage(error) || "Could not undo the rename");
+    } finally {
+      renameQuery.refetch();
+    }
+  };
+
   const runVerifyRename = async (notification: RenameNotification) => {
     setVerifyingRenameId(notification.notification_id);
     try {
@@ -800,7 +854,7 @@ export function WebhooksPage() {
         <TabsContent value="renames" className="mt-4 flex flex-col gap-3.5">
           <StatTiles
             items={[
-              { label: "Renames", value: renameTotals.runs, unit: "webhook runs" },
+              { label: "Renames", value: renameTotals.runs, unit: "runs" },
               {
                 label: "Files renamed",
                 value: renameTotals.renamed,
@@ -823,7 +877,7 @@ export function WebhooksPage() {
 
           <SectionCard
             label="Rename history"
-            description="Replays Sonarr's renames on this machine"
+            description="Sonarr's renames replayed on this machine, and renames started in Explore"
             contentClassName="p-3"
           >
             {renameQuery.isLoading ? (
@@ -851,10 +905,23 @@ export function WebhooksPage() {
                           <span className="opacity-50">·</span>
                           <span>{mediaLabel(notification.media_type)}</span>
                           <span className="opacity-50">·</span>
+                          <span>by {renameTrigger(notification)}</span>
+                          <span className="opacity-50">·</span>
                           <span>{formatAgo(notification.created_at)}</span>
                         </p>
                       </div>
-                      {getStatusBadge(notification.status)}
+                      <div className="flex flex-none items-center gap-1.5">
+                        {notification.undone_at && (
+                          <span
+                            title={new Date(notification.undone_at).toLocaleString()}
+                            className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[10px] font-bold tracking-wide text-muted-foreground uppercase"
+                          >
+                            <IconArrowBackUp className="size-3" />
+                            Undone {timeAgo(notification.undone_at)}
+                          </span>
+                        )}
+                        {getStatusBadge(notification.status)}
+                      </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <Button
@@ -889,6 +956,23 @@ export function WebhooksPage() {
                         <IconCode className="mr-1.5 size-3.5" />
                         View JSON
                       </Button>
+                      {canUndo(notification) && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setUndoTarget(notification)}
+                          disabled={
+                            undoRenameMutation.isPending &&
+                            undoRenameMutation.variables === notification.notification_id
+                          }
+                        >
+                          <IconArrowBackUp className="mr-1.5 size-3.5" />
+                          {undoRenameMutation.isPending &&
+                          undoRenameMutation.variables === notification.notification_id
+                            ? "Undoing…"
+                            : "Undo"}
+                        </Button>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -906,7 +990,7 @@ export function WebhooksPage() {
               <SectionEmpty
                 icon={IconPencil}
                 title="No renames yet"
-                hint="When Sonarr renames files, the run lands here so you can replay it on this machine."
+                hint="When Sonarr renames files, or you rename episodes in Explore, the run lands here — with Undo."
               />
             )}
           </SectionCard>
@@ -984,6 +1068,20 @@ export function WebhooksPage() {
                 </div>
               </div>
 
+              <p className="text-[12px] text-muted-foreground">
+                Started by {renameTrigger(renameDetailsQuery.data.notification)}
+                {renameDetailsQuery.data.notification.sonarr_message && (
+                  <> · {renameDetailsQuery.data.notification.sonarr_message}</>
+                )}
+                {renameDetailsQuery.data.notification.undone_at && (
+                  <>
+                    {" "}
+                    · Undone{" "}
+                    {new Date(renameDetailsQuery.data.notification.undone_at).toLocaleString()}
+                  </>
+                )}
+              </p>
+
               <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
@@ -1011,12 +1109,32 @@ export function WebhooksPage() {
                   <IconCode className="mr-1.5 size-3.5" />
                   View JSON
                 </Button>
+                {canUndo(renameDetailsQuery.data.notification) && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setUndoTarget(renameDetailsQuery.data.notification)}
+                    disabled={undoRenameMutation.isPending}
+                  >
+                    <IconArrowBackUp className="mr-1.5 size-3.5" />
+                    Undo
+                  </Button>
+                )}
               </div>
 
               <div className="flex flex-col gap-2">
                 {(renameDetailsQuery.data.notification.renamed_files ?? []).map((file, index) => {
-                  const episode = episodeTagOf(file.new_name || file.previous_name);
-                  const failed = !file.new_name;
+                  const episode = file.code || episodeTagOf(file.new_name || file.previous_name);
+                  const failed = file.status ? file.status === "failed" : !file.new_name;
+                  const notHere = file.status === "not_here";
+                  const rehearsed =
+                    file.dry_run || (file.message ?? "").toLowerCase().includes("dry run");
+                  const fromExplore =
+                    renameDetailsQuery.data.notification.trigger_kind === "manual" ||
+                    renameDetailsQuery.data.notification.trigger_kind === "scheduled";
+                  const sidecarsMoved = (file.sidecars ?? []).filter(
+                    (sidecar) => sidecar.status === "success"
+                  ).length;
                   return (
                     <div
                       key={`${index}-${file.previous_name}`}
@@ -1032,13 +1150,45 @@ export function WebhooksPage() {
                           <span className="text-[11px] text-rose-400">
                             {file.message || file.error || "Not renamed"}
                           </span>
+                        ) : notHere ? (
+                          <span className="text-[11px] text-muted-foreground">
+                            Not on this disk — nothing to rename here
+                          </span>
+                        ) : rehearsed ? (
+                          <span className="text-[11px] text-amber-300">
+                            Test mode — not renamed
+                          </span>
                         ) : (
                           <span className="text-[11px] text-muted-foreground">
-                            renamed by Sonarr
+                            {fromExplore ? "renamed from Explore" : "renamed by Sonarr"}
+                            {file.sonarr_rename && " · Sonarr was asked to rename its copy"}
+                            {file.matched_by_episode && " · found by its episode"}
+                          </span>
+                        )}
+                        {file.source === "tmdb" && (
+                          <span
+                            title="The title came from TMDB, because Sonarr had none yet"
+                            className="rounded border border-border px-1.5 py-px font-mono text-[9.5px] font-semibold tracking-[0.06em] text-muted-foreground uppercase"
+                          >
+                            from TMDB
+                          </span>
+                        )}
+                        {sidecarsMoved > 0 && (
+                          <span
+                            title={(file.sidecars ?? []).map((sidecar) => sidecar.new).join("\n")}
+                            className="text-[11px] text-muted-foreground"
+                          >
+                            + {sidecarsMoved} subtitle/info file{sidecarsMoved === 1 ? "" : "s"}
                           </span>
                         )}
                       </div>
-                      <FilenameDiff before={file.previous_name} after={file.new_name} />
+                      {notHere ? (
+                        <p className="font-mono text-[11px] break-all text-muted-foreground">
+                          {file.previous_name}
+                        </p>
+                      ) : (
+                        <FilenameDiff before={file.previous_name} after={file.new_name} />
+                      )}
                     </div>
                   );
                 })}
@@ -1067,6 +1217,27 @@ export function WebhooksPage() {
         confirmLabel={selectedCount === 1 ? "Delete arrival" : `Delete ${selectedCount} arrivals`}
         pending={bulkDeleteMutation.isPending}
         onConfirm={runBulkDelete}
+      />
+
+      <ConfirmDialog
+        open={Boolean(undoTarget)}
+        onOpenChange={(open) => !open && setUndoTarget(null)}
+        icon={<IconArrowBackUp />}
+        title="Undo this rename?"
+        description={
+          <>
+            The files this run renamed in {undoTarget?.series_title ?? "this series"} get their old
+            names back, with their subtitles and info files. Sonarr's own copies keep their new
+            names. Nothing is copied or deleted.
+          </>
+        }
+        confirmLabel="Undo rename"
+        destructive={false}
+        pending={undoRenameMutation.isPending}
+        onConfirm={() => {
+          if (undoTarget) runUndoRename(undoTarget);
+          setUndoTarget(null);
+        }}
       />
 
       <RenameVerifyDialog

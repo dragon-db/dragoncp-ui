@@ -1,6 +1,6 @@
 # DragonCP Database Schema v2 Documentation
 
-Last updated: 2026-10-05
+Last updated: 2026-10-23
 
 ## Overview
 
@@ -29,6 +29,7 @@ This document describes the current SQLite schema used by DragonCP.
 - `alert` *(the Notifications page, 2.3.0)*
 - `scheduled_job` *(the scheduler, 2.3.0)*
 - `sweep_finding` *(gaps the auto-scanner has seen)*
+- `title_check`, `title_link`, `episode_title` *(renames from Explore)*
 
 ### Column Renames
 - `transfer_type` → `operation_type` (more descriptive)
@@ -70,6 +71,12 @@ up on startup without a migration script:
   had, so a movie the safety check stopped or a restart interrupted went back
   to `pending` with nothing saying why. Added by the same
   `_create_sync_engine_tables`.
+- `rename_webhook`: `trigger_kind`, `triggered_by`, `undone_at`,
+  `sonarr_message` (added 2026-10-23) - who started a rename run (Sonarr's
+  webhook, someone in Explore, or the schedule), whether Undo has put the old
+  names back, and what Sonarr said when asked to rename its own copies. Added
+  by `DatabaseManager._create_title_tables`. Rows from before carry NULL, which
+  reads as Sonarr's webhook — the only thing that wrote them.
 
 ### Explore Tables
 
@@ -77,6 +84,15 @@ Added in the same startup path, created with `CREATE TABLE IF NOT EXISTS`:
 `explore_snapshot` (the cached comparison), `explore_plan` (an evaluated
 operation awaiting approval) and `transfer_file` (what a run did, file by file).
 Each is documented in full below.
+
+### Title Tables
+
+Added 2026-10-23 by `DatabaseManager._create_title_tables`, all with
+`CREATE TABLE IF NOT EXISTS`: `title_check` (what the last title check found
+for one series folder), `title_link` (which TMDB show a series folder is) and
+`episode_title` (episodes renamed to a TMDB title). An upgraded database picks
+them up empty; the first title check fills `title_check`. See
+`../features/renames/README.md`.
 
 ### Account Table
 
@@ -514,7 +530,11 @@ CREATE TABLE rename_webhook (
     raw_webhook_data TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     completed_at DATETIME,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    trigger_kind TEXT,      -- 'webhook', 'manual' or 'scheduled'; NULL = webhook
+    triggered_by TEXT,      -- the admin who pressed Rename
+    undone_at DATETIME,     -- set once Undo put the old names back
+    sonarr_message TEXT     -- what Sonarr said when asked to rename its copies
 )
 ```
 
@@ -523,12 +543,20 @@ CREATE TABLE rename_webhook (
 - `notification_id` - Unique identifier for the notification. Not a UUID;
   `movie_<movieId>_<epoch>` for Radarr, `<media_type>_<seriesId>_s<season>_ef<episodeFileId>`
   for Sonarr (falling back to a microsecond timestamp), `rename_<seriesId>_<epoch_ms>`
-  for renames
+  for renames Sonarr's webhook asked for, `rename_manual_<epoch_ms>` for one
+  started in Explore
 - `media_type` - Type of media: 'tvshows' or 'anime'
 - `series_title` - Series title
-- `series_id` - Series ID from Sonarr
-- `series_path` - Server source path for the series
-- `renamed_files` - JSON array of rename operations with status
+- `series_id` - Series ID from Sonarr (NULL for a series Sonarr does not have)
+- `series_path` - Server source path for the series; for a run started in
+  Explore, the series folder on this disk
+- `renamed_files` - JSON array of rename operations with status. Each entry
+  carries `previous_name`, `new_name`, `local_previous_path`,
+  `local_new_path`, `status` (`success`, `failed`, or `not_here` for a file
+  Sonarr renamed that this disk never had) and `message`; since 2026-10-23
+  also `sidecars` (subtitles, `.nfo` and artwork that moved with the video),
+  `dry_run`, and for a run started in Explore `code`, `title`, `source`
+  (`sonarr` or `tmdb`) and `sonarr_rename`
 - `total_files` - Total number of files to rename
 - `success_count` - Number of successfully renamed files
 - `failed_count` - Number of failed rename operations
@@ -538,6 +566,13 @@ CREATE TABLE rename_webhook (
 - `created_at` - Record creation timestamp
 - `completed_at` - Timestamp when processing completed
 - `updated_at` - Timestamp of the last row update
+- `trigger_kind` - who started the run: `webhook` (Sonarr), `manual` (Explore)
+  or `scheduled`. NULL on rows from before 2026-10-23, which all came from the
+  webhook
+- `triggered_by` - the admin's name, for a run started in Explore
+- `undone_at` - when Undo put the old names back; Undo refuses a second time
+- `sonarr_message` - for a run started in Explore, whether Sonarr took the
+  request to rename its own copies
 
 **Indexes:**
 - `idx_rename_webhook_notification_id` on `notification_id` - Fast lookup by notification ID
@@ -1716,6 +1751,122 @@ CREATE TABLE sweep_finding (
 
 **Model:** none; `services/auto_scanner.py` (`_remember`, `_stamp`,
 `_resolve_absent`) reads and writes it directly.
+
+---
+
+## Table: `title_check`
+
+**Purpose:** What the last title check found for one series folder: how many of
+its episodes still named TBA have a real title waiting, and the proposed new
+name for each, so Explore can show them without asking Sonarr on every view.
+
+**Schema:**
+```sql
+CREATE TABLE title_check (
+    media_type TEXT NOT NULL,
+    folder TEXT NOT NULL,
+    state TEXT NOT NULL,
+    placeholders INTEGER DEFAULT 0,
+    ready INTEGER DEFAULT 0,
+    waiting INTEGER DEFAULT 0,
+    skipped INTEGER DEFAULT 0,
+    sonarr_series_id INTEGER,
+    message TEXT,
+    detail TEXT,
+    notified_ready INTEGER DEFAULT 0,
+    checked_at DATETIME,
+    PRIMARY KEY (media_type, folder)
+)
+```
+
+**Column Descriptions:**
+- `media_type`, `folder` - the library (`tvshows` or `anime`) and the series
+  folder on this disk
+- `state` - `ready` (some can be renamed), `waiting` (no title anywhere yet),
+  `not_in_sonarr` (Sonarr does not have the series and it is not linked to
+  TMDB) or `unknown` (Sonarr is off or did not answer)
+- `placeholders` - files still named TBA when it was checked
+- `ready`, `waiting`, `skipped` - files that can be renamed, that have no title
+  yet, and that cannot be renamed safely (a name already taken, a double
+  episode)
+- `sonarr_series_id` - Sonarr's id for the series, when it has one
+- `message` - one line on how Sonarr stands for the series
+- `detail` - JSON: `items` (per file: `code`, `season_folder`, `old_name`,
+  `new_name`, `state`, `reason`, `source`, `retitle`), `seasons` (counts per
+  season folder), `sonarr` and `tmdb` summaries
+- `notified_ready` - how many ready files the scheduled check has already
+  announced, so the same titles do not alert twice
+- `checked_at` - when it was checked
+
+Rows are replaced on every check of the folder and removed once the folder has
+nothing left to rename.
+
+**Model:** `TitleStore` in `models/title_store.py`
+
+---
+
+## Table: `title_link`
+
+**Purpose:** Which TMDB show a series folder is. Picked by a person for a
+series Sonarr does not have, or found from Sonarr's own ids for one it does.
+
+**Schema:**
+```sql
+CREATE TABLE title_link (
+    media_type TEXT NOT NULL,
+    folder TEXT NOT NULL,
+    tmdb_id INTEGER NOT NULL,
+    tmdb_name TEXT,
+    tmdb_year INTEGER,
+    source TEXT NOT NULL DEFAULT 'manual',
+    linked_by TEXT,
+    linked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (media_type, folder)
+)
+```
+
+**Column Descriptions:**
+- `media_type`, `folder` - the series folder on this disk
+- `tmdb_id`, `tmdb_name`, `tmdb_year` - the TMDB show
+- `source` - `manual` (picked in Explore) or `sonarr` (matched from Sonarr's
+  TMDB or TVDB id)
+- `linked_by`, `linked_at` - who linked it, and when
+
+**Model:** `TitleStore` in `models/title_store.py`
+
+---
+
+## Table: `episode_title`
+
+**Purpose:** Episodes renamed to a title from TMDB. The title check uses it to
+offer Sonarr's own title once Sonarr has one, and never offers one TMDB title
+over another.
+
+**Schema:**
+```sql
+CREATE TABLE episode_title (
+    media_type TEXT NOT NULL,
+    folder TEXT NOT NULL,
+    season INTEGER NOT NULL,
+    episode INTEGER NOT NULL,
+    title TEXT,
+    source TEXT NOT NULL,
+    file_name TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (media_type, folder, season, episode)
+)
+```
+
+**Column Descriptions:**
+- `media_type`, `folder`, `season`, `episode` - the episode
+- `title`, `source` - the title it was given and where from (`tmdb`)
+- `file_name` - the name it was given; a file renamed since by anything else no
+  longer matches and is treated as an ordinary file
+
+A row goes when the episode is renamed to Sonarr's title, or when Undo puts the
+TBA name back.
+
+**Model:** `TitleStore` in `models/title_store.py`
 
 ---
 

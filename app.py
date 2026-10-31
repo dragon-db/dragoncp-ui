@@ -42,6 +42,10 @@ from services import TransferCoordinator
 from services.rename_service import RenameService
 from services.simulation_service import SimulationService
 from services.explore.service import ExploreService
+from services.renames.service import RenamesService
+from models.title_store import TitleStore
+from models.media_item import MediaItemStore
+from routes.renames import init_renames_routes, renames_bp
 from routes.media_library import init_media_library_routes, media_library_bp
 from services.connectors import configure as configure_connectors
 from models.connector import ConnectorStore
@@ -317,6 +321,19 @@ init_simulation_routes(simulation_service)
 explore_service = ExploreService(config, db_manager, transfer_coordinator, ssh_manager)
 init_explore_routes(explore_service)
 
+# Renames from Explore: episodes still named TBA get their real titles, here and
+# in Sonarr's copy. Local only, like Repair, so it works with SSH down. The
+# title check is one more scheduler job.
+renames_service = RenamesService(
+    config, db_manager, rename_model, TitleStore(db_manager),
+    active_transfers=transfer_coordinator.get_active_transfers,
+    media_items=MediaItemStore(db_manager), socketio=socketio,
+    notification_service=transfer_coordinator.notification_service,
+    alerts=transfer_coordinator.alerts)
+init_renames_routes(renames_service)
+rename_service.renames = renames_service
+transfer_coordinator.scheduler.register(renames_service.scheduler_job())
+
 
 def _session_changed(manager):
     """The browse session was opened, reopened or closed: every holder gets it."""
@@ -372,6 +389,7 @@ app.register_blueprint(debug_bp, url_prefix='/api')
 app.register_blueprint(logs_bp, url_prefix='/api')
 app.register_blueprint(simulation_bp, url_prefix='/api')
 app.register_blueprint(explore_bp, url_prefix='/api')
+app.register_blueprint(renames_bp, url_prefix='/api')
 app.register_blueprint(activity_bp, url_prefix='/api')
 app.register_blueprint(remote_daemon_bp, url_prefix='/api')
 app.register_blueprint(media_library_bp, url_prefix='/api')

@@ -190,6 +190,12 @@ a newer import, or dismissed earlier sends nothing.
 
 `RenameService.process_rename_webhook()` calls `send_rename_discord_notification()` after a rename batch finishes. The embed colour tracks the outcome: teal (`1752220`) for `completed`, orange (`15105570`) for `partial`, red (`15158332`) for `failed`. It lists the media type, the status, a totals block, and the first five resulting file names (prefixed `✓` or `✗`) with an "... and N more files" line beyond that, truncated to 900 characters. Headline FILE RENAME - COMPLETED (or PARTIAL, FAILED); until 2.3.2 it was authored "File Rename" and footed `DragonCP Rename Operation`.
 
+A rename started in Explore sends the same message (since 2026-10-23); *Rename all ready* sends one for the whole run rather than one per series, and a test-mode rehearsal sends none.
+
+### Titles ready
+
+The scheduled title check (off by default; switched on under Renames on Sonarr's Connection tab) opens a **Titles ready** alert, and sends one `titles.ready` message, when it finds real titles for episodes still named TBA that it has not announced before: how many, in which series, and that nothing is renamed until someone presses Rename. The alert links to Explore with the Needs titles filter on. A check someone starts by hand never alerts. See [renames](../renames/README.md).
+
 ### The app URL
 
 The connector's **App URL** is attached as the embed's clickable `url`, but only after passing `is_valid_app_url()` - a regex accepting `http`/`https` with a domain, `localhost`, or a dotted IPv4, with an optional port and path. It is deliberately permissive because this is a private deployment and the value is routinely a Tailscale IP. Discord rejects an embed outright if the URL is malformed, so an invalid value costs the link and nothing else. The check exists once, in `adapters/discord.py`; before 2.3.0 the same regex was copied into three files.
