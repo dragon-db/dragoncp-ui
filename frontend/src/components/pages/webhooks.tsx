@@ -113,8 +113,10 @@ function renameTrigger(notification: RenameNotification) {
  */
 function renamedForReal(file: RenamedFile) {
   const message = (file.message ?? "").toLowerCase();
+  // `pending` with paths: a run from Explore cut short after a file moved.
+  const renamed = file.status === "success" || (file.status === "pending" && !!file.local_new_path);
   return (
-    file.status === "success" &&
+    renamed &&
     !file.dry_run &&
     file.changed !== false &&
     !message.includes("dry run") &&

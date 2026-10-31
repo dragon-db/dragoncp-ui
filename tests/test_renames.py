@@ -479,6 +479,48 @@ class RenamesServiceTests(unittest.TestCase):
         self.assertTrue(self.here(name(1, 'TBA', '.nfo')))
         self.assertIsNotNone(self.history.get(result['notification_id'])['undone_at'])
 
+    def test_no_history_means_no_rename(self):
+        with patch.object(self.history, 'create', side_effect=RuntimeError('disk full')):
+            with self.assertRaises(RenamesError) as caught:
+                self.service.apply('tvshows', SERIES)
+        self.assertEqual(caught.exception.status, 500)
+        for episode in (1, 2, 3):
+            self.assertTrue(self.here(name(episode, 'TBA')), episode)
+        self.assertEqual(self.history.get_all(), [])
+
+    def test_a_rename_stops_when_its_history_cannot_be_saved(self):
+        with patch.object(self.history, 'update', return_value=False):
+            with self.assertRaises(RenamesError) as caught:
+                self.service.apply('tvshows', SERIES)
+        self.assertEqual(caught.exception.status, 500)
+        self.assertIn('Renamed 1 file(s)', caught.exception.message)
+        self.assertEqual(self.sonarr.commands, [], 'Sonarr is not asked after a stop')
+        moved = [e for e in (1, 2, 3) if not self.here(name(e, 'TBA'))]
+        self.assertEqual(len(moved), 1)
+
+        # The run was written before the file moved, so Undo still finds it.
+        [row] = self.history.get_all()
+        undone = self.service.undo(row['notification_id'])
+        self.assertEqual((undone['restored_count'], undone['failed']), (1, []))
+        for episode in (1, 2, 3):
+            self.assertTrue(self.here(name(episode, 'TBA')), episode)
+
+    def test_undo_stops_when_its_progress_cannot_be_saved_and_resumes(self):
+        result = self.service.apply('tvshows', SERIES)
+        with patch.object(self.history, 'update', return_value=False):
+            with self.assertRaises(RenamesError) as caught:
+                self.service.undo(result['notification_id'])
+        self.assertEqual(caught.exception.status, 500)
+        self.assertIn('Put back 1 name(s)', caught.exception.message)
+        self.assertIsNone(self.history.get(result['notification_id'])['undone_at'])
+
+        again = self.service.undo(result['notification_id'])
+        self.assertEqual((again['restored_count'], again['failed']), (3, []))
+        for episode in (1, 2, 3):
+            self.assertTrue(self.here(name(episode, 'TBA')), episode)
+        self.assertTrue(self.here(name(1, 'TBA', '.nfo')))
+        self.assertIsNotNone(self.history.get(result['notification_id'])['undone_at'])
+
     def test_undo_of_a_sonarr_retitle_brings_the_tmdb_title_back(self):
         self.service.apply('tvshows', SERIES)
         self.sonarr.eps[2]['title'] = 'Third From Sonarr'

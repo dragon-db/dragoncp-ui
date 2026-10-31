@@ -68,9 +68,10 @@ Titles are written the way Sonarr writes them (its "clean title" rules and its c
 - Waits while a transfer is writing into the same series.
 - Leaves out files stranded in a nested folder — Repair moves them into place first.
 - Asks Sonarr to rename the copies it holds (its `RenameFiles` command). Sonarr then sends its usual rename webhook, which finds the files here already renamed and records that.
+- Writes the run to the rename history before any file moves, and saves each file as it is renamed. If the history cannot be written, nothing is renamed; if it stops saving part way, the rename stops there and Sonarr is not asked.
 - Under `TEST_MODE`, rehearses: the same review and the same report, and nothing on disk or in Sonarr changes.
 
-**Undo**, from the run in the Renames tab, puts the old names back (with the subtitles and info files). Sonarr's copies keep their new names — Sonarr would only rename them to the same title again. Undo works for Sonarr's webhook runs too, except files the webhook found already renamed: it changed nothing there, so there is nothing to put back. A file that cannot be put back (its old name is taken) keeps Undo available; the rest are remembered, so Undo again finishes the job once that is fixed. Undoing a switch from a TMDB title to Sonarr's brings the TMDB title back, so Sonarr's is offered again.
+**Undo**, from the run in the Renames tab, puts the old names back (with the subtitles and info files). Sonarr's copies keep their new names — Sonarr would only rename them to the same title again. Undo works for Sonarr's webhook runs too, except files the webhook found already renamed: it changed nothing there, so there is nothing to put back. A file that cannot be put back (its old name is taken) keeps Undo available; the rest are remembered, so Undo again finishes the job once that is fixed. Undo saves its progress file by file and stops if it cannot; a file already back under its old name counts as done, so Undo after a failure or a restart picks up where it stopped. Undoing a switch from a TMDB title to Sonarr's brings the TMDB title back, so Sonarr's is offered again.
 
 ### Asking Sonarr and TMDB
 

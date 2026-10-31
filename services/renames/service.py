@@ -25,6 +25,7 @@ per series with a TBA episode; a preview or a rename reads three more for the
 one series. Requests are spaced half a second apart.
 """
 
+import json
 import os
 import threading
 import time
@@ -681,33 +682,54 @@ class RenamesService:
             raise RenamesError('Nothing here can be renamed right now.', 400)
 
         dry_run = test_mode_enabled()
-        results = [self._rename_one(root, folder, item, dry_run) for item in chosen]
+        titled = self.store.episode_titles(media_type, folder)
+        results = [self._planned(root, folder, item, dry_run) for item in chosen]
+        for result in results:
+            if result.get('key'):
+                self._keep_tmdb_before(result, titled.get(result['key']), result['key'])
+
+        # The history row exists before anything moves, and each file is saved
+        # as it is renamed: whatever happens next, Undo knows what changed.
+        notification_id = self._open_record(media_type, folder, src, results, trigger, actor)
+        for index, (item, result) in enumerate(zip(chosen, results)):
+            self._rename_one(root, folder, item, result)
+            if dry_run or result['status'] != 'success':
+                continue
+            if not self._save_files(notification_id, results):
+                for later in results[index + 1:]:
+                    later.update(status='failed', message='Not tried: the history could '
+                                                          'not be saved', error='history')
+                renamed = sum(1 for r in results if r['status'] == 'success')
+                self._save_files(notification_id, results)
+                raise RenamesError(
+                    f"Renamed {renamed} file(s), then stopped: the rename history could not "
+                    'be saved. What was renamed is in Webhooks → Renames and can be undone.',
+                    500)
         done = [r for r in results if r['status'] == 'success']
 
         sonarr = self._ask_sonarr(src, [r for r in done if r.get('sonarr_rename')], dry_run)
         if not dry_run:
-            titled = self.store.episode_titles(media_type, folder)
             for result in done:
                 key = result.get('key')
                 if not key:
                     continue
-                self._keep_tmdb_before(result, titled.get(key), key)
                 if result['source'] == SOURCE_TMDB:
                     self.store.record_title(media_type, folder, key[0], key[1],
                                             result['title'] or '', SOURCE_TMDB, result['new_name'])
                 else:
                     self.store.forget_title(media_type, folder, key[0], key[1])
 
-        record = self._record(media_type, folder, src, results, sonarr, trigger, actor, dry_run,
-                              announce)
+        record = self._record(notification_id, media_type, folder, src, results, sonarr,
+                              trigger, dry_run, announce)
         try:
             self.check_folder(media_type, folder)
         except Exception:  # noqa: BLE001 - the rename is done whatever the check says
             pass
         return record
 
-    def _rename_one(self, root: str, folder: str, item: Dict[str, Any],
-                    dry_run: bool) -> Dict[str, Any]:
+    def _planned(self, root: str, folder: str, item: Dict[str, Any],
+                 dry_run: bool) -> Dict[str, Any]:
+        """One file's history entry before it is renamed: status `pending`."""
         directory = os.path.join(root, folder, item['season_folder'])
         old = os.path.join(directory, item['old_name'])
         new = os.path.join(directory, item['new_name'])
@@ -724,7 +746,7 @@ class RenamesService:
             'sonarr_rename': item['sonarr_rename'],
             'sonarr_file_id': item['sonarr_file_id'],
             'sidecars': [],
-            'status': 'failed',
+            'status': 'pending',
             'message': '',
             'error': None,
             'dry_run': dry_run,
@@ -736,6 +758,14 @@ class RenamesService:
                 result['key'] = (int(season), int(episode))
             except ValueError:
                 result['key'] = None
+        return result
+
+    def _rename_one(self, root: str, folder: str, item: Dict[str, Any],
+                    result: Dict[str, Any]) -> Dict[str, Any]:
+        directory = os.path.join(root, folder, item['season_folder'])
+        old, new = result['local_previous_path'], result['local_new_path']
+        dry_run = result['dry_run']
+        result['status'] = 'failed'
         pairs = [(os.path.join(directory, s['old']), os.path.join(directory, s['new']))
                  for s in item['sidecars']]
         try:
@@ -808,39 +838,64 @@ class RenamesService:
                 'command_id': (answer or {}).get('id'),
                 'message': f"Sonarr is renaming its {len(files)} copy/copies"}
 
-    def _record(self, media_type: str, folder: str, src: _Sources,
+    @staticmethod
+    def _stored(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [{k: v for k, v in r.items() if k != 'key'} for r in results]
+
+    def _save_files(self, notification_id: str, results: List[Dict[str, Any]]) -> bool:
+        return self.rename_model.update(notification_id,
+                                        {'renamed_files': self._stored(results)})
+
+    def _open_record(self, media_type: str, folder: str, src: _Sources,
+                     results: List[Dict[str, Any]], trigger: str,
+                     actor: Optional[str]) -> str:
+        """Write the run to the history before any file moves."""
+        notification_id = f"rename_{trigger}_{int(time.time() * 1000)}"
+        root = self.config.get(LIBRARIES[media_type]) or ''
+        try:
+            self.rename_model.create({
+                'notification_id': notification_id,
+                'media_type': media_type,
+                'series_title': (src.series or {}).get('title') or folder,
+                'series_id': (src.series or {}).get('id'),
+                'series_path': os.path.join(root, folder),
+                'renamed_files': self._stored(results),
+                'total_files': len(results),
+                'status': 'pending',
+                'trigger_kind': trigger,
+                'triggered_by': actor,
+            })
+        except Exception as error:  # noqa: BLE001 - nothing has moved yet
+            raise RenamesError('The rename history could not be saved, so nothing was '
+                               f"renamed: {error}", 500) from error
+        return notification_id
+
+    def _record(self, notification_id: str, media_type: str, folder: str, src: _Sources,
                 results: List[Dict[str, Any]], sonarr: Dict[str, Any], trigger: str,
-                actor: Optional[str], dry_run: bool, announce: bool = True) -> Dict[str, Any]:
+                dry_run: bool, announce: bool = True) -> Dict[str, Any]:
         success = sum(1 for r in results if r['status'] == 'success')
         failed = len(results) - success
         status = 'completed' if failed == 0 else ('failed' if success == 0 else 'partial')
-        notification_id = f"rename_{trigger}_{int(time.time() * 1000)}"
         title = (src.series or {}).get('title') or folder
-        stored = [{k: v for k, v in r.items() if k != 'key'} for r in results]
+        stored = self._stored(results)
         lines = [(f"{'🧪' if dry_run else '✅'} {r['previous_name']} → {r['new_name']}"
                   if r['status'] == 'success'
                   else f"❌ {r['previous_name']}: {r['message']}") for r in results]
         if sonarr.get('message'):
             lines.append(sonarr['message'])
-        root = self.config.get(LIBRARIES[media_type]) or ''
-        data = {
-            'notification_id': notification_id,
-            'media_type': media_type,
-            'series_title': title,
-            'series_id': (src.series or {}).get('id'),
-            'series_path': os.path.join(root, folder),
+        saved = self.rename_model.update(notification_id, {
             'renamed_files': stored,
-            'total_files': len(results),
             'success_count': success,
             'failed_count': failed,
             'status': status,
             'error_message': '\n'.join(lines),
-            'trigger_kind': trigger,
-            'triggered_by': actor,
             'sonarr_message': sonarr.get('message') or None,
-        }
-        self.rename_model.create(data)
-        self.rename_model.update(notification_id, {'completed_at': datetime.now().isoformat()})
+            'completed_at': datetime.now().isoformat(),
+        })
+        if not saved:
+            # Each renamed file was saved as it went, so Undo still works;
+            # only the run's totals are missing.
+            print(f"⚠️  Rename history totals not saved for {notification_id}")
 
         result = {
             'notification_id': notification_id,
@@ -899,27 +954,43 @@ class RenamesService:
 
         dry_run = test_mode_enabled()
         restored, failed = [], []
+
+        def unsaved() -> RenamesError:
+            return RenamesError(
+                f"Put back {len(restored)} name(s), then stopped: the history could not be "
+                'saved. Undo again to finish.', 500)
+
         for info in files:
             if _undo_finished(info):
                 continue
             new, old = info['local_new_path'], info['local_previous_path']
             local_new = self._local_twin(root, row, new)
             local_old = self._local_twin(root, row, old)
+            before = json.dumps(info, sort_keys=True)
             try:
                 assert_path_within_bounds(local_new, [root])
                 assert_path_within_bounds(local_old, [root])
                 if os.path.dirname(local_new) != os.path.dirname(local_old):
                     raise OSError('the two names are in different folders')
                 if not info.get('undone'):
-                    if not os.path.lexists(local_new):
+                    if os.path.lexists(local_old) and not os.path.lexists(local_new):
+                        # Back under its old name already: an Undo whose
+                        # progress was not saved, or a rename that never ran.
+                        if not dry_run:
+                            info['undone'] = True
+                            self._restore_title(media_type, folder, info)
+                        if info.get('status') == 'success':
+                            restored.append(info.get('previous_name'))
+                    elif not os.path.lexists(local_new):
                         raise OSError('the renamed file is no longer there')
-                    if os.path.lexists(local_old):
+                    elif os.path.lexists(local_old):
                         raise OSError('a file with the old name is back already')
-                    if not dry_run:
-                        os.rename(local_new, local_old)
-                        info['undone'] = True
-                        self._restore_title(media_type, folder, info)
-                    restored.append(info.get('previous_name'))
+                    else:
+                        if not dry_run:
+                            os.rename(local_new, local_old)
+                            info['undone'] = True
+                            self._restore_title(media_type, folder, info)
+                        restored.append(info.get('previous_name'))
                 if dry_run:
                     continue
                 stuck = self._restore_sidecars(os.path.dirname(local_old), info)
@@ -928,12 +999,17 @@ class RenamesService:
                                    'error': f"{', '.join(stuck)} could not be put back"})
             except (OSError, PathTraversalError) as error:
                 failed.append({'name': info.get('new_name'), 'error': str(error)})
+            # Saved file by file: a failure or a restart part way through
+            # leaves the history true to the disk.
+            if not dry_run and json.dumps(info, sort_keys=True) != before:
+                if not self.rename_model.update(notification_id, {'renamed_files': stored}):
+                    raise unsaved()
 
         if not dry_run:
-            changes: Dict[str, Any] = {'renamed_files': stored}
             if all(_undo_finished(f) for f in files):
-                changes['undone_at'] = datetime.now().isoformat()
-            self.rename_model.update(notification_id, changes)
+                if not self.rename_model.update(notification_id,
+                                                {'undone_at': datetime.now().isoformat()}):
+                    raise unsaved()
             if restored:
                 try:
                     if folder:
@@ -1423,8 +1499,13 @@ class RenamesService:
 
 
 def _changed_a_file(info: Dict[str, Any]) -> bool:
-    """A recorded file this run really renamed on this disk."""
-    if info.get('status') != 'success' or info.get('dry_run'):
+    """A recorded file this run really renamed on this disk.
+
+    `pending` counts too: the history is written before a file moves, so a
+    restart between the rename and its save leaves it pending. Undo looks at
+    the disk to tell.
+    """
+    if info.get('status') not in ('success', 'pending') or info.get('dry_run'):
         return False
     if info.get('changed') is False or \
             str(info.get('message') or '').startswith('File already renamed'):
