@@ -146,7 +146,18 @@ def api_webhook_movies_receiver():
                 "message": "TEST webhook received - webhook connectivity verified",
                 "is_test": True
             })
-        
+
+        # Radarr sends a Rename notification when it renames a film. There is
+        # no film rename replay (no film here has ever needed one), and read as
+        # a download it would have synced the film again.
+        if event_type == 'Rename':
+            print(f"📝 Movie RENAME notification for {title} — not replayed, nothing synced")
+            return jsonify({
+                "status": "success",
+                "event_type": "Rename",
+                "message": "Film renames are not replayed here; nothing was synced",
+            })
+
         # Parse webhook data according to specification
         parsed_data = transfer_coordinator.parse_webhook_data(webhook_data)
         

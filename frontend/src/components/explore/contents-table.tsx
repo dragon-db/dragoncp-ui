@@ -3,10 +3,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { EpisodeLabel, NestedTag, StatusBadge } from "./explore-bits";
+import { EpisodeLabel, NestedTag, StatusBadge, TitlesTag } from "./explore-bits";
 import { formatBytes } from "@/lib/explore-format";
 import { EPISODE_CODE, containerOf, parseFilename } from "@/lib/media-filename";
 import type { ExploreEpisode, ExploreSeason } from "@/lib/explore-types";
+import type { TitleProposal } from "@/lib/rename-types";
 
 /**
  * What is inside the selected node: seasons when a series is selected, episodes
@@ -513,6 +514,8 @@ interface SeasonRowsProps {
   onSync: (season: string) => void;
   onToggle: (season: string) => void;
   onToggleAll: () => void;
+  /** TBA files and ready titles per season folder, from the last title check. */
+  seasonTitles?: Record<string, { count: number; ready: number }>;
 }
 
 export function SeasonRows({
@@ -525,6 +528,7 @@ export function SeasonRows({
   onSync,
   onToggle,
   onToggleAll,
+  seasonTitles,
 }: SeasonRowsProps) {
   const allSelected = seasons.length > 0 && seasons.every((s) => selected.has(s.name));
   const someSelected = !allSelected && seasons.some((s) => selected.has(s.name));
@@ -577,6 +581,11 @@ export function SeasonRows({
                     {season.name}
                   </span>
                   <NestedTag count={season.misplaced.length} status={season.status} />
+                  <TitlesTag
+                    count={seasonTitles?.[season.name]?.count ?? season.placeholders ?? 0}
+                    ready={seasonTitles?.[season.name]?.ready ?? 0}
+                    className="hidden sm:inline-flex"
+                  />
                 </div>
                 {/* No Quality block here: a season is a folder, and quality is
                     read out of file names. The switch disables that option
@@ -622,6 +631,8 @@ interface EpisodeRowsProps {
   focused: boolean;
   onToggle: (code: string, index: number, shiftKey: boolean) => void;
   onToggleAll: () => void;
+  /** What the last title check proposed, by the file's name here. */
+  titles?: Record<string, TitleProposal>;
 }
 
 export function EpisodeRows({
@@ -632,6 +643,7 @@ export function EpisodeRows({
   focused,
   onToggle,
   onToggleAll,
+  titles,
 }: EpisodeRowsProps) {
   // Every file can be ticked, whether or not it is already in sync. A matching
   // file is still something you may want to rehearse, or fetch again because
@@ -707,6 +719,12 @@ export function EpisodeRows({
                     </span>
                   )}
                 </div>
+                {(episode.local_placeholder ||
+                  (episode.local_name && titles?.[episode.local_name])) && (
+                  <NewTitleLine
+                    proposal={episode.local_name ? titles?.[episode.local_name] : undefined}
+                  />
+                )}
                 {view === "compare" && <CompareBlock episode={episode} />}
                 {view === "quality" && <QualityBlock episode={episode} />}
               </Td>
@@ -727,6 +745,44 @@ export function EpisodeRows({
         })}
       </tbody>
     </table>
+  );
+}
+
+/**
+ * Under a file still named TBA: the name it would get, or why it has none yet.
+ * From the last title check, so showing it asks Sonarr nothing.
+ */
+function NewTitleLine({ proposal }: { proposal?: TitleProposal }) {
+  if (!proposal) {
+    return (
+      <p className="mt-1 pl-6 text-[11px] text-violet-300/80">
+        Still named TBA — not checked for a title yet
+      </p>
+    );
+  }
+  if (proposal.state === "ready" && proposal.new_name) {
+    return (
+      <p className="mt-1 flex min-w-0 items-start gap-1.5 pl-6 text-[11px]">
+        <span className="flex-none text-emerald-400">→</span>
+        <span className="min-w-0 break-words text-emerald-200" title={proposal.new_name}>
+          {proposal.new_name}
+        </span>
+        <span className="flex-none rounded border border-border/70 px-1 font-mono text-[9.5px] text-foreground-3 uppercase">
+          {proposal.source === "tmdb" ? "TMDB" : "Sonarr"}
+        </span>
+      </p>
+    );
+  }
+  return (
+    <p
+      className={cn(
+        "mt-1 pl-6 text-[11px]",
+        proposal.state === "skipped" ? "text-amber-300/90" : "text-violet-300/80"
+      )}
+    >
+      {proposal.state === "skipped" ? "Can’t rename: " : "Waiting for a title — "}
+      {proposal.reason}
+    </p>
   );
 }
 

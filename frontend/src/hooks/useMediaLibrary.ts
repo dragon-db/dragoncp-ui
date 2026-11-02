@@ -250,6 +250,8 @@ export interface TitleDetail {
   kept_here_count?: number;
   /** Media files here in a nested folder (counted seasons, or the film). */
   nested_files?: number;
+  /** Episode files here still named TBA, which Explore's Rename can give a title. */
+  placeholder_count?: number;
   last_synced_at?: string | null;
   actions?: {
     /** The title's Sync, offered only where a whole-folder sync removes nothing. */

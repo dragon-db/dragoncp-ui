@@ -9,6 +9,8 @@ import { ExplorePage } from "@/components/pages/explore";
 interface ExploreSearch {
   series?: string;
   season?: string;
+  /** `titles` opens on Needs titles: the titles-ready alert links here. */
+  filter?: string;
 }
 
 /**
@@ -26,13 +28,14 @@ export const Route = createFileRoute("/_authenticated/media/$type")({
   validateSearch: (search: Record<string, unknown>): ExploreSearch => ({
     series: text(search.series),
     season: text(search.season),
+    filter: text(search.filter),
   }),
   component: ExploreComponent,
 });
 
 function ExploreComponent() {
   const { type } = Route.useParams();
-  const { series, season } = Route.useSearch();
+  const { series, season, filter } = Route.useSearch();
   const initialSeason = season ?? (type === "movies" && series ? MOVIE_FILES : undefined);
   // Keying on the library throws away the open series, season, expanded rows
   // and ticked files when you switch. A TV series has no meaning inside Anime,
@@ -40,10 +43,11 @@ function ExploreComponent() {
   // another folder starts afresh the same way.
   return (
     <ExplorePage
-      key={`${type}|${series ?? ""}|${initialSeason ?? ""}`}
+      key={`${type}|${series ?? ""}|${initialSeason ?? ""}|${filter ?? ""}`}
       mediaType={type}
       initialSeries={series}
       initialSeason={series ? initialSeason : undefined}
+      initialFilter={filter}
     />
   );
 }

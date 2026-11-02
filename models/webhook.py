@@ -754,6 +754,10 @@ class RenameNotification:
     Handles rename events where Sonarr renames files on the server and we need
     to reflect those changes in local files.
     
+    Since TASK-028 a row is also written for a rename started in Explore
+    (`trigger_kind` 'manual' or 'scheduled'); `undone_at` is set once Undo has
+    put the names back.
+
     STATUS VALUES:
     - 'pending': Webhook received, not yet processed
     - 'completed': All files renamed successfully
@@ -774,8 +778,9 @@ class RenameNotification:
                     INSERT INTO rename_webhook (
                         notification_id, media_type, series_title, series_id, series_path,
                         renamed_files, total_files, success_count, failed_count,
-                        status, error_message, raw_webhook_data
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        status, error_message, raw_webhook_data,
+                        trigger_kind, triggered_by, sonarr_message
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     notification_data['notification_id'],
                     notification_data['media_type'],
@@ -788,7 +793,11 @@ class RenameNotification:
                     notification_data.get('failed_count', 0),
                     notification_data.get('status', 'pending'),
                     notification_data.get('error_message'),
-                    raw_webhook_data
+                    raw_webhook_data,
+                    # Sonarr's webhook is what a row without one has always meant.
+                    notification_data.get('trigger_kind') or 'webhook',
+                    notification_data.get('triggered_by'),
+                    notification_data.get('sonarr_message'),
                 ))
                 conn.commit()
                 print(f"✅ Rename notification created successfully for {notification_data.get('series_title', 'Unknown')}")

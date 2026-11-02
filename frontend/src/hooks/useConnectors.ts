@@ -25,6 +25,17 @@ export interface ConnectorField {
   choices?: { value: string; label: string }[];
   /** What an unset field means. A `choice` shows it selected. */
   default?: string;
+  /** Which of the connector's `config_groups` it sits in; empty is the first. */
+  group?: string;
+  /** A switch this only matters while on: shown dimmed while it is off. */
+  depends_on?: string;
+}
+
+/** A heading the settings form sets its fields under. */
+export interface ConnectorGroup {
+  id: string;
+  label: string;
+  description: string;
 }
 
 /** A place announcements can be sent — a named Discord webhook. */
@@ -63,6 +74,8 @@ export interface Connector {
   description: string;
   capabilities: string[];
   config_fields: ConnectorField[];
+  /** How the form groups its fields, in order. Empty: one block. */
+  config_groups?: ConnectorGroup[];
   /** What the settings form is called. "Connection" for most; Discord's holds
    *  only presentation, so it calls itself "Appearance". */
   settings_label: string;

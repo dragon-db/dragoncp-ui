@@ -39,6 +39,8 @@ export interface ExploreSeriesSummary {
   odd_folders: string[];
   /** Every season, sent with the tree so several series can stay expanded. */
   seasons?: ExploreSeason[];
+  /** Episodes here still named TBA. Absent from a result saved before renames. */
+  placeholders?: number;
 }
 
 export interface ExploreSeason {
@@ -59,6 +61,8 @@ export interface ExploreSeason {
   remote_bytes: number;
   local_bytes: number;
   remote_mtime: number;
+  /** Episodes here still named TBA. */
+  placeholders?: number;
   episodes?: ExploreEpisode[];
 }
 
@@ -78,6 +82,8 @@ export interface ExploreEpisode {
   local_path: string | null;
   /** The local copy sits in a nested folder, whatever the label says. */
   local_nested?: boolean;
+  /** The local copy is still named TBA: Rename can give it its real title. */
+  local_placeholder?: boolean;
   absolute_number: number | null;
 }
 

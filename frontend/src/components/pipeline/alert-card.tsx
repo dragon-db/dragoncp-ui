@@ -28,14 +28,15 @@ const DOING_ACTIONS = new Set(["sync_now", "retry", "sync_anyway", "run_now"]);
 /**
  * The folder an alert is about, as Explore opens it. A missed auto-sync names
  * `series`; the safety check's alert has named the same folder `folder` since
- * before this link existed.
+ * before this link existed. "Titles ready" covers several series, so it names
+ * Explore's Needs titles filter as well, and opens the library with it on.
  */
 function exploreTarget(
   data: Record<string, unknown>
-): { type: string; series: string; season?: string } | null {
+): { type: string; series: string; season?: string; filter?: string } | null {
   const explore = data.explore;
   if (!explore || typeof explore !== "object") return null;
-  const { media_type, series, folder, season } = explore as Record<string, unknown>;
+  const { media_type, series, folder, season, filter } = explore as Record<string, unknown>;
   const name = typeof series === "string" && series ? series : folder;
   if (typeof media_type !== "string" || !media_type || typeof name !== "string" || !name) {
     return null;
@@ -44,7 +45,14 @@ function exploreTarget(
     type: media_type,
     series: name,
     season: typeof season === "string" ? season : undefined,
+    filter: typeof filter === "string" && filter ? filter : undefined,
   };
+}
+
+/** Where the link goes: the whole library under a filter, or one folder. */
+function exploreSearch(target: NonNullable<ReturnType<typeof exploreTarget>>) {
+  if (target.filter) return { filter: target.filter };
+  return { series: target.series, season: target.season };
 }
 
 const CLOSED_AS: Record<string, string> = {
@@ -148,10 +156,10 @@ export function AlertCard({ alert, showRunLink = true }: { alert: Alert; showRun
             <Link
               to="/media/$type"
               params={{ type: explore.type }}
-              search={{ series: explore.series, season: explore.season }}
+              search={exploreSearch(explore)}
               className="inline-flex items-center gap-1 text-xs font-medium text-brand-hover hover:underline"
             >
-              Open in Explore
+              {explore.filter === "titles" ? "Rename in Explore" : "Open in Explore"}
               <IconArrowRight className="size-3.5" />
             </Link>
           )}

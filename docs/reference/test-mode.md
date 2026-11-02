@@ -54,7 +54,7 @@ the real coordinator with test mode on, starts each kind of sync through the
 engine, and fails if any rsync it launches lacks `--dry-run` or any destination
 folder appears — simulations excepted, below.
 
-Re-audited 2026-10-06; first audited 2026-07-31 by reading every `os.rename`, `os.remove`, `os.unlink`,
+Re-audited 2026-10-23 for renames from Explore, 2026-10-06 before that; first audited 2026-07-31 by reading every `os.rename`, `os.remove`, `os.unlink`,
 `shutil.rmtree`, `shutil.move`, `os.makedirs` and `subprocess` call under
 `services/`, `routes/` and `config.py`. Nothing outside this table touches
 media.
@@ -64,7 +64,10 @@ media.
 | Transfer rsync — copies from the remote, and `--delete` removes destination files absent from the source | `services/transfer_service.py:599` | `--dry-run` appended; no bytes move and nothing is deleted |
 | Destination directory creation | `services/transfer_service.py:497` | Printed, not created |
 | Backup staging directory and its `.rsync-partial` | `services/transfer_service.py:555` | Printed, not created |
-| Rename webhook — `os.rename` on a local media file | `services/rename_service.py:342` | Skipped; reported as `Renamed successfully (dry run)` |
+| Rename webhook — `os.rename` on a local media file, and on the subtitles and info files beside it | `services/rename_service.py` (`_execute_renames`) | Skipped; reported as `Renamed successfully (dry run)` with `dry_run` set |
+| Explore **Rename** — a TBA episode and its subtitles and info files renamed to the real title | `services/renames/service.py` (`_rename_one`) | Rehearsed (added 2026-10-23): the same plan and report, `dry_run: true`, nothing renamed, no title recorded, no Discord message |
+| Explore **Rename** — asking Sonarr to rename its copies (`RenameFiles`) or fetch fresh titles (`RefreshSeries`) | `services/connectors/adapters/_arr.py` (`command`) | Not sent; answered `Test mode: Sonarr was not asked`. Sonarr's library is a real one even on a test instance |
+| Rename **Undo** — putting the old names back | `services/renames/service.py` (`undo`) | Rehearsed: the same checks, the message says what would have been put back, nothing renamed |
 | Restore — keeping the file it is about to replace | `services/backups/restore.py` (`_capture_current`) | Skipped; logged as `would store N replaced file(s)` |
 | Restore — writing the restored file | `services/backups/restore.py` (`_restore_one`) | Skipped; logged as `would write <path>` |
 | Restore — removing the file it replaced | `services/backups/restore.py` (`_restore_one`) | Skipped; logged as `would remove <path>` |

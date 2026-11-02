@@ -72,6 +72,13 @@ ACTIONS = {
     # explore
     'explore.transfer': 'Ran an approved Explore plan',
     'explore.repair': 'Moved misplaced files back into place',
+    'explore.rename': 'Renamed episodes to their real titles',
+    'explore.rename_all': 'Renamed every ready episode in a library',
+    'explore.refresh_titles': 'Asked Sonarr to refresh episode titles',
+    'explore.check_titles': 'Checked for episode titles',
+    'explore.tmdb_link': 'Linked a series to TMDB',
+    'explore.tmdb_unlink': 'Removed a series’ TMDB link',
+    'rename.undo': 'Undid a rename',
     # settings and connection
     'settings.update': 'Changed settings',
     'settings.webhook_update': 'Changed webhook settings',

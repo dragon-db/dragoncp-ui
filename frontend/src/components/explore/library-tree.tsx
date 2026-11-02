@@ -2,9 +2,10 @@ import { IconChevronRight, IconFolder, IconMovie, IconStack2 } from "@tabler/ico
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { NestedTag, StatusBadge, UpgradeTag } from "./explore-bits";
+import { NestedTag, StatusBadge, TitlesTag, UpgradeTag } from "./explore-bits";
 import { formatAge, formatBytes } from "@/lib/explore-format";
 import type { ExploreSeriesSummary } from "@/lib/explore-types";
+import { titleCounts, type TitleStatus } from "@/lib/rename-types";
 
 /**
  * The library tree.
@@ -36,6 +37,10 @@ interface LibraryTreeProps {
   onSelectSeason: (series: string, season: string) => void;
   onCollapseAll: () => void;
   emptyMessage: string;
+  /** The last title check per series, for the TBA tags. */
+  titles?: Record<string, TitleStatus>;
+  /** When the library was last walked, to tell which count is newer. */
+  walkedAt?: string | null;
 }
 
 /**
@@ -78,6 +83,8 @@ export function LibraryTree({
   onSelectSeason,
   onCollapseAll,
   emptyMessage,
+  titles,
+  walkedAt,
 }: LibraryTreeProps) {
   return (
     <aside
@@ -127,6 +134,7 @@ export function LibraryTree({
               const inBranch = selectedSeries === entry.name;
               const seriesSelected = inBranch && !selectedSeason;
               const seasons = entry.seasons ?? [];
+              const tba = titleCounts(entry.placeholders, titles?.[entry.name], walkedAt);
 
               return (
                 <div
@@ -195,6 +203,7 @@ export function LibraryTree({
                           {entry.name}
                         </span>
                         <NestedTag count={entry.misplaced_count} status={entry.status} />
+                        <TitlesTag count={tba.count} ready={tba.ready} />
                         <UpgradeTag count={entry.counts.upgraded} />
                         <StatusBadge status={entry.status} />
                       </div>
@@ -232,6 +241,14 @@ export function LibraryTree({
                       ) : (
                         seasons.map((season) => {
                           const selected = inBranch && selectedSeason === season.name;
+                          const seasonTba = titleCounts(
+                            season.placeholders,
+                            titles?.[entry.name],
+                            walkedAt,
+                            // The check knows the folder here, which can be
+                            // spelled differently from the remote one.
+                            season.local_folder ?? season.name
+                          );
                           return (
                             <div key={season.name} className="explore-kid">
                               <div
@@ -272,6 +289,7 @@ export function LibraryTree({
                                       count={season.misplaced.length}
                                       status={season.status}
                                     />
+                                    <TitlesTag count={seasonTba.count} ready={seasonTba.ready} />
                                     <UpgradeTag count={season.counts.upgraded} />
                                     <StatusBadge status={season.status} />
                                   </div>

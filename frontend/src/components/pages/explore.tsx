@@ -25,6 +25,7 @@ import {
   IconRefresh,
   IconRestore,
   IconSearch,
+  IconTag,
   IconTestPipe,
   IconTool,
   IconX,
@@ -60,6 +61,23 @@ import {
 } from "@/components/explore/contents-table";
 import { PlanDialog } from "@/components/explore/plan-dialog";
 import { RepairDialog } from "@/components/explore/repair-dialog";
+import { RenameDialog } from "@/components/explore/rename-dialog";
+import { RenameAllDialog } from "@/components/explore/rename-all-dialog";
+import { TmdbLinkDialog } from "@/components/explore/tmdb-link-dialog";
+import {
+  hasTitles,
+  useCheckTitles,
+  useRefreshTitles,
+  useRename,
+  useRenameAll,
+  useRenameAllPlan,
+  useRenamePlan,
+  useSeasonTitles,
+  useTitleEvents,
+  useTitleStatus,
+  useTmdbLink,
+} from "@/hooks/useRenames";
+import { titleCounts, type TitleStatus } from "@/lib/rename-types";
 import { RestoreDialog } from "@/components/backups/restore-dialog";
 import { usePlanRestore, useRestoreCapture } from "@/hooks/useBackups";
 import type { RestorePlan } from "@/lib/backup-types";
@@ -88,7 +106,8 @@ const LIBRARIES = [
 // "Upgrade" and "Nested" are not statuses: each picks every title with at
 // least one such file, whatever else is going on with it. "Nested" covers
 // "Needs repair" too — that status only means a nested file and nothing else.
-type StatusFilter = "all" | "UPGRADE" | "NESTED" | ExploreStatus;
+// "Needs titles" is the same kind: every series with an episode still named TBA.
+type StatusFilter = "all" | "UPGRADE" | "NESTED" | "TITLES" | ExploreStatus;
 
 const STATUS_FILTERS: Array<{ id: StatusFilter; label: string }> = [
   { id: "all", label: "All" },
@@ -96,17 +115,29 @@ const STATUS_FILTERS: Array<{ id: StatusFilter; label: string }> = [
   { id: "PARTIAL_SYNC", label: "Partial" },
   { id: "UPGRADE", label: "Upgrade" },
   { id: "NESTED", label: "Nested" },
+  { id: "TITLES", label: "Needs titles" },
   { id: "SYNCED", label: "Synced" },
   { id: "NO_INFO", label: "Not on remote" },
 ];
 
 function matchesFilter(
-  entry: { status: ExploreStatus; counts: { upgraded: number }; misplaced_count: number },
-  filter: StatusFilter
+  entry: {
+    name: string;
+    status: ExploreStatus;
+    counts: { upgraded: number };
+    misplaced_count: number;
+    placeholders?: number;
+  },
+  filter: StatusFilter,
+  titles?: { status?: Record<string, TitleStatus>; walkedAt?: string | null }
 ) {
   if (filter === "all") return true;
   if (filter === "UPGRADE") return entry.counts.upgraded > 0;
   if (filter === "NESTED") return entry.misplaced_count > 0;
+  if (filter === "TITLES") {
+    const tba = titleCounts(entry.placeholders, titles?.status?.[entry.name], titles?.walkedAt);
+    return tba.count > 0 || tba.ready > 0;
+  }
   return entry.status === filter;
 }
 
@@ -142,11 +173,14 @@ export function ExplorePage({
   mediaType,
   initialSeries,
   initialSeason,
+  initialFilter,
 }: {
   mediaType: string;
   /** Open on this series (and season) — a link from a Sonarr or Radarr title. */
   initialSeries?: string;
   initialSeason?: string;
+  /** `titles`: open on Needs titles — a link from the titles-ready alert. */
+  initialFilter?: string;
 }) {
   const navigate = useNavigate();
   // A movie folder holds files, not seasons — the season layer is skipped
@@ -154,7 +188,9 @@ export function ExplorePage({
   const isMovies = mediaType === "movies";
 
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(
+    initialFilter === "titles" && hasTitles(mediaType) ? "TITLES" : "all"
+  );
   const [sort, setSort] = useState<"recent" | "name">("recent");
   const [view, setView] = useState<ViewMode>("list");
   const [expanded, setExpanded] = useState<Set<string>>(
@@ -200,6 +236,14 @@ export function ExplorePage({
   // the stranded file's path and cleared with the dialog, so a choice made in
   // one scope cannot leak into the next one.
   const [repairChoices, setRepairChoices] = useState<Record<string, RepairDecision>>({});
+
+  // Renames work the way Repair does: a scope held while its review is open,
+  // a TMDB search for a series Sonarr does not have, and the library-wide run.
+  const [renameScope, setRenameScope] = useState<{ folder: string; season: string | null } | null>(
+    null
+  );
+  const [tmdbFolder, setTmdbFolder] = useState<string | null>(null);
+  const [renameAllOpen, setRenameAllOpen] = useState(false);
 
   const isMobile = useIsMobile();
   // The actions panel is pinned open on a wide screen; below that it is a
@@ -293,6 +337,22 @@ export function ExplorePage({
     repairScope?.season
   );
   const repair = useExploreRepair(mediaType);
+  const titleStatus = useTitleStatus(mediaType);
+  const titles = titleStatus.data;
+  const walkedAt = tree.data?.checked_at ?? null;
+  const renamePlan = useRenamePlan(
+    mediaType,
+    renameScope?.folder ?? null,
+    renameScope?.season ?? null,
+    Boolean(renameScope)
+  );
+  const rename = useRename(mediaType);
+  const refreshTitles = useRefreshTitles(mediaType);
+  const checkTitles = useCheckTitles(mediaType);
+  const renameAllPlan = useRenameAllPlan(mediaType, renameAllOpen);
+  const renameAll = useRenameAll(mediaType);
+  const tmdbLink = useTmdbLink(mediaType);
+  const titleEvents = useTitleEvents(mediaType);
 
   const series = useMemo(() => tree.data?.series ?? [], [tree.data]);
   const library = libraries.data?.find((entry) => entry.id === mediaType);
@@ -301,19 +361,35 @@ export function ExplorePage({
     const needle = query.trim().toLowerCase();
     let list = series;
     if (needle) list = list.filter((s) => s.name.toLowerCase().includes(needle));
-    if (statusFilter !== "all") list = list.filter((s) => matchesFilter(s, statusFilter));
+    if (statusFilter !== "all")
+      list = list.filter((s) => matchesFilter(s, statusFilter, { status: titles, walkedAt }));
     return [...list].sort((a, b) =>
       sort === "name" ? a.name.localeCompare(b.name) : b.remote_mtime - a.remote_mtime
     );
-  }, [series, query, statusFilter, sort]);
+  }, [series, query, statusFilter, sort, titles, walkedAt]);
 
   const counts = useMemo(() => {
     const base: Record<string, number> = { all: series.length };
     for (const filter of STATUS_FILTERS.slice(1)) {
-      base[filter.id] = series.filter((s) => matchesFilter(s, filter.id)).length;
+      base[filter.id] = series.filter((s) =>
+        matchesFilter(s, filter.id, { status: titles, walkedAt })
+      ).length;
     }
     return base;
-  }, [series]);
+  }, [series, titles, walkedAt]);
+
+  /** Every ready episode in the library, for Rename all ready. */
+  const readyTotals = useMemo(() => {
+    let files = 0;
+    let seriesCount = 0;
+    for (const status of Object.values(titles ?? {})) {
+      if (status.ready > 0) {
+        files += status.ready;
+        seriesCount += 1;
+      }
+    }
+    return { files, series: seriesCount };
+  }, [titles]);
 
   const activeSeries = useMemo(
     () => series.find((entry) => entry.name === selectedSeries),
@@ -322,6 +398,38 @@ export function ExplorePage({
   const activeSeason = seasonQuery.data;
   const episodes = useMemo(() => activeSeason?.episodes ?? [], [activeSeason]);
   const seasons = useMemo(() => activeSeries?.seasons ?? [], [activeSeries]);
+
+  // TBA episodes in what is open: counted from the last walk and the last
+  // title check, whichever is newer (see `titleCounts`).
+  const activeTitles = activeSeries ? titles?.[activeSeries.name] : undefined;
+  const activeSeasonRow = seasons.find((s) => s.name === selectedSeason);
+  const activeSeasonKey = activeSeasonRow?.local_folder ?? selectedSeason ?? undefined;
+  const activeTba = activeSeries
+    ? titleCounts(
+        selectedSeason ? activeSeasonRow?.placeholders : activeSeries.placeholders,
+        activeTitles,
+        walkedAt,
+        selectedSeason ? activeSeasonKey : undefined
+      )
+    : { count: 0, ready: 0 };
+  const seasonTitles = useSeasonTitles(
+    mediaType,
+    selectedSeries,
+    activeSeasonKey ?? null,
+    Boolean(selectedSeason) && activeTba.count + activeTba.ready > 0
+  );
+  const seasonTitleCounts = useMemo(() => {
+    const out: Record<string, { count: number; ready: number }> = {};
+    for (const season of seasons) {
+      out[season.name] = titleCounts(
+        season.placeholders,
+        activeTitles,
+        walkedAt,
+        season.local_folder ?? season.name
+      );
+    }
+    return out;
+  }, [seasons, activeTitles, walkedAt]);
   const rowCount = selectedSeason ? episodes.length : seasons.length;
   const nodeKey = `${selectedSeries ?? ""}|${selectedSeason ?? ""}`;
   const cursor = cursorAt.node === nodeKey ? cursorAt.index : 0;
@@ -591,6 +699,90 @@ export function ExplorePage({
     );
   }, [repair, repairScope, repairChoices]);
 
+  const confirmRename = useCallback(
+    (picks: Array<{ path: string; new_name: string }>) => {
+      if (!renameScope) return;
+      rename.mutate(
+        { folder: renameScope.folder, season: renameScope.season, picks },
+        {
+          onSuccess: (result) => {
+            const text = [result.message, result.sonarr.message].filter(Boolean).join(". ");
+            if (result.dry_run || result.failed_count) toast.warning(text);
+            else toast.success(text);
+            for (const file of result.renamed_files.filter((f) => f.status === "failed")) {
+              toast.error(`${file.previous_name} — ${file.message}`);
+            }
+            setRenameScope(null);
+          },
+          onError: (error: unknown) => {
+            toast.error(messageFrom(error, "The rename could not be run."));
+          },
+        }
+      );
+    },
+    [rename, renameScope]
+  );
+
+  const refreshTitlesOf = useCallback(
+    (folder: string) =>
+      refreshTitles.mutate(folder, {
+        onSuccess: (result) => toast.success(result.message),
+        onError: (error: unknown) =>
+          toast.error(messageFrom(error, "Could not refresh the titles.")),
+      }),
+    [refreshTitles]
+  );
+
+  const checkTitlesOf = useCallback(
+    (folder?: string) =>
+      checkTitles.mutate(folder, {
+        onSuccess: () =>
+          toast.success(
+            folder
+              ? "Titles checked"
+              : "Checking titles for TV shows and anime. The tags update when it is done."
+          ),
+        onError: (error: unknown) => toast.error(messageFrom(error, "Could not check titles.")),
+      }),
+    [checkTitles]
+  );
+
+  const linkTmdb = useCallback(
+    (tmdbId: number | null) => {
+      if (!tmdbFolder) return;
+      tmdbLink.mutate(
+        { folder: tmdbFolder, tmdbId },
+        {
+          onSuccess: () => {
+            toast.success(
+              tmdbId === null
+                ? "TMDB link removed"
+                : "Linked. Its episodes now get titles from TMDB."
+            );
+            setTmdbFolder(null);
+            // Linked from inside the review: show it again with TMDB's titles.
+            if (renameScope) renamePlan.refetch();
+          },
+          onError: (error: unknown) => toast.error(messageFrom(error, "Could not link it.")),
+        }
+      );
+    },
+    [tmdbFolder, tmdbLink, renamePlan, renameScope]
+  );
+
+  const startRenameAll = useCallback(
+    (folders: string[]) =>
+      renameAll.mutate(folders, {
+        onSuccess: (result) => {
+          toast.success(`Renaming ${result.total} series in the background`);
+          setRenameAllOpen(false);
+        },
+        onError: (error: unknown) =>
+          toast.error(messageFrom(error, "Rename all could not be started.")),
+      }),
+    [renameAll]
+  );
+
   const primaryAction = useCallback(() => {
     if (!selectedSeries) return;
     if (pickedEpisodes.length && selectedSeason) {
@@ -761,7 +953,7 @@ export function ExplorePage({
           />
         </div>
 
-        {STATUS_FILTERS.map((filter) => (
+        {STATUS_FILTERS.filter((f) => f.id !== "TITLES" || hasTitles(mediaType)).map((filter) => (
           <button
             key={filter.id}
             type="button"
@@ -819,6 +1011,17 @@ export function ExplorePage({
         />
       )}
 
+      {statusFilter === "TITLES" && hasTitles(mediaType) && (
+        <TitlesLibraryStrip
+          files={readyTotals.files}
+          series={readyTotals.series}
+          progress={titleEvents.progress}
+          checking={checkTitles.isPending}
+          onRenameAll={() => setRenameAllOpen(true)}
+          onCheck={() => checkTitlesOf()}
+        />
+      )}
+
       {/* ---- panes: three side by side, one at a time on a narrow screen ---- */}
       <div className="flex min-h-0 flex-1">
         <LibraryTree
@@ -842,6 +1045,8 @@ export function ExplorePage({
           emptyMessage={
             treeError ?? (query ? `No series match “${query}”.` : "This library is empty.")
           }
+          titles={titles}
+          walkedAt={walkedAt}
         />
 
         <div
@@ -989,6 +1194,23 @@ export function ExplorePage({
             />
           )}
 
+          {activeSeries && hasTitles(mediaType) && (
+            <TitlesBanner
+              tba={activeTba}
+              status={activeTitles}
+              season={selectedSeason ? activeSeasonKey : undefined}
+              scope={selectedSeason ? "season" : "series"}
+              refreshing={refreshTitles.isPending}
+              checking={checkTitles.isPending}
+              onRename={() =>
+                setRenameScope({ folder: activeSeries.name, season: activeSeasonKey ?? null })
+              }
+              onRefresh={() => refreshTitlesOf(activeSeries.name)}
+              onCheck={() => checkTitlesOf(activeSeries.name)}
+              onFindOnTmdb={() => setTmdbFolder(activeSeries.name)}
+            />
+          )}
+
           <TableShell
             loading={seasonQuery.isLoading}
             empty={
@@ -1012,6 +1234,7 @@ export function ExplorePage({
                 focused={pane === "table"}
                 onToggle={togglePick}
                 onToggleAll={toggleAll}
+                titles={seasonTitles.data}
               />
             ) : activeSeries && !isMovies ? (
               <SeasonRows
@@ -1023,6 +1246,7 @@ export function ExplorePage({
                 onOpen={(season) => selectSeason(activeSeries.name, season)}
                 onToggle={toggleSeasonPick}
                 onToggleAll={toggleAllSeasons}
+                seasonTitles={seasonTitleCounts}
                 onSync={(season) =>
                   openPlan({
                     media_type: mediaType,
@@ -1228,6 +1452,48 @@ export function ExplorePage({
           setRepairChoices({});
         }}
         onConfirm={confirmRepair}
+      />
+
+      <RenameDialog
+        open={Boolean(renameScope)}
+        plan={renamePlan.data ?? null}
+        loading={renamePlan.isPending}
+        error={
+          renamePlan.isError
+            ? messageFrom(renamePlan.error, "Could not work out the new names.")
+            : null
+        }
+        submitting={rename.isPending}
+        onOpenChange={(open) => {
+          if (!open) setRenameScope(null);
+        }}
+        onConfirm={confirmRename}
+        onFindOnTmdb={() => renameScope && setTmdbFolder(renameScope.folder)}
+      />
+
+      <TmdbLinkDialog
+        open={Boolean(tmdbFolder)}
+        mediaType={mediaType}
+        folder={tmdbFolder}
+        linking={tmdbLink.isPending}
+        onOpenChange={(open) => {
+          if (!open) setTmdbFolder(null);
+        }}
+        onLink={linkTmdb}
+      />
+
+      <RenameAllDialog
+        open={renameAllOpen}
+        plan={renameAllPlan.data ?? null}
+        loading={renameAllPlan.isPending}
+        error={
+          renameAllPlan.isError
+            ? messageFrom(renameAllPlan.error, "Could not read the last title check.")
+            : null
+        }
+        submitting={renameAll.isPending}
+        onOpenChange={setRenameAllOpen}
+        onConfirm={startRenameAll}
       />
     </div>
   );
@@ -1840,6 +2106,179 @@ function NestedBanner({
       >
         <IconTool className="mr-1.5 size-3.5" />
         Repair
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * Above the file list when episodes here are still named TBA: how many can get
+ * their real titles now, how many are still waiting, and the button for each.
+ * Built from the last title check, so it asks Sonarr nothing to appear.
+ */
+function TitlesBanner({
+  tba,
+  status,
+  season,
+  scope,
+  refreshing,
+  checking,
+  onRename,
+  onRefresh,
+  onCheck,
+  onFindOnTmdb,
+}: {
+  tba: { count: number; ready: number };
+  status?: TitleStatus;
+  /** The season folder here, when one season is open. */
+  season?: string;
+  scope: string;
+  refreshing: boolean;
+  checking: boolean;
+  onRename: () => void;
+  onRefresh: () => void;
+  onCheck: () => void;
+  onFindOnTmdb: () => void;
+}) {
+  if (tba.count <= 0 && tba.ready <= 0) return null;
+  const part = season ? status?.seasons[season] : undefined;
+  const waiting = season
+    ? (part?.waiting ?? 0) + (part?.skipped ?? 0)
+    : status
+      ? status.waiting + status.skipped
+      : 0;
+  const checked = Boolean(status && status.state !== "clear");
+  const notInSonarr = status?.state === "not_in_sonarr";
+  const plural = (n: number) => (n === 1 ? "episode" : "episodes");
+
+  let text: string;
+  if (!checked) {
+    text = `${tba.count} ${plural(tba.count)} in this ${scope} ${tba.count === 1 ? "is" : "are"} still named TBA. Check whether ${tba.count === 1 ? "its title exists" : "their titles exist"} yet.`;
+  } else if (tba.ready > 0) {
+    text = `${tba.ready} ${plural(tba.ready)} can get ${tba.ready === 1 ? "its" : "their"} real title${tba.ready === 1 ? "" : "s"}`;
+    if (waiting > 0) text += ` · ${waiting} still waiting`;
+  } else if (notInSonarr) {
+    text = `${tba.count} ${plural(tba.count)} still named TBA. This series is not in Sonarr.`;
+  } else {
+    text = `${waiting || tba.count} ${plural(waiting || tba.count)} still waiting for a title`;
+  }
+
+  return (
+    <div
+      role="status"
+      aria-label="Episodes still named TBA"
+      className="flex flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-violet-500/30 bg-violet-500/8 px-4 py-2 text-[12.5px] text-violet-50/90"
+    >
+      <IconTag className="size-4 flex-none text-violet-300" />
+      <span className="min-w-0 flex-1">
+        {text}
+        {checked && status?.checked_at && (
+          <span className="ml-2 font-mono text-[10.5px] text-violet-200/60">
+            checked {formatWhen(status.checked_at)}
+          </span>
+        )}
+      </span>
+      {!checked ? (
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={checking}
+          className="flex-none border-violet-500/40 text-violet-100 hover:bg-violet-500/12"
+          onClick={onCheck}
+        >
+          <IconSearch className="mr-1.5 size-3.5" />
+          {checking ? "Checking…" : "Check titles"}
+        </Button>
+      ) : (
+        <>
+          {notInSonarr && tba.ready === 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-none border-violet-500/40 text-violet-100 hover:bg-violet-500/12"
+              onClick={onFindOnTmdb}
+            >
+              <IconSearch className="mr-1.5 size-3.5" />
+              Find titles on TMDB
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={refreshing}
+            className="flex-none text-violet-100 hover:bg-violet-500/12"
+            title={
+              notInSonarr
+                ? "Ask TMDB again"
+                : "Ask Sonarr to fetch fresh titles for this series, then check again"
+            }
+            onClick={onRefresh}
+          >
+            <IconRefresh className={cn("mr-1.5 size-3.5", refreshing && "animate-spin")} />
+            Refresh titles
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-none border-violet-500/40 text-violet-100 hover:bg-violet-500/12"
+            onClick={onRename}
+          >
+            {tba.ready > 0 ? `Rename ${tba.ready}` : "Review"}
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** With Needs titles on: everything ready in the library, and Rename all ready. */
+function TitlesLibraryStrip({
+  files,
+  series,
+  progress,
+  checking,
+  onRenameAll,
+  onCheck,
+}: {
+  files: number;
+  series: number;
+  progress: { done: number; total: number } | null;
+  checking: boolean;
+  onRenameAll: () => void;
+  onCheck: () => void;
+}) {
+  return (
+    <div
+      role="status"
+      aria-label="Titles ready to rename"
+      className="flex flex-none flex-wrap items-center gap-x-3 gap-y-2 border-b border-violet-500/30 bg-violet-500/8 px-4 py-2 text-[12.5px] text-violet-50/90"
+    >
+      <IconTag className="size-4 flex-none text-violet-300" />
+      <span className="min-w-0 flex-1">
+        {progress
+          ? `Renaming… ${progress.done} of ${progress.total} series done`
+          : files > 0
+            ? `${files} ${files === 1 ? "file" : "files"} in ${series} series can get ${files === 1 ? "its" : "their"} real title${files === 1 ? "" : "s"}`
+            : "Nothing is ready to rename yet. Check titles asks Sonarr and TMDB again."}
+      </span>
+      <Button
+        variant="ghost"
+        size="sm"
+        disabled={checking}
+        className="flex-none text-violet-100 hover:bg-violet-500/12"
+        onClick={onCheck}
+      >
+        <IconSearch className="mr-1.5 size-3.5" />
+        {checking ? "Checking…" : "Check titles"}
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={files === 0 || Boolean(progress)}
+        className="flex-none border-violet-500/40 text-violet-100 hover:bg-violet-500/12"
+        onClick={onRenameAll}
+      >
+        Rename all ready
       </Button>
     </div>
   );

@@ -20,7 +20,7 @@ info:
     (`routes/remote_daemon.py`) are not listed yet either; see
     `../features/fast-transfers/README.md`.
 
-    Endpoint count: 143 method+path operations.
+    Endpoint count: 157 method+path operations.
 
     ## Sync runs
 
@@ -2285,6 +2285,28 @@ paths:
         '500':
           $ref: '#/components/responses/ServerError'
 
+  /webhook/rename/notifications/{notification_id}/undo:
+    post:
+      tags: [Webhooks - Renames]
+      summary: Put back the old names of the files one rename run renamed here
+      description: |
+        Subtitles, `.nfo` and artwork that moved with a file move back too.
+        Sonarr's own copies keep their new names. TEST_MODE rehearses. Sets
+        the run's `undone_at`. Served by `routes/renames.py`.
+      parameters:
+        - $ref: '#/components/parameters/NotificationId'
+      responses:
+        '200':
+          description: "restored_count, failed, dry_run, message"
+        '400':
+          description: Nothing in that run changed a file
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Already undone, or a transfer is writing into the series
+
   # ==================== WEBHOOK SETTINGS ====================
 
   /webhook/settings:
@@ -3985,6 +4007,291 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '409':
           description: A transfer is active against this title, or that could not be checked
+
+  /explore/rename/{media_type}/{folder}:
+    get:
+      tags: [Explore]
+      summary: What renaming the TBA episodes here would do; changes nothing
+      description: >-
+        Local only, like Repair. Reads one series from Sonarr (episodes, files,
+        rename preview) and, for titles Sonarr does not have, TMDB. Each item is
+        `ready`, `waiting` or `skipped`, with the reason in plain words.
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [tvshows, anime] }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+        - name: season
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: "Rename plan: items, counts, sonarr and tmdb summaries, blocker, test_mode"
+        '400':
+          description: Invalid folder or season name
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Not a TV or anime library, or the folder is not on this disk
+    post:
+      tags: [Explore]
+      summary: Rename what the preview showed, and ask Sonarr to rename its copies
+      description: >-
+        The plan is rebuilt from the disk and Sonarr here; a pick applies only
+        when the rebuilt plan proposes exactly that new name for that file.
+        Sonarr is sent `RenameFiles` for the files it holds. TEST_MODE
+        rehearses. The answer's `status` is the run's status (`completed`,
+        `partial`, `failed`).
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [tvshows, anime] }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                season: { type: string, nullable: true }
+                picks:
+                  type: array
+                  items:
+                    type: object
+                    required: [path, new_name]
+                    properties:
+                      path: { type: string }
+                      new_name: { type: string }
+      responses:
+        '200':
+          description: "The run: notification_id, counts, renamed_files, sonarr, dry_run, message"
+        '400':
+          description: Nothing here can be renamed right now
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A transfer is writing into the series, or the names changed since the preview
+
+  /explore/titles/refresh/{media_type}/{folder}:
+    post:
+      tags: [Explore]
+      summary: Ask Sonarr to fetch fresh titles for the series, then check again
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [tvshows, anime] }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: "asked_sonarr, message; summary when the check ran at once"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Not a TV or anime library, or the folder is not on this disk
+
+  /explore/titles/check:
+    post:
+      tags: [Explore]
+      summary: Check episode titles for one series now, or every library in the background
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                media_type: { type: string, enum: [tvshows, anime] }
+                folder: { type: string }
+      responses:
+        '200':
+          description: The folder's summary (with `folder`)
+        '202':
+          description: The check of every library started (without `folder`); `titles_checked` follows. `after` is `checks_finished` at the start
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /explore/title-jobs:
+    get:
+      tags: [Explore]
+      summary: The title check and Rename all, running or done; polled while one runs
+      responses:
+        '200':
+          description: '`checking`, `checks_finished`, and per library `rename_all` (`running`, `run_id`, `done`, `total`, `finished`)'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /explore/titles/{media_type}:
+    get:
+      tags: [Explore]
+      summary: The last title check of every series in one library; asks nothing
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [tvshows, anime] }
+      responses:
+        '200':
+          description: "titles keyed by series folder: state, ready, waiting, skipped, seasons, checked_at"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /explore/titles/{media_type}/{folder}:
+    get:
+      tags: [Explore]
+      summary: What the last check proposed for each file of one series or season; asks nothing
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [tvshows, anime] }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+        - name: season
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: "files keyed by current name: new_name, state, reason, source"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /explore/rename-all/{media_type}:
+    get:
+      tags: [Explore]
+      summary: What Rename all ready would rename across one library, from the last check
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [tvshows, anime] }
+      responses:
+        '200':
+          description: "series with their ready items, files, running, test_mode"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Explore]
+      summary: Rename every ready episode in the chosen series, one series at a time, in the background
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [tvshows, anime] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [folders]
+              properties:
+                folders:
+                  type: array
+                  items: { type: string }
+      responses:
+        '202':
+          description: Started; `rename_progress` and `rename_library_finished` follow
+        '400':
+          description: No folder picked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Already running for this library
+
+  /explore/tmdb/search/{media_type}/{folder}:
+    get:
+      tags: [Explore]
+      summary: TMDB shows matching the folder's name and year, for a series Sonarr does not have
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [tvshows, anime] }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: "query, results (tmdb_id, name, year, overview), linked"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: No TMDB key is set
+        '502':
+          description: TMDB did not answer
+
+  /explore/tmdb/link/{media_type}/{folder}:
+    post:
+      tags: [Explore]
+      summary: Link the series folder to a TMDB show, then check its titles again
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [tvshows, anime] }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tmdb_id]
+              properties:
+                tmdb_id: { type: integer }
+      responses:
+        '200':
+          description: "linked, summary"
+        '400':
+          description: No show picked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: TMDB has no such show
+        '409':
+          description: No TMDB key is set
+    delete:
+      tags: [Explore]
+      summary: Remove the series folder's TMDB link, then check again
+      parameters:
+        - name: media_type
+          in: path
+          required: true
+          schema: { type: string, enum: [tvshows, anime] }
+        - name: folder
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: "removed, summary"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /explore/plan:
     post:

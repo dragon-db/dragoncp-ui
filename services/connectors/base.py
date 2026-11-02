@@ -136,7 +136,8 @@ class ConfigField:
     def __init__(self, name: str, label: str, description: str = '',
                  kind: str = 'text', secret: bool = False,
                  required: bool = False, placeholder: str = '',
-                 choices: Sequence[Sequence[str]] = (), default: str = ''):
+                 choices: Sequence[Sequence[str]] = (), default: str = '',
+                 group: str = '', depends_on: str = ''):
         self.name = name
         self.label = label
         self.description = description
@@ -148,6 +149,12 @@ class ConfigField:
         self.choices = tuple((str(value), str(text)) for value, text in choices)
         #: What an unset field means, so the form can show it selected.
         self.default = default
+        #: Which of the connector's `config_groups` the field sits in. Empty
+        #: puts it in the first; a connector with no groups is one block.
+        self.group = group
+        #: A switch this field only matters while on. The form shows it dimmed
+        #: while that switch is off, still editable, so it can be set first.
+        self.depends_on = depends_on
 
     def accepts(self, value: str) -> bool:
         """Whether a submitted value fits. Only a `choice` is checked; unset is fine."""
@@ -166,6 +173,8 @@ class ConfigField:
             'placeholder': self.placeholder,
             'choices': [{'value': v, 'label': t} for v, t in self.choices],
             'default': self.default,
+            'group': self.group,
+            'depends_on': self.depends_on,
         }
 
 
@@ -181,6 +190,10 @@ class Connector:
     capabilities: FrozenSet[str] = frozenset()
     #: What the settings form shows.
     config_fields: tuple = ()
+    #: How the form groups its fields: (id, heading, one line), in order. A
+    #: wide screen sets the groups side by side rather than stacking a dozen
+    #: fields down a narrow column.
+    config_groups: tuple = ()
 
     #: What that form is *called*, and what it says it does. Most connectors
     #: are reached with an address and a key, so the default is right for them.
@@ -233,6 +246,8 @@ class Connector:
             'description': self.description,
             'capabilities': sorted(self.capabilities),
             'config_fields': [f.as_dict() for f in self.config_fields],
+            'config_groups': [{'id': g, 'label': label, 'description': text}
+                              for g, label, text in self.config_groups],
             'settings_label': self.settings_label,
             'settings_description': (
                 self.settings_description

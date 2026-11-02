@@ -49,19 +49,17 @@ const STATUS_META: Record<ExploreStatus, { label: string; tone: string; Icon: ty
     },
   };
 
+/** One shape for every tag on a row, so a status and the tags beside it line up. */
+const TAG_SHAPE = cn(
+  "inline-flex flex-none items-center gap-[5px] rounded-full border px-2 py-[2.5px]",
+  "text-[10px] font-bold tracking-[0.05em] whitespace-nowrap uppercase"
+);
+
 export function StatusBadge({ status, className }: { status: ExploreStatus; className?: string }) {
   const meta = STATUS_META[status] ?? STATUS_META.NO_INFO;
   const { Icon } = meta;
   return (
-    <span
-      className={cn(
-        "inline-flex flex-none items-center gap-[5px] rounded-full border px-2 py-[2.5px]",
-        "text-[10px] font-bold tracking-[0.05em] whitespace-nowrap uppercase",
-        meta.tone,
-        status === "NO_INFO" && "pl-0",
-        className
-      )}
-    >
+    <span className={cn(TAG_SHAPE, meta.tone, status === "NO_INFO" && "pl-0", className)}>
       <Icon className="size-2.5" />
       {meta.label}
     </span>
@@ -102,12 +100,7 @@ export function UpgradeTag({ count, className }: { count: number; className?: st
   return (
     <span
       title={`${count} file${count === 1 ? " has" : "s have"} a different, usually newer, version on the remote server`}
-      className={cn(
-        "inline-flex flex-none items-center gap-[5px] rounded-full border px-2 py-[2.5px]",
-        "text-[10px] font-bold tracking-[0.05em] whitespace-nowrap uppercase",
-        UPGRADE_TONE,
-        className
-      )}
+      className={cn(TAG_SHAPE, UPGRADE_TONE, className)}
     >
       <IconCircleArrowUp className="size-3" />
       Upgrade
@@ -133,15 +126,56 @@ export function NestedTag({
   return (
     <span
       title={`${count} file${count === 1 ? " is" : "s are"} inside a nested folder, where the media server cannot see ${count === 1 ? "it" : "them"}. Repair moves ${count === 1 ? "it" : "them"} into place.`}
-      className={cn(
-        "inline-flex flex-none items-center gap-[5px] rounded-full border px-2 py-[2.5px]",
-        "text-[10px] font-bold tracking-[0.05em] whitespace-nowrap uppercase",
-        NESTED_TONE,
-        className
-      )}
+      className={cn(TAG_SHAPE, NESTED_TONE, className)}
     >
       <IconFolderExclamation className="size-3" />
       Nested
+    </span>
+  );
+}
+
+/**
+ * Episodes still named TBA: Sonarr named them before their title was known.
+ *
+ * The same pill as the status beside it, with no icon and a three-letter
+ * label so it stays the shortest tag on the row: it is not a sync problem.
+ * Violet, a colour nothing else on the page uses. Outlined while every title
+ * is still unknown; filled, with the count of titles ready to rename, once
+ * some have arrived. The tooltip says what both numbers mean.
+ */
+export function TitlesTag({
+  count,
+  ready = 0,
+  className,
+}: {
+  count: number;
+  ready?: number;
+  className?: string;
+}) {
+  if (count <= 0 && ready <= 0) return null;
+  const files = Math.max(count, ready);
+  const still = `${files} episode${files === 1 ? " is" : "s are"} still named TBA`;
+  return (
+    <span
+      title={
+        ready > 0
+          ? `${still}. ${ready} can get ${ready === 1 ? "its" : "their"} real title now.`
+          : still
+      }
+      className={cn(
+        TAG_SHAPE,
+        ready > 0
+          ? "border-violet-500/40 bg-violet-500/14 pr-[3px] text-violet-200"
+          : "border-violet-500/30 text-violet-300/75",
+        className
+      )}
+    >
+      TBA
+      {ready > 0 && (
+        <span className="grid h-3.5 min-w-3.5 place-items-center rounded-full bg-violet-400 px-1 text-[9px] tracking-normal text-violet-950 tabular-nums">
+          {ready}
+        </span>
+      )}
     </span>
   );
 }

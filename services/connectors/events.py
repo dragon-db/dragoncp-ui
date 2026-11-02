@@ -176,6 +176,13 @@ CATALOGUE: Tuple[EventType, ...] = (
         default_ping=PING_NEVER,
     ),
     EventType(
+        'titles.ready', 'Titles ready to rename',
+        'The title check found real titles for episodes still named TBA. Nothing '
+        'is renamed until someone presses Rename in Explore.',
+        INFO,
+        default_ping=PING_NEVER,
+    ),
+    EventType(
         'backup.retention_deleted', 'Old backups deleted',
         'The retention rule deleted stored versions. This cannot be undone, '
         'which is why it comes and finds you.',

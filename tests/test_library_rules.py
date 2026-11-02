@@ -645,6 +645,15 @@ class DetailTests(LibraryTestCase):
         self.assertFalse(view['actions']['sync']['offered'])
         self.assertIn('kept only here', view['actions']['sync']['reason'])
 
+    def test_it_counts_the_episodes_here_still_named_tba(self):
+        """The pop-up's "Rename in Explore" line, read from names already listed."""
+        self.real_case()
+        self.keep(1, 9, name='Example Show (2021) - S01E09 - TBA [WEBDL-1080p][GRP].mkv')
+        self.keep(1, 9, name='Example Show (2021) - S01E09 - TBA [WEBDL-1080p][GRP].nfo')
+        self.rescan()
+        view = self.detail().get_json()
+        self.assertEqual(view['placeholder_count'], 1, 'the .nfo beside it is not an episode')
+
     def test_the_last_sync_of_each_season_is_shown(self):
         self.real_case()
         moment = ago(days=3)

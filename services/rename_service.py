@@ -23,6 +23,8 @@ from typing import Dict, List, Tuple, Optional
 from env_flags import test_mode_enabled
 from services.path_service import PathService
 from security import assert_path_within_bounds, validate_relative_path, PathTraversalError
+from services.explore.identity import is_media_file, parse_episode_keys
+from services.renames.naming import sidecars as sidecar_names
 
 
 class RenameService:
@@ -48,6 +50,9 @@ class RenameService:
         self.socketio = socketio
         self.notification_service = notification_service
         self.path_service = PathService(config)
+        # Renames from Explore (RenamesService), wired in app.py: told about
+        # what a webhook changed so the title check does not go stale.
+        self.renames = None
     
     def process_rename_webhook(self, webhook_data: Dict, media_type: str) -> Tuple[bool, Dict]:
         """
@@ -92,11 +97,25 @@ class RenameService:
             # Execute the rename operations
             renamed_files, operation_logs = self._execute_renames(rename_data)
             
+            # What Sonarr changed here retires any title taken from TMDB
+            # for those episodes; noted before the run is stored, so Undo
+            # can put it back.
+            folder = os.path.basename(str(rename_data.get('series_path') or '').rstrip('/'))
+            changed_titles = False
+            if self.renames is not None and folder:
+                try:
+                    changed_titles = self.renames.note_webhook_renames(
+                        media_type, folder, renamed_files)
+                except Exception as e:  # noqa: BLE001 - the rename itself is done
+                    print(f"⚠️  Could not update the title state after a rename: {e}")
+
             # Calculate results
             success_count = sum(1 for f in renamed_files if f['status'] == 'success')
             failed_count = sum(1 for f in renamed_files if f['status'] == 'failed')
+            not_here_count = sum(1 for f in renamed_files if f['status'] == 'not_here')
             
-            # Determine overall status
+            # Determine overall status. A file this disk never had is not a
+            # failure: Sonarr renames everything it holds, synced or not.
             if failed_count == 0:
                 status = 'completed'
             elif success_count == 0:
@@ -128,6 +147,7 @@ class RenameService:
                 'total_files': rename_data['total_files'],
                 'success_count': success_count,
                 'failed_count': failed_count,
+                'not_here_count': not_here_count,
                 'status': status,
                 'renamed_files': renamed_files,
                 'completed_at': completed_at,
@@ -145,6 +165,9 @@ class RenameService:
             # Emit completion WebSocket event
             if self.socketio:
                 self.socketio.emit('rename_completed', result)
+
+            if changed_titles:
+                self.renames.check_later(media_type, folder)
             
             # Log result
             status_icon = '✅' if status == 'completed' else ('⚠️' if status == 'partial' else '❌')
@@ -175,7 +198,9 @@ class RenameService:
                 'message': 'Rename notification not found'
             }
 
-        files_to_verify = self._extract_verification_files(notification)
+        # A file this disk never had has nothing to verify.
+        files_to_verify = [f for f in self._extract_verification_files(notification)
+                           if f.get('status') != 'not_here']
         if not files_to_verify:
             return False, {
                 'notification_id': notification_id,
@@ -313,33 +338,44 @@ class RenameService:
                 result['local_previous_path'] = local_previous_path
                 result['local_new_path'] = local_new_path
                 
-                # Check if source file exists
-                if not os.path.exists(local_previous_path):
-                    # Check if file is already renamed (idempotency)
+                source_path = local_previous_path
+                if not os.path.exists(source_path) and not os.path.exists(local_new_path):
+                    # Not under the name Sonarr remembers. Renamed here
+                    # already, or synced under another name: the episode is
+                    # what identifies it, never the old file name.
+                    source_path = self._find_by_episode(local_new_path)
+                    if source_path:
+                        result['local_previous_path'] = source_path
+                        result['matched_by_episode'] = True
+
+                if not source_path or not os.path.exists(source_path):
                     if os.path.exists(local_new_path):
+                        # Idempotency: already renamed, here or by Explore.
                         result['status'] = 'success'
                         result['message'] = 'File already renamed (exists at new path)'
                         result['error'] = None
+                        # Nothing changed on disk, so Undo must leave it alone.
+                        result['changed'] = False
                         log_msg = f"ℹ️  File already renamed: {result['new_name']}"
-                        print(f"   {log_msg}")
-                        operation_logs.append(log_msg)
                     else:
-                        result['status'] = 'failed'
-                        result['message'] = 'File not found locally'
-                        result['error'] = f"File not found locally: {local_previous_path}"
-                        log_msg = f"❌ File not found: {result['previous_name']}"
-                        print(f"   {log_msg}")
-                        operation_logs.append(log_msg)
+                        # Sonarr renamed a file this disk never received or no
+                        # longer keeps. Nothing went wrong here.
+                        result['status'] = 'not_here'
+                        result['message'] = 'Not on this disk'
+                        result['error'] = None
+                        log_msg = f"ℹ️  Not on this disk: {result['previous_name']}"
+                    print(f"   {log_msg}")
+                    operation_logs.append(log_msg)
+                elif os.path.exists(local_new_path):
+                    result['status'] = 'failed'
+                    result['message'] = 'Target file already exists'
+                    result['error'] = f"Target file already exists: {local_new_path}"
+                    log_msg = f"❌ Target exists: {result['new_name']}"
+                    print(f"   {log_msg}")
+                    operation_logs.append(log_msg)
                 else:
-                    # Check if target already exists with different file
-                    if os.path.exists(local_new_path):
-                        result['status'] = 'failed'
-                        result['message'] = 'Target file already exists'
-                        result['error'] = f"Target file already exists: {local_new_path}"
-                        log_msg = f"❌ Target exists: {result['new_name']}"
-                        print(f"   {log_msg}")
-                        operation_logs.append(log_msg)
-                    elif test_mode_enabled():
+                    sidecars = self._sidecars(source_path, local_new_path)
+                    if test_mode_enabled():
                         # Renaming is a real, irreversible change to someone's
                         # media library, so it is gated like every other write.
                         # Reported as a success, the way TEST_MODE reports a
@@ -348,24 +384,24 @@ class RenameService:
                         result['status'] = 'success'
                         result['message'] = 'Renamed successfully (dry run)'
                         result['error'] = None
-                        log_msg = (f"🧪 [DRY-RUN] Would rename: {result['previous_name']} "
+                        result['dry_run'] = True
+                        log_msg = (f"🧪 [DRY-RUN] Would rename: {os.path.basename(source_path)} "
                                    f"→ {result['new_name']}")
-                        print(f"   {log_msg}")
-                        operation_logs.append(log_msg)
                     else:
                         # Ensure target directory exists
                         target_dir = os.path.dirname(local_new_path)
                         if not os.path.exists(target_dir):
                             os.makedirs(target_dir, exist_ok=True)
-                        
+
                         # Perform the rename
-                        os.rename(local_previous_path, local_new_path)
+                        os.rename(source_path, local_new_path)
                         result['status'] = 'success'
                         result['message'] = 'Renamed successfully'
                         result['error'] = None
-                        log_msg = f"✅ Renamed: {result['previous_name']} → {result['new_name']}"
-                        print(f"   {log_msg}")
-                        operation_logs.append(log_msg)
+                        log_msg = f"✅ Renamed: {os.path.basename(source_path)} → {result['new_name']}"
+                        result['sidecars'] = self._move_sidecars(sidecars)
+                    print(f"   {log_msg}")
+                    operation_logs.append(log_msg)
                         
             except PathTraversalError as e:
                 # SECURITY: Path traversal attempt detected in webhook rename data
@@ -401,6 +437,55 @@ class RenameService:
         
         return results, operation_logs
     
+    def _find_by_episode(self, local_new_path: str) -> Optional[str]:
+        """The one media file in the target folder holding the same episode(s)."""
+        folder = os.path.dirname(local_new_path)
+        wanted = parse_episode_keys(os.path.basename(local_new_path))
+        if not wanted or not os.path.isdir(folder):
+            return None
+        found = []
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return None
+        for name in names:
+            if name == os.path.basename(local_new_path) or not is_media_file(name):
+                continue
+            if set(parse_episode_keys(name)) == set(wanted):
+                found.append(os.path.join(folder, name))
+        # Two copies of one episode is a choice for a person, not for this.
+        return found[0] if len(found) == 1 else None
+
+    @staticmethod
+    def _sidecars(source_path: str, new_path: str) -> List[Tuple[str, str]]:
+        """Subtitles, .nfo and artwork that share the video's name, and their new names."""
+        folder = os.path.dirname(source_path)
+        if os.path.dirname(new_path) != folder:
+            return []
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            return []
+        return [(os.path.join(folder, old), os.path.join(folder, new))
+                for old, new in sidecar_names(os.path.basename(source_path),
+                                              os.path.basename(new_path), names)]
+
+    @staticmethod
+    def _move_sidecars(pairs: List[Tuple[str, str]]) -> List[Dict]:
+        moved = []
+        for old, new in pairs:
+            entry = {'old': os.path.basename(old), 'new': os.path.basename(new)}
+            try:
+                if os.path.lexists(new):
+                    entry.update(status='failed', error='Its new name is taken')
+                else:
+                    os.rename(old, new)
+                    entry['status'] = 'success'
+            except OSError as error:
+                entry.update(status='failed', error=str(error))
+            moved.append(entry)
+        return moved
+
     def _map_to_local_path(self, relative_path: str, server_series_path: str, media_type: str) -> str:
         """
         Convert a server relative path to a local filesystem path.
@@ -551,6 +636,8 @@ class RenameService:
         """
         total = success_count + failed_count
         
+        if failed_count == 0 and success_count == 0:
+            return f"Nothing of {series_title} that Sonarr renamed is on this disk"
         if failed_count == 0:
             return f"Successfully renamed {success_count} file(s) for {series_title}"
         elif success_count == 0:

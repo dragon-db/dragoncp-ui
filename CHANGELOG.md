@@ -11,6 +11,76 @@ Newest first.
 
 ---
 
+## 2.3.3
+
+Renames, rebuilt: DragonCP now works out each file's real name itself and
+renames it here, instead of only repeating what Sonarr renamed.
+
+### Renames
+
+- **A TBA tag in Explore.** Every series and season with an episode Sonarr
+  named TBA gets a tag, and a **Needs titles** filter lists only those. It is
+  read from file names Explore already lists, so it costs nothing.
+- **Rename from Explore.** A strip above the episode list says how many
+  episodes can get their real titles now and how many still wait, with
+  **Rename** and **Refresh titles**. **Rename** opens a review of every file,
+  old name → new name, with the subtitles, `.nfo` and artwork that move along,
+  and what is left alone and why. Nothing changes until you confirm, and if
+  anything changed in between the rename is refused and you review again.
+- **Rename all ready** does the same for every ready episode in a library, one
+  series at a time, with progress and one Discord message at the end.
+- **Sonarr renames its own copy too** when it still holds the file, so both
+  ends carry the same name and Explore sees them in sync. This is the only
+  write DragonCP makes to Sonarr besides asking it to refresh a series;
+  nothing is sent in test mode.
+- **Real titles for what Sonarr lacks.** With a TMDB token on Sonarr's
+  **Connection** tab, TMDB fills the titles of episodes Sonarr still calls
+  TBA or TBD, only when the episode matches safely (same number, same air
+  day). A series Sonarr does not have can be linked to a TMDB show once, with
+  **Find titles on TMDB**. Titles taken from TMDB are marked, and Explore
+  offers Sonarr's title once it has one. Without a token everything Sonarr has
+  a title for still renames.
+- **Titles are written the way Sonarr writes them** (its cleaning rules and
+  colon and illegal-character settings). Files are never overwritten; a name
+  already taken is left alone with the reason.
+- **Undo** puts the old names back, for renames from Explore and from
+  Sonarr's webhook alike. Both stay in the **Renames** tab under Webhooks.
+  A file whose old name is taken keeps Undo available, so a second Undo
+  finishes the job; files the webhook found already renamed are left alone.
+- **Title check on demand.** **Check titles** and **Refresh titles** read
+  Sonarr (and TMDB where needed); page views ask nothing. The scheduled check
+  is off by default and, when on, only opens a **Titles ready** alert and one
+  Discord message — it never renames by itself.
+- **Check titles and Rename all ready finish on the page even with live
+  updates off** (they close after a while idle): the page asks every
+  3 seconds until the run is done.
+
+### Webhooks
+
+- **Sonarr's rename webhook finds the file by its episode.** A file already
+  renamed here under another title, or synced under a different name, is
+  still matched.
+- **"Not on this disk" is no longer a failure.** Sonarr renames everything it
+  holds, synced here or not; a run where nothing was here finishes as
+  completed and Sonarr gets HTTP 200 instead of 400.
+- **A Sonarr rename updates Explore's TBA tags and strip** by checking that
+  series again in the background.
+- **A Radarr Rename notification is ignored.** It used to be read as a new
+  download and synced the film again.
+
+### Settings
+
+- **Connector settings are grouped** into clearer sections, and Explore's row
+  tags share one pill shape.
+
+### Upgrading
+
+- The database migrates itself on start: new tables for title checks,
+  TMDB links and stored titles, and a Sonarr message on rename history.
+  Nothing to do by hand.
+- To get titles for TBA episodes, paste a TMDB API Read Access Token on
+  Sonarr's Connection tab. Optional.
+
 ## 2.3.2
 
 Quality of life, round two: connection tests that test what you typed,

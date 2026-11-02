@@ -61,6 +61,7 @@ KINDS = {
     'integration_down': 'Integration',
     'job_failing': 'Scheduler',
     'fast_route_failed': 'Fast transfers',
+    'titles_ready': 'Titles ready',
 }
 
 
@@ -81,6 +82,7 @@ HEADLINES = {
     'integration_down': ('Integration down', ''),
     'job_failing': ('Scheduler', 'job failing'),
     'fast_route_failed': ('Fast transfer failed', 'SSH fallback used'),
+    'titles_ready': ('Renames', 'titles ready'),
 }
 
 

@@ -36,6 +36,7 @@ Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors
 | The facade everything else uses | `services/connectors/service.py` |
 | Discord: embeds, colours, webhook validation | `services/connectors/adapters/discord.py` |
 | Sonarr and Radarr: the read-only client, the "still downloading?" answer, the auto-scanner's settings | `services/connectors/adapters/_arr.py`, `sonarr.py`, `radarr.py` |
+| Sonarr's two allowed commands (`RenameFiles`, `RefreshSeries`), the TMDB key and the title-check schedule | `services/connectors/adapters/sonarr.py`, `_arr.py` (`command`); behaviour in [renames](../renames/README.md) |
 | Jellyfin | `services/connectors/adapters/jellyfin.py` |
 | Asking Sonarr whether a season is ready — the pipeline's Ready check | `services/sync_engine/engine.py`, through `services/media_index.py` (`in_flight_for_season`) |
 | The scheduled auto-scanner | `services/auto_scanner.py` |
@@ -266,7 +267,8 @@ announcement that cannot be seen cannot be turned off.
 | --- | --- |
 | `transfer.completed` | A transfer finished successfully |
 | `transfer.failed` | A transfer stopped without finishing |
-| `rename.finished` | A rename run finished — whole, partial or failed |
+| `rename.finished` | A rename run finished — whole, partial or failed. Sonarr's webhook runs and renames started in Explore alike; *Rename all ready* sends one for the whole run |
+| `titles.ready` | The scheduled title check found real titles for episodes still named TBA. Nothing is renamed until someone presses Rename in Explore (added 2026-10-23; never pings by default) |
 | `backup.retention_deleted` | The retention rule deleted stored versions |
 | `autosync.blocked` | An automatic sync's safety check stopped it, waiting for a person — not one a person started, or released with Sync or Go now |
 | `sync.held` | Automatic sync is off for the library, so a batch is waiting for someone to press Sync. Once per batch: webhooks that join it later send nothing (added in 2.3.2, issue #35) |
