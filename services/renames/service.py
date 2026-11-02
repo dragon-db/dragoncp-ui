@@ -698,7 +698,8 @@ class RenamesService:
             if not self._save_files(notification_id, results):
                 for later in results[index + 1:]:
                     later.update(status='failed', message='Not tried: the history could '
-                                                          'not be saved', error='history')
+                                                          'not be saved', error='history',
+                                 sidecars=[])
                 renamed = sum(1 for r in results if r['status'] == 'success')
                 self._save_files(notification_id, results)
                 raise RenamesError(
@@ -719,13 +720,14 @@ class RenamesService:
                 else:
                     self.store.forget_title(media_type, folder, key[0], key[1])
 
-        record = self._record(notification_id, media_type, folder, src, results, sonarr,
-                              trigger, dry_run, announce)
         try:
-            self.check_folder(media_type, folder)
-        except Exception:  # noqa: BLE001 - the rename is done whatever the check says
-            pass
-        return record
+            return self._record(notification_id, media_type, folder, src, results, sonarr,
+                                trigger, dry_run, announce)
+        finally:
+            try:
+                self.check_folder(media_type, folder)
+            except Exception:  # noqa: BLE001 - the rename is done whatever the check says
+                pass
 
     def _planned(self, root: str, folder: str, item: Dict[str, Any],
                  dry_run: bool) -> Dict[str, Any]:
@@ -745,7 +747,9 @@ class RenamesService:
             'source': item['source'],
             'sonarr_rename': item['sonarr_rename'],
             'sonarr_file_id': item['sonarr_file_id'],
-            'sidecars': [],
+            # Planned too, so Undo can find a sidecar moved before its save.
+            'sidecars': [{'old': s['old'], 'new': s['new'], 'status': 'pending'}
+                         for s in item['sidecars']],
             'status': 'pending',
             'message': '',
             'error': None,
@@ -766,8 +770,11 @@ class RenamesService:
         old, new = result['local_previous_path'], result['local_new_path']
         dry_run = result['dry_run']
         result['status'] = 'failed'
+        planned = result['sidecars']
+        # Until the file itself moves, no sidecar has.
+        result['sidecars'] = []
         pairs = [(os.path.join(directory, s['old']), os.path.join(directory, s['new']))
-                 for s in item['sidecars']]
+                 for s in planned]
         try:
             for path in [old, new, *[p for pair in pairs for p in pair]]:
                 assert_path_within_bounds(path, [root])
@@ -789,9 +796,8 @@ class RenamesService:
                                        'status': 'success'} for a, b in pairs]
                 return result
             os.rename(old, new)
-            result.update(status='success', message='Renamed')
-            for src_path, dst in pairs:
-                entry = {'old': os.path.basename(src_path), 'new': os.path.basename(dst)}
+            result.update(status='success', message='Renamed', sidecars=planned)
+            for entry, (src_path, dst) in zip(planned, pairs):
                 try:
                     if os.path.lexists(src_path) and not os.path.lexists(dst):
                         os.rename(src_path, dst)
@@ -802,7 +808,6 @@ class RenamesService:
                 except OSError as error:
                     entry['status'] = 'failed'
                     entry['error'] = str(error)
-                result['sidecars'].append(entry)
             return result
         except PathTraversalError as error:
             result.update(message='Path rejected', error=str(error))
@@ -893,9 +898,12 @@ class RenamesService:
             'completed_at': datetime.now().isoformat(),
         })
         if not saved:
-            # Each renamed file was saved as it went, so Undo still works;
-            # only the run's totals are missing.
-            print(f"⚠️  Rename history totals not saved for {notification_id}")
+            # Each renamed file was saved as it went, so Undo still works, but
+            # the run must not be reported as finished when its row says pending.
+            raise RenamesError(
+                f"Renamed {success} file(s), but the rename history could not be finished. "
+                'What was renamed is in Webhooks → Renames and can be undone.'
+                + (f" {sonarr['message']}." if sonarr.get('message') else ''), 500)
 
         result = {
             'notification_id': notification_id,
@@ -1038,7 +1046,7 @@ class RenamesService:
         """Put a file's sidecars back; returns the ones that could not be."""
         stuck = []
         for sidecar in info.get('sidecars') or []:
-            if sidecar.get('status') != 'success' or sidecar.get('undone'):
+            if sidecar.get('status') not in ('success', 'pending') or sidecar.get('undone'):
                 continue
             a = os.path.join(directory, sidecar['new'])
             b = os.path.join(directory, sidecar['old'])
@@ -1515,7 +1523,8 @@ def _changed_a_file(info: Dict[str, Any]) -> bool:
 
 def _undo_finished(info: Dict[str, Any]) -> bool:
     return bool(info.get('undone')) and all(
-        s.get('undone') for s in info.get('sidecars') or [] if s.get('status') == 'success')
+        s.get('undone') for s in info.get('sidecars') or []
+        if s.get('status') in ('success', 'pending'))
 
 
 def _day(value: Any) -> Optional[date]:

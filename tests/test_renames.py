@@ -13,7 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -504,6 +504,31 @@ class RenamesServiceTests(unittest.TestCase):
         self.assertEqual((undone['restored_count'], undone['failed']), (1, []))
         for episode in (1, 2, 3):
             self.assertTrue(self.here(name(episode, 'TBA')), episode)
+        # Its sidecars moved before the save too, and come back with it.
+        self.assertTrue(self.here(name(1, 'TBA', '.nfo')))
+        self.assertTrue(self.here(name(1, 'TBA', '.en.srt')))
+        self.assertIsNotNone(self.history.get(row['notification_id'])['undone_at'])
+
+    def test_a_rename_whose_history_cannot_be_finished_is_not_reported_done(self):
+        self.service.notification_service = MagicMock()
+        self.service.socketio = MagicMock()
+        update = self.history.update
+
+        def totals_fail(notification_id, data):
+            return False if 'status' in data else update(notification_id, data)
+
+        with patch.object(self.history, 'update', side_effect=totals_fail):
+            with self.assertRaises(RenamesError) as caught:
+                self.service.apply('tvshows', SERIES)
+        self.assertEqual(caught.exception.status, 500)
+        self.assertIn('Renamed 3 file(s)', caught.exception.message)
+        self.service.notification_service.send_rename_discord_notification.assert_not_called()
+        events = [c.args[0] for c in self.service.socketio.emit.call_args_list]
+        self.assertNotIn('rename_completed', events)
+
+        [row] = self.history.get_all()
+        undone = self.service.undo(row['notification_id'])
+        self.assertEqual((undone['restored_count'], undone['failed']), (3, []))
 
     def test_undo_stops_when_its_progress_cannot_be_saved_and_resumes(self):
         result = self.service.apply('tvshows', SERIES)
