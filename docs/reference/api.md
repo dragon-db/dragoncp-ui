@@ -1,6 +1,6 @@
 # DragonCP API Reference
 
-Last updated: 2026-10-23
+Last updated: 2026-11-02
 
 Purpose: human-friendly reference for every backend HTTP API endpoint implemented by the Python server.
 
@@ -2011,6 +2011,307 @@ Output JSON:
 A row with `ok: false` and a `skipped_reason` was held back deliberately —
 the notification is switched off, the destination is out of service, or no
 default is set. A row with `ok: false` and an `error` was attempted and failed.
+
+## Jellyfin
+
+What Jellyfin is playing, and DragonCP's own record of every play
+(`routes/jellyfin.py`). Read only towards Jellyfin. The connector's `views`
+(`["now_playing", "plays"]`) tell the Integrations page to show these tabs
+instead of Library, Queue and History.
+
+### GET `/jellyfin/now-playing`
+Every stream playing right now, converted ones first. Each call asks Jellyfin
+(two calls under two seconds apart share one answer), and when **Record plays**
+is on, the answer is also folded into the play record.
+
+Auth: required.
+
+Output JSON:
+```json
+{
+  "success": true,
+  "ok": true,
+  "state": "ok",
+  "recording": true,
+  "signed_in": 3,
+  "message": "",
+  "checked_at": "2026-11-02T10:15:00+00:00",
+  "streams": [
+    {
+      "session_id": "0f1e…",
+      "user": {"id": "a1b2…", "name": "alex"},
+      "client": "Jellyfin Web", "app_version": "10.11.11",
+      "device": {"id": "d1", "name": "Living room TV"},
+      "address": "192.168.1.20", "network": "local",
+      "item": {"id": "aaaa…", "type": "Episode", "title": "Pilot",
+               "series": "Example Show", "series_id": "cccc…",
+               "season": 1, "episode": 1, "year": 2021, "runtime_seconds": 1440,
+               "path": "/data/tvshows/…", "provider_ids": {"Tvdb": "900001"},
+               "poster_id": "cccc…", "poster": "/api/jellyfin/image/cccc…?s=…"},
+      "position_seconds": 600, "paused": false,
+      "play_method": "Transcode",
+      "transcode": {"video": true, "audio": false,
+                    "reasons": ["SubtitleCodecNotSupported"],
+                    "container": "ts", "video_codec": "h264", "audio_codec": "aac",
+                    "width": 1920, "height": 1080, "bitrate": 8000000,
+                    "framerate": null, "audio_channels": null,
+                    "hardware": "nvenc", "progress": null, "method": "Transcode"},
+      "source": {"container": "mkv",
+                 "video": {"codec": "hevc", "width": 1920, "height": 1080,
+                           "bit_depth": 10, "range": "SDR", "…": "…"},
+                 "audio": {"codec": "aac", "channels": 2, "language": "jpn", "…": "…"},
+                 "subtitle": {"codec": "ass", "language": "eng", "external": false, "…": "…"}}
+    }
+  ]
+}
+```
+
+Notes:
+- `state` is `ok`, `off` (Jellyfin switched off or not set up) or
+  `unreachable` (with `message` saying why). `ok` is true only for `ok`.
+- `play_method` is Jellyfin's: `DirectPlay`, `DirectStream` or `Transcode`.
+  `transcode` is null for a direct play. `transcode.video`/`audio` say what is
+  being converted; null when Jellyfin did not say.
+- `network` is `local` for private, loopback, link-local and tailnet
+  (100.64.0.0/10) addresses, `remote` otherwise, empty when unknown.
+- `poster` is a signed address on this app (see the image endpoint below).
+
+### GET `/jellyfin/plays`
+Recorded plays, newest first. Reads DragonCP's own table, so it answers with
+Jellyfin switched off or down.
+
+Auth: required.
+
+Query: `limit` (1–200, default 50), `offset`, `user` (exact name), `converted`
+(`1`: converted plays only, `0`: the others), `q` (title, series, device or
+app; up to 100 characters).
+
+Output JSON:
+```json
+{
+  "success": true,
+  "recording": true,
+  "total": 1,
+  "users": ["alex", "sam"],
+  "plays": [
+    {"id": 7, "source": "live", "user": "alex", "client": "Jellyfin Web",
+     "app_version": "10.11.11", "device": "Living room TV",
+     "address": "192.168.1.20", "network": "local",
+     "item": {"id": "aaaa…", "type": "Episode", "title": "Pilot",
+              "series": "Example Show", "series_id": "cccc…", "season": 1,
+              "episode": 1, "year": 2021, "runtime_seconds": 1440,
+              "poster": "/api/jellyfin/image/cccc…?s=…"},
+     "started_at": "2026-11-02T10:05:00+00:00",
+     "last_seen_at": "2026-11-02T10:29:00+00:00",
+     "ended_at": "2026-11-02T10:29:00+00:00",
+     "watched_seconds": 1380, "reached_seconds": 1440, "finished": true,
+     "play_method": "Transcode", "video_converted": true, "audio_converted": false,
+     "reasons": ["SubtitleCodecNotSupported"],
+     "transcode": {"…": "the latest conversion details, as on now-playing"},
+     "source_media": {"…": "the file's tracks, as on now-playing"}}
+  ]
+}
+```
+
+Notes:
+- `ended_at` is null while the play is still going.
+- `play_method` is the heaviest seen during the play; `reasons` every reason
+  seen, not only the first.
+- `finished` is true once the play reached 90% of the runtime.
+- `users` is everyone with a recorded play, most recent first, for the filter.
+
+### GET `/jellyfin/image/<item_id>?s=<signature>&w=<width>`
+One item's poster, fetched from Jellyfin and scaled there (`w` 60–600, default
+240). Cached by the browser for a day.
+
+Auth: **none** — an `<img>` cannot send the sign-in token. The `s` signature
+(an HMAC of the item id with the app's secret key) is the guard: only item ids
+this app put in a signed-in response are served. Anything else is `404`: a bad
+signature, an id that is not 32 hex digits, Jellyfin off, or no image.
+
+---
+
+## Seerr
+
+Seerr's admin side: requests, where approved ones have got to, and issues
+(`routes/seerr.py`, `services/seerr/`). The connector's `views`
+(`["requests", "issues"]`) give it its own tabs. Every answer names people by
+an id and a display name only; Seerr's e-mail addresses and tokens never
+leave the server.
+
+Reads: auth required. Changes (`POST`): auth required, and on a test instance
+(TEST_MODE on) refused with `403` until the connector's **Allow changes from
+this instance** is on. Every change, failure and refusal is in the activity
+log (`seerr.request_approve`, `seerr.request_decline`, `seerr.request_retry`,
+`seerr.issue_comment`, `seerr.issue_resolve`, `seerr.issue_reopen`).
+
+A refusal answers `{"success": false, "error": "…", "message": "…"}` with
+`400` (bad input), `403` (changes off here), `409` (Seerr off, or the request
+is no longer waiting) or `502` (Seerr said no or did not answer).
+
+### GET `/seerr/summary`
+Counts for the tabs and the sidebar, whether this instance may change things,
+and the webhook's state. Counts are kept for a minute.
+
+```json
+{
+  "success": true,
+  "state": "ok",
+  "message": "",
+  "requests": {"pending": 2, "processing": 4, "approved": 4, "declined": 0,
+               "completed": 184, "available": 0, "total": 190, "movie": 70, "tv": 120},
+  "issues": {"open": 3, "closed": 29, "total": 32, "video": 1, "audio": 0,
+             "subtitles": 2, "others": 0},
+  "can_change": false,
+  "why_not": "This is a test instance, so changes in Seerr are off. …",
+  "test_mode": true,
+  "polling": false,
+  "webhook": {"password_set": true, "last_at": "2026-11-02T10:15:00Z",
+              "last_type": "MEDIA_PENDING", "path": "/api/webhook/seerr"}
+}
+```
+
+`state` is `ok`, `off` (switched off or not set up) or `unreachable` (with
+`message`); `requests` and `issues` are null unless `ok`.
+
+### GET `/seerr/requests`
+Query: `view` (`waiting` default, `progress`, `failed`, `done`, `all`),
+`type` (`all`, `movie`, `tv`), `sort` (`added` default, `modified`), `user`
+(a Seerr user id), `take` (1–100, default 20), `skip`.
+
+```json
+{
+  "success": true, "state": "ok", "message": "", "total": 1,
+  "can_change": true, "why_not": "",
+  "requests": [{
+    "id": 5, "status": "approved", "type": "tv", "is4k": false,
+    "title": {"tmdb_id": 900001, "tvdb_id": 800001, "type": "tv",
+              "name": "Example Show", "year": 2024,
+              "poster": "https://image.tmdb.org/t/p/w185/…"},
+    "jellyfin_id": null,
+    "seasons": [{"number": 1, "state": "available", "episodes_total": 8,
+                 "episodes_here": 8, "downloading": false, "syncing": false},
+                {"number": 2, "state": "processing", "episodes_total": 10,
+                 "episodes_here": null, "downloading": false, "syncing": true}],
+    "requested_by": {"id": 2, "name": "alex"},
+    "requested_at": "2026-10-24T09:00:00Z",
+    "decided_by": {"id": 1, "name": "owner"},
+    "updated_at": "2026-10-25T09:00:00Z",
+    "profile": "HD-1080p",
+    "stage": {"key": "syncing", "label": "Syncing here", "tone": "brand",
+              "detail": "45% · 4 minutes left", "percent": 45},
+    "steps": [{"key": "approved", "state": "done"}, {"key": "download", "state": "done"},
+              {"key": "sync", "state": "active"}, {"key": "jellyfin", "state": "active"}],
+    "download": null,
+    "sync": {"state": "syncing", "percent": 45, "eta_seconds": 240, "seasons": [2],
+             "at": "2026-11-02T09:00:00Z"},
+    "actions": [],
+    "requested_ago_seconds": 777600
+  }]
+}
+```
+
+Notes:
+- `stage.key`: `waiting`, `declined`, `failed`, `removed`, `in_jellyfin`,
+  `held`, `syncing`, `downloading`, `arrived`, `sync_failed`, `partly`,
+  `synced`, `searching` (with `stuck` true after 3 days). `tone` is one of
+  `ok`, `warn`, `crit`, `brand`, `info`, `muted`.
+- `steps[].state`: `done`, `active`, `waiting`, `problem`, `todo`.
+- `download` (from Seerr's copy of the Sonarr/Radarr queue): `state`
+  (`downloading`, `importing`, `paused`, `queued`, `warning`), `percent`,
+  `eta_seconds`, `downloads`, `episodes`, `seasons`.
+- `sync` (from DragonCP's arrivals and transfers since the request): `state`
+  (`held` with `reason`, `syncing`, `arrived`, `failed`, `synced`).
+- `episodes_here` is Jellyfin's count of episodes with files, when Jellyfin is
+  connected and the series is not finished; null otherwise.
+- `actions`: `["approve", "decline"]` while waiting, `["retry"]` when failed.
+
+### GET `/seerr/requests/<id>`
+One request, in the same shape, as `{"success": true, "request": {…}}`.
+
+### GET `/seerr/requests/<id>/options`
+What can be changed before approving. Makes Seerr ask that Sonarr or Radarr
+(on the remote server) live; the page only asks when "Change, then approve"
+opens. Query: `server` (another server's id, to list its choices).
+
+```json
+{
+  "success": true, "service": "sonarr",
+  "servers": [{"id": 0, "name": "Sonarr", "is_default": true}],
+  "server_id": 0,
+  "profiles": [{"id": 4, "name": "HD-1080p"}, {"id": 6, "name": "Ultra-HD"}],
+  "root_folders": [{"path": "/data/media/tv", "free_bytes": 2400000000000}],
+  "current": {"profile_id": 4, "root_folder": "/data/media/tv"},
+  "seasons": [{"number": 1, "episodes": 8, "requested": true, "available": false}]
+}
+```
+
+### POST `/seerr/requests/<id>/approve` · `/decline` · `/retry`
+Approve or decline a waiting request; retry a failed one. The request is read
+again first: if it is no longer waiting (or failed, for retry), `409` with
+"This request is already approved in Seerr now."
+
+Input (approve only, optional):
+```json
+{"changes": {"server_id": 0, "profile_id": 6, "root_folder": "/data/media/tv", "seasons": [1, 2]}}
+```
+Seerr's edit replaces every field, so the server sends the request's current
+values for anything not changed; nothing is sent when nothing changed. Output:
+`{"success": true}`.
+
+### GET `/seerr/issues`
+Query: `view` (`open` default, `resolved`, `all`), `sort` (`added`,
+`modified`), `user` (reporter's Seerr id), `take`, `skip`.
+
+```json
+{
+  "success": true, "state": "ok", "message": "", "total": 1,
+  "can_change": true, "why_not": "",
+  "issues": [{
+    "id": 11, "type": "subtitles", "status": "open",
+    "title": {"tmdb_id": 900001, "tvdb_id": 800001, "type": "tv",
+              "name": "Example Show", "year": 2024, "poster": ""},
+    "jellyfin_id": "cccc…", "season": 1, "episode": 2,
+    "reported_by": {"id": 3, "name": "sam"},
+    "reported_at": "2026-11-02T08:00:00Z", "updated_at": "2026-11-02T09:00:00Z",
+    "modified_by": null,
+    "message": "The subtitles are out of sync.",
+    "replies": 1,
+    "comments": [{"id": 1, "by": {"id": 3, "name": "sam"},
+                  "message": "The subtitles are out of sync.", "at": "2026-11-02T08:00:00Z"},
+                 {"id": 2, "by": {"id": 1, "name": "owner"},
+                  "message": "Looking into it.", "at": "2026-11-02T09:00:00Z"}]
+  }]
+}
+```
+
+`type`: `video`, `audio`, `subtitles`, `other`. `season`/`episode` are null
+for the whole title (Seerr's 0).
+
+### GET `/seerr/issues/<id>`
+One issue: `{"success": true, "issue": {…}, "can_change": true, "why_not": ""}`.
+
+### POST `/seerr/issues/<id>/comment`
+Input: `{"message": "Swapped the file, try again.", "resolve": false}`. Up to
+2000 characters, not empty. With `resolve` true the issue is resolved after
+the reply. The reply shows in Seerr under the API key's account (Seerr's
+owner).
+
+### POST `/seerr/issues/<id>/resolve` · `/reopen`
+Output: `{"success": true}`.
+
+### GET `/seerr/users`
+`{"success": true, "users": [{"id": 2, "name": "alex"}]}`, for the filters.
+
+### POST `/webhook/seerr`
+Seerr's webhook (Settings → Notifications → Webhook).
+
+Auth: **no sign-in**. Seerr sends the connector's **Webhook password** in
+`Authorization` (exactly, or as `Bearer …`). `403` while Seerr is off in
+DragonCP or no password is set; `401` for a wrong password. The body is only
+read for `notification_type`, to say which tab changed; nothing in it is
+stored or trusted. A valid call drops every kept Seerr answer and emits the
+socket event `seerr_changed` (`{"kind": "request" | "issue" | "test"}`).
 
 ---
 

@@ -16,9 +16,15 @@ under Integrations in the sidebar.
   sync that was skipped — and alerts on them (the default, **Alert only**) or
   syncs them, and pages that show the service's library, download queue and
   history against this disk.
-- **Jellyfin** can be connected and tested, but nothing reads it yet.
+- **Jellyfin** shows what is playing, with the reason for every conversion,
+  and keeps a record of every play once **Record plays** is on. That page has
+  its own doc: [Jellyfin](../jellyfin/README.md).
+- **Seerr** shows requests waiting for approval, where every approved one has
+  got to (downloading on the remote server, syncing here, in Jellyfin), and
+  the issues users reported, with approve, decline, retry, reply and resolve.
+  Its own doc: [Seerr](../seerr/README.md).
 
-Last updated: 2026-10-19
+Last updated: 2026-11-02
 Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors.py`,
 `services/auto_scanner.py`, `services/scheduler.py`, `services/media_index.py`,
 `services/library_compare.py`, `services/local_library.py`,
@@ -38,6 +44,7 @@ Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors
 | Sonarr and Radarr: the read-only client, the "still downloading?" answer, the auto-scanner's settings | `services/connectors/adapters/_arr.py`, `sonarr.py`, `radarr.py` |
 | Sonarr's two allowed commands (`RenameFiles`, `RefreshSeries`), the TMDB key and the title-check schedule | `services/connectors/adapters/sonarr.py`, `_arr.py` (`command`); behaviour in [renames](../renames/README.md) |
 | Jellyfin | `services/connectors/adapters/jellyfin.py` |
+| Seerr | `services/connectors/adapters/seerr.py`, `services/seerr/` |
 | Asking Sonarr whether a season is ready — the pipeline's Ready check | `services/sync_engine/engine.py`, through `services/media_index.py` (`in_flight_for_season`) |
 | The scheduled auto-scanner | `services/auto_scanner.py` |
 | The scheduler that runs it | `services/scheduler.py` |
@@ -203,15 +210,17 @@ them:
 A connector that is switched off says so above its tabs, and the Library,
 Queue and History tabs ask for it to be turned on.
 
-**Integrations → Jellyfin** is drawn by the same layout as Sonarr and Radarr,
-because it declares the same capability, so it shows Library, Queue and History
-tabs too. The library endpoints know only Sonarr and Radarr and answer 404 for
-Jellyfin. Not verified: how those three tabs render that refusal.
+**Integrations → Jellyfin** has its own tabs, **Now playing** and **Plays**,
+then **Connection**: the adapter lists them, so the page does not borrow
+Sonarr's Library, Queue and History. What they show is in
+[Jellyfin](../jellyfin/README.md). **Integrations → Seerr** works the same way
+with **Requests** and **Issues**, whose counts (waiting, open) show on the tabs
+and beside Seerr in the sidebar: [Seerr](../seerr/README.md).
 
 The settings tab is named by the adapter, not by the page. Discord calls its
 tab **Appearance** because nothing on it reaches Discord — a webhook URL
 carries its own credential, so connecting happens on the Webhooks tab. Sonarr,
-Radarr and Jellyfin are reached with an address and an API key, so theirs is
+Radarr, Jellyfin and Seerr are reached with an address and an API key, so theirs is
 called **Connection** and carries a Test connection button that genuinely
 reaches the service.
 
@@ -543,7 +552,9 @@ for its job (`sonarr_auto_scanner`, `radarr_auto_scanner`):
 When the job does not run, the card says why it can tell: with the connector
 itself turned off, that the service is off and must be turned on first; with
 the connector on, that the scanner's switch is off. A connector that is on but
-missing its address or API key also reads as switched off. Jellyfin and Discord have no card. There is no
+missing its address or API key also reads as switched off. Jellyfin, Seerr and Discord have no card;
+Jellyfin's play recorder is the scheduler job `jellyfin_plays`, and Seerr's
+"Check every 5 minutes" is `seerr_updates`. There is no
 page listing every job: `GET /api/scheduler/jobs` lists them, and
 `POST /api/scheduler/jobs/<name>/run` runs one.
 
@@ -732,16 +743,16 @@ class ExampleConnector(Connector):
 The only frontend change a new connector might want is an icon, in
 `frontend/src/components/integrations/connector-icon.tsx`. Without one it gets
 a plug. A connector that declares `CAP_QUERY` also gets the Library, Queue and
-History tabs, which only Sonarr and Radarr can fill — see Jellyfin above.
+History tabs, which only Sonarr and Radarr can fill, unless it lists its own
+`views` (tab ids the page knows) — as Jellyfin and Seerr do.
 
 ## What is not here yet
 
 - **Radarr is never asked whether a film is still downloading** — decided: a
   Radarr webhook means a finished film. The check exists and is unused.
-- **Jellyfin** connects and tests; nothing reads it, and its page shows tabs
-  whose endpoints do not serve it.
-- **The scheduler has two jobs**, the auto-scanners. Nothing else DragonCP does
-  on a clock has been moved onto it.
+- **The scheduler's jobs** are the two auto-scanners, the title check,
+  Jellyfin's play recorder and Seerr's 5-minute check. Nothing else DragonCP does on a clock has been
+  moved onto it.
 - **Not verified:** the Ready check has not yet been watched against a real
   Sonarr download, nor a scan read against a live library — the live run in
   TASK-020 is still open.

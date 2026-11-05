@@ -223,6 +223,48 @@ def send(method: str, url: str, *,
     return last
 
 
+@dataclass(frozen=True)
+class BytesResult:
+    """A binary answer — an image — or why there is none."""
+
+    ok: bool
+    status_code: Optional[int] = None
+    content: bytes = b''
+    content_type: str = ''
+    error: Optional[str] = None
+
+
+def fetch_bytes(url: str, *, headers: Optional[Dict[str, str]] = None,
+                timeout: float = DEFAULT_TIMEOUT,
+                max_bytes: int = 5 * 1024 * 1024) -> BytesResult:
+    """GET something that is not text, capped at `max_bytes`. Never raises.
+
+    No retry: a missing poster is drawn as a placeholder, and asking twice
+    would only make the page wait longer for the same blank.
+    """
+    safe_url = redact_url(url)
+    try:
+        with requests.get(url, headers=headers, timeout=timeout, stream=True) as response:
+            if not 200 <= response.status_code < 300:
+                return BytesResult(False, status_code=response.status_code,
+                                   error=_describe_status(safe_url, response.status_code, None))
+            chunks, size = [], 0
+            for chunk in response.iter_content(64 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    return BytesResult(False, status_code=response.status_code,
+                                       error=f"{safe_url} sent more than {max_bytes} bytes")
+                chunks.append(chunk)
+            return BytesResult(True, status_code=response.status_code, content=b''.join(chunks),
+                               content_type=response.headers.get('Content-Type', ''))
+    except requests.Timeout:
+        return BytesResult(False, error=f"{safe_url} did not answer within {timeout:.0f}s")
+    except requests.ConnectionError:
+        return BytesResult(False, error=f"Could not reach {safe_url}")
+    except Exception as exc:  # noqa: BLE001 - the whole point is not raising
+        return BytesResult(False, error=f"Request to {safe_url} failed: {type(exc).__name__}")
+
+
 def _elapsed_ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
 

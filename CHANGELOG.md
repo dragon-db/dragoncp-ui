@@ -11,6 +11,52 @@ Newest first.
 
 ---
 
+## 2.3.4
+
+Jellyfin and Seerr, tracked from DragonCP. In progress: this entry grows as
+each part lands.
+
+### Jellyfin
+
+- **Now playing.** Integrations → Jellyfin opens on what is playing right now:
+  who, what, on which device and app, at home or away, and how far in. Each
+  stream says whether Jellyfin plays the file as it is or converts it, and a
+  converted stream lists **why**, in plain words, with what usually avoids it
+  ("the app cannot draw these subtitles, so Jellyfin burns them into the
+  picture"). Checked every 5 seconds while the tab is open.
+- **Plays: the history Jellyfin does not keep.** With **Record plays** on
+  (Connection tab, off by default), every play is kept: who, what, device,
+  when, how long was watched, and whether and why it was converted. The
+  **Plays** tab lists them with filters for converted plays, a person and a
+  search.
+- The Jellyfin page no longer shows Sonarr's Library, Queue and History tabs,
+  which had nothing to show for it.
+- The API key is sent the way Jellyfin 10.11 documents, so the connection keeps
+  working if Jellyfin's legacy sign-in setting is switched off.
+
+### Seerr
+
+- **New: Integrations → Seerr**, the admin side of Seerr. **Requests** lists
+  the ones waiting for approval with **Approve**, **Change, then approve**
+  (quality, folder, seasons) and **Decline**, and failed ones with **Retry**.
+  Every button asks first.
+- **Where every approved request has got to**, which Seerr only calls
+  "processing": searching (flagged after 3 days), downloading on the remote
+  server with percent and time left, held back by the safety check (with the
+  reason), syncing here, synced, partly or fully in Jellyfin. A series shows
+  each season, with "6 of 10 episodes" when Jellyfin is connected. Listing
+  requests adds no calls to the remote server beyond Seerr's own hourly one.
+- **Issues** lists what users reported (video, audio, subtitles), with the
+  episode and the conversation. **Reply**, **Reply and resolve**, **Resolve**
+  and **Reopen** go through Seerr, which tells the user as usual.
+- Counts of waiting requests and open issues on the tabs and beside Seerr in
+  the sidebar. With Seerr's webhook pointed at DragonCP (instructions on the
+  Connection tab, guarded by a password) they update the moment something
+  changes; **Check every 5 minutes** is a backup, off by default.
+- On a test instance, changes in Seerr are refused until **Allow changes from
+  this instance** is on: approving starts a real download. Every change, and
+  every refusal, is in the activity log.
+
 ## 2.3.3
 
 Renames, rebuilt: DragonCP now works out each file's real name itself and

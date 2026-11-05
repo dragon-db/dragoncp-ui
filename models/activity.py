@@ -96,6 +96,13 @@ ACTIONS = {
     'connector.mention_delete': 'Removed someone notifications can ping',
     'connector.mention_test': 'Sent a test ping',
     'connector.routes_update': 'Changed where notifications are sent',
+    # Seerr: requests and issues, changed from DragonCP
+    'seerr.request_approve': 'Approved a Seerr request',
+    'seerr.request_decline': 'Declined a Seerr request',
+    'seerr.request_retry': 'Retried a failed Seerr request',
+    'seerr.issue_comment': 'Replied to a Seerr issue',
+    'seerr.issue_resolve': 'Resolved a Seerr issue',
+    'seerr.issue_reopen': 'Reopened a Seerr issue',
     'ssh.connect': 'Connected to the remote server',
     'ssh.disconnect': 'Disconnected from the remote server',
     # the transfer server on the remote host

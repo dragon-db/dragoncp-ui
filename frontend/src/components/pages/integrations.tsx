@@ -17,8 +17,14 @@ import { DeliveryLog } from "@/components/integrations/delivery-log";
 import { RoutingPanel } from "@/components/integrations/routing-panel";
 import { TargetsPanel } from "@/components/integrations/targets-panel";
 import { MentionsPanel } from "@/components/integrations/mentions-panel";
+import { NowPlayingPanel } from "@/components/integrations/now-playing-panel";
+import { PlaysPanel } from "@/components/integrations/plays-panel";
+import { SeerrRequestsPanel } from "@/components/integrations/seerr-requests-panel";
+import { SeerrIssuesPanel } from "@/components/integrations/seerr-issues-panel";
+import { SeerrWebhookCard } from "@/components/integrations/seerr-webhook-card";
 import { useConnector, useSaveConnector } from "@/hooks/useConnectors";
 import { useLibrary, useLibraryQueue } from "@/hooks/useMediaLibrary";
+import { useSeerrSummary } from "@/hooks/useSeerr";
 import {
   IconAdjustmentsHorizontal,
   IconAt,
@@ -26,12 +32,31 @@ import {
   IconHistory,
   IconInbox,
   IconLayoutGrid,
+  IconListCheck,
+  IconMessageReport,
+  IconPlayerPlay,
   IconPlugConnected,
   IconRoute,
 } from "@tabler/icons-react";
 
 const NOTIFY_TABS = ["targets", "mentions", "routing", "activity", "settings"];
 const QUERY_TABS = ["library", "queue", "history", "settings"];
+
+/** Tabs a connector can ask for by id, for when its capabilities do not say
+ *  enough. Jellyfin answers questions like Sonarr, but has no library to hold
+ *  against this disk; what it has is what is playing. Seerr's are its
+ *  requests and the issues users reported. */
+const VIEW_TABS = {
+  now_playing: { label: "Now playing", icon: IconPlayerPlay },
+  plays: { label: "Plays", icon: IconHistory },
+  requests: { label: "Requests", icon: IconListCheck },
+  issues: { label: "Issues", icon: IconMessageReport },
+} as const;
+type ViewId = keyof typeof VIEW_TABS;
+
+function isViewId(value: string): value is ViewId {
+  return value in VIEW_TABS;
+}
 
 /** The saved "Look back (days)", read the way the server reads it: 1 to 30, 7 when empty. */
 function lookbackDays(value: string | undefined): number {
@@ -61,7 +86,11 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
       search: next,
     });
 
-  const answers = Boolean(connector?.enabled) && Boolean(connector?.capabilities.includes("query"));
+  const views = (connector?.views ?? []).filter(isViewId);
+  const answers =
+    Boolean(connector?.enabled) &&
+    Boolean(connector?.capabilities.includes("query")) &&
+    views.length === 0;
 
   // The tab counts, from the same queries the panels make — the cache is shared,
   // so the Library count costs nothing and the Queue count one light read. The
@@ -70,6 +99,12 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
   // be asked for a queue every thirty seconds and refuse every time.
   const library = useLibrary(connectorId, answers);
   const queue = useLibraryQueue(connectorId, answers && library.isSuccess);
+  // Seerr's tab counts: requests waiting for approval, issues still open.
+  const seerr = useSeerrSummary(views.includes("requests") && Boolean(connector?.enabled));
+  const viewCounts: Partial<Record<ViewId, number | undefined>> = {
+    requests: seerr.data?.requests?.pending,
+    issues: seerr.data?.issues?.open,
+  };
 
   if (connectorQuery.isLoading) {
     return (
@@ -94,11 +129,11 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
   const canNotify = connector.capabilities.includes("notify");
   const canQuery = connector.capabilities.includes("query");
   const hasSettings = connector.config_fields.length > 0;
-  const tabs = canNotify ? NOTIFY_TABS : QUERY_TABS;
+  const tabs = canNotify ? NOTIFY_TABS : views.length ? [...views, "settings"] : QUERY_TABS;
   const tab = search.tab && tabs.includes(search.tab) ? search.tab : tabs[0];
   // A title opens in a pop-up over the list; the address carries it, so the
   // browser's Back closes it and a link can open one directly.
-  const title = canQuery && connector.enabled ? search.title : undefined;
+  const title = canQuery && connector.enabled && !views.length ? search.title : undefined;
   const openTitle = (externalId: string) => go({ tab, title: Number(externalId) });
   const closeTitle = () => go({ tab });
 
@@ -240,6 +275,52 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
             </TabsContent>
           )}
         </Tabs>
+      ) : views.length ? (
+        /*
+          A connector with its own tabs. Jellyfin's are what is playing and the
+          record of it; its address and key sit last, as everywhere else.
+        */
+        <Tabs value={tab} onValueChange={(next) => go({ tab: String(next) })}>
+          <PageTabsList
+            items={[
+              ...views.map((view) => ({
+                value: view,
+                label: VIEW_TABS[view].label,
+                icon: VIEW_TABS[view].icon,
+                count: viewCounts[view] || undefined,
+              })),
+              {
+                value: "settings",
+                label: connector.settings_label,
+                icon: IconPlugConnected,
+                atEnd: true,
+              },
+            ]}
+          />
+          {views.map((view) => (
+            <TabsContent key={view} value={view} className="mt-4 space-y-4">
+              {view === "plays" ? (
+                <PlaysPanel onOpenSettings={() => go({ tab: "settings" })} />
+              ) : !connector.enabled ? (
+                <p className="rounded-xl border border-border/70 bg-card/50 px-4 py-8 text-center text-sm text-muted-foreground">
+                  {view === "now_playing"
+                    ? `Turn ${connector.display_name} on to see what is playing.`
+                    : `Turn ${connector.display_name} on to see its ${view}.`}
+                </p>
+              ) : view === "now_playing" ? (
+                <NowPlayingPanel onOpenSettings={() => go({ tab: "settings" })} />
+              ) : view === "requests" ? (
+                <SeerrRequestsPanel onOpenSettings={() => go({ tab: "settings" })} />
+              ) : (
+                <SeerrIssuesPanel onOpenSettings={() => go({ tab: "settings" })} />
+              )}
+            </TabsContent>
+          ))}
+          <TabsContent value="settings" className="mt-4 space-y-4">
+            <ConnectorForm connector={connector} />
+            {connector.id === "seerr" && <SeerrWebhookCard enabled={connector.enabled} />}
+          </TabsContent>
+        </Tabs>
       ) : canQuery ? (
         /*
           A connector that answers questions rather than receiving messages.
@@ -336,7 +417,7 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
         </SectionCard>
       )}
 
-      {canQuery && (
+      {canQuery && !views.length && (
         <TitleDialog
           source={connector.id}
           displayName={connector.display_name}

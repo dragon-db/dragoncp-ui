@@ -5,6 +5,7 @@ import {
   IconMovie,
   IconPlayerPlay,
   IconPlug,
+  IconTicket,
 } from "@tabler/icons-react";
 
 /**
@@ -21,6 +22,7 @@ const ICONS: Record<string, ComponentType<{ className?: string }>> = {
   sonarr: IconDeviceTv,
   radarr: IconMovie,
   jellyfin: IconPlayerPlay,
+  seerr: IconTicket,
 };
 
 export function ConnectorIcon({

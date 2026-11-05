@@ -1,6 +1,6 @@
 # Sync engine
 
-Last updated: 2026-10-06
+Last updated: 2026-11-02
 
 Every sync DragonCP performs — a Sonarr or Radarr webhook, the auto-scanner, a
 press of Sync, an Explore plan, a restart, a restore, a simulation — goes
@@ -494,8 +494,11 @@ sentence mentions only the switch.
 
 ## The scheduler
 
-One service runs everything DragonCP does on a clock. This release has two
-jobs: the Sonarr and Radarr auto-scanners. For every job:
+One service runs everything DragonCP does on a clock. Its jobs: the Sonarr
+and Radarr auto-scanners, the title check (renames), Jellyfin's play
+recorder, `jellyfin_plays` (see [Jellyfin](../jellyfin/README.md)), and
+Seerr's 5-minute check, `seerr_updates` (see [Seerr](../seerr/README.md)). For every
+job:
 
 - its switch and interval are read on every tick, so turning it on or off
   takes effect without a restart;

@@ -83,6 +83,8 @@ export interface Connector {
   /** False when the connector has no endpoint to reach at this level, so the
    *  UI must not offer a test that cannot fail. */
   supports_check: boolean;
+  /** The tabs before settings, by id, when the connector has its own (Jellyfin). */
+  views?: string[];
   enabled: boolean;
   configured: boolean;
   config: Record<string, string>;

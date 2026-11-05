@@ -1,6 +1,6 @@
 # DragonCP Database Schema v2 Documentation
 
-Last updated: 2026-10-23
+Last updated: 2026-11-02
 
 ## Overview
 
@@ -30,6 +30,8 @@ This document describes the current SQLite schema used by DragonCP.
 - `scheduled_job` *(the scheduler, 2.3.0)*
 - `sweep_finding` *(gaps the auto-scanner has seen)*
 - `title_check`, `title_link`, `episode_title` *(renames from Explore)*
+- `jellyfin_play` *(every Jellyfin play, 2.3.4)*
+- `seerr_title` *(names and posters of Seerr's requested titles, 2.3.4)*
 
 ### Column Renames
 - `transfer_type` → `operation_type` (more descriptive)
@@ -93,6 +95,20 @@ for one series folder), `title_link` (which TMDB show a series folder is) and
 `episode_title` (episodes renamed to a TMDB title). An upgraded database picks
 them up empty; the first title check fills `title_check`. See
 `../features/renames/README.md`.
+
+### Jellyfin Table
+
+Added in 2.3.4 by `DatabaseManager._create_jellyfin_tables`, with
+`CREATE TABLE IF NOT EXISTS`: `jellyfin_play`, one row per play DragonCP saw
+while **Record plays** was on. An upgraded database picks it up empty. See
+`../features/jellyfin/README.md`.
+
+### Seerr Table
+
+Added in 2.3.4 by `DatabaseManager._create_seerr_tables`, with
+`CREATE TABLE IF NOT EXISTS`: `seerr_title`, the name, year, poster and season
+episode counts of each title Seerr has a request or issue for. Everything else
+about Seerr is read from Seerr when asked. See `../features/seerr/README.md`.
 
 ### Account Table
 
@@ -650,7 +666,7 @@ CREATE TABLE connector (
 ```
 
 **Column Descriptions:**
-- `connector_id` - stable id matching a registered adapter: `discord`, `sonarr`, `radarr`, `jellyfin`
+- `connector_id` - stable id matching a registered adapter: `discord`, `sonarr`, `radarr`, `jellyfin`, `seerr`
 - `enabled` - off means nothing is sent to or read from it
 - `config` - JSON, **non-secret settings only**
 - `last_check_*` - what the Test connection button last found
@@ -1870,6 +1886,114 @@ TBA name back.
 
 ---
 
+## Table: `jellyfin_play`
+
+**Purpose:** Every Jellyfin play, the history Jellyfin does not keep: who
+watched what, on which device, for how long, and — for a converted stream —
+why Jellyfin converted it. Written from Jellyfin's live session list while
+**Record plays** is on.
+
+**Schema:**
+```sql
+CREATE TABLE jellyfin_play (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL DEFAULT 'live',
+    session_id TEXT,
+    user_id TEXT,
+    user_name TEXT,
+    client TEXT,
+    app_version TEXT,
+    device_id TEXT,
+    device_name TEXT,
+    address TEXT,
+    network TEXT,
+    item_id TEXT,
+    item_type TEXT,
+    title TEXT,
+    series_name TEXT,
+    series_id TEXT,
+    season INTEGER,
+    episode INTEGER,
+    year INTEGER,
+    runtime_seconds INTEGER,
+    path TEXT,
+    provider_ids TEXT,
+    started_at TEXT NOT NULL,
+    last_seen_at TEXT,
+    ended_at TEXT,
+    watched_seconds INTEGER DEFAULT 0,
+    max_position_seconds INTEGER DEFAULT 0,
+    paused INTEGER DEFAULT 0,
+    play_method TEXT,
+    video_transcoded INTEGER DEFAULT 0,
+    audio_transcoded INTEGER DEFAULT 0,
+    transcode_reasons TEXT,
+    transcode TEXT,
+    source_media TEXT,
+    activity_log_id INTEGER UNIQUE
+)
+```
+
+**Column Descriptions:**
+- `source` - `live`: watched by DragonCP. Reserved for plays imported from
+  Jellyfin's activity log, which carry no play method or reasons
+- `session_id`, `item_id` - Jellyfin's ids; one play is one (session, item)
+- `user_*`, `client`, `app_version`, `device_*` - who, with which app, on what
+- `address`, `network` - where from; `network` is `local` (home network or
+  tailnet), `remote`, or empty
+- `item_type` … `provider_ids` - what was played, as Jellyfin names it;
+  `path` is Jellyfin's own path, inside its container; `provider_ids` JSON
+- `started_at`, `last_seen_at`, `ended_at` - UTC ISO. `ended_at` is NULL while
+  the play is open and is set to its last sighting once it has been gone 45 s
+- `watched_seconds` - time it was playing between sightings, at most 30 s per
+  gap, so paused time and time DragonCP was not looking are not counted
+- `max_position_seconds` - how far into the item it got
+- `play_method` - the heaviest seen: `Transcode` > `DirectStream` > `DirectPlay`
+- `video_transcoded`, `audio_transcoded` - whether the picture or the sound
+  was converted at any point
+- `transcode_reasons` - JSON list of every reason Jellyfin gave during the play
+- `transcode`, `source_media` - JSON: the latest conversion details, and the
+  file's playing tracks
+- `activity_log_id` - unused until the activity-log import exists
+
+**Model:** `PlayRecorder` in `services/jellyfin/recorder.py`
+
+---
+
+## Table: `seerr_title`
+
+**Purpose:** The name, year, poster and season episode counts of each title
+Seerr has a request or issue for. Seerr's request and issue rows carry only
+the title's TMDB id, and the name is a second question per title (Seerr's
+`/movie/{id}` or `/tv/{id}`, answered from TMDB). Kept here so a title is
+asked about once every three days rather than on every page load, and a
+restart starts warm.
+
+```sql
+CREATE TABLE seerr_title (
+    media_type TEXT NOT NULL,
+    tmdb_id INTEGER NOT NULL,
+    title TEXT,
+    year INTEGER,
+    poster_path TEXT,
+    seasons TEXT,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (media_type, tmdb_id)
+)
+```
+
+**Columns:**
+- `media_type` - `movie` or `tv`, as Seerr says
+- `tmdb_id` - the title's TMDB id
+- `title`, `year` - as TMDB names it, through Seerr
+- `poster_path` - TMDB's path; the page loads it from `image.tmdb.org`
+- `seasons` - JSON list of `[season number, episode count]` (series only)
+- `fetched_at` - UTC ISO; older than three days is asked again
+
+**Model:** `TitleCache` in `services/seerr/titles.py`
+
+---
+
 ## Database Indexes Summary
 
 ### Performance Indexes
@@ -1918,6 +2042,11 @@ All indexes are created with `CREATE INDEX IF NOT EXISTS` to allow safe re-execu
 **Connector Indexes:**
 - `idx_connector_target_owner` on `connector_target(connector_id)` - Destination lookup
 - `idx_connector_delivery_recent` on `connector_delivery(connector_id, id DESC)` - Recent-first history
+
+**Jellyfin Indexes:**
+- `idx_jellyfin_play_started` on `jellyfin_play(started_at DESC)` - Newest first
+- `idx_jellyfin_play_open` on `jellyfin_play(ended_at)` where `ended_at IS NULL` - Open plays
+- `idx_jellyfin_play_item` on `jellyfin_play(item_id)` - Plays of one item
 
 **Backup Indexes:**
 - `idx_backup_transfer_id` on `backup(transfer_id)` - Transfer linking

@@ -239,10 +239,10 @@ class EventTests(unittest.TestCase):
 
 
 class RegistryTests(unittest.TestCase):
-    def test_the_four_connectors_are_registered(self):
+    def test_the_five_connectors_are_registered(self):
         self.assertEqual(
             sorted(registry.known_ids()),
-            ['discord', 'jellyfin', 'radarr', 'sonarr'],
+            ['discord', 'jellyfin', 'radarr', 'seerr', 'sonarr'],
         )
 
     def test_two_adapters_cannot_claim_one_id(self):
@@ -803,7 +803,7 @@ class ServiceTests(unittest.TestCase):
     def test_every_registered_connector_is_described_even_when_unsaved(self):
         """A fresh install must not show an empty Integrations section."""
         ids = {c['id'] for c in self.service.describe_all()}
-        self.assertEqual(ids, {'discord', 'jellyfin', 'radarr', 'sonarr'})
+        self.assertEqual(ids, {'discord', 'jellyfin', 'radarr', 'seerr', 'sonarr'})
 
     def test_an_unconfigured_query_connector_is_not_checked_over_the_wire(self):
         with patch('services.connectors.transport.requests.request') as request:
