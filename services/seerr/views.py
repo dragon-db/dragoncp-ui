@@ -157,6 +157,15 @@ def download_block(items: Iterable[Any], now: float) -> Optional[Dict[str, Any]]
 
 # -------------------------------------------------------------------- sync
 
+def _fixed_later(failure: Dict[str, Any], done: List[Dict[str, Any]]) -> bool:
+    """A failure stops counting once the same season syncs later. A sync that
+    names no season (a whole series, or a film) covers every season."""
+    after = failure['at'] or ''
+    return any((d['at'] or '') > after
+               and (d.get('season') is None or d.get('season') == failure.get('season'))
+               for d in done)
+
+
 def sync_block(arrivals: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """DragonCP's side: arrived on the remote server, syncing, synced, held."""
     if not arrivals:
@@ -172,9 +181,7 @@ def sync_block(arrivals: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     done = [a for a in arrivals if a['status'] == 'completed']
     seasons = sorted({a['season'] for a in arrivals if isinstance(a.get('season'), int)})
     last = arrivals[-1]
-    # A failure followed by a later success is not a failure any more.
-    if failed and done and (done[-1]['at'] or '') > (failed[-1]['at'] or ''):
-        failed = []
+    failed = [f for f in failed if not _fixed_later(f, done)]
     if held:
         return {'state': 'held', 'reason': held[-1]['reason'] or '', 'seasons': seasons,
                 'at': iso(held[-1]['at'])}
@@ -222,6 +229,17 @@ def _seasons(raw: Dict[str, Any], is4k: bool, title: Optional[Dict[str, Any]],
     return rows
 
 
+def _requested_seasons(raw: Dict[str, Any]) -> set:
+    return {s.get('seasonNumber') for s in raw.get('seasons') or []
+            if isinstance(s, dict) and isinstance(s.get('seasonNumber'), int)}
+
+
+def _queue_season(item: Any) -> Optional[int]:
+    episode = item.get('episode') if isinstance(item, dict) else None
+    season = episode.get('seasonNumber') if isinstance(episode, dict) else None
+    return season if isinstance(season, int) else None
+
+
 def request_view(raw: Dict[str, Any], *, title: Optional[Dict[str, Any]] = None,
                  arrivals: Optional[List[Dict[str, Any]]] = None,
                  episodes_here: Optional[Dict[int, int]] = None,
@@ -232,8 +250,17 @@ def request_view(raw: Dict[str, Any], *, title: Optional[Dict[str, Any]] = None,
     is4k = bool(raw.get('is4k'))
     status = REQUEST_STATUS.get(raw.get('status'), 'unknown')
     media_status = media.get('status4k' if is4k else 'status')
-    download = download_block(media.get('downloadStatus4k' if is4k else 'downloadStatus'), now)
-    sync = sync_block(arrivals or [])
+    queue = media.get('downloadStatus4k' if is4k else 'downloadStatus') or []
+    arrivals = arrivals or []
+    requested = _requested_seasons(raw) if media_type == 'tv' else set()
+    if requested:
+        # The queue and the arrivals are the whole series'. A request for
+        # season 2 must not read as synced because season 1 was. A row that
+        # does not say its season (a whole-series sync) still counts.
+        queue = [i for i in queue if _queue_season(i) in requested or _queue_season(i) is None]
+        arrivals = [a for a in arrivals if a.get('season') in requested or a.get('season') is None]
+    download = download_block(queue, now)
+    sync = sync_block(arrivals)
     seasons = _seasons(raw, is4k, title, episodes_here, download, sync) if media_type == 'tv' else []
     requested_at = epoch(raw.get('createdAt'))
     decided_at = epoch(raw.get('updatedAt'))
@@ -241,7 +268,11 @@ def request_view(raw: Dict[str, Any], *, title: Optional[Dict[str, Any]] = None,
 
     all_here = bool(seasons) and all(s['state'] == 'available' for s in seasons)
     available = media_status == MEDIA_AVAILABLE or status == 'completed' or all_here
-    partial = media_status == MEDIA_PARTIAL or any(s['state'] in ('available', 'partial') for s in seasons)
+    if seasons:
+        # Partly here means part of what was asked for, not of the series.
+        partial = any(s['state'] in ('available', 'partial') for s in seasons)
+    else:
+        partial = media_status == MEDIA_PARTIAL
 
     stage = _stage(status, available=available, partial=partial, download=download, sync=sync,
                    decided_at=decided_at, now=now, service=service, deleted=media_status == MEDIA_DELETED)

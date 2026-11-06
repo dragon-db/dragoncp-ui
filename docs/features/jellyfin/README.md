@@ -75,9 +75,15 @@ folded into the record:
   time DragonCP was not looking.
 - The play method kept is the heaviest seen: a play that was converted at any
   point counts as converted. Every reason seen during the play is kept.
-- After a restart, a play still going carries on in the same row; one that
-  ended while DragonCP was down is closed at its last sighting by the first
-  answer.
+- A stream seen again after more than 45 seconds unseen is a new play, and
+  the old one is closed at its last sighting, even when no answer in between
+  was late enough to close it (answers at +40 and +50 s, say).
+- After a restart, a play still going carries on in the same row if it was
+  last seen less than 45 seconds before; one that ended while DragonCP was
+  down is closed at its last sighting by the first answer.
+- Switching **Record plays** off, or Jellyfin off, closes every open play at
+  its last sighting, so none is left reading "Playing". The Plays tab and the
+  Now playing tab both do this when they find recording off.
 
 While Jellyfin is not answering, the job asks after 60 seconds, then 120, then
 every 5 minutes, and three failures in a row open the scheduler's alert. With

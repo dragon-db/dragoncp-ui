@@ -226,6 +226,24 @@ class RecorderTests(unittest.TestCase):
         row = self._rows()[0]
         self.assertEqual(row['ended_at'], row['last_seen_at'])
 
+    def test_a_stream_back_after_the_grace_is_a_new_play(self):
+        """Answers at +10..+40 without it do not reach the grace; the one at +50
+        has it again. Gone 50 s is over the 45 s grace, so that is two plays."""
+        self.recorder.observe([stream_from_session(episode_session())], now=1000)
+        for moment in (1010, 1020, 1030, 1040):
+            self.recorder.observe([], now=moment)
+        summary = self.recorder.observe([stream_from_session(episode_session())], now=1050)
+        self.assertEqual((summary['opened'], summary['closed']), (1, 1))
+        first, second = self._rows()
+        self.assertEqual(first['ended_at'], first['last_seen_at'])
+        self.assertIsNone(second['ended_at'])
+
+    def test_back_within_the_grace_is_the_same_play(self):
+        self.recorder.observe([stream_from_session(episode_session())], now=1000)
+        self.recorder.observe([], now=1030)
+        self.recorder.observe([stream_from_session(episode_session())], now=1000 + GRACE_SECONDS)
+        self.assertEqual(len(self._rows()), 1)
+
     def test_the_next_episode_is_a_new_play(self):
         self.recorder.observe([stream_from_session(episode_session())], now=1000)
         nxt = episode_session()
@@ -303,6 +321,26 @@ class ServiceTests(unittest.TestCase):
         snapshot = self.service.poll()
         self.assertEqual(snapshot['state'], 'off')
         self.assertIsNone(self.service.interval())
+
+    def test_switching_recording_off_mid_play_closes_the_play(self):
+        adapter = FakeAdapter([episode_session()])
+        self._with(adapter)
+        self.service.poll()
+        adapter._record = False
+        # The scheduler stops; the Plays tab is what notices.
+        self.now += 60
+        page = self.service.plays()
+        self.assertEqual(page['total'], 1)
+        self.assertIsNotNone(page['plays'][0]['ended_at'])
+        self.assertEqual(self.service.recorder.open_count(), 0)
+
+    def test_jellyfin_switched_off_mid_play_closes_the_play(self):
+        self._with(FakeAdapter([episode_session()]))
+        self.service.poll()
+        self._with(None)
+        self.now += 5
+        self.assertEqual(self.service.poll()['state'], 'off')
+        self.assertEqual(self.service.recorder.open_count(), 0)
 
     def test_nothing_is_recorded_while_recording_is_off(self):
         self._with(FakeAdapter([episode_session()], record=False))

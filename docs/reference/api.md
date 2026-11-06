@@ -2220,6 +2220,8 @@ Notes:
 - `download` (from Seerr's copy of the Sonarr/Radarr queue): `state`
   (`downloading`, `importing`, `paused`, `queued`, `warning`), `percent`,
   `eta_seconds`, `downloads`, `episodes`, `seasons`.
+- `download` and `sync` count only the requested seasons of a series (plus
+  anything that names no season).
 - `sync` (from DragonCP's arrivals and transfers since the request): `state`
   (`held` with `reason`, `syncing`, `arrived`, `failed`, `synced`).
 - `episodes_here` is Jellyfin's count of episodes with files, when Jellyfin is

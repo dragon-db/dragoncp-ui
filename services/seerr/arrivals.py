@@ -13,6 +13,7 @@ Only arrivals since the request count: an older season that arrived last year
 says nothing about this request.
 """
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -37,6 +38,19 @@ def sqlite_time(iso_value: str) -> Optional[str]:
     return moment.strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _season(row) -> Optional[int]:
+    """The season a row is about: Sonarr's number, or a transfer's "Season 01"."""
+    keys = row.keys()
+    if 'season_number' in keys and isinstance(row['season_number'], int):
+        return row['season_number']
+    for key in ('parsed_season', 'season_name'):
+        if key in keys and row[key]:
+            digits = re.search(r'\d+', str(row[key]))
+            if digits:
+                return int(digits.group())
+    return None
+
+
 def _row(row, kind: str) -> Dict[str, Any]:
     return {
         'kind': kind,
@@ -44,7 +58,7 @@ def _row(row, kind: str) -> Dict[str, Any]:
         'status': row['status'] or '',
         'held': bool(row['requires_manual_sync']) if 'requires_manual_sync' in row.keys() else False,
         'reason': (row['manual_sync_reason'] or '') if 'manual_sync_reason' in row.keys() else '',
-        'season': row['season_number'] if 'season_number' in row.keys() else None,
+        'season': _season(row),
         'transfer_status': row['transfer_status'] or '',
         'percent': row['progress_percent'],
         'eta_seconds': row['eta_seconds'],
@@ -92,6 +106,7 @@ def arrivals_for(db_manager, media_type: str, *, tvdb_id: Optional[int],
             rows = conn.execute(f'''
                 SELECT t.created_at, t.status AS status, 0 AS requires_manual_sync,
                        '' AS manual_sync_reason, NULL AS season_number,
+                       t.parsed_season, t.season_name,
                        t.status AS transfer_status, t.progress_percent, t.eta_seconds
                   FROM transfers t
                   JOIN media_item m ON m.id = t.media_item_id

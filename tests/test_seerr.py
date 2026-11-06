@@ -161,6 +161,30 @@ class RequestViewTests(unittest.TestCase):
         block = download_block([{'size': 10, 'sizeLeft': 5, 'status': 'warning'}], NOW)
         self.assertEqual(block['state'], 'warning')
 
+    def test_other_seasons_do_not_move_a_request(self):
+        """Season 2 asked for; only season 1 downloaded, synced and is in Jellyfin."""
+        downloads = [{'downloadId': 'd1', 'size': 10, 'sizeLeft': 5, 'status': 'downloading',
+                      'episode': {'seasonNumber': 1, 'episodeNumber': 3}}]
+        raw = a_request(seasons=(2,), media_status=4, media_seasons=[(1, 5)],
+                        downloads=downloads, updated=86400)
+        view = self.view(raw, arrivals=[arrival('completed', season=1)])
+        self.assertEqual(view['stage']['key'], 'searching')
+        self.assertIsNone(view['download'])
+        self.assertIsNone(view['sync'])
+        self.assertEqual([s['state'] for s in view['steps']], ['done', 'waiting', 'todo', 'todo'])
+
+    def test_its_own_season_does_move_it(self):
+        raw = a_request(seasons=(2,), media_status=4, media_seasons=[(1, 5)])
+        view = self.view(raw, arrivals=[arrival('completed', season=1),
+                                         arrival('completed', season=2, when='2027-01-14 11:00:00')])
+        self.assertEqual(view['stage']['key'], 'synced')
+
+    def test_a_sync_that_names_no_season_still_counts(self):
+        raw = a_request(seasons=(2,))
+        view = self.view(raw, arrivals=[arrival('syncing', season=None, kind='transfer',
+                                                transfer_status='running', percent=10)])
+        self.assertEqual(view['stage']['key'], 'syncing')
+
     def test_a_held_sync_needs_you_with_the_reason(self):
         view = self.view(a_request(), arrivals=[arrival('pending', held=True, reason='files would be deleted')])
         self.assertEqual(view['stage']['key'], 'held')
@@ -184,6 +208,20 @@ class RequestViewTests(unittest.TestCase):
         view = self.view(a_request(), arrivals=[
             arrival('failed', when='2027-01-14 09:00:00'),
             arrival('completed', when='2027-01-14 10:00:00')])
+        self.assertEqual(view['stage']['key'], 'synced')
+
+    def test_one_season_syncing_does_not_hide_another_failing(self):
+        raw = a_request(seasons=(1, 2))
+        view = self.view(raw, arrivals=[
+            arrival('failed', season=1, when='2027-01-14 09:00:00'),
+            arrival('completed', season=2, when='2027-01-14 10:00:00')])
+        self.assertEqual(view['stage']['key'], 'sync_failed')
+
+    def test_a_whole_series_sync_clears_a_season_failure(self):
+        raw = a_request(seasons=(1, 2))
+        view = self.view(raw, arrivals=[
+            arrival('failed', season=1, when='2027-01-14 09:00:00'),
+            arrival('completed', season=None, kind='transfer', when='2027-01-14 10:00:00')])
         self.assertEqual(view['stage']['key'], 'synced')
 
     def test_available_is_in_jellyfin_with_every_step_done(self):
@@ -266,6 +304,20 @@ class ArrivalTests(unittest.TestCase):
         self.assertEqual(found[0]['status'], 'syncing')
         self.assertEqual(found[0]['transfer_status'], 'running')
         self.assertEqual(found[0]['percent'], 55)
+
+    def test_a_hand_started_sync_carries_its_season(self):
+        with self.db.get_connection() as conn:
+            conn.execute("""INSERT INTO media_item (source, external_id, title)
+                            VALUES ('sonarr', '101', 'Example Show')""")
+            item = conn.execute("SELECT id FROM media_item WHERE external_id = '101'").fetchone()[0]
+            conn.execute("""INSERT INTO transfers (transfer_id, media_type, folder_name, season_name,
+                            source_path, dest_path, operation_type, status, media_item_id, created_at)
+                            VALUES ('t2', 'tvshows', 'Example Show', 'Season 02', '/a', '/b',
+                            'explore_sync', 'completed', ?, '2027-01-14 12:00:00')""", (item,))
+            conn.commit()
+        found = arrivals_for(self.db, 'tv', tvdb_id=101, tmdb_id=None, since='2027-01-01 00:00:00')
+        hand = [a for a in found if a['kind'] == 'transfer']
+        self.assertEqual([(a['season'], a['status']) for a in hand], [(2, 'completed')])
 
     def test_seerr_time_becomes_sqlite_utc(self):
         self.assertEqual(sqlite_time('2027-01-14T10:00:27.000Z'), '2027-01-14 10:00:27')

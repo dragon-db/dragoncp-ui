@@ -79,6 +79,14 @@ class PlayRecorder:
                         continue
                     seen.add(key)
                     state = self._open.get(key)
+                    if state is not None and now - state['last_seen'] > GRACE_SECONDS:
+                        # Gone longer than the grace between two answers (Jellyfin
+                        # down, a long restart, a slow check): that play ended at
+                        # its last sighting, and this is a new one.
+                        self._close(conn, state)
+                        del self._open[key]
+                        closed += 1
+                        state = None
                     if state is None:
                         self._open[key] = self._insert(conn, stream, now)
                         opened += 1
@@ -86,12 +94,32 @@ class PlayRecorder:
                         self._update(conn, state, stream, now)
                 for key, state in list(self._open.items()):
                     if key not in seen and now - state['last_seen'] > GRACE_SECONDS:
-                        conn.execute("UPDATE jellyfin_play SET ended_at = ? WHERE id = ?",
-                                     (iso(state['last_seen']), state['id']))
+                        self._close(conn, state)
                         del self._open[key]
                         closed += 1
                 conn.commit()
         return {'opened': opened, 'closed': closed, 'open': len(self._open)}
+
+    def close_open(self) -> int:
+        """Close every open play at its last sighting. For when recording stops:
+        nothing will ever see those plays end, and they must not read as
+        "Playing" for ever."""
+        with self._lock:
+            self._load_open()
+            if not self._open:
+                return 0
+            with self.db.get_connection() as conn:
+                for state in self._open.values():
+                    self._close(conn, state)
+                conn.commit()
+            count = len(self._open)
+            self._open.clear()
+            return count
+
+    @staticmethod
+    def _close(conn, state: Dict[str, Any]) -> None:
+        conn.execute("UPDATE jellyfin_play SET ended_at = ? WHERE id = ?",
+                     (iso(state['last_seen']), state['id']))
 
     def _load_open(self) -> None:
         """The plays a previous process left open, so they can carry on or close."""

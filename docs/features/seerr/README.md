@@ -77,7 +77,7 @@ first match wins:
 | Syncing here | A sync of it is queued or running here, with percent and time left | DragonCP's arrivals and transfers |
 | Downloading | Sonarr or Radarr has it in the download queue, with percent and time left; also "paused", "waiting to download", "importing" and "has a problem" | Seerr's copy of the queue |
 | On the remote server | It arrived there and no sync has started | DragonCP's arrivals |
-| Sync failed | It arrived and the sync here failed (a later success clears this) | DragonCP's arrivals |
+| Sync failed | It arrived and the sync here failed (a later sync of the same season, or of the whole series, clears this) | DragonCP's arrivals |
 | Partly in Jellyfin | Some of a series is in Jellyfin | Seerr |
 | Synced here | Synced, and Jellyfin has not picked it up yet (Seerr checks every few minutes) | DragonCP's arrivals |
 | Searching | Approved, nothing found yet. After 3 days: **Searching for N days**, in amber | Seerr |
@@ -94,6 +94,13 @@ DragonCP when a file is imported on the remote server) and the transfers they
 started, plus transfers started by hand or from Explore that the title index
 ties to the title. Both sides name the title by its TVDB id (series) or TMDB
 id (films); only arrivals since the request was made count.
+
+For a series, only the **requested seasons** count, in all three places: a
+request for season 2 is not moved by season 1 downloading, syncing or being
+in Jellyfin ("Partly in Jellyfin" means part of what was asked for). A queue
+entry or sync that names no season (a whole-series sync from Explore) still
+counts. Syncs started by hand carry their season from the transfer's folder
+("Season 02").
 
 ### 4. Issues
 

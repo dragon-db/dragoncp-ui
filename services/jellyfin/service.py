@@ -80,6 +80,7 @@ class JellyfinService:
                 return self._snapshot
             adapter = self.adapter()
             if adapter is None:
+                self.recorder.close_open()
                 snapshot = {'ok': False, 'state': 'off', 'streams': [],
                             'message': 'Jellyfin is off or not set up yet.'}
             else:
@@ -90,6 +91,8 @@ class JellyfinService:
                     recording = adapter.record_plays()
                     if recording:
                         self.recorder.observe(streams, now=now)
+                    else:
+                        self.recorder.close_open()
                     for stream in streams:
                         stream['item']['poster'] = self.poster_url(stream['item']['poster_id'])
                     snapshot = {'ok': True, 'state': 'ok', 'streams': streams,
@@ -137,6 +140,10 @@ class JellyfinService:
 
     def plays(self, **filters) -> Dict[str, Any]:
         """Recorded plays, each with its poster address."""
+        if not self.recording():
+            # Switched off mid-play: close what was open at its last sighting,
+            # or it would read as "Playing" until recording came back on.
+            self.recorder.close_open()
         page = self.recorder.plays(**filters)
         for play in page['plays']:
             item = play['item']
