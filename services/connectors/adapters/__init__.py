@@ -15,5 +15,6 @@ from services.connectors.adapters import discord  # noqa: F401
 from services.connectors.adapters import sonarr  # noqa: F401
 from services.connectors.adapters import radarr  # noqa: F401
 from services.connectors.adapters import jellyfin  # noqa: F401
+from services.connectors.adapters import seerr  # noqa: F401
 
-__all__ = ['discord', 'jellyfin', 'radarr', 'sonarr']
+__all__ = ['discord', 'jellyfin', 'radarr', 'seerr', 'sonarr']

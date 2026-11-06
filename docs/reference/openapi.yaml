@@ -91,6 +91,10 @@ tags:
     description: Background jobs on a clock (the Sonarr and Radarr auto-scanners)
   - name: Media Library
     description: Library, Queue and History views of Sonarr and Radarr, and Sync on a title
+  - name: Jellyfin
+    description: What Jellyfin is playing, and DragonCP's own record of every play
+  - name: Seerr
+    description: Seerr's admin side - requests, where approved ones have got to, and issues
 
 security:
   - bearerAuth: []
@@ -4988,6 +4992,350 @@ paths:
   # Errors here are `{"success": false, "error": "..."}`, not the `status`
   # envelope. Every endpoint answers 404 for an unknown source and 503 when the
   # title index is not available. Sonarr and Radarr are only ever read.
+
+  /jellyfin/now-playing:
+    get:
+      tags: [Jellyfin]
+      summary: Every stream playing right now, converted ones first; recorded when Record plays is on
+      responses:
+        '200':
+          description: What is playing. `state` is ok, off or unreachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  ok: { type: boolean }
+                  state: { type: string, enum: [ok, off, unreachable] }
+                  recording: { type: boolean }
+                  signed_in: { type: integer }
+                  message: { type: string }
+                  checked_at: { type: string, format: date-time }
+                  streams:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                      properties:
+                        session_id: { type: string }
+                        play_method: { type: string, enum: [DirectPlay, DirectStream, Transcode, ''] }
+                        network: { type: string, enum: [local, remote, ''] }
+                        position_seconds: { type: integer }
+                        paused: { type: boolean }
+                        transcode:
+                          type: object
+                          nullable: true
+                          additionalProperties: true
+                          properties:
+                            video: { type: boolean, nullable: true }
+                            audio: { type: boolean, nullable: true }
+                            reasons: { type: array, items: { type: string } }
+                            hardware: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /jellyfin/plays:
+    get:
+      tags: [Jellyfin]
+      summary: Recorded plays, newest first, from DragonCP's own table
+      parameters:
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 50, minimum: 1, maximum: 200 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, default: 0 } }
+        - { name: user, in: query, required: false, schema: { type: string } }
+        - name: converted
+          in: query
+          required: false
+          description: 1 for converted plays only, 0 for the others
+          schema: { type: string, enum: ['1', '0'] }
+        - { name: q, in: query, required: false, schema: { type: string, maxLength: 100 } }
+      responses:
+        '200':
+          description: One page of plays
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  recording: { type: boolean }
+                  total: { type: integer }
+                  users: { type: array, items: { type: string } }
+                  plays:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                      properties:
+                        id: { type: integer }
+                        source: { type: string }
+                        started_at: { type: string, format: date-time }
+                        ended_at: { type: string, format: date-time, nullable: true }
+                        watched_seconds: { type: integer }
+                        finished: { type: boolean }
+                        play_method: { type: string, nullable: true }
+                        reasons: { type: array, items: { type: string } }
+        '400':
+          description: limit or offset is not a number
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /jellyfin/image/{item_id}:
+    get:
+      tags: [Jellyfin]
+      summary: An item's poster through DragonCP; guarded by a signature, not a sign-in
+      security: []
+      parameters:
+        - { name: item_id, in: path, required: true, schema: { type: string, pattern: '^[0-9a-fA-F-]{32,36}$' } }
+        - { name: s, in: query, required: true, description: The signature from a signed-in response, schema: { type: string } }
+        - { name: w, in: query, required: false, schema: { type: integer, default: 240, minimum: 60, maximum: 600 } }
+      responses:
+        '200':
+          description: The image
+          content:
+            image/*:
+              schema: { type: string, format: binary }
+        '404':
+          description: Bad signature, bad id, Jellyfin off, or no image
+
+  /seerr/summary:
+    get:
+      tags: [Seerr]
+      summary: Counts for the tabs and sidebar, whether changes are allowed here, the webhook's state
+      responses:
+        '200':
+          description: The summary. `requests` and `issues` are null unless `state` is ok.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  state: { type: string, enum: [ok, off, unreachable] }
+                  message: { type: string }
+                  requests: { type: object, nullable: true, additionalProperties: { type: integer } }
+                  issues: { type: object, nullable: true, additionalProperties: { type: integer } }
+                  can_change: { type: boolean }
+                  why_not: { type: string }
+                  test_mode: { type: boolean }
+                  polling: { type: boolean }
+                  webhook:
+                    type: object
+                    properties:
+                      password_set: { type: boolean }
+                      last_at: { type: string, format: date-time, nullable: true }
+                      last_type: { type: string, nullable: true }
+                      path: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /seerr/requests:
+    get:
+      tags: [Seerr]
+      summary: Requests by filter, each with where it has got to
+      parameters:
+        - { name: view, in: query, schema: { type: string, enum: [waiting, progress, failed, done, all], default: waiting } }
+        - { name: type, in: query, schema: { type: string, enum: [all, movie, tv], default: all } }
+        - { name: sort, in: query, schema: { type: string, enum: [added, modified], default: added } }
+        - { name: user, in: query, description: A Seerr user id, schema: { type: integer } }
+        - { name: take, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: skip, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: One page of requests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  state: { type: string, enum: [ok, off, unreachable] }
+                  message: { type: string }
+                  total: { type: integer }
+                  can_change: { type: boolean }
+                  why_not: { type: string }
+                  requests:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                      properties:
+                        id: { type: integer }
+                        status: { type: string, enum: [pending, approved, declined, failed, completed, unknown] }
+                        type: { type: string, enum: [movie, tv] }
+                        stage:
+                          type: object
+                          properties:
+                            key: { type: string }
+                            label: { type: string }
+                            tone: { type: string, enum: [ok, warn, crit, brand, info, muted] }
+                            detail: { type: string }
+                            percent: { type: integer, nullable: true }
+                        steps:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              key: { type: string, enum: [approved, download, sync, jellyfin] }
+                              state: { type: string, enum: [done, active, waiting, problem, todo] }
+                        actions: { type: array, items: { type: string, enum: [approve, decline, retry] } }
+        '400':
+          description: take or skip is not a number
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /seerr/requests/{id}:
+    get:
+      tags: [Seerr]
+      summary: One request, with where it has got to
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: The request }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { description: Seerr did not answer or has no such request }
+  /seerr/requests/{id}/options:
+    get:
+      tags: [Seerr]
+      summary: What can be changed before approving; asks Sonarr or Radarr through Seerr
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: server, in: query, description: Another server's id, schema: { type: integer } }
+      responses:
+        '200': { description: Servers, quality profiles, folders and seasons }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { description: Seerr, Sonarr or Radarr did not answer }
+  /seerr/requests/{id}/{decision}:
+    post:
+      tags: [Seerr]
+      summary: Approve or decline a waiting request, or retry a failed one
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: decision, in: path, required: true, schema: { type: string, enum: [approve, decline, retry] } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                changes:
+                  type: object
+                  description: Approve only. Unchanged fields are sent as they are.
+                  properties:
+                    server_id: { type: integer }
+                    profile_id: { type: integer }
+                    root_folder: { type: string }
+                    seasons: { type: array, items: { type: integer } }
+      responses:
+        '200': { description: Done }
+        '400': { description: Bad changes }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Changes are off on this test instance }
+        '409': { description: Seerr is off, or the request is no longer waiting }
+        '502': { description: Seerr said no or did not answer }
+  /seerr/issues:
+    get:
+      tags: [Seerr]
+      summary: Issues by filter, each with its thread
+      parameters:
+        - { name: view, in: query, schema: { type: string, enum: [open, resolved, all], default: open } }
+        - { name: sort, in: query, schema: { type: string, enum: [added, modified], default: added } }
+        - { name: user, in: query, description: The reporter's Seerr user id, schema: { type: integer } }
+        - { name: take, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: skip, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        '200':
+          description: One page of issues
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  state: { type: string, enum: [ok, off, unreachable] }
+                  total: { type: integer }
+                  can_change: { type: boolean }
+                  issues:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                      properties:
+                        id: { type: integer }
+                        type: { type: string, enum: [video, audio, subtitles, other] }
+                        status: { type: string, enum: [open, resolved] }
+                        season: { type: integer, nullable: true }
+                        episode: { type: integer, nullable: true }
+                        message: { type: string }
+                        replies: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /seerr/issues/{id}:
+    get:
+      tags: [Seerr]
+      summary: One issue with its thread
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: The issue }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { description: Seerr did not answer or has no such issue }
+  /seerr/issues/{id}/comment:
+    post:
+      tags: [Seerr]
+      summary: Reply to an issue, optionally resolving it
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, maxLength: 2000 }
+                resolve: { type: boolean, default: false }
+      responses:
+        '200': { description: Sent }
+        '400': { description: Empty or too long }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Changes are off on this test instance }
+        '502': { description: Seerr said no or did not answer }
+  /seerr/issues/{id}/{state}:
+    post:
+      tags: [Seerr]
+      summary: Resolve or reopen an issue
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+        - { name: state, in: path, required: true, schema: { type: string, enum: [resolve, reopen] } }
+      responses:
+        '200': { description: Done }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Changes are off on this test instance }
+        '502': { description: Seerr said no or did not answer }
+  /seerr/users:
+    get:
+      tags: [Seerr]
+      summary: Seerr's users by id and name, for the filters
+      responses:
+        '200': { description: The users }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /webhook/seerr:
+    post:
+      tags: [Seerr]
+      summary: Seerr's webhook; guarded by the webhook password, not a sign-in
+      security: []
+      parameters:
+        - { name: Authorization, in: header, required: true, description: The connector's webhook password, exactly or as Bearer, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true, description: Only notification_type is read }
+      responses:
+        '200': { description: Received; open pages are told to refresh }
+        '401': { description: Wrong webhook password }
+        '403': { description: Seerr is off in DragonCP, or no webhook password is set }
 
   /library/{source}:
     get:

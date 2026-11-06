@@ -47,6 +47,10 @@ from models.title_store import TitleStore
 from models.media_item import MediaItemStore
 from routes.renames import init_renames_routes, renames_bp
 from routes.media_library import init_media_library_routes, media_library_bp
+from routes.jellyfin import init_jellyfin_routes, jellyfin_bp
+from routes.seerr import init_seerr_routes, seerr_bp
+from services.jellyfin import JellyfinService
+from services.seerr import SeerrService
 from services.connectors import configure as configure_connectors
 from models.connector import ConnectorStore
 
@@ -365,6 +369,19 @@ connector_store = ConnectorStore(db_manager)
 connector_service = configure_connectors(connector_store)
 init_connector_routes(connector_service, connector_store)
 
+# Jellyfin: what is playing, and a record of every play (TASK-030). One more
+# scheduler job, off until "Record plays" is switched on in its Connection tab.
+jellyfin_service = JellyfinService(db_manager, secret=app.config['SECRET_KEY'])
+init_jellyfin_routes(jellyfin_service)
+transfer_coordinator.scheduler.register(jellyfin_service.scheduler_job())
+
+# Seerr: requests, where approved ones have got to, and issues (TASK-030). Its
+# job only runs with "Check every 5 minutes" on; its webhook needs a password.
+# Jellyfin's adapter is lent for episode counts on half-finished series.
+seerr_service = SeerrService(db_manager, jellyfin=jellyfin_service.adapter, socketio=socketio)
+init_seerr_routes(seerr_service)
+transfer_coordinator.scheduler.register(seerr_service.scheduler_job())
+
 # Background work starts only now, with the connector layer up: the sync
 # engine's restart recovery and the completion watchers for transfers that
 # survived a restart can both announce what they find, and before this point
@@ -395,6 +412,8 @@ app.register_blueprint(remote_daemon_bp, url_prefix='/api')
 app.register_blueprint(media_library_bp, url_prefix='/api')
 app.register_blueprint(connectors_bp, url_prefix='/api')
 app.register_blueprint(sync_engine_bp, url_prefix='/api')
+app.register_blueprint(jellyfin_bp, url_prefix='/api')
+app.register_blueprint(seerr_bp, url_prefix='/api')
 
 logger.info('Backend logging file: %s', LOG_FILE_PATH)
 

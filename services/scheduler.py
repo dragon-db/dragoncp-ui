@@ -16,8 +16,9 @@ What every job gets without asking (decided 2026-10-02):
   * it can run once shortly after start-up, because a restart is exactly when
     webhooks get lost.
 
-This release registers two jobs: the Sonarr and Radarr auto-scanners. Backup
-cleanup and a disk-space check are meant to move in later as more entries.
+Registered jobs: the Sonarr and Radarr auto-scanners, the title check,
+Jellyfin's play recorder and Seerr's 5-minute check. Backup cleanup and a disk-space check are meant to
+move in later as more entries.
 """
 
 import json

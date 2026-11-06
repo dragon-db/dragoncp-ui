@@ -312,6 +312,82 @@ class DatabaseManager:
             )
         ''')
 
+    def _create_jellyfin_tables(self, conn):
+        """Jellyfin (TASK-030): one row per play, the history Jellyfin does not keep.
+
+        `source` is 'live' for a play DragonCP watched; the "how" columns
+        (method, conversion, reasons) only exist for those. Times are UTC ISO.
+        `transcode_reasons` is every reason seen during the play, as a JSON
+        list; `transcode` and `source_media` the latest details, as JSON.
+        """
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS jellyfin_play (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL DEFAULT 'live',
+                session_id TEXT,
+                user_id TEXT,
+                user_name TEXT,
+                client TEXT,
+                app_version TEXT,
+                device_id TEXT,
+                device_name TEXT,
+                address TEXT,
+                network TEXT,
+                item_id TEXT,
+                item_type TEXT,
+                title TEXT,
+                series_name TEXT,
+                series_id TEXT,
+                season INTEGER,
+                episode INTEGER,
+                year INTEGER,
+                runtime_seconds INTEGER,
+                path TEXT,
+                provider_ids TEXT,
+                started_at TEXT NOT NULL,
+                last_seen_at TEXT,
+                ended_at TEXT,
+                watched_seconds INTEGER DEFAULT 0,
+                max_position_seconds INTEGER DEFAULT 0,
+                paused INTEGER DEFAULT 0,
+                play_method TEXT,
+                video_transcoded INTEGER DEFAULT 0,
+                audio_transcoded INTEGER DEFAULT 0,
+                transcode_reasons TEXT,
+                transcode TEXT,
+                source_media TEXT,
+                activity_log_id INTEGER UNIQUE
+            )
+        ''')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_jellyfin_play_started '
+                     'ON jellyfin_play(started_at DESC)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_jellyfin_play_open '
+                     'ON jellyfin_play(ended_at) WHERE ended_at IS NULL')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_jellyfin_play_item '
+                     'ON jellyfin_play(item_id)')
+
+    def _create_seerr_tables(self, conn):
+        """Seerr (TASK-030): the name, year and poster of each requested title.
+
+        Seerr's request and issue rows carry only the title's TMDB id; the name
+        comes from a second question per title, which Seerr answers out of
+        TMDB. Keeping the answer here means a title is asked about once every
+        few days, not on every page load, and a restart starts warm.
+        `seasons` is a JSON list of [season number, episode count].
+        """
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS seerr_title (
+                media_type TEXT NOT NULL,
+                tmdb_id INTEGER NOT NULL,
+                title TEXT,
+                year INTEGER,
+                poster_path TEXT,
+                seasons TEXT,
+                fetched_at TEXT NOT NULL,
+                PRIMARY KEY (media_type, tmdb_id)
+            )
+        ''')
+
     def _create_sync_engine_tables(self, conn):
         """The sync engine's memory: every pass through the pipeline, stage by stage.
 
@@ -1192,6 +1268,8 @@ class DatabaseManager:
 
             self._create_title_tables(conn)
             self._create_sync_engine_tables(conn)
+            self._create_jellyfin_tables(conn)
+            self._create_seerr_tables(conn)
 
             self._migrate_discord_to_connector(conn)
             self._backfill_media_items(conn)

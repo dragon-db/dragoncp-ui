@@ -203,6 +203,12 @@ class Connector:
     settings_label: str = 'Connection'
     settings_description: str = ''
 
+    #: The tabs the connector's page shows before its settings, by id, when
+    #: they are not the ones its capabilities imply. Jellyfin is asked
+    #: questions like Sonarr, but has no library to compare against this
+    #: disk and no download queue; what it has is what is playing.
+    views: tuple = ()
+
     #: Whether `check()` reaches anything. False means the connector has no
     #: endpoint to test at this level, and the UI must not offer a button that
     #: cannot fail — a test that always passes is worse than no test.
@@ -254,6 +260,7 @@ class Connector:
                 or f"How DragonCP reaches {self.display_name}."
             ),
             'supports_check': self.supports_check,
+            'views': list(self.views),
         }
 
 

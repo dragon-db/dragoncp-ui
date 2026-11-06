@@ -5,6 +5,7 @@ import { useLogout } from "@/hooks/useAuth";
 import { useConnectors } from "@/hooks/useConnectors";
 import { useAlertSummary } from "@/hooks/useSync";
 import { ConnectorIcon } from "@/components/integrations/connector-icon";
+import { useSeerrLive, useSeerrSummary } from "@/hooks/useSeerr";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -115,6 +116,20 @@ export function AppSidebar() {
   // means someone has to do something.
   const openAlerts = useAlertSummary().data?.open ?? 0;
   const counts: Record<string, number> = { "/notifications": openAlerts };
+
+  // Seerr's own count, on its entry: requests waiting for a yes or no, plus
+  // issues nobody has answered. Kept current by Seerr's webhook over the socket.
+  const seerrOn = connectors.some((connector) => connector.id === "seerr" && connector.enabled);
+  useSeerrLive(seerrOn);
+  const seerr = useSeerrSummary(seerrOn).data;
+  const seerrWaiting = seerr?.requests?.pending ?? 0;
+  const seerrIssues = seerr?.issues?.open ?? 0;
+  const connectorCounts: Record<string, { count: number; title: string }> = {
+    seerr: {
+      count: seerrWaiting + seerrIssues,
+      title: `${seerrWaiting} waiting for approval, ${seerrIssues} open issue${seerrIssues === 1 ? "" : "s"}`,
+    },
+  };
 
   const closeMobile = () => setOpenMobile(false);
   const isActive = (item: NavItem) =>
@@ -244,12 +259,21 @@ export function AppSidebar() {
                     >
                       <ConnectorIcon connectorId={connector.id} />
                       <span>{connector.display_name}</span>
-                      {connector.enabled && (
+                      {connector.enabled && (connectorCounts[connector.id]?.count ?? 0) > 0 ? (
+                        <span
+                          className="ml-auto min-w-5 rounded-full border border-amber-500/40 bg-amber-500/15 px-1.5 text-center font-mono text-[10px] leading-4 text-amber-300"
+                          title={connectorCounts[connector.id].title}
+                        >
+                          {connectorCounts[connector.id].count > 99
+                            ? "99+"
+                            : connectorCounts[connector.id].count}
+                        </span>
+                      ) : connector.enabled ? (
                         <span
                           className="ml-auto size-1.5 rounded-full bg-brand"
                           title="Turned on"
                         />
-                      )}
+                      ) : null}
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 ))}

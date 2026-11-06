@@ -1,6 +1,6 @@
 # DragonCP Frontend Reference
 
-Last updated: 2026-10-05
+Last updated: 2026-11-02
 Primary files: `frontend/src/`, `frontend/package.json`, `frontend/components.json`, `frontend/vite.config.ts`, `frontend_serving.py`, `app.py`, `start.py`
 
 ## Purpose
@@ -323,7 +323,7 @@ store says the backend is unreachable, with a retry that refetches.
 
 | Component | What it is |
 |---|---|
-| `app-sidebar.tsx` | Four groups — Workspace (Dashboard, Transfers, Webhooks, Notifications), Library (Browse Media → Movies, TV Shows, Anime), Integrations (one entry per connector the server lists, hidden until that list arrives, with a dot on each one switched on), System (Backups, Activity, Settings) — plus the user footer with a log-out button. Notifications carries an amber count of open alerts (`useAlertSummary`, capped at "99+"). Workspace had a Pipeline entry from 2026-10-05 to 2026-10-06; syncs now live on Transfers |
+| `app-sidebar.tsx` | Four groups — Workspace (Dashboard, Transfers, Webhooks, Notifications), Library (Browse Media → Movies, TV Shows, Anime), Integrations (one entry per connector the server lists, hidden until that list arrives, with a dot on each one switched on, and on Seerr an amber count of waiting requests plus open issues instead of the dot), System (Backups, Activity, Settings) — plus the user footer with a log-out button. Notifications carries an amber count of open alerts (`useAlertSummary`, capped at "99+"). Workspace had a Pipeline entry from 2026-10-05 to 2026-10-06; syncs now live on Transfers |
 | `app-navbar.tsx` | Breadcrumb from a prefix path table, the live metrics pill (realtime status, Active, Queued), the bell and settings links, and a version badge. The bell links to Notifications and shows a dot while any alert is open; until 2026-10-05 it linked to Webhooks and lit for pending webhooks |
 | `mobile-nav.tsx` | Bottom bar below `md`: Home, Transfers, Webhooks and a Menu button that opens the sidebar sheet, which is where Notifications is on a phone; counts come from active transfers and pending notifications |
 | `realtime-status.tsx` | The connection popover — state, session minutes, active WebSocket count, and enable/extend/disable/reconnect |
@@ -568,17 +568,32 @@ Worth knowing when changing these pages:
 `components/pages/integrations.tsx`, at `/integrations/$connector`, draws a
 connector's tabs from what it declares rather than from its name: a connector
 that can notify (Discord) gets its destinations, **Routing**, Activity and its
-settings tab; one that answers queries (Sonarr, Radarr, Jellyfin) gets Library,
-Queue, History and its settings tab. **Routing** was named Notifications until
-2026-10-05; that name now belongs to the alerts page.
+settings tab; one that answers queries (Sonarr, Radarr) gets Library,
+Queue, History and its settings tab. A connector that lists `views` gets those
+tabs instead, then its settings tab: Jellyfin's are **Now playing** and
+**Plays** (`VIEW_TABS` in the page; panels `integrations/now-playing-panel.tsx`
+and `integrations/plays-panel.tsx`, words in `integrations/jellyfin-vocab.ts`,
+data from `hooks/useJellyfin.ts`, types in `lib/jellyfin-types.ts`). Now
+playing asks every 5 seconds while it is on screen; Plays every 30. Seerr's
+are **Requests** and **Issues**, with the waiting and open counts on the tabs
+from `useSeerrSummary` (panels `integrations/seerr-requests-panel.tsx`,
+`integrations/seerr-issues-panel.tsx`, the "Change, then approve" dialog
+`integrations/seerr-approve-dialog.tsx`, the webhook card on its Connection
+tab `integrations/seerr-webhook-card.tsx`, words in
+`integrations/seerr-vocab.ts`, data from `hooks/useSeerr.ts`, types in
+`lib/seerr-types.ts`). `useSeerrLive` invalidates every `["seerr", …]` query
+on the socket event `seerr_changed`; otherwise In progress refetches every 20
+seconds and the rest every minute. Every change goes through a confirm.
+**Routing** was named Notifications until 2026-10-05; that name now belongs to
+the alerts page.
 
 The tabs are `PageTabsList`, the same underlined bar as Transfers and Webhooks
 (a segmented pill until 2026-10-07), with an icon each and the settings tab at
 the far end. Destinations count their webhooks; Library counts its titles and
 Queue its downloads, read through `useLibrary` and `useLibraryQueue` — the same
 queries the panels make, so the Library count costs nothing extra. The queue is
-only asked for once the library has answered, so a query connector with no
-library here (Jellyfin) is not polled for one.
+only asked for once the library has answered. A connector with its own
+`views` is never asked for a library or a queue.
 
 On the Library tab each card is `group/card`, and `TitlePoster` takes
 `interactive`: on hover or keyboard focus the picture eases in within its

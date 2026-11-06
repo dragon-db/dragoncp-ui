@@ -479,7 +479,7 @@ class ConnectorRouteTests(unittest.TestCase):
     def test_every_connector_appears_even_when_never_saved(self):
         connectors = self.client.get('/api/connectors').get_json()['connectors']
         self.assertEqual({c['id'] for c in connectors},
-                         {'discord', 'jellyfin', 'radarr', 'sonarr'})
+                         {'discord', 'jellyfin', 'radarr', 'seerr', 'sonarr'})
         jellyfin = next(c for c in connectors if c['id'] == 'jellyfin')
         self.assertFalse(jellyfin['exists'])
         self.assertFalse(jellyfin['enabled'])
