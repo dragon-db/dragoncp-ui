@@ -166,6 +166,10 @@ def _fixed_later(failure: Dict[str, Any], done: List[Dict[str, Any]]) -> bool:
                for d in done)
 
 
+def _season_numbers(rows: List[Dict[str, Any]]) -> List[int]:
+    return sorted({r['season'] for r in rows if isinstance(r.get('season'), int)})
+
+
 def sync_block(arrivals: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """DragonCP's side: arrived on the remote server, syncing, synced, held."""
     if not arrivals:
@@ -179,24 +183,25 @@ def sync_block(arrivals: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     waiting = [a for a in arrivals if a['status'] == 'pending' and not a['held']
                and a['kind'] == 'arrival' and not a['transfer_status']]
     done = [a for a in arrivals if a['status'] == 'completed']
-    seasons = sorted({a['season'] for a in arrivals if isinstance(a.get('season'), int)})
     last = arrivals[-1]
     failed = [f for f in failed if not _fixed_later(f, done)]
+    # 'seasons' names the seasons in the state reported, so a season already
+    # synced is not shown as syncing because another one is.
     if held:
-        return {'state': 'held', 'reason': held[-1]['reason'] or '', 'seasons': seasons,
+        return {'state': 'held', 'reason': held[-1]['reason'] or '', 'seasons': _season_numbers(held),
                 'at': iso(held[-1]['at'])}
     if active:
         current = active[-1]
         return {'state': 'syncing', 'percent': current.get('percent'),
-                'eta_seconds': current.get('eta_seconds'), 'seasons': seasons,
+                'eta_seconds': current.get('eta_seconds'), 'seasons': _season_numbers(active),
                 'at': iso(current['at'])}
     if waiting:
-        return {'state': 'arrived', 'seasons': seasons, 'at': iso(waiting[-1]['at'])}
+        return {'state': 'arrived', 'seasons': _season_numbers(waiting), 'at': iso(waiting[-1]['at'])}
     if failed:
-        return {'state': 'failed', 'seasons': seasons, 'at': iso(failed[-1]['at'])}
+        return {'state': 'failed', 'seasons': _season_numbers(failed), 'at': iso(failed[-1]['at'])}
     if done:
-        return {'state': 'synced', 'seasons': seasons, 'at': iso(done[-1]['at'])}
-    return {'state': 'arrived', 'seasons': seasons, 'at': iso(last['at'])}
+        return {'state': 'synced', 'seasons': _season_numbers(done), 'at': iso(done[-1]['at'])}
+    return {'state': 'arrived', 'seasons': _season_numbers(arrivals), 'at': iso(last['at'])}
 
 
 # --------------------------------------------------------------- requests

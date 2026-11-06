@@ -217,6 +217,16 @@ class RequestViewTests(unittest.TestCase):
             arrival('completed', season=2, when='2027-01-14 10:00:00')])
         self.assertEqual(view['stage']['key'], 'sync_failed')
 
+    def test_only_the_season_being_synced_shows_as_syncing(self):
+        raw = a_request(seasons=(1, 2))
+        view = self.view(raw, arrivals=[
+            arrival('completed', season=1, when='2027-01-14 09:00:00'),
+            arrival('syncing', season=2, transfer_status='running', percent=30,
+                    when='2027-01-14 10:00:00')])
+        self.assertEqual(view['stage']['key'], 'syncing')
+        self.assertEqual([(s['number'], s['syncing']) for s in view['seasons']],
+                         [(1, False), (2, True)])
+
     def test_a_whole_series_sync_clears_a_season_failure(self):
         raw = a_request(seasons=(1, 2))
         view = self.view(raw, arrivals=[

@@ -2223,7 +2223,9 @@ Notes:
 - `download` and `sync` count only the requested seasons of a series (plus
   anything that names no season).
 - `sync` (from DragonCP's arrivals and transfers since the request): `state`
-  (`held` with `reason`, `syncing`, `arrived`, `failed`, `synced`).
+  (`held` with `reason`, `syncing`, `arrived`, `failed`, `synced`) and
+  `seasons`, the seasons in that state. A failure stays until the same season,
+  or the whole series, syncs later.
 - `episodes_here` is Jellyfin's count of episodes with files, when Jellyfin is
   connected and the series is not finished; null otherwise.
 - `actions`: `["approve", "decline"]` while waiting, `["retry"]` when failed.
