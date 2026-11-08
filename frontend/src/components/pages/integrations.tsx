@@ -22,6 +22,8 @@ import { PlaysPanel } from "@/components/integrations/plays-panel";
 import { SeerrRequestsPanel } from "@/components/integrations/seerr-requests-panel";
 import { SeerrIssuesPanel } from "@/components/integrations/seerr-issues-panel";
 import { SeerrWebhookCard } from "@/components/integrations/seerr-webhook-card";
+import { ProwlarrSearchPanel } from "@/components/integrations/prowlarr-search-panel";
+import { ProwlarrIndexersPanel } from "@/components/integrations/prowlarr-indexers-panel";
 import { useConnector, useSaveConnector } from "@/hooks/useConnectors";
 import { useLibrary, useLibraryQueue } from "@/hooks/useMediaLibrary";
 import { useSeerrSummary } from "@/hooks/useSeerr";
@@ -37,6 +39,8 @@ import {
   IconPlayerPlay,
   IconPlugConnected,
   IconRoute,
+  IconSearch,
+  IconServer2,
 } from "@tabler/icons-react";
 
 const NOTIFY_TABS = ["targets", "mentions", "routing", "activity", "settings"];
@@ -45,12 +49,15 @@ const QUERY_TABS = ["library", "queue", "history", "settings"];
 /** Tabs a connector can ask for by id, for when its capabilities do not say
  *  enough. Jellyfin answers questions like Sonarr, but has no library to hold
  *  against this disk; what it has is what is playing. Seerr's are its
- *  requests and the issues users reported. */
+ *  requests and the issues users reported; Prowlarr's, its search and the
+ *  health of its indexers. */
 const VIEW_TABS = {
   now_playing: { label: "Now playing", icon: IconPlayerPlay },
   plays: { label: "Plays", icon: IconHistory },
   requests: { label: "Requests", icon: IconListCheck },
   issues: { label: "Issues", icon: IconMessageReport },
+  search: { label: "Search", icon: IconSearch },
+  indexers: { label: "Indexers", icon: IconServer2 },
 } as const;
 type ViewId = keyof typeof VIEW_TABS;
 
@@ -311,6 +318,10 @@ export function IntegrationsPage({ connectorId }: { connectorId: string }) {
                 <NowPlayingPanel onOpenSettings={() => go({ tab: "settings" })} />
               ) : view === "requests" ? (
                 <SeerrRequestsPanel onOpenSettings={() => go({ tab: "settings" })} />
+              ) : view === "search" ? (
+                <ProwlarrSearchPanel onOpenSettings={() => go({ tab: "settings" })} />
+              ) : view === "indexers" ? (
+                <ProwlarrIndexersPanel onOpenSettings={() => go({ tab: "settings" })} />
               ) : (
                 <SeerrIssuesPanel onOpenSettings={() => go({ tab: "settings" })} />
               )}

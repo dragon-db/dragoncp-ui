@@ -23,6 +23,10 @@ under Integrations in the sidebar.
   got to (downloading on the remote server, syncing here, in Jellyfin), and
   the issues users reported, with approve, decline, retry, reply and resolve.
   Its own doc: [Seerr](../seerr/README.md).
+- **Prowlarr** searches every indexer from a phone, with results as each
+  indexer answers, and shows which indexers are healthy. A release can be
+  sent to one of Prowlarr's download clients. Its own doc:
+  [Prowlarr](../prowlarr/README.md).
 
 Last updated: 2026-11-02
 Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors.py`,
@@ -45,6 +49,7 @@ Primary files: `services/connectors/`, `models/connector.py`, `routes/connectors
 | Sonarr's two allowed commands (`RenameFiles`, `RefreshSeries`), the TMDB key and the title-check schedule | `services/connectors/adapters/sonarr.py`, `_arr.py` (`command`); behaviour in [renames](../renames/README.md) |
 | Jellyfin | `services/connectors/adapters/jellyfin.py` |
 | Seerr | `services/connectors/adapters/seerr.py`, `services/seerr/` |
+| Prowlarr | `services/connectors/adapters/prowlarr.py`, `services/prowlarr/` |
 | Asking Sonarr whether a season is ready — the pipeline's Ready check | `services/sync_engine/engine.py`, through `services/media_index.py` (`in_flight_for_season`) |
 | The scheduled auto-scanner | `services/auto_scanner.py` |
 | The scheduler that runs it | `services/scheduler.py` |
