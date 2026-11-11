@@ -103,6 +103,8 @@ ACTIONS = {
     'seerr.issue_comment': 'Replied to a Seerr issue',
     'seerr.issue_resolve': 'Resolved a Seerr issue',
     'seerr.issue_reopen': 'Reopened a Seerr issue',
+    # Prowlarr: a release sent to a download client from Search
+    'prowlarr.grab': 'Sent a release to a download client',
     'ssh.connect': 'Connected to the remote server',
     'ssh.disconnect': 'Disconnected from the remote server',
     # the transfer server on the remote host

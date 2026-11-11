@@ -33,6 +33,7 @@ map; `INDEX.md` is the catalogue.
 | Browsing the library, comparing it with the remote, or planning a sync | `features/explore/README.md` | `features/transfers/README.md` |
 | Why a transfer is stuck, queued, or not starting | `features/queue/README.md` | `features/transfers/README.md` |
 | Radarr/Sonarr webhook payloads and what they trigger | `features/webhooks/README.md` | `features/sync-engine/README.md` |
+| Searching indexers from a phone, sending a release on, or which Prowlarr indexers work | `features/prowlarr/README.md` | `features/integrations/README.md` |
 | Adding or changing an HTTP endpoint | `reference/api.md` | `reference/openapi.yaml`, then the owning feature doc |
 | Adding or changing a database column | `reference/database-schema.md` | The owning feature doc's `Data` section |
 | Adding or changing a Socket.IO event | `reference/realtime.md` | The owning feature doc's `API` section |

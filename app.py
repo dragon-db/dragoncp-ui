@@ -49,8 +49,10 @@ from routes.renames import init_renames_routes, renames_bp
 from routes.media_library import init_media_library_routes, media_library_bp
 from routes.jellyfin import init_jellyfin_routes, jellyfin_bp
 from routes.seerr import init_seerr_routes, seerr_bp
+from routes.prowlarr import init_prowlarr_routes, prowlarr_bp
 from services.jellyfin import JellyfinService
 from services.seerr import SeerrService
+from services.prowlarr import ProwlarrService
 from services.connectors import configure as configure_connectors
 from models.connector import ConnectorStore
 
@@ -382,6 +384,11 @@ seerr_service = SeerrService(db_manager, jellyfin=jellyfin_service.adapter, sock
 init_seerr_routes(seerr_service)
 transfer_coordinator.scheduler.register(seerr_service.scheduler_job())
 
+# Prowlarr: search every indexer from a phone, and see which are healthy. It
+# runs nothing on a schedule; every search is one the operator started.
+prowlarr_service = ProwlarrService()
+init_prowlarr_routes(prowlarr_service)
+
 # Background work starts only now, with the connector layer up: the sync
 # engine's restart recovery and the completion watchers for transfers that
 # survived a restart can both announce what they find, and before this point
@@ -414,6 +421,7 @@ app.register_blueprint(connectors_bp, url_prefix='/api')
 app.register_blueprint(sync_engine_bp, url_prefix='/api')
 app.register_blueprint(jellyfin_bp, url_prefix='/api')
 app.register_blueprint(seerr_bp, url_prefix='/api')
+app.register_blueprint(prowlarr_bp, url_prefix='/api')
 
 logger.info('Backend logging file: %s', LOG_FILE_PATH)
 
