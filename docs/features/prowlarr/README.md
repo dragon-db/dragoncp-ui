@@ -92,8 +92,11 @@ name), the facts, and:
   confirm. It then reads **Sent** in the sheet and the list.
   Above the button, **where it lands**: see below.
 - **Copy magnet**: torrents only. Prowlarr hands magnet links out as a
-  redirect, so the server follows it; the copy works on iPhone Safari because
-  the clipboard is given the link while it is still being fetched.
+  redirect, so the server follows it. Over https the copy works on iPhone
+  Safari because the clipboard is given the link while it is still being
+  fetched. Over plain http (a private address), browsers withhold the
+  clipboard; the older copy route is tried, and when that is refused too the
+  link appears in the sheet to select, with **Open in a torrent app**.
 - **Save .torrent / .nzb**: fetched through the server.
 - **Indexer page**, and IMDb, TMDB and TVDB links when the release names them.
 
@@ -110,6 +113,9 @@ checks both before **Send**, for the download client chosen:
 2. **Who watches that.** Sonarr's and Radarr's download clients of the same
    kind at the same address (any of that kind, if none shares the address)
    and the category each watches; one with no category watches everything.
+   One of the same kind at another address may be the same server reached
+   by another name, or a different one, so it is shown as a warning to
+   check, never as a confirmed match.
    Also whether their automatic import of finished downloads is on. A
    warning when nobody watches it: it would download and stay there. Another
    when a TV release lands where only Radarr looks, or the reverse.
@@ -148,6 +154,11 @@ indexer anything.
 - **The same search within 5 minutes is not asked again.** It is answered
   from what was found, and the line says "from 2 min ago". **Again** asks
   afresh. This protects private trackers' API limits.
+- **"Nothing found" is checked.** Prowlarr answers an indexer that failed
+  with an empty list, the same as one that found nothing. When an indexer
+  returns nothing, Prowlarr's history for it is read: a search recorded as
+  failed shows as **failed**; no record at all (an indexer at its API limit
+  looks like this) shows a note that the result is uncertain.
 - **Nothing is retried.** A failed indexer shows as failed with Prowlarr's
   own words; a second try would be a second hit on the tracker.
 - **Searches are kept 25 minutes.** Prowlarr only keeps a found release for

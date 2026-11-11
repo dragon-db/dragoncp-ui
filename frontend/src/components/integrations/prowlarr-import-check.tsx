@@ -169,7 +169,14 @@ function Watchers({
   return (
     <>
       {client.watchers.map((watcher) =>
-        watcher.imports ? (
+        !watcher.verified ? (
+          <Row key={watcher.app} tone="warn">
+            <Strong>{watcher.label}</Strong> watches{" "}
+            {watcher.everything ? "everything" : client.category} on its {watcher.client}, which is
+            at a different address from Prowlarr's {client.name}. If they are the same server it
+            imports this; if not, nothing does. Check both point at the same place.
+          </Row>
+        ) : watcher.imports ? (
           <Row key={watcher.app} tone="ok">
             <Strong>{watcher.label}</Strong>{" "}
             {watcher.everything

@@ -349,11 +349,13 @@ class ArrLinkTests(unittest.TestCase):
         self.assertEqual([w['app'] for w in link.watchers(QBIT, 'radarr')], ['radarr'])
         self.assertEqual(link.watchers(QBIT, 'prowlarr'), [])
 
-    def test_a_client_at_another_address_still_counts_and_no_category_watches_all(self):
-        link = self.link(sonarr=FakeArr('tvCategory', 'tv-sonarr', host='localhost'),
+    def test_a_client_at_another_address_is_only_a_maybe_and_no_category_watches_all(self):
+        link = self.link(sonarr=FakeArr('tvCategory', 'tv-sonarr', host='other.example'),
                          radarr=FakeArr('movieCategory', ''))
         watchers = {w['app']: w for w in link.watchers(QBIT, 'tv-sonarr')}
         self.assertEqual(set(watchers), {'sonarr', 'radarr'})
+        self.assertFalse(watchers['sonarr']['verified'])
+        self.assertTrue(watchers['radarr']['verified'])
         self.assertTrue(watchers['radarr']['everything'])
 
     def test_completed_download_handling_off_is_reported(self):
@@ -422,6 +424,12 @@ class FakeProwlarr:
                              'initialFailure': '2027-01-14T00:00:00Z',
                              'mostRecentFailure': '2027-01-15T00:00:00Z'}]
         self.failing = set()
+        self.empty = set()
+        #: Prowlarr's history per indexer: what it recorded of each search.
+        self.history = {}
+
+    def indexer_history(self, indexer_id, limit=10):
+        return Answer(True, data=self.history.get(indexer_id, []))
 
     def allows_grabs(self):
         return self.allow
@@ -450,6 +458,8 @@ class FakeProwlarr:
         self.searched.append(iid)
         if iid in self.failing:
             return Answer(False, error='Prowlarr said: Indexer timed out', duration_ms=30000)
+        if iid in self.empty:
+            return Answer(True, data=[], duration_ms=400)
         return Answer(True, data=[release(n, iid) for n in range(1, 3)], duration_ms=400)
 
     def grab(self, guid, indexer_id, client=None):
@@ -510,6 +520,31 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(route['sent']['client_id'], 9)
         self.assertEqual([(t['app'], t['state']) for t in route['tracking']], [('sonarr', 'not_seen')])
         self.assertEqual(radarr.calls.count('queue'), 0)
+
+    def test_nothing_found_is_checked_against_prowlarrs_history(self):
+        """Prowlarr answers a failed indexer with an empty list; its history
+        says whether the search worked."""
+        def record(ok, at=NOW + 1):
+            stamp = datetime.fromtimestamp(at, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            return {'eventType': 'indexerQuery', 'successful': ok, 'date': stamp}
+        self.fake.empty = {1, 3, 4}
+        self.fake.history = {
+            1: [record(False), record(True, at=NOW - 3600)],  # failed now, worked an hour ago
+            3: [record(True)],                                  # really found nothing
+            4: [{'eventType': 'indexerRss', 'successful': True, 'date': '2027-01-15T00:00:00Z'}],
+        }
+        rows = {r['id']: r for r in self.service.poll(self.start(), 0)['indexers']}
+        self.assertEqual(rows[1]['state'], 'failed')
+        self.assertIn('recorded this search as failed', rows[1]['error'])
+        self.assertEqual((rows[3]['state'], rows[3].get('error')), ('done', None))
+        self.assertEqual(rows[4]['state'], 'done')
+        self.assertIn('no record', rows[4]['error'])
+
+    def test_results_are_not_second_guessed(self):
+        self.fake.history = {1: [{'eventType': 'indexerQuery', 'successful': False,
+                                  'date': '2030-01-01T00:00:00Z'}]}
+        rows = {r['id']: r for r in self.service.poll(self.start(), 0)['indexers']}
+        self.assertEqual((rows[1]['state'], rows[1]['count']), ('done', 2))
 
     def test_categories_and_scope_narrow_who_is_asked(self):
         self.start(categories=[5000], scope='torrent')

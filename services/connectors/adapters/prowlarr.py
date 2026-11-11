@@ -167,6 +167,12 @@ class ProwlarrConnector(Connector):
     def indexer_stats(self, start: Optional[str] = None) -> Answer:
         return self._call('GET', '/indexerstats', params={'startDate': start})
 
+    def indexer_history(self, indexer_id: int, limit: int = 10) -> Answer:
+        """Prowlarr's latest records for one indexer, newest first. Each search
+        it passed on is there with whether it worked."""
+        return self._call('GET', '/history/indexer',
+                          params={'indexerId': int(indexer_id), 'limit': int(limit)})
+
     def health(self) -> Answer:
         return self._call('GET', '/health')
 

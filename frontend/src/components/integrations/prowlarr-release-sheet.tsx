@@ -24,7 +24,7 @@ import { formatSize, libraryError, stampText } from "@/components/integrations/l
 import { ageText, flagLabel, qualityTokens } from "@/components/integrations/prowlarr-vocab";
 import { QualityChips, ProtocolMark } from "@/components/integrations/prowlarr-bits";
 import { ImportCheck } from "@/components/integrations/prowlarr-import-check";
-import { copyMagnet, downloadReleaseFile, useGrabRelease } from "@/hooks/useProwlarr";
+import { copyMagnet, copyText, downloadReleaseFile, useGrabRelease } from "@/hooks/useProwlarr";
 import type { ProwlarrClient, ProwlarrRelease } from "@/lib/prowlarr-types";
 
 /**
@@ -84,6 +84,8 @@ function ReleaseBody({
   const grab = useGrabRelease();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState<"magnet" | "file" | null>(null);
+  // The magnet link, shown to select by hand when the browser refused to copy.
+  const [shownMagnet, setShownMagnet] = useState<string | null>(null);
   // Only clients that take this kind of release, enabled, best priority first.
   const usable = clients
     .filter((c) => c.enabled && (c.protocol === release.protocol || c.protocol === "unknown"))
@@ -109,8 +111,13 @@ function ReleaseBody({
   const copy = async () => {
     setBusy("magnet");
     try {
-      await copyMagnet(searchId, release.id);
-      toast.success("Magnet link copied");
+      const { magnet, copied } = await copyMagnet(searchId, release.id);
+      if (copied) {
+        toast.success("Magnet link copied");
+      } else {
+        setShownMagnet(magnet);
+        toast.message("This browser did not allow copying here. The link is shown below.");
+      }
     } catch (failure) {
       toast.error(libraryError(failure, "Could not copy the magnet link."));
     } finally {
@@ -130,12 +137,8 @@ function ReleaseBody({
   };
 
   const copyTitle = async () => {
-    try {
-      await navigator.clipboard.writeText(release.title);
-      toast.success("Name copied");
-    } catch {
-      toast.error("This browser did not allow copying.");
-    }
+    if (await copyText(release.title)) toast.success("Name copied");
+    else toast.error("This browser did not allow copying. Press and hold the name to select it.");
   };
 
   const facts: [string, string][] = [
@@ -267,6 +270,28 @@ function ReleaseBody({
                 client switched on. Add one in Prowlarr: Settings → Download Clients.
               </p>
             ) : null}
+          </div>
+        )}
+
+        {shownMagnet && (
+          <div className="space-y-2 rounded-xl border border-border/70 bg-card/40 p-3">
+            <label className="block text-[12px] text-muted-foreground" htmlFor="magnet-link">
+              Magnet link: tap it to select, then copy.
+            </label>
+            <textarea
+              id="magnet-link"
+              readOnly
+              value={shownMagnet}
+              onFocus={(event) => event.currentTarget.select()}
+              className="h-20 w-full resize-none rounded-lg border border-border bg-background p-2 font-mono text-[11px] [overflow-wrap:anywhere] text-foreground-2"
+            />
+            <a
+              href={shownMagnet}
+              className={cn(buttonVariants({ variant: "outline" }), "h-10 w-full")}
+            >
+              <IconMagnet className="size-4" />
+              Open in a torrent app
+            </a>
           </div>
         )}
 

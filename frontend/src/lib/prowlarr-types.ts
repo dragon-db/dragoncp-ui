@@ -62,6 +62,9 @@ export interface ArrWatcher {
   imports: boolean;
   /** Its client has no category, so it watches everything there. */
   everything: boolean;
+  /** Its client is at the same address as Prowlarr's. False: only the same
+   *  kind of client, so it may be another server. */
+  verified: boolean;
 }
 
 export interface RouteClient {

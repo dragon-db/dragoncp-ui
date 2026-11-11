@@ -119,28 +119,68 @@ export async function downloadReleaseFile(searchId: string, releaseId: number) {
 }
 
 /**
+ * Put text on the clipboard. DragonCP is usually reached over plain http at a
+ * private address, where browsers withhold the clipboard API; the old
+ * select-and-copy route still works there in most browsers while the tap is
+ * fresh. False when neither did, so the caller can show the text instead.
+ */
+export async function copyText(text: string): Promise<boolean> {
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fall through to the old route.
+    }
+  }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  area.setSelectionRange(0, text.length);
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  area.remove();
+  return copied;
+}
+
+/**
  * Copy a magnet link the server has to fetch first.
  *
  * Safari only lets a page write to the clipboard during the tap itself, and
- * the link arrives after it. Handing the clipboard a promise keeps the tap's
- * permission while the link is fetched; browsers without that take the plain
- * route once it arrives.
+ * the link arrives after it. On a secure connection, handing the clipboard a
+ * promise keeps the tap's permission while the link is fetched; elsewhere the
+ * link is copied the old way once it arrives. `copied` is false when the
+ * browser allowed neither, and the sheet then shows the link to select.
  */
-export async function copyMagnet(searchId: string, releaseId: number): Promise<string> {
+export async function copyMagnet(
+  searchId: string,
+  releaseId: number
+): Promise<{ magnet: string; copied: boolean }> {
   const pending = fetchMagnet(searchId, releaseId);
-  if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+  if (
+    window.isSecureContext &&
+    typeof ClipboardItem !== "undefined" &&
+    navigator.clipboard?.write
+  ) {
     try {
       await navigator.clipboard.write([
         new ClipboardItem({
           "text/plain": pending.then((magnet) => new Blob([magnet], { type: "text/plain" })),
         }),
       ]);
-      return pending;
+      return { magnet: await pending, copied: true };
     } catch {
       // Fall through: some browsers refuse a promised item.
     }
   }
   const magnet = await pending;
-  await navigator.clipboard.writeText(magnet);
-  return magnet;
+  return { magnet, copied: await copyText(magnet) };
 }

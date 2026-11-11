@@ -38,6 +38,7 @@ from env_flags import test_mode_enabled
 from services.prowlarr.arr import ArrLink, family_app, landing_category
 from services.prowlarr.views import (
     SEARCH_TYPES,
+    parse_time,
     client_view,
     covers_categories,
     health_view,
@@ -66,6 +67,9 @@ PER_INDEXER_LIMIT = 100
 #: How far back the Indexers tab's numbers go.
 STATS_DAYS = 30
 MAX_QUERY = 300
+#: How far before our question an entry in Prowlarr's history may be dated
+#: and still be taken for it: the two machines' clocks need not agree.
+HISTORY_SLACK_SECONDS = 30.0
 
 SCOPES = ('all', 'torrent', 'usenet', 'picked')
 
@@ -273,6 +277,7 @@ class ProwlarrService:
 
     def _ask_one(self, adapter, search: Search, row: Dict[str, Any]) -> None:
         """Ask one indexer through Prowlarr and file what it found."""
+        asked_at = self.clock()
         try:
             answer = adapter.search(search.query, search_type=search.type,
                                     indexer_ids=[row['id']], categories=search.categories,
@@ -281,21 +286,61 @@ class ProwlarrService:
             log.exception('Prowlarr search %s: indexer %s raised', search.id, row['id'])
             answer = None
             error = f"DragonCP failed asking it ({type(exc).__name__})"
+        found = [r for r in (answer.data or []) if isinstance(r, dict)] \
+            if answer is not None and answer.ok and isinstance(answer.data, list) else []
+        empty = None
+        if answer is not None and answer.ok and not found:
+            empty = self._why_empty(adapter, row['id'], asked_at)
         with search.lock:
-            if answer is not None and answer.ok:
-                found = [r for r in (answer.data or []) if isinstance(r, dict)] \
-                    if isinstance(answer.data, list) else []
+            if empty and empty[0] == 'failed':
+                row.update(state='failed', count=0, ms=answer.duration_ms, error=empty[1])
+            elif answer is not None and answer.ok:
                 for raw in found:
                     release_id = len(search.releases)
                     search.releases.append(release_view(raw, release_id))
                     search.private.append(release_private(raw))
-                row.update(state='done', count=len(found), ms=answer.duration_ms)
+                row.update(state='done', count=len(found), ms=answer.duration_ms,
+                           error=empty[1] if empty else None)
             else:
                 row.update(state='failed', count=0,
                            ms=answer.duration_ms if answer is not None else None,
                            error=(answer.error if answer is not None else error) or 'It did not answer')
             if all(r['state'] != 'waiting' for r in search.indexers):
                 search.finished = self.clock()
+
+    def _why_empty(self, adapter, indexer_id: int, asked_at: float) -> Optional[Tuple[str, str]]:
+        """Whether "nothing found" was the indexer's answer or a failure.
+
+        Prowlarr answers an indexer that failed (timed out, refused, broke)
+        with an empty list, exactly like one that found nothing; only its
+        history says which. Its record of this search is the one dated after
+        we asked. Returns None when the search worked, ('failed', why) when
+        Prowlarr recorded it as failed, ('unsure', why) when Prowlarr kept no
+        record of it, which is what an indexer at its API limit looks like.
+        """
+        try:
+            answer = adapter.indexer_history(indexer_id)
+        except Exception:  # noqa: BLE001 - cannot tell is not a failure
+            return None
+        if not answer.ok or not isinstance(answer.data, list):
+            return None
+        since = asked_at - HISTORY_SLACK_SECONDS
+        mine = []
+        for record in answer.data:
+            if not isinstance(record, dict):
+                continue
+            if str(record.get('eventType') or '').lower() != 'indexerquery':
+                continue
+            when = parse_time(record.get('date'))
+            if when is not None and when.timestamp() >= since:
+                mine.append(record)
+        if not mine:
+            return ('unsure', 'Nothing found, and Prowlarr kept no record of asking it. '
+                              'It may be at its API limit, or the search never reached it.')
+        if any(r.get('successful') for r in mine):
+            return None
+        return ('failed', 'Prowlarr recorded this search as failed. It shows a failed '
+                          'indexer as "nothing found"; Test on the Indexers tab says why.')
 
     def poll(self, search_id: str, cursor: int = 0) -> Optional[Dict[str, Any]]:
         """What a search has found since `cursor`, and how each indexer is doing."""

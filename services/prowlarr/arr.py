@@ -205,10 +205,12 @@ class ArrLink:
     def watchers(self, prowlarr_client: Dict[str, Any], category: str) -> List[Dict[str, Any]]:
         """Which apps import what lands in `category` on this Prowlarr client.
 
-        The same client is the one of the same kind at the same address; when
-        none shares the address (Prowlarr reaches it by another name), any
-        client of the same kind counts. A Sonarr or Radarr client with no
-        category of its own watches everything in that client.
+        The same client is the one of the same kind at the same address. When
+        none shares the address, a client of the same kind may still be it
+        (Prowlarr reaching it as an IP, Sonarr as a name) or may be another
+        server entirely, so such a match is returned with `verified` False and
+        the page says to check. A Sonarr or Radarr client with no category of
+        its own watches everything in that client.
         """
         identity = client_identity(prowlarr_client)
         found = []
@@ -224,7 +226,8 @@ class ArrLink:
                 if not client['category'] or client['category'].lower() == category.lower():
                     found.append({'app': app, 'label': label, 'client': client['name'],
                                   'imports': info['imports'],
-                                  'everything': not client['category']})
+                                  'everything': not client['category'],
+                                  'verified': bool(here)})
                     break
         return found
 
