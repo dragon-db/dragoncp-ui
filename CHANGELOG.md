@@ -11,6 +11,37 @@ Newest first.
 
 ---
 
+## 2.3.5
+
+Prowlarr search, built for a phone.
+
+- **New: Integrations → Prowlarr.** **Search** asks every indexer, only
+  torrent or only usenet ones, or ones you pick, in the categories you tick,
+  as a plain, TV (season and episode) or film search, or by IMDb, TVDB or
+  TMDB id. Results appear as each indexer answers instead of after the
+  slowest one, and a line says who answered, who failed and why.
+- Sort and filter the results on the phone without asking again: words
+  (`-word` to exclude), torrent or usenet, resolution, seeders, age, size,
+  freeleech, indexer.
+- Tap a result for its whole name and facts, then **Send to** one of
+  Prowlarr's download clients, **Copy magnet**, or **Save .torrent / .nzb**.
+  On a test instance, sending stays off until allowed on the Connection tab.
+- **Indexers** shows which indexers are healthy, failing, paused by Prowlarr
+  or off, how fast each answers and how often it fails over 30 days,
+  Prowlarr's own warnings, and a **Test** for one indexer.
+- Easy on the trackers: nothing is retried, the same search within 5 minutes
+  is shown again rather than asked again, and paused indexers are skipped.
+- **Before you send, the release says whether Sonarr or Radarr will import
+  it:** which category it lands in on the download client, whether Sonarr or
+  Radarr watches that category, and which show and episodes or which film
+  they read the name as. A warning when nothing watches that category, the
+  title is not in their library, or the name cannot be read. After sending,
+  it follows the release in their queue until it is imported.
+- **Indexers → Download clients** shows which release categories go in which
+  client category.
+
+---
+
 ## 2.3.4
 
 Jellyfin and Seerr, tracked from DragonCP. In progress: this entry grows as

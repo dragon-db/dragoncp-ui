@@ -2319,6 +2319,143 @@ socket event `seerr_changed` (`{"kind": "request" | "issue" | "test"}`).
 
 ---
 
+## Prowlarr
+
+Search every indexer and see which are healthy (`routes/prowlarr.py`,
+`services/prowlarr/`). The connector's `views` (`["search", "indexers"]`)
+give it its own tabs. Behaviour: [Prowlarr](../features/prowlarr/README.md).
+
+Every endpoint needs a sign-in. No answer carries Prowlarr's API key, a
+download or magnet address, or a release's guid; a release is named by its
+search id and its number in that search. Sending a release (`grab`) is
+refused with `403` on a test instance until **Allow sending releases from
+this instance** is on, and every send, failure and refusal is in the activity
+log as `prowlarr.grab`.
+
+A refusal answers `{"success": false, "error": "…", "message": "…"}` with
+`400` (bad input), `403` (sending off here), `404` (no such release), `410`
+(the search expired: search again), `502` (Prowlarr said no or did not
+answer) or `503` (Prowlarr off or not set up).
+
+### GET `/prowlarr/overview`
+Indexers, health warnings and download clients, kept for 30 seconds
+(`?fresh=1` asks Prowlarr now).
+
+```json
+{
+  "success": true,
+  "state": "ok",
+  "version": "1.30.2",
+  "indexers": [{
+    "id": 1, "name": "Alpha", "definition": "alpha", "protocol": "torrent",
+    "privacy": "private", "enabled": true, "priority": 25,
+    "state": "ok | failing | paused | off",
+    "paused_until": null, "failing_since": null, "last_failure": null,
+    "site": "https://alpha.example/",
+    "categories": [{"id": 2000, "name": "Movies"}],
+    "category_tree": [{"id": 2000, "name": "Movies", "subs": [2040]}],
+    "search_types": ["search", "tvsearch", "movie"],
+    "stats": {"queries": 812, "grabs": 40, "failed_queries": 9,
+              "failed_grabs": 0, "avg_ms": 640, "failure_rate": 0.011}
+  }],
+  "health": [{"source": "IndexerStatusCheck", "level": "warning",
+              "message": "…", "wiki_url": "https://…"}],
+  "download_clients": [{"id": 1, "name": "Client", "protocol": "torrent",
+                        "enabled": true, "priority": 1, "kind": "qBittorrent"}],
+  "stats_days": 30, "stats_available": true, "read_at": "2026-11-06T09:00:00Z",
+  "can_grab": true, "why_not": ""
+}
+```
+
+`state` is `off` (with `message`) when Prowlarr is off or not set up in
+DragonCP, `error` when it did not answer.
+
+### POST `/prowlarr/indexers/<id>/test`
+Prowlarr's own test of one indexer. `{"success": true, "message": "…",
+"duration_ms": 900}`, or a refusal with Prowlarr's reason.
+
+### POST `/prowlarr/search`
+Body:
+
+```json
+{"query": "Example Show", "type": "search | tvsearch | movie | music | book",
+ "scope": "all | torrent | usenet | picked", "indexer_ids": [1, 4],
+ "categories": [5000], "season": "1", "episode": "2",
+ "imdb_id": "tt0000000", "tvdb_id": "123", "tmdb_id": "456", "fresh": false}
+```
+
+`indexer_ids` only with `scope: picked`. Season and episode only with
+`tvsearch`; ids only with `tvsearch` or `movie`. Answers
+`{"success": true, "search_id": "…", "reused": false}`. `reused` is true when
+the same search was started in the last 5 minutes and `fresh` was not set.
+
+### GET `/prowlarr/search/<search_id>?cursor=<n>`
+What the search has found since `cursor` (0 for everything):
+
+```json
+{"success": true, "search": {
+  "id": "…", "query": "…", "type": "tvsearch", "categories": [5000],
+  "running": true, "started": "…Z", "finished": null,
+  "indexers": [{"id": 1, "name": "Alpha", "protocol": "torrent",
+                "state": "waiting | done | failed | skipped",
+                "count": 30, "ms": 1040, "error": null}],
+  "total": 62, "cursor": 62,
+  "releases": [{"id": 0, "title": "…", "size": 1500000000,
+                "published": "…Z", "grabs": 100, "files": 1,
+                "seeders": 41, "leechers": 2, "protocol": "torrent",
+                "indexer_id": 1, "indexer": "Alpha", "categories": ["TV/HD"],
+                "category_ids": [5040], "flags": ["freeleech"],
+                "info_url": "https://…", "info_hash": "…",
+                "imdb_id": null, "tmdb_id": null, "tvdb_id": null,
+                "can_download": true, "can_magnet": true, "grabbed": false}],
+  "grabbed": [3]
+}}
+```
+
+Pass the answer's `cursor` back next time. `410` once the search is
+forgotten (25 minutes, or a restart).
+
+### POST `/prowlarr/search/<search_id>/releases/<n>/grab`
+Body `{"download_client_id": 1}` (optional; Prowlarr's default otherwise).
+`{"success": true, "message": "Sent to Client"}`.
+
+### GET `/prowlarr/search/<search_id>/releases/<n>/route`
+Where the release lands and whether Sonarr or Radarr imports it from there.
+Reads only, from Prowlarr, Sonarr and Radarr. Before a send:
+
+```json
+{"success": true,
+ "connected": ["sonarr", "radarr"], "family": "sonarr",
+ "clients": [{"id": 1, "name": "qBittorrent", "category": "tv-sonarr",
+              "how": "mapped | default | none",
+              "watchers": [{"app": "sonarr", "label": "Sonarr", "client": "qBit",
+                            "imports": true, "everything": false}]}],
+ "readings": [{"app": "sonarr", "label": "Sonarr",
+               "state": "matched | unmatched | unreadable | error",
+               "title": "Example Show", "year": 2020, "season": 1,
+               "episodes": [2], "absolute": [], "full_season": false,
+               "anime": false, "other_title": false, "found": 1, "have": 0}],
+ "sent": null, "tracking": []}
+```
+
+`clients` are Prowlarr's enabled clients for the release's kind, best
+priority first. `family` is the app the release's category belongs to (TV:
+Sonarr, Movies: Radarr). After a send, `sent` is `{"client_id", "at"}` and
+`tracking` has one row per watching app:
+`{"app", "label", "state": "imported | queued | not_seen | error", "verdict",
+"why", "known", "stuck", "progress", "message"}`. Each name is read once per
+app for 10 minutes; tracking is reused for 10 seconds.
+
+### GET `/prowlarr/search/<search_id>/releases/<n>/magnet`
+`{"success": true, "magnet": "magnet:?…"}`. `400` for usenet, or when the
+indexer gives a .torrent file rather than a magnet link.
+
+### GET `/prowlarr/search/<search_id>/releases/<n>/file`
+The .torrent or .nzb as an attachment (`Cache-Control: no-store`). When
+Prowlarr answers with a magnet link instead, `{"success": true, "magnet": …}`.
+
+---
+
 ## 8) Backup Endpoints
 
 Backups are organised by **slot** — one movie, or one episode — with a version

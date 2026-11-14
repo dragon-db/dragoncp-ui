@@ -265,6 +265,86 @@ def fetch_bytes(url: str, *, headers: Optional[Dict[str, str]] = None,
         return BytesResult(False, error=f"Request to {safe_url} failed: {type(exc).__name__}")
 
 
+@dataclass(frozen=True)
+class DownloadResult:
+    """A release file, or the magnet link the service redirected to instead."""
+
+    ok: bool
+    status_code: Optional[int] = None
+    content: bytes = b''
+    content_type: str = ''
+    filename: str = ''
+    #: Set instead of `content` when the answer was a redirect to `magnet:`.
+    magnet: str = ''
+    error: Optional[str] = None
+
+
+#: Redirects followed by hand before giving up. Prowlarr answers a download
+#: with the file, a redirect to a magnet link, or (for an indexer set to
+#: redirect) a hop to the tracker's own download address.
+MAX_DOWNLOAD_HOPS = 3
+
+
+def fetch_download(url: str, *, headers: Optional[Dict[str, str]] = None,
+                   timeout: float = DEFAULT_TIMEOUT,
+                   max_bytes: int = 10 * 1024 * 1024) -> DownloadResult:
+    """GET a .torrent or .nzb, or the magnet link it redirects to. Never raises.
+
+    Redirects are followed by hand because `requests` cannot follow one to
+    `magnet:`, and that redirect is the answer rather than a failure. Headers
+    are only sent to the first address: a hop to a tracker must not carry the
+    service's API key with it.
+    """
+    current = url
+    send_headers = headers
+    for _ in range(MAX_DOWNLOAD_HOPS + 1):
+        safe_url = redact_url(current)
+        try:
+            with requests.get(current, headers=send_headers, timeout=timeout,
+                              stream=True, allow_redirects=False) as response:
+                status = response.status_code
+                if 300 <= status < 400:
+                    location = (response.headers.get('Location') or '').strip()
+                    if location.lower().startswith('magnet:'):
+                        return DownloadResult(True, status_code=status, magnet=location)
+                    if not location.lower().startswith(('http://', 'https://')):
+                        return DownloadResult(False, status_code=status,
+                                              error=f"{safe_url} redirected somewhere unusable")
+                    current, send_headers = location, None
+                    continue
+                if not 200 <= status < 300:
+                    return DownloadResult(False, status_code=status,
+                                          error=_describe_status(safe_url, status, None))
+                chunks, size = [], 0
+                for chunk in response.iter_content(64 * 1024):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        return DownloadResult(False, status_code=status,
+                                              error=f"{safe_url} sent more than {max_bytes} bytes")
+                    chunks.append(chunk)
+                return DownloadResult(
+                    True, status_code=status, content=b''.join(chunks),
+                    content_type=response.headers.get('Content-Type', ''),
+                    filename=_disposition_filename(response.headers.get('Content-Disposition', '')),
+                )
+        except requests.Timeout:
+            return DownloadResult(False, error=f"{safe_url} did not answer within {timeout:.0f}s")
+        except requests.ConnectionError:
+            return DownloadResult(False, error=f"Could not reach {safe_url}")
+        except Exception as exc:  # noqa: BLE001 - the whole point is not raising
+            return DownloadResult(False, error=f"Request to {safe_url} failed: {type(exc).__name__}")
+    return DownloadResult(False, error=f"{redact_url(url)} redirected too many times")
+
+
+def _disposition_filename(header: str) -> str:
+    """The file name a Content-Disposition header gives, or ''."""
+    for part in (header or '').split(';'):
+        key, _, value = part.strip().partition('=')
+        if key.lower() == 'filename' and value:
+            return value.strip().strip('"')
+    return ''
+
+
 def _elapsed_ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
 
