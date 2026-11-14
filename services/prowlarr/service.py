@@ -38,7 +38,6 @@ from env_flags import test_mode_enabled
 from services.prowlarr.arr import ArrLink, family_app, landing_category
 from services.prowlarr.views import (
     SEARCH_TYPES,
-    parse_time,
     client_view,
     covers_categories,
     health_view,
@@ -67,9 +66,17 @@ PER_INDEXER_LIMIT = 100
 #: How far back the Indexers tab's numbers go.
 STATS_DAYS = 30
 MAX_QUERY = 300
-#: How far before our question an entry in Prowlarr's history may be dated
-#: and still be taken for it: the two machines' clocks need not agree.
-HISTORY_SLACK_SECONDS = 30.0
+#: Prowlarr's records read back after an empty answer, newest first. Its
+#: record of our search is among the few written since we asked.
+HISTORY_READ_BACK = 10
+UNSURE_NO_RECORD = ('Nothing found, and Prowlarr kept no record of asking it. '
+                    'It may be at its API limit, or the search never reached it.')
+UNSURE_NO_HISTORY = ('Nothing found, and Prowlarr\'s history could not be read to '
+                     'check that the search worked.')
+UNSURE_MIXED = ('Nothing found. Prowlarr recorded other searches on this indexer at '
+                'the same moment, so it is unclear whether this one worked.')
+FAILED_RECORDED = ('Prowlarr recorded this search as failed. It shows a failed '
+                   'indexer as "nothing found"; Test on the Indexers tab says why.')
 
 SCOPES = ('all', 'torrent', 'usenet', 'picked')
 
@@ -277,7 +284,7 @@ class ProwlarrService:
 
     def _ask_one(self, adapter, search: Search, row: Dict[str, Any]) -> None:
         """Ask one indexer through Prowlarr and file what it found."""
-        asked_at = self.clock()
+        before = self._last_record(adapter, row['id'])
         try:
             answer = adapter.search(search.query, search_type=search.type,
                                     indexer_ids=[row['id']], categories=search.categories,
@@ -290,7 +297,7 @@ class ProwlarrService:
             if answer is not None and answer.ok and isinstance(answer.data, list) else []
         empty = None
         if answer is not None and answer.ok and not found:
-            empty = self._why_empty(adapter, row['id'], asked_at)
+            empty = self._why_empty(adapter, row['id'], before, search.query)
         with search.lock:
             if empty and empty[0] == 'failed':
                 row.update(state='failed', count=0, ms=answer.duration_ms, error=empty[1])
@@ -308,39 +315,65 @@ class ProwlarrService:
             if all(r['state'] != 'waiting' for r in search.indexers):
                 search.finished = self.clock()
 
-    def _why_empty(self, adapter, indexer_id: int, asked_at: float) -> Optional[Tuple[str, str]]:
+    def _last_record(self, adapter, indexer_id: int) -> Optional[int]:
+        """The number of Prowlarr's newest history record for an indexer, taken
+        just before asking it: whatever is numbered higher came after. 0 when
+        the indexer has no history, None when the history could not be read."""
+        try:
+            answer = adapter.indexer_history(indexer_id, limit=1)
+        except Exception:  # noqa: BLE001 - the search goes ahead regardless
+            return None
+        if not answer.ok or not isinstance(answer.data, list):
+            return None
+        numbers = [_record_number(r) for r in answer.data if isinstance(r, dict)]
+        numbers = [n for n in numbers if n is not None]
+        if answer.data and not numbers:
+            return None
+        return max(numbers, default=0)
+
+    def _why_empty(self, adapter, indexer_id: int, before: Optional[int],
+                   query: str) -> Optional[Tuple[str, str]]:
         """Whether "nothing found" was the indexer's answer or a failure.
 
         Prowlarr answers an indexer that failed (timed out, refused, broke)
         with an empty list, exactly like one that found nothing; only its
-        history says which. Its record of this search is the one dated after
-        we asked. Returns None when the search worked, ('failed', why) when
-        Prowlarr recorded it as failed, ('unsure', why) when Prowlarr kept no
-        record of it, which is what an indexer at its API limit looks like.
+        history says which. Its record of this search is the search record
+        numbered after `before`. Returns None only when that record says the
+        search worked; ('failed', why) when it says it failed; ('unsure', why)
+        when there is no such record (an indexer at its API limit looks like
+        that), the history cannot be read, or other searches at the same
+        moment make it unclear which record is this one.
         """
+        if before is None:
+            return ('unsure', UNSURE_NO_HISTORY)
         try:
-            answer = adapter.indexer_history(indexer_id)
-        except Exception:  # noqa: BLE001 - cannot tell is not a failure
-            return None
+            answer = adapter.indexer_history(indexer_id, limit=HISTORY_READ_BACK)
+        except Exception:  # noqa: BLE001 - cannot tell is not a success
+            return ('unsure', UNSURE_NO_HISTORY)
         if not answer.ok or not isinstance(answer.data, list):
-            return None
-        since = asked_at - HISTORY_SLACK_SECONDS
-        mine = []
+            return ('unsure', UNSURE_NO_HISTORY)
+        since = []
         for record in answer.data:
             if not isinstance(record, dict):
                 continue
-            if str(record.get('eventType') or '').lower() != 'indexerquery':
+            number = _record_number(record)
+            if number is None or number <= before:
                 continue
-            when = parse_time(record.get('date'))
-            if when is not None and when.timestamp() >= since:
-                mine.append(record)
-        if not mine:
-            return ('unsure', 'Nothing found, and Prowlarr kept no record of asking it. '
-                              'It may be at its API limit, or the search never reached it.')
-        if any(r.get('successful') for r in mine):
+            if str(record.get('eventType') or '').lower() == 'indexerquery':
+                since.append(record)
+        if not since:
+            return ('unsure', UNSURE_NO_RECORD)
+        if len(since) > 1:
+            wanted = query.strip().lower()
+            same = [r for r in since
+                    if str((r.get('data') or {}).get('query') or '').strip().lower() == wanted]
+            since = same if same else since
+        verdicts = {bool(r.get('successful')) for r in since}
+        if verdicts == {True}:
             return None
-        return ('failed', 'Prowlarr recorded this search as failed. It shows a failed '
-                          'indexer as "nothing found"; Test on the Indexers tab says why.')
+        if verdicts == {False}:
+            return ('failed', FAILED_RECORDED)
+        return ('unsure', UNSURE_MIXED)
 
     def poll(self, search_id: str, cursor: int = 0) -> Optional[Dict[str, Any]]:
         """What a search has found since `cursor`, and how each indexer is doing."""
@@ -542,6 +575,12 @@ class ProwlarrService:
 
 def _rows(data: Any) -> List[Dict[str, Any]]:
     return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+
+
+def _record_number(record: Dict[str, Any]) -> Optional[int]:
+    """Prowlarr numbers its history records in the order it writes them."""
+    value = record.get('id')
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _stamp(seconds: float) -> str:

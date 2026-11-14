@@ -155,10 +155,15 @@ indexer anything.
   from what was found, and the line says "from 2 min ago". **Again** asks
   afresh. This protects private trackers' API limits.
 - **"Nothing found" is checked.** Prowlarr answers an indexer that failed
-  with an empty list, the same as one that found nothing. When an indexer
-  returns nothing, Prowlarr's history for it is read: a search recorded as
-  failed shows as **failed**; no record at all (an indexer at its API limit
-  looks like this) shows a note that the result is uncertain.
+  with an empty list, the same as one that found nothing. Just before asking
+  an indexer, DragonCP notes the number of Prowlarr's newest history record
+  for it. When the indexer returns nothing, only search records numbered
+  after that one count, so an earlier search that worked cannot vouch for
+  this one. A search recorded as failed shows as **failed**. It shows as
+  "nothing found" with a note that the result is uncertain when:
+  - there is no record (an indexer at its API limit looks like this);
+  - the history cannot be read;
+  - other searches recorded at the same moment, with the same words, disagree.
 - **Nothing is retried.** A failed indexer shows as failed with Prowlarr's
   own words; a second try would be a second hit on the tracker.
 - **Searches are kept 25 minutes.** Prowlarr only keeps a found release for

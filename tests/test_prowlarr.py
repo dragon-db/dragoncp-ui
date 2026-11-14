@@ -425,11 +425,33 @@ class FakeProwlarr:
                              'mostRecentFailure': '2027-01-15T00:00:00Z'}]
         self.failing = set()
         self.empty = set()
-        #: Prowlarr's history per indexer: what it recorded of each search.
+        #: Prowlarr's history per indexer, oldest first. Each search adds a
+        #: record numbered after every earlier one, as Prowlarr does.
         self.history = {}
+        self.numbered = 1000
+        #: How each indexer's next searches are recorded: True worked, False
+        #: failed, None not recorded at all. Unlisted indexers record success.
+        self.outcomes = {}
+        #: Others' searches Prowlarr records on an indexer alongside ours.
+        self.alongside = {}
+        #: How reading an indexer's history goes wrong: 'raise', 'refuse', 'junk'.
+        self.history_broken = {}
+
+    def note(self, indexer_id, event='indexerQuery', ok=True, query='Example Show'):
+        self.numbered += 1
+        self.history.setdefault(indexer_id, []).append(
+            {'id': self.numbered, 'eventType': event, 'successful': ok,
+             'date': '2027-01-15T00:00:00Z', 'data': {'query': query}})
 
     def indexer_history(self, indexer_id, limit=10):
-        return Answer(True, data=self.history.get(indexer_id, []))
+        broken = self.history_broken.get(indexer_id)
+        if broken == 'raise':
+            raise RuntimeError('connection reset')
+        if broken == 'refuse':
+            return Answer(False, error='Prowlarr said: 500')
+        if broken == 'junk':
+            return Answer(True, data={'records': []})
+        return Answer(True, data=list(reversed(self.history.get(indexer_id, [])))[:limit])
 
     def allows_grabs(self):
         return self.allow
@@ -456,6 +478,13 @@ class FakeProwlarr:
     def search(self, query, *, search_type, indexer_ids, categories, limit):
         (iid,) = indexer_ids
         self.searched.append(iid)
+        for other in self.alongside.get(iid, ()):
+            self.note(iid, ok=other[0], query=other[1])
+        outcome = self.outcomes.get(iid, True)
+        if isinstance(outcome, list):
+            outcome = outcome.pop(0)
+        if outcome is not None:
+            self.note(iid, ok=outcome, query=query)
         if iid in self.failing:
             return Answer(False, error='Prowlarr said: Indexer timed out', duration_ms=30000)
         if iid in self.empty:
@@ -521,29 +550,58 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual([(t['app'], t['state']) for t in route['tracking']], [('sonarr', 'not_seen')])
         self.assertEqual(radarr.calls.count('queue'), 0)
 
+    def rows(self, **params):
+        return {r['id']: r for r in self.service.poll(self.start(**params), 0)['indexers']}
+
     def test_nothing_found_is_checked_against_prowlarrs_history(self):
-        """Prowlarr answers a failed indexer with an empty list; its history
-        says whether the search worked."""
-        def record(ok, at=NOW + 1):
-            stamp = datetime.fromtimestamp(at, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-            return {'eventType': 'indexerQuery', 'successful': ok, 'date': stamp}
+        """Prowlarr answers a failed indexer with an empty list; its record of
+        that search says whether it worked."""
         self.fake.empty = {1, 3, 4}
-        self.fake.history = {
-            1: [record(False), record(True, at=NOW - 3600)],  # failed now, worked an hour ago
-            3: [record(True)],                                  # really found nothing
-            4: [{'eventType': 'indexerRss', 'successful': True, 'date': '2027-01-15T00:00:00Z'}],
-        }
-        rows = {r['id']: r for r in self.service.poll(self.start(), 0)['indexers']}
+        self.fake.note(1, ok=True)           # worked an earlier time
+        self.fake.outcomes = {1: False, 3: True, 4: None}
+        self.fake.note(4, event='indexerRss')  # not a search record
+        rows = self.rows()
         self.assertEqual(rows[1]['state'], 'failed')
         self.assertIn('recorded this search as failed', rows[1]['error'])
         self.assertEqual((rows[3]['state'], rows[3].get('error')), ('done', None))
         self.assertEqual(rows[4]['state'], 'done')
         self.assertIn('no record', rows[4]['error'])
 
+    def test_a_success_just_before_does_not_hide_this_failure(self):
+        """The same search twice, seconds apart: the first worked, the second
+        failed. Only the record written for the second one counts."""
+        self.fake.empty = {1}
+        self.fake.outcomes = {1: [True, False, None]}
+        self.assertEqual(self.rows()[1].get('error'), None)
+        self.clock[0] += 10
+        failed = self.rows(fresh=True)[1]
+        self.assertEqual(failed['state'], 'failed')
+        self.clock[0] += 10
+        unrecorded = self.rows(fresh=True)[1]
+        self.assertEqual(unrecorded['state'], 'done')
+        self.assertIn('no record', unrecorded['error'])
+
+    def test_an_unreadable_history_is_unsure_not_a_success(self):
+        self.fake.empty = {1, 3, 4}
+        self.fake.history_broken = {1: 'raise', 3: 'refuse', 4: 'junk'}
+        rows = self.rows()
+        for iid in (1, 3, 4):
+            self.assertEqual(rows[iid]['state'], 'done')
+            self.assertIn('could not be read', rows[iid]['error'])
+
+    def test_others_searching_at_the_same_moment_are_told_apart_by_the_query(self):
+        self.fake.empty = {1, 3}
+        self.fake.outcomes = {1: False, 3: False}
+        self.fake.alongside = {1: [(True, 'Another Show')],
+                               3: [(True, 'Example Show')]}  # same words, other outcome
+        rows = self.rows()
+        self.assertEqual(rows[1]['state'], 'failed')
+        self.assertEqual(rows[3]['state'], 'done')
+        self.assertIn('unclear', rows[3]['error'])
+
     def test_results_are_not_second_guessed(self):
-        self.fake.history = {1: [{'eventType': 'indexerQuery', 'successful': False,
-                                  'date': '2030-01-01T00:00:00Z'}]}
-        rows = {r['id']: r for r in self.service.poll(self.start(), 0)['indexers']}
+        self.fake.outcomes = {1: False}
+        rows = self.rows()
         self.assertEqual((rows[1]['state'], rows[1]['count']), ('done', 2))
 
     def test_categories_and_scope_narrow_who_is_asked(self):
